@@ -76,7 +76,7 @@ Everything is an env var, so nothing host-specific is baked in:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GPL-3.0 — see [LICENSE](LICENSE).
 
 ---
 
