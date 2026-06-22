@@ -1,0 +1,21 @@
+{
+  "show": "Delicious in Dungeon",
+  "initial_prompt": "This is Delicious in Dungeon (Dungeon Meshi). Spell names correctly: Laios, Marcille, Chilchuck, Senshi, Falin, Touden, dungeon, golden kingdom.",
+  "names": [
+    "Laios",
+    "Marcille",
+    "Chilchuck",
+    "Senshi",
+    "Falin",
+    "Touden",
+    "Namari",
+    "Shuro",
+    "Kabru",
+    "Mithrun",
+    "dungeon",
+    "monster",
+    "halfling"
+  ],
+  "hard_fixes": {},
+  "_curated": true
+}

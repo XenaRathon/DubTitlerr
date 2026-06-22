@@ -1,0 +1,26 @@
+{
+  "show": "Frieren: Beyond Journey's End",
+  "initial_prompt": "This is Frieren: Beyond Journey's End. Spell names correctly: Frieren, Fern, Stark, Himmel, Heiter, Eisen, Flamme, Serie, Aura, Sein, Ubel, Denken, Demon King, mana, mage.",
+  "names": [
+    "Frieren",
+    "Fern",
+    "Stark",
+    "Himmel",
+    "Heiter",
+    "Eisen",
+    "Flamme",
+    "Serie",
+    "Aura",
+    "Sein",
+    "Ubel",
+    "Denken",
+    "Wirbel",
+    "Methode",
+    "mana",
+    "mage",
+    "demon",
+    "grimoire"
+  ],
+  "hard_fixes": {},
+  "_curated": true
+}

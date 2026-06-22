@@ -1,39 +1,43 @@
-# Anime Library dubtitle rollout — priority order (one show folder per line).
-# anime_library.sh processes top to bottom. Edit freely to reprioritize.
-# Sub-only shows (no English dub) are omitted; even if added, REQUIRE_ENG=1 skips any
-# episode lacking an English audio track, so mixed shows are handled per-episode.
+# Anime Library dubtitle rollout — REPRIORITIZED by Tautulli user watch history (2026-06-22).
+# Shows users have actually started come first. Edit freely; gen loop re-reads each sweep.
 
-# ---- PILOTS (calibrate timing + quality before the long tail) ----
-MARRIAGETOXIN (2026) {tvdb-468734}
+# ---- in progress / done (idempotent skip) ----
 JoJo's Bizarre Adventure (2012) {tvdb-262954}
-Reborn as a Vending Machine, I Now Wander the Dungeon (2023) {tvdb-423121}
+MARRIAGETOXIN (2026) {tvdb-468734}
 
-# ---- DUBBED Japanese anime (priority over English-only), biggest libraries first ----
+# ---- WATCHED by users (Tautulli, by engagement) — dubbed ----
+JUJUTSU KAISEN (2020) {tvdb-377543}
+Cyberpunk Edgerunners (2022) {tvdb-384541}
+Trigun (1998) {tvdb-77680}
+Reborn as a Vending Machine, I Now Wander the Dungeon (2023) {tvdb-423121}
+TRIGUN STAMPEDE (2023) {tvdb-421378}
+SPY x FAMILY (2022) {tvdb-405920}
+Serial Experiments Lain (1998) {tvdb-78814}
+Darker Than Black (2007) {tvdb-80042}
 My Hero Academia {tvdb-305074}
+Cowboy Bebop (1998) {tvdb-76885}
+Fire Force (2019) {tvdb-355480}
+My Hero Academia Vigilantes (2025) {tvdb-458058}
+Frieren Beyond Journey's End (2023) {tvdb-424536}
+Delicious in Dungeon (2024) {tvdb-423257}
+Life With an Ordinary Guy Who Reincarnated Into a Total Fantasy Knockout (2022) {tvdb-405227}
+Mother of the Goddess' Dormitory (2021) {tvdb-400642}
+
+# ---- rest of dubbed anime (no watch history yet) ----
 Sword Art Online (2012) {tvdb-259640}
 Black Butler (2008) {tvdb-83996}
-Fire Force (2019) {tvdb-355480}
 Fullmetal Alchemist Brotherhood (2009) {tvdb-85249}
 Demon Slayer Kimetsu no Yaiba (2019) {tvdb-348545}
-JUJUTSU KAISEN (2020) {tvdb-377543}
 To Your Eternity (2021) {tvdb-375271}
 Fullmetal Alchemist (2003) {tvdb-75579}
-SPY x FAMILY (2022) {tvdb-405920}
-Frieren Beyond Journey's End (2023) {tvdb-424536}
-Darker Than Black (2007) {tvdb-80042}
 Death Note (2006) {tvdb-79481}
 FateZero (2011) {tvdb-275798}
-Cowboy Bebop (1998) {tvdb-76885}
-Trigun (1998) {tvdb-77680}
-My Hero Academia Vigilantes (2025) {tvdb-458058}
 FateStay Night Unlimited Blade Works (2014) {tvdb-278626}
 FateStay Night (2006) {tvdb-79151}
 Solo Leveling (2024) {tvdb-389597}
 FateApocrypha (2017) {tvdb-326332}
-TRIGUN STAMPEDE (2023) {tvdb-421378}
 My Dress-Up Darling (2022) {tvdb-401233}
 Komi Can't Communicate (2021) {tvdb-402412}
-Delicious in Dungeon (2024) {tvdb-423257}
 DAN DA DAN (2024) {tvdb-432832}
 Chainsaw Man (2022) {tvdb-397934}
 Chained Soldier (2024) {tvdb-412656}
@@ -48,18 +52,17 @@ I'm in Love With the Villainess (2023) {tvdb-428350}
 I Parry Everything (2024) {tvdb-441727}
 Demon Lord 2099 (2024) {tvdb-432847}
 My Status as an Assassin Obviously Exceeds the Hero's (2025) {tvdb-460341}
-Life With an Ordinary Guy Who Reincarnated Into a Total Fantasy Knockout (2022) {tvdb-405227}
 The Dark History of the Reincarnated Villainess (2025) {tvdb-446238}
 Suicide Squad Isekai (2024) {tvdb-436846}
-Mother of the Goddess' Dormitory (2021) {tvdb-400642}
-Cyberpunk Edgerunners (2022) {tvdb-384541}
-Pokémon Concierge (2023) {tvdb-431703}
 Disney Twisted-Wonderland The Animation (2025) {tvdb-411393}
 
-# ---- ENGLISH-ONLY / Western & legacy (already English; transcribe to create captions) ----
+# ---- WATCHED but English-only (captions) ----
 Pokémon (1997) {tvdb-76703}
-Yu-Gi-Oh! Duel Monsters (2000) {tvdb-76894}
 Speed Racer (1967) {tvdb-77777}
+
+# ---- rest of English-only ----
+Pokémon Concierge (2023) {tvdb-431703}
+Yu-Gi-Oh! Duel Monsters (2000) {tvdb-76894}
 Pokémon Horizons {tvdb-220150}
 Pokémon Chronicles (1998) {tvdb-72975}
 Yu-Gi-Oh! Capsule Monsters (2006) {tvdb-267996}

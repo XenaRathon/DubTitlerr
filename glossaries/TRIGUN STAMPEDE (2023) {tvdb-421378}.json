@@ -1,0 +1,22 @@
+{
+  "show": "Trigun Stampede",
+  "initial_prompt": "This is Trigun Stampede. Spell names correctly: Vash the Stampede, Nicholas D. Wolfwood, Meryl Stryfe, Roberto De Niro, Knives (Millions Knives), Rem Saverem, Plant, Jeneora.",
+  "names": [
+    "Vash",
+    "Stampede",
+    "Nicholas",
+    "Wolfwood",
+    "Meryl",
+    "Stryfe",
+    "Roberto",
+    "Knives",
+    "Millions",
+    "Saverem",
+    "Plant",
+    "Jeneora",
+    "Tesla",
+    "Luida"
+  ],
+  "hard_fixes": {},
+  "_curated": true
+}

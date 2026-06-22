@@ -1,0 +1,18 @@
+{
+  "show": "My Hero Academia: Vigilantes",
+  "initial_prompt": "This is My Hero Academia: Vigilantes. Spell names correctly: Koichi Haimawari (The Crawler), Kazuho Haneyama (Pop Step), Knuckleduster, Makoto, All Might, Quirk, vigilante.",
+  "names": [
+    "Koichi",
+    "Haimawari",
+    "Crawler",
+    "Kazuho",
+    "Haneyama",
+    "Knuckleduster",
+    "Makoto",
+    "Quirk",
+    "vigilante",
+    "Naruhata"
+  ],
+  "hard_fixes": {},
+  "_curated": true
+}

@@ -1,0 +1,18 @@
+{
+  "show": "Darker than Black",
+  "initial_prompt": "This is Darker than Black. Spell names correctly: Hei, Yin, Mao, Huang, Misaki Kirihara, Contractor, Hell's Gate, BK-201, the Syndicate.",
+  "names": [
+    "Yin",
+    "Mao",
+    "Huang",
+    "Misaki",
+    "Kirihara",
+    "Contractor",
+    "Syndicate",
+    "Pandora",
+    "Amber",
+    "November"
+  ],
+  "hard_fixes": {},
+  "_curated": true
+}

@@ -14,6 +14,11 @@ while :; do
   while IFS= read -r show; do
     case "$show" in ''|\#*) continue;; esac
     [ -d "$ANIME/$show" ] || { echo "skip-missing: $show"; continue; }
+    # ADDITIVE dictionary: load the show's existing glossary + mine its NEW episodes'
+    # embedded subs for new proper nouns, appending them (never rebuilds). Runs before
+    # generate so the grown dictionary applies to the episodes about to be transcribed.
+    echo "#### MINE $show $(date)"
+    GLOSSARY_DIR="$GLOSS_DIR" python3 /app/mine_glossary.py "$ANIME/$show" 2>&1 || echo "  mine failed (continuing)"
     GLOSS="$GLOSS_DIR/$show.json"; [ -f "$GLOSS" ] || GLOSS=""
     echo "#### GENERATE $show $(date)"
     # crash-resume: re-run until clean exit or no progress (poison files get a .fail marker)

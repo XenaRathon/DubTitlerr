@@ -1,0 +1,28 @@
+{
+  "show": "Fire Force",
+  "initial_prompt": "This is Fire Force. Spell names correctly: Shinra Kusakabe, Arthur Boyle, Maki Oze, Iris, Akitaru Obi, Takehisa Hinawa, Tamaki Kotatsu, Joker, Sho Kusakabe, Benimaru Shinmon, Infernal, pyrokinetic, Adolla.",
+  "names": [
+    "Shinra",
+    "Kusakabe",
+    "Arthur",
+    "Boyle",
+    "Maki",
+    "Oze",
+    "Iris",
+    "Akitaru",
+    "Takehisa",
+    "Hinawa",
+    "Tamaki",
+    "Kotatsu",
+    "Joker",
+    "Benimaru",
+    "Shinmon",
+    "Infernal",
+    "pyrokinetic",
+    "Adolla",
+    "Haijima",
+    "Evangelist"
+  ],
+  "hard_fixes": {},
+  "_curated": true
+}

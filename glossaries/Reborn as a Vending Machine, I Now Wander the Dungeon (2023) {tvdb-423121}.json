@@ -1,0 +1,18 @@
+{
+  "show": "Reborn as a Vending Machine",
+  "initial_prompt": "This is Reborn as a Vending Machine, I Now Wander the Dungeon. Spell names correctly: Boxxo, Lammis, Hulemy, Shui, Mishel, Kerrioll, Clearflow Lake, Hunters Association.",
+  "names": [
+    "Boxxo",
+    "Lammis",
+    "Hulemy",
+    "Shui",
+    "Mishel",
+    "Kerrioll",
+    "Clearflow",
+    "Hunters",
+    "Association",
+    "dungeon"
+  ],
+  "hard_fixes": {},
+  "_curated": true
+}
