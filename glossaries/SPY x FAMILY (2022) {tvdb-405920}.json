@@ -1,0 +1,30 @@
+{
+  "show": "Spy x Family",
+  "initial_prompt": "This is Spy x Family. Spell names correctly: Loid Forger (Twilight), Anya Forger, Yor Forger (Thorn Princess), Bond, Damian Desmond, Donovan Desmond, Becky Blackbell, Yuri Briar, WISE, Eden Academy.",
+  "names": [
+    "Loid",
+    "Forger",
+    "Twilight",
+    "Anya",
+    "Thorn",
+    "Princess",
+    "Bond",
+    "Damian",
+    "Desmond",
+    "Donovan",
+    "Becky",
+    "Blackbell",
+    "Franky",
+    "Yuri",
+    "Briar",
+    "Henderson",
+    "Eden",
+    "Academy",
+    "Stella",
+    "Garden",
+    "Ostania",
+    "Westalis"
+  ],
+  "hard_fixes": {},
+  "_curated": true
+}

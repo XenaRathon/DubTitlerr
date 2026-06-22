@@ -1,0 +1,19 @@
+{
+  "show": "Serial Experiments Lain",
+  "initial_prompt": "This is Serial Experiments Lain. Spell names correctly: Lain Iwakura, the Wired, Navi, the Knights, Eiri Masami, Alice, Protocol Seven.",
+  "names": [
+    "Lain",
+    "Iwakura",
+    "Wired",
+    "Navi",
+    "Knights",
+    "Eiri",
+    "Masami",
+    "Alice",
+    "Mika",
+    "protocol",
+    "Cyberia"
+  ],
+  "hard_fixes": {},
+  "_curated": true
+}

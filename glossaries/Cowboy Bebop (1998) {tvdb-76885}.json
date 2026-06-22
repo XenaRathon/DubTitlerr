@@ -1,0 +1,21 @@
+{
+  "show": "Cowboy Bebop",
+  "initial_prompt": "This is Cowboy Bebop. Spell names correctly: Spike Spiegel, Jet Black, Faye Valentine, Edward (Ed), Ein, Vicious, Julia, the Bebop, Red Dragon Syndicate.",
+  "names": [
+    "Spike",
+    "Spiegel",
+    "Black",
+    "Faye",
+    "Valentine",
+    "Edward",
+    "Vicious",
+    "Julia",
+    "Bebop",
+    "Syndicate",
+    "Swordfish",
+    "bounty",
+    "Ganymede"
+  ],
+  "hard_fixes": {},
+  "_curated": true
+}

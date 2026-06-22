@@ -1,0 +1,41 @@
+{
+  "show": "My Hero Academia",
+  "initial_prompt": "This is My Hero Academia. Spell names correctly: Izuku Midoriya (Deku), Katsuki Bakugo, Shoto Todoroki, Tenya Iida, Ochaco Uraraka, Tsuyu Asui, All Might, Shota Aizawa, Endeavor, Tomura Shigaraki, All For One, One For All, Dabi, Himiko Toga, Eijiro Kirishima, Quirk, U.A.",
+  "names": [
+    "Izuku",
+    "Midoriya",
+    "Deku",
+    "Katsuki",
+    "Bakugo",
+    "Shoto",
+    "Todoroki",
+    "Tenya",
+    "Iida",
+    "Ochaco",
+    "Uraraka",
+    "Tsuyu",
+    "Asui",
+    "Might",
+    "Aizawa",
+    "Endeavor",
+    "Tomura",
+    "Shigaraki",
+    "Dabi",
+    "Himiko",
+    "Toga",
+    "Eijiro",
+    "Kirishima",
+    "Momo",
+    "Yaoyorozu",
+    "Tokoyami",
+    "Mineta",
+    "Mirio",
+    "Hawks",
+    "Nomu",
+    "Quirk"
+  ],
+  "hard_fixes": {
+    "bakugou": "Bakugo"
+  },
+  "_curated": true
+}

@@ -1,0 +1,26 @@
+{
+  "show": "Cyberpunk: Edgerunners",
+  "initial_prompt": "This is Cyberpunk: Edgerunners. Spell names correctly: David Martinez, Lucy, Maine, Rebecca, Kiwi, Pilar, Dorio, Falco, Adam Smasher, Night City, Arasaka, cyberware, netrunner, ripperdoc.",
+  "names": [
+    "David",
+    "Martinez",
+    "Lucy",
+    "Maine",
+    "Rebecca",
+    "Kiwi",
+    "Pilar",
+    "Dorio",
+    "Falco",
+    "Gloria",
+    "Smasher",
+    "Arasaka",
+    "Militech",
+    "cyberware",
+    "netrunner",
+    "ripperdoc",
+    "cyberpsycho",
+    "Trauma"
+  ],
+  "hard_fixes": {},
+  "_curated": true
+}

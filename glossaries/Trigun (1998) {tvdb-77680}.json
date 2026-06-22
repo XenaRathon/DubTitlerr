@@ -1,0 +1,22 @@
+{
+  "show": "Trigun",
+  "initial_prompt": "This is Trigun. Spell names correctly: Vash the Stampede, Nicholas D. Wolfwood, Meryl Stryfe, Milly Thompson, Knives (Millions Knives), Legato Bluesummers, Gung-Ho Guns, Plant.",
+  "names": [
+    "Vash",
+    "Stampede",
+    "Nicholas",
+    "Wolfwood",
+    "Meryl",
+    "Stryfe",
+    "Milly",
+    "Thompson",
+    "Knives",
+    "Millions",
+    "Legato",
+    "Bluesummers",
+    "Plant",
+    "Gunsmoke"
+  ],
+  "hard_fixes": {},
+  "_curated": true
+}

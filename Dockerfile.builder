@@ -11,7 +11,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY generate.py repair.py dub_signs_merge.py plex_refresh.py \
+COPY generate.py repair.py dub_signs_merge.py plex_refresh.py mine_glossary.py \
      merge_pass.sh gen_loop.sh container_run.sh /app/
 RUN chmod +x /app/*.sh
 
