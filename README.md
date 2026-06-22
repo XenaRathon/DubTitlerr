@@ -74,6 +74,14 @@ Everything is an env var, so nothing host-specific is baked in:
 
 `ffmpeg`/`ffprobe` and the [`pysubs2`](https://pypi.org/project/pysubs2/) Python package — both baked into the provided `Dockerfile`.
 
+## Roadmap
+
+- **Web UI** — a small dashboard to watch the rollout (per-show / per-episode progress, GPU
+  status, live logs), queue or reorder shows, kick off a re-scan, and edit per-show glossaries
+  — instead of tailing logs over SSH.
+- **Per-show glossary editor** — manage the name/spelling glossaries from the UI.
+- **Auto-mux** — optionally embed the finished `.ass` into the MKV as a tagged "Dubtitles" track.
+
 ## License
 
 GPL-3.0 — see [LICENSE](LICENSE).

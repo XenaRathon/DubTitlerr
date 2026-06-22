@@ -1,0 +1,27 @@
+{
+  "show": "One Piece (the One Pace edit)",
+  "initial_prompt": "This is One Piece (the One Pace edit). Spell names correctly: Luffy, Zoro, Nami, Usopp, Sanji, Tony Tony Chopper, Nico Robin, Franky, Brook, Vivi, Crocodile, Smoker, Kohza, Bon Clay, Bellamy, Masira, Montblanc Noland, Skypiea, Jaya, Enel, Iceburg, Lucci, Moriah, Hancock, Doflamingo, Trafalgar Law, Kaido, Going Merry, Thousand Sunny, Grand Line, Devil Fruit, Den Den Mushi, Log Pose, Haki, Straw Hat.",
+  "names": [
+    "Luffy", "Zoro", "Nami", "Usopp", "Sanji", "Tony", "Chopper", "Nico", "Robin",
+    "Franky", "Brook", "Jinbe", "Vivi", "Nefertari", "Cobra", "Crocodile", "Smoker",
+    "Tashigi", "Kohza", "Igaram", "Chaka", "Pell", "Clay", "Baroque", "Works", "Dalton",
+    "Wapol", "Hiriluk", "Kureha", "Dorry", "Brogy", "Karoo", "Bellamy", "Cricket", "Masira",
+    "Shoujou", "Montblanc", "Noland", "Sarquiss", "Mock", "Town", "Jaya", "Skypiea", "Enel",
+    "Wiper", "Conis", "Fall", "Iceburg", "Galley-La", "Paulie", "Kaku", "Lucci", "Spandam",
+    "Moria", "Perona", "Oars", "Kuma", "Hancock", "Rayleigh", "Sabo", "Whitebeard", "Marco",
+    "Sengoku", "Garp", "Doflamingo", "Trafalgar", "Kaido", "Katakuri", "Killer",
+    "Going", "Merry", "Thousand", "Sunny", "Alabasta", "Water", "Seven", "Enies", "Lobby",
+    "Thriller", "Bark", "Sabaody", "Marineford", "Dressrosa", "Wano", "Grand", "Line",
+    "Devil", "Fruit", "Mushi", "Pose", "Haki", "Straw", "Marines", "Baratie", "Arlong",
+    "Buggy", "Shanks", "Roger", "Pirate", "Raftel"
+  ],
+  "hard_fixes": {
+    "ruffy": "Luffy", "rufi": "Luffy", "luffi": "Luffy", "zorro": "Zoro", "zolo": "Zoro",
+    "bibi": "Vivi", "bivi": "Vivi", "arabasta": "Alabasta", "alabaster": "Alabasta",
+    "coza": "Kohza", "cosa": "Kohza", "kosa": "Kohza", "igoram": "Igaram",
+    "hiriluck": "Hiriluk", "hiluluk": "Hiriluk", "whopper": "Wapol",
+    "karu": "Karoo", "carue": "Karoo", "usop": "Usopp", "santi": "Sanji",
+    "mashita": "Masira", "masita": "Masira", "shojo": "Shoujou", "bellamine": "Bellamy",
+    "noland": "Noland", "norland": "Noland", "skypia": "Skypiea", "enelm": "Enel"
+  }
+}
