@@ -10,6 +10,12 @@ RUN apt-get update \
     && python3 -m pip install --no-cache-dir pysubs2 \
     && rm -rf /var/lib/apt/lists/*
 
+# Bake the Whisper large-v3 model into the image (~3GB) so the container is fully
+# self-contained — no dependency on an external models bind-mount. Fetched once at build
+# time (CPU, just to download the files). MODEL_DIR points generate.py at it.
+ENV MODEL_DIR=/models
+RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('large-v3', device='cpu', compute_type='int8', download_root='/models')"
+
 WORKDIR /app
 COPY generate.py repair.py dub_signs_merge.py plex_refresh.py mine_glossary.py \
      merge_pass.sh gen_loop.sh container_run.sh /app/

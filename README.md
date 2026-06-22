@@ -1,10 +1,16 @@
-# dub-signs-merge
+# DubTitlerr
 
-**Show anime "dubtitles" *and* the "Signs & Songs" track on screen at the same time.**
+**Automatic English-dub "dubtitles" for your whole anime library — and the "Signs & Songs" track on screen at the same time.**
 
-If you watch anime with the **English dub** but still want the on-screen **signs and song lyrics** translated, you normally hit a wall: most players (Plex included) only display **one subtitle track at a time**. So you can have dub captions *or* signs — not both.
+DubTitlerr is a self-hosted, *-arr-style service that watches your anime library and, for every show with an **English dub**, transcribes the dub into accurate captions ("dubtitles"), repairs them with a local LLM, and **merges the on-screen signs & song lyrics into the same subtitle track** — so one track shows everything. It runs as one container, grows a per-show name **dictionary** automatically, and refreshes Plex per-episode.
 
-This little tool fixes that by **merging the two into a single subtitle file**, so one track shows everything.
+> The original `dub-signs-merge` was just the signs+dub *merge* step (documented below); the project has grown into the full pipeline (transcribe → repair → merge → mux) with additive per-show dictionaries. **See the [Wiki](../../wiki) for setup & usage.**
+
+<details>
+<summary><b>The signs+dub merge, in detail (click to expand)</b></summary>
+
+If you watch anime with the English dub but still want the on-screen signs and song lyrics translated, most players (Plex included) only display **one subtitle track at a time** — so you get dub captions *or* signs, not both. This merges the two into a single subtitle file.
+</details>
 
 <details>
 <summary><b>What's actually going on (click to expand)</b></summary>
