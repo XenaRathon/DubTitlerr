@@ -15,6 +15,17 @@ def sentence(words, t0=0.0, dur=0.3, gap=0.1, seg=0, prob=0.9):
     return out
 
 
+def lay(texts, dur=0.3, gaps=0.0, t0=0.0, seg=0, prob=0.9):
+    """Build words with explicit per-position gaps. `gaps` is a scalar applied
+    after every word, or a list of len(texts)-1 gaps (gap after word i)."""
+    out, t = [], t0
+    for i, w in enumerate(texts):
+        out.append(mkword(w, t, t + dur, prob=prob, seg=seg))
+        if i < len(texts) - 1:
+            t += dur + (gaps if isinstance(gaps, (int, float)) else gaps[i])
+    return out
+
+
 # --- T1: scaffold / contracts ------------------------------------------------
 
 def test_module_exposes_netflix_profile_constants():
@@ -54,3 +65,54 @@ def test_split_spans_gap_exactly_half_second_does_not_break():
 
 def test_split_spans_empty_input():
     assert reflow.split_spans([]) == []
+
+
+# --- T3: segment_span --------------------------------------------------------
+
+def test_segment_span_splits_on_sentence_punctuation():
+    span = sentence(["Hi", "there.", "Bye", "now!"])
+    groups = reflow.segment_span(span)
+    assert [[w["text"] for w in g] for g in groups] == [["Hi", "there."], ["Bye", "now!"]]
+
+
+def test_segment_span_keeps_a_fitting_piece_whole():
+    span = sentence(["short", "and", "sweet"])
+    assert len(reflow.segment_span(span)) == 1
+
+
+def test_segment_span_overflow_cuts_at_largest_pause():
+    # 12 identical 7-char words = 95 chars (>84). Bigger gap after word 6.
+    gaps = [0.05] * 11
+    gaps[5] = 0.30          # the gap that closes a card (split index 6)
+    span = lay(["alphaaa"] * 12, gaps=gaps)
+    groups = reflow.segment_span(span)
+    assert len(groups) == 2
+    assert len(groups[0]) == 6
+
+
+def test_segment_span_overflow_no_pause_cuts_at_clause():
+    # all words abut (gap 0) -> no pause tier; a comma decides the break
+    texts = ["alphaaa"] * 12
+    texts[5] = "alphaa,"
+    span = lay(texts, gaps=0.0)
+    groups = reflow.segment_span(span)
+    assert len(groups) == 2
+    assert len(groups[0]) == 6
+
+
+def test_segment_span_overflow_no_pause_no_clause_word_wraps_near_midpoint():
+    span = lay(["alphaaa"] * 12, gaps=0.0)
+    groups = reflow.segment_span(span)
+    assert len(groups) == 2
+    assert abs(len(groups[0]) - len(groups[1])) <= 1
+
+
+def test_segment_span_overflow_by_duration_even_when_text_short():
+    # short text but >7s spoken -> must still split (gap 0.4 <= 0.5 keeps one span)
+    span = lay(["aaa", "aaa"], dur=3.5, gaps=[0.4])
+    assert len(reflow.segment_span(span)) == 2
+
+
+def test_segment_span_single_unsplittable_word_returned_as_is():
+    span = [mkword("x" * 200, 0.0, 12.0)]   # too long AND too long-duration
+    assert len(reflow.segment_span(span)) == 1

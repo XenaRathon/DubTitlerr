@@ -49,11 +49,74 @@ def split_spans(words: list[dict]) -> list[list[dict]]:
     return spans
 
 
+def _text(words: list[dict]) -> str:
+    return " ".join(w["text"].strip() for w in words)
+
+
+def _dur(words: list[dict]) -> float:
+    return words[-1]["end"] - words[0]["start"]
+
+
+def _fits(words: list[dict]) -> bool:
+    return len(_text(words)) <= MAX_CHARS and _dur(words) <= MAX_DUR
+
+
+def _split_sentences(span: list[dict]) -> list[list[dict]]:
+    """Close a piece after any word whose text ends in sentence-final punctuation."""
+    pieces: list[list[dict]] = []
+    cur: list[dict] = []
+    for w in span:
+        cur.append(w)
+        if w["text"].rstrip().endswith(tuple(SENT_END)):
+            pieces.append(cur)
+            cur = []
+    if cur:
+        pieces.append(cur)
+    return pieces
+
+
+def _best_split_index(piece: list[dict]) -> int:
+    """Interior index (1..n-1) at which to cut an overflowing piece, honoring
+    the tier order: largest pause -> clause delimiter -> char midpoint."""
+    n = len(piece)
+    mid = n / 2
+    # tier 1: largest inter-word pause (tie -> nearest the midpoint)
+    gap, _, idx = max(
+        (piece[i]["start"] - piece[i - 1]["end"], -abs(i - mid), i) for i in range(1, n)
+    )
+    if gap > 0:
+        return idx
+    # tier 2: clause delimiter, nearest the midpoint
+    clause = [i for i in range(1, n) if piece[i - 1]["text"].rstrip().endswith(tuple(CLAUSE))]
+    if clause:
+        return min(clause, key=lambda i: (abs(i - mid), i))
+    # tier 3: word boundary nearest the character midpoint
+    half = len(_text(piece)) / 2
+    run = 0
+    best_i, best_d = 1, None
+    for i in range(1, n):
+        run += len(piece[i - 1]["text"].strip()) + 1
+        d = abs(run - half)
+        if best_d is None or d < best_d:
+            best_d, best_i = d, i
+    return best_i
+
+
+def _split_overflow(piece: list[dict]) -> list[list[dict]]:
+    if len(piece) == 1 or _fits(piece):
+        return [piece]
+    i = _best_split_index(piece)
+    return _split_overflow(piece[:i]) + _split_overflow(piece[i:])
+
+
 def segment_span(span: list[dict]) -> list[list[dict]]:
     """Segment one span's words into card-sized word groups: sentence-final
     punctuation first; an overflowing piece (>MAX_CHARS or >MAX_DUR) is cut by
     largest internal pause -> clause delimiter near the midpoint -> word-wrap."""
-    raise NotImplementedError
+    groups: list[list[dict]] = []
+    for piece in _split_sentences(span):
+        groups.extend(_split_overflow(piece))
+    return groups
 
 
 def wrap_balance(text: str) -> str:
