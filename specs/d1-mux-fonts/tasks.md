@@ -13,16 +13,16 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
 - [x] **T1 — Scaffold + extract pure helpers.** In `mux.py`: `tests/test_mux.py`; extract/define
       `read_stamp`/`write_stamp`/`stamp_valid`, `has_room`, `keep_sub`, `is_muxed` signatures +
       constants (`MIN_FREE_GB`, `DELETE_BROKEN_HARDLINKS=0`). — done when: ruff clean, pytest collects.
-- [ ] **T2 — Stamp helpers.** `.dubtitles.done` write (size+mtime+muxed) / read / `stamp_valid`
+- [x] **T2 — Stamp helpers.** `.dubtitles.done` write (size+mtime+muxed) / read / `stamp_valid`
       (matches current file). — done when: round-trip + staleness tests pass.
-- [ ] **T3 — `has_room`.** free-bytes vs needed (file size × factor) ≥ MIN_FREE_GB margin.
+- [x] **T3 — `has_room`.** free-bytes vs needed (file size × factor) ≥ MIN_FREE_GB margin.
       — done when: boundary tests pass.
-- [ ] **T4 — `keep_sub`.** keep eng/nld/und/original; ALSO keep `mul` or signs/songs-named tracks;
+- [x] **T4 — `keep_sub`.** keep eng/nld/und/original; ALSO keep `mul` or signs/songs-named tracks;
       drop other-language dialogue subs. — done when: keep/drop + signs-songs-survive tests pass.
-- [ ] **T5 — `build_cmd` flags (refine/confirm).** eng audio default, jpn kept non-default,
+- [x] **T5 — `build_cmd` flags (refine/confirm).** eng audio default, jpn kept non-default,
       Dubtitles default (not forced), foreign dropped, attachments kept — over a fake `mkvmerge -J`
       dict. — done when: track/flag unit tests pass.
-- [ ] **T6 — Process wiring (mkv + mp4) + stamp + no-partner-delete + EXDEV-safe finalize.**
+- [x] **T6 — Process wiring (mkv + mp4) + stamp + no-partner-delete + EXDEV-safe finalize.**
       `process()`: free-space gate; mkv→embed `.ass`; mp4→remux to mkv embed `.srt` + remove old
       `.mp4` link only; verify→finalize→write stamp→remove sidecar; never delete partners.
       — done when: ruff clean, pytest green, mp4/mkv branch unit-tested (subprocess stubbed).
