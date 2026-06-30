@@ -30,7 +30,7 @@ def log(*a):
     print(*a, flush=True)
 
 TOPK = 6                  # candidate titles per term handed to the LLM
-CAND_CUTOFF = 0.5         # min similarity for a title to be a candidate
+CAND_CUTOFF = 0.62        # min similarity for a candidate (0.5 let junk like blarghxyzqq->Largo in)
 VERIFY_MODEL = os.environ.get("VERIFY_MODEL", "qwen3:8b")
 OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
 CACHE_DIR = os.environ.get("WIKI_CACHE_DIR", "/config/wiki_cache")
@@ -67,7 +67,11 @@ def build_adjudication_prompt(term: str, cands: list[str], show: str) -> str:
         f"Candidate official wiki page titles:\n{cl}\n\n"
         "Pick the ONE candidate that is the SAME entity as the term and give its canonical "
         "spelling. If the English DUB spells it differently from the wiki/manga, PREFER the dub "
-        "spelling and say so in dub_note. If no candidate is the same entity, return no match.\n"
+        "spelling and say so in dub_note.\n"
+        "Use confidence 'high' ONLY when you are certain a candidate is the same named entity as "
+        "the term (a clear misspelling/variant of it). If the term is garbled beyond recognition, "
+        "or no candidate is clearly the same entity, return confidence 'none' and empty canonical. "
+        "Do NOT guess.\n"
         'Reply ONLY as JSON: {"canonical": "<spelling or empty>", '
         '"confidence": "high|low|none", "dub_note": "<short or empty>"}')
 
