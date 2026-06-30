@@ -48,3 +48,37 @@ def test_load_dict_splits_phrase_and_token_fixes():
 def test_load_blank_path_is_noop_glossary():
     g = glossary.load("")
     assert g["names"] == [] and g["token_fixes"] == {} and g["phrase_fixes"] == {}
+
+
+# --- T3: correct() tiered ----------------------------------------------------
+
+def test_correct_does_not_touch_real_english_words():
+    g = gloss(names=["Arlong", "Franky", "Spandam", "Alabasta"])
+    for line in ["those pirates ran", "frank work along the line", "seven of them fall"]:
+        assert glossary.correct(line, g) == (line, 0)
+
+
+def test_correct_applies_exact_token_hard_fix_case_insensitive_keeps_punct():
+    g = gloss(hard_fixes={"spondum": "Spandam"})
+    assert glossary.correct("then Spondum, the chief", g)[0] == "then Spandam, the chief"
+
+
+def test_correct_applies_phrase_hard_fix():
+    g = gloss(hard_fixes={"eddie's lobby": "Enies Lobby"})
+    assert glossary.correct("we reach Eddie's Lobby soon", g)[0] == "we reach Enies Lobby soon"
+
+
+def test_correct_guarded_fuzzy_fires_on_non_english_substitution_misspelling():
+    g = gloss(names=["Alabasta"])
+    assert glossary.correct("bound for Arabasta", g)[0] == "bound for Alabasta"
+
+
+def test_correct_guarded_fuzzy_refuses_one_char_indel():
+    g = gloss(names=["Spandam"])
+    assert glossary.correct("it was Spandm", g) == ("it was Spandm", 0)  # left for the LLM
+
+
+def test_correct_phrase_runs_before_token_and_noop_without_glossary():
+    g = gloss(phrases=["Water Seven"], hard_fixes={"water seven": "Water Seven"})
+    assert glossary.correct("from water seven port", g)[0] == "from Water Seven port"
+    assert glossary.correct("anything at all", gloss()) == ("anything at all", 0)
