@@ -27,8 +27,18 @@ Env:
   MEDIA_UID/GID   default 1000/100
 Built with help of Claude (Anthropic).
 """
-import os, sys, json, subprocess, tempfile, difflib, re
+import difflib
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
 from faster_whisper import WhisperModel
+
+import reflow
 
 # OUTPUT_ROOT: write sidecars to this branch path instead of next to the mkv, so writes
 # land on a disk with space (mergerfs unifies branches, so the file still shows next to the
@@ -47,6 +57,7 @@ COMPUTE = os.environ.get("COMPUTE_TYPE", "int8")
 MODEL_DIR = os.environ.get("MODEL_DIR", "/subgen/models")
 UID = int(os.environ.get("MEDIA_UID", "1000")); GID = int(os.environ.get("MEDIA_GID", "100"))
 SUFFIX = ".eng.dubtitles.srt"
+WMODEL = None        # the WhisperModel, lazily loaded in main() once there's work to do
 
 # --- Per-show glossary (optional) ---------------------------------------------------
 # Library-wide safety: the franchise name-forcing below is OPT-IN per show, so One
@@ -188,33 +199,43 @@ def process(video):
         if not extract_wav(video, idx, wav): return "extract-failed"
         try: open(fail, "w").close()             # mark in-flight (a segfault here leaves the
         except OSError: pass                     # marker, so a resume skips this poison file)
-        segs, info = WMODEL.transcribe(
+        segs, _info = WMODEL.transcribe(
             wav, language="en", task="transcribe", beam_size=5,
             word_timestamps=True, vad_filter=True, condition_on_previous_text=True,
             initial_prompt=INITIAL_PROMPT)
-        rows, conf, fixes, dropped = [], [], 0, 0
-        for s in segs:
-            raw = s.text.strip()
-            if BLOCKLIST.search(raw):            # whisper hallucination in music/silence
-                dropped += 1; continue
-            txt, n = correct(raw); fixes += n
-            # TIMING: segment.start drifts early (condition_on_previous_text); use the actual
-            # WORD onsets instead, and end-anchor-cap any still-pathological span so a line never
-            # lingers over silence before it's spoken.
-            ws = [w for w in (s.words or []) if w.start is not None and w.end is not None]
-            a = ws[0].start if ws else s.start
-            b = ws[-1].end if ws else s.end
-            cap = min(8.0, max(1.2, 0.07 * len(txt)))   # readable window from text length
-            if b - a > cap + 1.0:                        # too long -> anchor to the (correct) end
-                a = b - cap
-            if b <= a:
-                b = a + 1.0
-            rows.append((a, b, txt))
-            conf.append({"start": round(a, 3), "end": round(b, 3),
-                         "avg_logprob": round(s.avg_logprob, 3),
-                         "no_speech_prob": round(s.no_speech_prob, 3), "text": txt})
+        # Consume the (lazy) generator while the wav still exists, adapting whisper's
+        # objects to the plain dicts reflow expects: one word dict per word (with its
+        # source segment index), plus a per-segment record for no_speech_prob.
+        words, segments = [], []
+        for si, s in enumerate(segs):
+            segments.append({"start": s.start, "end": s.end, "no_speech_prob": s.no_speech_prob})
+            sw = s.words or []
+            if sw:
+                for w in sw:
+                    words.append({"text": w.word, "start": w.start, "end": w.end,
+                                  "prob": getattr(w, "probability", 1.0) or 1.0, "seg": si})
+            else:                                # no word timestamps -> whole segment as one "word"
+                words.append({"text": s.text, "start": s.start, "end": s.end,
+                              "prob": min(1.0, math.exp(s.avg_logprob)), "seg": si})
     try: os.remove(fail)                          # transcription finished -> clear in-flight mark
     except OSError: pass
+    # A1: reflow whisper's words into clean, well-timed cards (sentence-split, re-timed,
+    # wrapped). See reflow.py / specs/a1-reflow-timing. Name-correction + the hallucination
+    # blocklist still apply, now per finished card.
+    cards = reflow.reflow(words, segments)
+    rows, conf, fixes, dropped = [], [], 0, 0
+    for c in cards:
+        if BLOCKLIST.search(c["text"]):           # hallucination phrase -> drop the card
+            dropped += 1; continue
+        lines, n = [], 0
+        for ln in c["text"].split("\n"):          # correct per line so the wrap is preserved
+            fixed, k = correct(ln); lines.append(fixed); n += k
+        txt = "\n".join(lines); fixes += n
+        rows.append((c["start"], c["end"], txt))
+        conf.append({"start": round(c["start"], 3), "end": round(c["end"], 3),
+                     "avg_logprob": round(c["avg_logprob"], 3),
+                     "no_speech_prob": round(c["no_speech_prob"], 3),
+                     "text": txt.replace("\n", " ")})
     srt = out_for(stem + SUFFIX); confp = out_for(stem + ".dubtitles.conf.json")
     with open(srt, "w") as f:
         for i, (a, b, t) in enumerate(rows, 1):
@@ -225,7 +246,13 @@ def process(video):
         try: os.chown(p, UID, GID)
         except OSError: pass
     low = sum(1 for c in conf if c["avg_logprob"] < -0.8 or c["no_speech_prob"] > 0.6)
-    log(f"  segs={len(rows)} name-fixes={fixes} dropped-hallucination={dropped} low-conf={low} "
+    max_dur = max((b - a for a, b, _ in rows), default=0.0)
+    over_cps = sum(1 for a, b, t in rows
+                   if len(t.replace("\n", " ")) / max(b - a, 1e-6) > reflow.MAX_CPS)
+    bad = sum(1 for a, b, t in rows
+              if b - a > 7.001 or len(t.split("\n")) > 2 or any(len(ln) > 42 for ln in t.split("\n")))
+    log(f"  cards={len(rows)} name-fixes={fixes} dropped-hallucination={dropped} low-conf={low} "
+        f"max_dur={max_dur:.1f}s over_cps={over_cps} violations={bad} "
         f"meanlp={sum(c['avg_logprob'] for c in conf)/max(1,len(conf)):.2f}")
     return "ok"
 
