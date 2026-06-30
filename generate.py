@@ -163,7 +163,8 @@ def process(video):
         segs, _info = WMODEL.transcribe(
             wav, language="en", task="transcribe", beam_size=5,
             word_timestamps=True, vad_filter=True, condition_on_previous_text=False,
-            initial_prompt=INITIAL_PROMPT)
+            no_speech_threshold=0.9, log_prob_threshold=-2.0,   # max coverage: keep music-masked
+            initial_prompt=INITIAL_PROMPT)                       # dialogue (Buster Call etc.) whisper
         # condition_on_previous_text=False: with True, hard/music-masked stretches collapse into
         # one mega-segment (e.g. a 139s "segment" over the 18-20min mark of One Pace S19E16) that
         # reflow then renders as a long gap — real dialogue lost. False keeps segments discrete and
