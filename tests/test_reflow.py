@@ -25,3 +25,32 @@ def test_module_exposes_netflix_profile_constants():
     assert reflow.MIN_DUR == 0.83
     assert reflow.MAX_DUR == 7.0
     assert reflow.GAP_MAX == 0.5
+
+
+# --- T2: split_spans ---------------------------------------------------------
+
+def test_split_spans_keeps_tightly_spaced_words_in_one_span():
+    words = sentence(["a", "b", "c"], gap=0.1)
+    spans = reflow.split_spans(words)
+    assert len(spans) == 1
+    assert [w["text"] for w in spans[0]] == ["a", "b", "c"]
+
+
+def test_split_spans_breaks_on_gap_over_half_second():
+    # "a b" then a 0.8s silence then "c d"
+    words = [
+        mkword("a", 0.0, 0.3), mkword("b", 0.4, 0.7),
+        mkword("c", 1.5, 1.8), mkword("d", 1.9, 2.2),
+    ]
+    spans = reflow.split_spans(words)
+    assert [[w["text"] for w in s] for s in spans] == [["a", "b"], ["c", "d"]]
+
+
+def test_split_spans_gap_exactly_half_second_does_not_break():
+    # gap == GAP_MAX is not "over" the threshold -> stays together
+    words = [mkword("a", 0.0, 1.0), mkword("b", 1.5, 2.0)]
+    assert len(reflow.split_spans(words)) == 1
+
+
+def test_split_spans_empty_input():
+    assert reflow.split_spans([]) == []

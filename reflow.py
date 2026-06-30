@@ -37,7 +37,16 @@ PROB_FLOOR = 1e-4        # clamp before ln() so prob==0 doesn't give -inf
 def split_spans(words: list[dict]) -> list[list[dict]]:
     """Split the ordered word list into spans, breaking wherever the gap between
     one word's end and the next word's start exceeds :data:`GAP_MAX`."""
-    raise NotImplementedError
+    spans: list[list[dict]] = []
+    cur: list[dict] = []
+    for w in words:
+        if cur and w["start"] - cur[-1]["end"] > GAP_MAX:
+            spans.append(cur)
+            cur = []
+        cur.append(w)
+    if cur:
+        spans.append(cur)
+    return spans
 
 
 def segment_span(span: list[dict]) -> list[list[dict]]:
