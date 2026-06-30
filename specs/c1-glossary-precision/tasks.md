@@ -18,7 +18,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable. Test-first. Gates gree
 - [x] **T2 — `is_english` gate.** Load wordlist from `WORDLIST_PATH` ∪ bundled
       `common_words.txt`; `is_english(token)` case-insensitive. — done when: gate unit tests pass.
 
-- [ ] **T3 — `correct()` tiered.** phrase hard_fixes (word-boundary, case-insensitive) →
+- [x] **T3 — `correct()` tiered.** phrase hard_fixes (word-boundary, case-insensitive) →
       exact-token hard_fixes → guarded fuzzy (skip real English words; length-scaled cutoff
       ~0.95 short; reject one-char add/drop). — done when: false-positive + hard_fix + phrase +
       guarded-fuzzy fire/refuse + phrase-before-token tests pass.

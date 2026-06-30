@@ -17,8 +17,10 @@ specs/c1-glossary-precision/spec.md.  Built with help of Claude (Anthropic).
 """
 from __future__ import annotations
 
+import difflib
 import json
 import os
+import re
 
 # Guarded-fuzzy thresholds: short words demand near-identical matches.
 MIN_FUZZY_LEN = 4
@@ -79,9 +81,49 @@ def load(path: str) -> dict:
     return load_dict({})
 
 
+def _one_indel(a: str, b: str) -> bool:
+    """True if a and b differ by exactly one inserted/deleted char (e.g. along/arlong,
+    frank/franky). Such edits are too risky to auto-apply — left for the LLM."""
+    if abs(len(a) - len(b)) != 1:
+        return False
+    short, lng = (a, b) if len(a) < len(b) else (b, a)
+    return any(lng[:i] + lng[i + 1:] == short for i in range(len(lng)))
+
+
+_TOKEN_RE = re.compile(r"^([^\w']*)([\w'][\w'-]*?)([^\w']*)$")
+
+
+def _fix_token(tok: str, names: list[str], token_fixes: dict) -> tuple[str, int]:
+    m = _TOKEN_RE.match(tok)
+    if not m:
+        return tok, 0
+    pre, core, post = m.groups()
+    low = core.lower()
+    if low in token_fixes:
+        return pre + token_fixes[low] + post, 1
+    if any(low == nm.lower() for nm in names):     # already a correct name -> leave
+        return tok, 0
+    if len(core) < MIN_FUZZY_LEN or "'" in core or is_english(low):
+        return tok, 0
+    cand = difflib.get_close_matches(core.title(), names, n=1, cutoff=fuzzy_cutoff(len(core)))
+    if cand and cand[0].lower() != low and not _one_indel(low, cand[0].lower()):
+        return pre + cand[0] + post, 1
+    return tok, 0
+
+
 def correct(text: str, gloss: dict) -> tuple[str, int]:
     """Apply the tiered correction to one line; return (corrected, n_changes)."""
-    raise NotImplementedError
+    n = 0
+    for key in sorted(gloss["phrase_fixes"], key=len, reverse=True):   # phrases first
+        text, c = re.compile(r"\b" + re.escape(key) + r"\b", re.I).subn(
+            gloss["phrase_fixes"][key], text)
+        n += c
+    out = []
+    for tok in text.split():
+        new, ch = _fix_token(tok, gloss["names"], gloss["token_fixes"])
+        out.append(new)
+        n += ch
+    return " ".join(out), n
 
 
 def name_suspect(text: str, gloss: dict) -> bool:
