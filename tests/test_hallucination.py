@@ -62,3 +62,38 @@ def test_flag_reason_maybe_silence():
 
 def test_flag_reason_none_for_clean_line():
     assert h.flag_reason(card("Don't let your guard down")) is None
+
+
+# --- T4: collapse_runs -------------------------------------------------------
+
+def run(text, n, t0=0.0, step=2.0):
+    return [card(text, start=t0 + i * step, end=t0 + i * step + 1.5) for i in range(n)]
+
+
+def test_collapse_runs_merges_four_plus_identical():
+    cards = run("Help me!", 5)
+    out = h.collapse_runs(cards)
+    assert len(out) == 1
+    assert out[0]["start"] == cards[0]["start"]
+    assert out[0]["end"] == cards[-1]["end"]
+
+
+def test_collapse_runs_leaves_three_or_fewer():
+    cards = run("Run!", 3)
+    assert len(h.collapse_runs(cards)) == 3
+
+
+def test_collapse_runs_treats_case_punct_as_near_identical():
+    cards = [card("Run!"), card("run"), card("RUN."), card("Run")]
+    assert len(h.collapse_runs(cards)) == 1
+
+
+def test_collapse_runs_only_consecutive():
+    cards = [card("A line here"), card("B line there"), card("A line here")]
+    assert len(h.collapse_runs(cards)) == 3       # duplicates not consecutive
+
+
+def test_collapse_runs_mixed_sequence():
+    cards = run("loop", 4) + [card("a distinct ending line")]
+    out = h.collapse_runs(cards)
+    assert len(out) == 2 and out[1]["text"] == "a distinct ending line"
