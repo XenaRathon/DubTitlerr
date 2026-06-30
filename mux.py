@@ -270,21 +270,26 @@ def process(orig, apply):
 
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument("--apply", action="store_true")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--apply", action="store_true")
+    ap.add_argument("paths", nargs="*", help="explicit video paths; else walk MUX_ROOTS")
     a = ap.parse_args()
     if a.apply and os.geteuid() != 0:
         log("WARNING: not root — atomic replace may fail (mergerfs perms).")
+    vids = list(a.paths)
+    if not vids:
+        for root in ROOTS:
+            if not os.path.isdir(root):
+                continue
+            for dp, _, files in os.walk(root):
+                vids += [os.path.join(dp, f) for f in files
+                         if f.lower().endswith((".mkv", ".mp4", ".m4v"))]
     counts = {}
-    for root in ROOTS:
-        if not os.path.isdir(root):
-            continue
-        for dp, _, files in os.walk(root):
-            for f in files:
-                if f.lower().endswith((".mkv", ".mp4", ".m4v")):
-                    res = process(os.path.join(dp, f), a.apply)
-                    counts[res] = counts.get(res, 0) + 1
-                    if res not in ("no-sub", "already-muxed"):
-                        log(f"{res}: {f}")
+    for v in vids:
+        res = process(v, a.apply)
+        counts[res] = counts.get(res, 0) + 1
+        if res not in ("no-sub", "already-muxed"):
+            log(f"{res}: {os.path.basename(v)}")
     log("SUMMARY", counts)
 
 
