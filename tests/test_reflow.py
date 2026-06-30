@@ -238,3 +238,49 @@ def test_reflow_drops_blank_cards():
     words = [mkword("   ", 0.0, 0.3, seg=0)]
     segs = [{"no_speech_prob": 0.1}]
     assert reflow.reflow(words, segs) == []
+
+
+def test_reflow_clamps_word_timestamps_into_their_segment_bounds():
+    # whisper's word DTW sometimes times a segment's leading words far too early;
+    # those words must not strand into an orphan card shown long before the line.
+    words = [
+        {"text": "I", "start": 5.0, "end": 5.2, "prob": 0.9, "seg": 0},
+        {"text": "must", "start": 5.3, "end": 5.5, "prob": 0.9, "seg": 0},
+        {"text": "admit.", "start": 110.7, "end": 111.2, "prob": 0.9, "seg": 0},
+    ]
+    segs = [{"start": 110.5, "end": 111.5, "no_speech_prob": 0.1}]
+    cards = reflow.reflow(words, segs)
+    assert len(cards) == 1                 # not an orphaned "I must" at t=5
+    assert cards[0]["start"] >= 110.5      # clamped into the segment, no early reveal
+    assert cards[0]["text"] == "I must admit."
+
+
+def test_reflow_dejitters_large_intra_segment_word_gap():
+    # ONE segment whose leading words are mis-timed early while the body is ~105s
+    # later (a real faster-whisper word-alignment artifact, words within bounds).
+    # The leading cluster must be pulled forward, not stranded as an early card.
+    words = [
+        {"text": "I", "start": 5.11, "end": 5.67, "prob": 0.9, "seg": 0},
+        {"text": "must", "start": 5.67, "end": 6.23, "prob": 0.9, "seg": 0},
+        {"text": "admit.", "start": 110.71, "end": 111.20, "prob": 0.9, "seg": 0},
+    ]
+    segs = [{"start": 5.11, "end": 111.20, "no_speech_prob": 0.04}]
+    cards = reflow.reflow(words, segs)
+    assert len(cards) == 1
+    assert cards[0]["text"] == "I must admit."
+    assert cards[0]["start"] >= 108        # pulled up to the body, not shown at t=5
+
+
+def test_reflow_no_tiny_fragment_from_small_intra_segment_gap():
+    # a ~1.3s gap INSIDE one segment is an artifact, not a pause: the leading word
+    # must join its body, not become a lone card (splits happen at segment gaps only).
+    words = [
+        {"text": "I", "start": 121.19, "end": 121.41, "prob": 0.9, "seg": 0},
+        {"text": "couldn't", "start": 122.72, "end": 123.20, "prob": 0.9, "seg": 0},
+        {"text": "win.", "start": 123.20, "end": 123.60, "prob": 0.9, "seg": 0},
+    ]
+    segs = [{"start": 121.19, "end": 123.60, "no_speech_prob": 0.1}]
+    cards = reflow.reflow(words, segs)
+    assert len(cards) == 1
+    assert cards[0]["text"] == "I couldn't win."
+    assert cards[0]["start"] >= 122.0     # leading "I" pulled to the body, no early reveal
