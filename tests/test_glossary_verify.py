@@ -73,3 +73,28 @@ def test_prompt_has_term_candidates_and_dub_rule():
     assert "spandom" in p and "Spandam" in p
     assert "dub" in p.lower()
     assert "canonical" in p.lower()
+
+
+# --- T6: wiki I/O pure helpers -----------------------------------------------
+
+def test_wiki_candidates_from_messy_title():
+    cands = gv.wiki_candidates("One Piece (1999) {tvdb-81797}")
+    assert any("onepiece.fandom.com" in c for c in cands)
+    assert all(c.endswith("/api.php") for c in cands)
+
+
+def test_normalize_api_handles_bases_and_paths():
+    assert gv.normalize_api("https://onepiece.fandom.com") == "https://onepiece.fandom.com/api.php"
+    assert gv.normalize_api("https://onepiece.fandom.com/api.php").endswith("/api.php")
+    assert gv.normalize_api("https://onepiece.fandom.com/wiki/Spandam").endswith("fandom.com/api.php")
+
+
+def test_allpages_url_and_parse():
+    u = gv.allpages_url("https://x.fandom.com/api.php")
+    assert "list=allpages" in u and "apnamespace=0" in u
+    titles, cont = gv.parse_allpages(
+        {"query": {"allpages": [{"title": "Spandam"}, {"title": "Enies Lobby"}]},
+         "continue": {"apcontinue": "Foo"}})
+    assert titles == ["Spandam", "Enies Lobby"] and cont == "Foo"
+    t2, c2 = gv.parse_allpages({"query": {"allpages": [{"title": "A"}]}})
+    assert t2 == ["A"] and c2 is None
