@@ -99,7 +99,7 @@ def has_dubtitles_track(video):
     try:
         r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "s",
                             "-show_entries", "stream_tags=title", "-of", "json", video],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
         for st in json.loads(r.stdout).get("streams", []):
             if ((st.get("tags") or {}).get("title", "") or "") == "Dubtitles":
                 return True
@@ -112,7 +112,8 @@ def eng_audio_index(video):
     try:
         r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
                             "-show_entries", "stream=index:stream_tags=language",
-                            "-of", "json", video], capture_output=True, text=True, timeout=60)
+                            "-of", "json", video], capture_output=True, text=True, timeout=60,
+                           stdin=subprocess.DEVNULL)
         streams = json.loads(r.stdout).get("streams", [])
     except Exception as e:
         log("ffprobe failed", video, e); return None
@@ -129,9 +130,9 @@ def eng_audio_index(video):
 
 
 def extract_wav(video, idx, wav):
-    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}",
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}",
                     "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav],
-                   capture_output=True, timeout=600)
+                   capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
     return os.path.exists(wav) and os.path.getsize(wav) > 1000
 
 
