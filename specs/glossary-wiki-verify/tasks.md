@@ -10,7 +10,7 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
 
 ## Tasks
 
-- [ ] **T1 — Scaffold.** `glossary_verify.py` skeleton (signatures + constants: top-K, cutoffs,
+- [x] **T1 — Scaffold.** `glossary_verify.py` skeleton (signatures + constants: top-K, cutoffs,
       `VERIFY_MODEL`, cache dir) + `tests/test_glossary_verify.py`. — done when: ruff clean, pytest collects.
 - [ ] **T2 — `candidates`.** deterministic top-K title pre-match by similarity (cutoff floors junk).
       — done when: top-K + cutoff unit tests pass.
