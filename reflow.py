@@ -31,6 +31,10 @@ MIN_DUR = 0.83           # seconds
 MAX_DUR = 7.0            # seconds
 MIN_GAP = 0.083          # ~2 frames @ 24 fps — minimum gap between cards
 GAP_MAX = 0.5            # hard span break: never glue words across a pause this long
+# Within a whisper segment the words are one continuous utterance, so any gap is an
+# alignment artifact, not silence — close it (== GAP_MAX so the only real splits left
+# are at segment boundaries, where genuine pauses land). Prevents leading-word orphans.
+DEJITTER_GAP = GAP_MAX
 SENT_END = ".!?…"
 CLAUSE = ",;:"
 PROB_FLOOR = 1e-4        # clamp before ln() so prob==0 doesn't give -inf
@@ -191,10 +195,48 @@ def _normalize(words: list[dict]) -> list[dict]:
     return out
 
 
+def _clamp_to_segments(words: list[dict], segments: list[dict]) -> list[dict]:
+    """Pull each word's timestamps inside its source segment's [start, end].
+    Whisper's word DTW occasionally times a segment's leading word far before the
+    segment itself; left alone, the >0.5s gap split would strand it as an orphan
+    card shown long before its line. Segments without bounds are left untouched."""
+    out = []
+    for w in words:
+        seg = segments[w["seg"]] if w.get("seg", 0) < len(segments) else {}
+        lo, hi = seg.get("start"), seg.get("end")
+        start, end = w["start"], w["end"]
+        if lo is not None and hi is not None and hi >= lo:
+            start = min(max(start, lo), hi)
+            end = max(min(max(end, lo), hi), start)
+        out.append({**w, "start": start, "end": end})
+    return out
+
+
+def _dejitter(words: list[dict]) -> list[dict]:
+    """Close implausibly large gaps WITHIN a whisper segment. Whisper sometimes pins a
+    segment's leading word(s) to the segment's (too-early) start while the real speech
+    is seconds later; the gap between is an alignment artifact, not silence. For each
+    such gap (> DEJITTER_GAP) the earlier words are shifted forward to meet the body,
+    so they aren't stranded as an early card. Observed leading-orphan pattern only."""
+    i = 0
+    while i < len(words):
+        j = i
+        while j < len(words) and words[j]["seg"] == words[i]["seg"]:
+            j += 1
+        for k in range(i, j - 1):
+            gap = words[k + 1]["start"] - words[k]["end"]
+            if gap > DEJITTER_GAP:
+                for m in range(i, k + 1):     # shift the early cluster forward to close it
+                    words[m]["start"] += gap
+                    words[m]["end"] += gap
+        i = j
+    return words
+
+
 def reflow(words: list[dict], segments: list[dict]) -> list[dict]:
     """Turn whisper word/segment data into finished Cards (see module docstring)."""
     groups: list[list[dict]] = []
-    for span in split_spans(_normalize(words)):
+    for span in split_spans(_dejitter(_clamp_to_segments(_normalize(words), segments))):
         for g in segment_span(span):
             if _text(g).strip():           # drop blank cards
                 groups.append(g)
