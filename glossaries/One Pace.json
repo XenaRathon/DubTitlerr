@@ -1,5 +1,6 @@
 {
   "show": "One Piece (the One Pace edit)",
+  "wiki": "https://onepiece.fandom.com/api.php",
   "initial_prompt": "This is One Piece (the One Pace edit). Spell names correctly: Luffy, Zoro, Nami, Usopp, Sanji, Tony Tony Chopper, Nico Robin, Franky, Cutty Flam, Brook, Vivi, Crocodile, Smoker, Spandam, Lucci, Kaku, Kalifa, Blueno, Jabra, Kumadori, Fukurou, Iceburg, Aokiji, Sengoku, Garp, Cipher Pol, CP9, Buster Call, Enies Lobby, Gates of Justice, Water 7, Ohara, Pluton, Robin, Going Merry, Thousand Sunny, Grand Line, Devil Fruit, Den Den Mushi, Log Pose, Haki, Straw Hat.",
   "names": [
     "Luffy", "Zoro", "Nami", "Usopp", "Sanji", "Chopper", "Robin", "Franky", "Brook",

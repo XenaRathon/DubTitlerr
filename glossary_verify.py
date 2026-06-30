@@ -231,12 +231,19 @@ def verify(gloss_path: str, override: str | None = None, force: bool = False) ->
     rep = {"show": show, "checked": 0, "applied": 0, "flagged": 0}
     if not terms:
         return {**rep, "note": "nothing pending"}
-    api = resolve_wiki(show, override or gloss.get("wiki"))
+    pinned = override or gloss.get("wiki")
+    api = resolve_wiki(show, pinned)
     if not api:
         return {**rep, "note": "wiki unresolved (set a 'wiki' override)"}
     titles = fetch_titles(api, show)
     if not titles:
         return {**rep, "wiki": api, "note": "no titles fetched"}
+    # sanity gate (auto-resolved only): if NONE of the known names exist on this wiki, it's
+    # almost certainly the wrong wiki — refuse to verify rather than corrupt the glossary.
+    if not pinned and len(gloss.get("names", [])) >= 3:
+        tl = {t.lower() for t in titles}
+        if not any(n.lower() in tl for n in gloss.get("names", [])):
+            return {**rep, "wiki": api, "note": "wiki mismatch (no known names found) — set a 'wiki' override"}
     results = {t: adjudicate(t, candidates(t, titles), show) for t in terms}
     new = apply_results(gloss, results)
     new.setdefault("wiki", api)

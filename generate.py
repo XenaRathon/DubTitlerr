@@ -163,8 +163,10 @@ def process(video):
         segs, _info = WMODEL.transcribe(
             wav, language="en", task="transcribe", beam_size=5,
             word_timestamps=True, vad_filter=True, condition_on_previous_text=True,
-            hallucination_silence_threshold=2.0,   # B1: skip long silences whisper would invent over
             initial_prompt=INITIAL_PROMPT)
+        # NOTE: hallucination_silence_threshold was removed — verification on S19E16 showed it
+        # ~doubled the "dialogue with no subtitle" gaps (28 vs 14) by skipping real speech. B1's
+        # post-hoc gate (blocklist/repetition/music drop + collapse) handles hallucinations instead.
         # Consume the (lazy) generator while the wav still exists, adapting whisper's
         # objects to the plain dicts reflow expects: one word dict per word (with its
         # source segment index), plus a per-segment record for no_speech_prob.
