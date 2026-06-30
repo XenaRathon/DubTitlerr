@@ -39,13 +39,13 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable. Test-first. Gates gree
 - [x] **T7 — `Dockerfile.builder`.** `apt-get install wamerican`; `COPY glossary.py
       common_words.txt`. — done when: grep shows both + the apt line.
 
-- [ ] **T8 — Glossary curation (USER-GATED).** Draft cleaned + expanded `One Pace.json`
+- [x] **T8 — Glossary curation (USER-GATED).** Draft cleaned + expanded `One Pace.json`
       (drop fragments, add canon + hard_fixes), **present to user for review/edits, apply only
       after approval**, then commit. — done when: user-approved glossary committed.
 
 ## Closing (the *close* phase of `dev-lifecycle` — always keep last)
 
-- [ ] **Model bake-off (offline):** `tools/bakeoff.py` drives Ollama (`qwen3:8b`,
+- [x] **Model bake-off (offline):** `tools/bakeoff.py` drives Ollama (`qwen3:8b`,
       `qwen3.5:4b`, `qwen2.5:7b`) on real S19E16 sample lines + glossary + fansub refs; compare
       correction quality + latency; user confirms; set `REPAIR_MODEL` in compose/.env.
       — done when: winner locked.
