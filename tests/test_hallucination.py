@@ -9,7 +9,7 @@ def card(text, lp=-0.2, nsp=0.1, start=0.0, end=2.0):
 # --- T1: scaffold / constants ------------------------------------------------
 
 def test_constants_and_blocklist():
-    assert h.NSP_DROP == 0.8 and h.LP_DROP == -1.0 and h.RUN_COLLAPSE == 4
+    assert h.NSP_DROP == 0.95 and h.LP_DROP == -2.0 and h.RUN_COLLAPSE == 4
     assert h.BLOCKLIST.search("Subtitles by the community")
     assert h.BLOCKLIST.search("please subscribe to our channel")
     assert not h.BLOCKLIST.search("I subscribe to that philosophy of life")
@@ -41,7 +41,7 @@ def test_drop_reason_repetition():
 
 
 def test_drop_reason_music_requires_both_signals():
-    assert h.drop_reason(card("mmm", lp=-1.5, nsp=0.9)) == "music"
+    assert h.drop_reason(card("mmm", lp=-2.5, nsp=0.97)) == "music"
     assert h.drop_reason(card("a real quiet line", lp=-1.5, nsp=0.5)) is None   # nsp not high
     assert h.drop_reason(card("a real quiet line", lp=-0.5, nsp=0.9)) is None   # lp not low
 

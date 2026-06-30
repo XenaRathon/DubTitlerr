@@ -14,9 +14,11 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-# DROP thresholds (the music/silence combo — both must hold)
-NSP_DROP = 0.8           # no_speech_prob above this AND...
-LP_DROP = -1.0           # ...avg_logprob below this => invented text over music/silence
+# DROP thresholds (the music/silence combo — both must hold). Deliberately strict so B1 does
+# NOT cull music-masked REAL dialogue (e.g. a "Buster Call" line under loud action is nsp~0.86);
+# VAD already blocks pure-music/silence, so only near-certain garbage is dropped here.
+NSP_DROP = 0.95          # no_speech_prob above this AND...
+LP_DROP = -2.0           # ...avg_logprob below this => invented text over music/silence
 # FLAG thresholds (a single weaker signal -> keep but mark suspect)
 NSP_FLAG = 0.5
 LP_FLAG = -0.6
