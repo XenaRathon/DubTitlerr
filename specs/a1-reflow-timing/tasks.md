@@ -51,7 +51,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable done criterion. Built
       the new code, captured raw whisper output for offline iteration. Surfaced + fixed a
       word-timestamp artifact (28/204 segs). Offline re-verify on real data: 316 cards,
       max_dur 5.3s, 0 over 7s, no orphans, 1 line 43 chars, 1 legitimate pause-split.
-- [ ] Ensure CI runs ruff + pytest (create `.github`/Forgejo workflow if none) — done when: pipeline green.
+- [x] Ensure CI runs ruff + pytest (create `.github`/Forgejo workflow if none) — done when: pipeline green.
 - [ ] Push `feat/a1-reflow-timing` to origin — done when: branch published.
 - [ ] Draft PR (Summary / Notable Decisions / Test Plan, English) and **pause for approval** — done when: user approved.
 
