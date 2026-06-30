@@ -42,7 +42,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable done criterion. Built
       (`cards= max_dur= over_cps= violations=`). Preserve `.fail`/idempotency/`OUTPUT_ROOT`.
       — done when: `ruff` clean, full pytest green, `python -c "import ast; ast.parse(open('generate.py').read())"` ok.
 
-- [ ] **T8 — `Dockerfile.builder` COPY `reflow.py`.** — done when: grep shows the new
+- [x] **T8 — `Dockerfile.builder` COPY `reflow.py`.** — done when: grep shows the new
       module copied into `/app`.
 
 ## Closing (the *close* phase of `dev-lifecycle` — always keep last)
