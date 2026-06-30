@@ -16,7 +16,7 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
       repetition ∨ (nsp>0.8 ∧ lp<-1.0). — done when: drop-signal unit tests pass.
 - [x] **T3 — `flag_reason`.** weaker single signal (mid nsp OR mid lp) → flag, not drop.
       — done when: flag-tier tests pass (flag set, drop None).
-- [ ] **T4 — `collapse_runs`.** merge runs of ≥4 near-identical consecutive cards to one
+- [x] **T4 — `collapse_runs`.** merge runs of ≥4 near-identical consecutive cards to one
       (first start, last end); ≤3 untouched. — done when: collapse tests pass.
 - [ ] **T5 — Wire into `generate.py`.** drop via `drop_reason`, annotate conf via `flag_reason`,
       `collapse_runs` survivors; add `hallucination_silence_threshold=2.0`; extend the log

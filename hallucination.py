@@ -73,7 +73,26 @@ def flag_reason(card: dict) -> str | None:
     return None
 
 
+def _norm(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
 def collapse_runs(cards: list[dict]) -> list[dict]:
     """Collapse runs of >= RUN_COLLAPSE near-identical consecutive cards into one (first
     start, last end). Shorter repeats are left untouched."""
-    raise NotImplementedError
+    out: list[dict] = []
+    i = 0
+    while i < len(cards):
+        j = i + 1
+        key = _norm(cards[i]["text"])
+        while j < len(cards) and _norm(cards[j]["text"]) == key:
+            j += 1
+        run = cards[i:j]
+        if len(run) >= RUN_COLLAPSE:
+            merged = dict(run[0])
+            merged["end"] = run[-1]["end"]
+            out.append(merged)
+        else:
+            out.extend(run)
+        i = j
+    return out
