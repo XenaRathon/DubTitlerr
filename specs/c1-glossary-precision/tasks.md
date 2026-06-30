@@ -23,7 +23,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable. Test-first. Gates gree
       ~0.95 short; reject one-char add/drop). — done when: false-positive + hard_fix + phrase +
       guarded-fuzzy fire/refuse + phrase-before-token tests pass.
 
-- [ ] **T4 — `name_suspect(text, gloss)`.** Flag a line with a token that near-matches a
+- [x] **T4 — `name_suspect(text, gloss)`.** Flag a line with a token that near-matches a
       glossary name but isn't exact, or a capitalized non-glossary proper-noun-like token.
       — done when: flags suspect lines, ignores clean lines (unit tests).
 
