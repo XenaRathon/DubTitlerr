@@ -49,10 +49,10 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable. Test-first. Gates gree
       `qwen3.5:4b`, `qwen2.5:7b`) on real S19E16 sample lines + glossary + fansub refs; compare
       correction quality + latency; user confirms; set `REPAIR_MODEL` in compose/.env.
       — done when: winner locked.
-- [ ] **Integration verify:** run a repair pass on a sample (offline harness / live Ollama),
+- [x] **Integration verify:** run a repair pass on a sample (offline harness / live Ollama),
       confirm the S19E16 name errors are fixed and no over-correction. — done when: eyeball-pass.
 - [x] CI: extend ruff/pytest scope to `glossary.py` — done when: pipeline green.
-- [ ] Push `feat/c1-glossary-precision`; merge to `main` (no PR, per the build's flow).
+- [x] Push `feat/c1-glossary-precision`; merge to `main` (no PR, per the build's flow).
       — done when: merged + pushed.
 
 ## Done
