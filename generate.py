@@ -38,6 +38,7 @@ import tempfile
 from faster_whisper import WhisperModel
 
 import glossary
+import hallucination
 import reflow
 
 # OUTPUT_ROOT: write sidecars to this branch path instead of next to the mkv, so writes
@@ -78,9 +79,6 @@ def load_glossary():
     print(f"glossary: show={show!r} names={len(GLOSS['names'])} "
           f"fixes={len(GLOSS['token_fixes']) + len(GLOSS['phrase_fixes'])} "
           f"prompt={'custom' if GLOSS['initial_prompt'] else 'neutral'}", flush=True)
-# whisper hallucination phrases that surface in music/silence — drop these segments outright
-BLOCKLIST = re.compile(r"amara\.org|thank you for watching|thanks for watching|please subscribe|"
-                       r"subtitles by|like and subscribe|see you next time|www\.|http", re.I)
 
 
 # Plex "local extras" subfolders + creditless/scene clips — never real episodes, often
@@ -162,6 +160,7 @@ def process(video):
         segs, _info = WMODEL.transcribe(
             wav, language="en", task="transcribe", beam_size=5,
             word_timestamps=True, vad_filter=True, condition_on_previous_text=True,
+            hallucination_silence_threshold=2.0,   # B1: skip long silences whisper would invent over
             initial_prompt=INITIAL_PROMPT)
         # Consume the (lazy) generator while the wav still exists, adapting whisper's
         # objects to the plain dicts reflow expects: one word dict per word (with its
@@ -179,23 +178,31 @@ def process(video):
                               "prob": min(1.0, math.exp(s.avg_logprob)), "seg": si})
     try: os.remove(fail)                          # transcription finished -> clear in-flight mark
     except OSError: pass
-    # A1: reflow whisper's words into clean, well-timed cards (sentence-split, re-timed,
-    # wrapped). See reflow.py / specs/a1-reflow-timing. Name-correction + the hallucination
-    # blocklist still apply, now per finished card.
+    # A1: reflow whisper's words into clean, well-timed cards. C1: name-correct each card.
+    # B1: drop near-certain hallucinations, flag the suspect, collapse runaway repeat runs.
     cards = reflow.reflow(words, segments)
-    rows, conf, fixes, dropped = [], [], 0, 0
+    kept, fixes, dropped = [], 0, 0
     for c in cards:
-        if BLOCKLIST.search(c["text"]):           # hallucination phrase -> drop the card
+        if hallucination.drop_reason(c):          # blocklist / repetition / music -> drop
             dropped += 1; continue
         lines, n = [], 0
         for ln in c["text"].split("\n"):          # correct per line so the wrap is preserved
             fixed, k = glossary.correct(ln, GLOSS); lines.append(fixed); n += k
-        txt = "\n".join(lines); fixes += n
-        rows.append((c["start"], c["end"], txt))
-        conf.append({"start": round(c["start"], 3), "end": round(c["end"], 3),
-                     "avg_logprob": round(c["avg_logprob"], 3),
-                     "no_speech_prob": round(c["no_speech_prob"], 3),
-                     "text": txt.replace("\n", " ")})
+        fixes += n
+        kc = dict(c); kc["text"] = "\n".join(lines)
+        kc["flag"] = hallucination.flag_reason(c)  # weaker single signal -> kept but marked
+        kept.append(kc)
+    collapsed = hallucination.collapse_runs(kept)
+    rows = [(c["start"], c["end"], c["text"]) for c in collapsed]
+    conf = []
+    for c in collapsed:
+        row = {"start": round(c["start"], 3), "end": round(c["end"], 3),
+               "avg_logprob": round(c["avg_logprob"], 3),
+               "no_speech_prob": round(c["no_speech_prob"], 3),
+               "text": c["text"].replace("\n", " ")}
+        if c.get("flag"):
+            row["flag"] = c["flag"]
+        conf.append(row)
     srt = out_for(stem + SUFFIX); confp = out_for(stem + ".dubtitles.conf.json")
     with open(srt, "w") as f:
         for i, (a, b, t) in enumerate(rows, 1):
@@ -211,7 +218,10 @@ def process(video):
                    if len(t.replace("\n", " ")) / max(b - a, 1e-6) > reflow.MAX_CPS)
     bad = sum(1 for a, b, t in rows
               if b - a > 7.001 or len(t.split("\n")) > 2 or any(len(ln) > 42 for ln in t.split("\n")))
-    log(f"  cards={len(rows)} name-fixes={fixes} dropped-hallucination={dropped} low-conf={low} "
+    collapsed_n = len(kept) - len(collapsed)
+    flagged = sum(1 for c in conf if c.get("flag"))
+    log(f"  cards={len(rows)} name-fixes={fixes} dropped-hallucination={dropped} "
+        f"collapsed={collapsed_n} flagged={flagged} low-conf={low} "
         f"max_dur={max_dur:.1f}s over_cps={over_cps} violations={bad} "
         f"meanlp={sum(c['avg_logprob'] for c in conf)/max(1,len(conf)):.2f}")
     return "ok"

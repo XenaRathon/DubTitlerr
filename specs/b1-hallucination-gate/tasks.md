@@ -18,7 +18,7 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
       — done when: flag-tier tests pass (flag set, drop None).
 - [x] **T4 — `collapse_runs`.** merge runs of ≥4 near-identical consecutive cards to one
       (first start, last end); ≤3 untouched. — done when: collapse tests pass.
-- [ ] **T5 — Wire into `generate.py`.** drop via `drop_reason`, annotate conf via `flag_reason`,
+- [x] **T5 — Wire into `generate.py`.** drop via `drop_reason`, annotate conf via `flag_reason`,
       `collapse_runs` survivors; add `hallucination_silence_threshold=2.0`; extend the log
       (collapsed/flagged counts). — done when: ruff clean, full pytest green, generate.py parses.
 - [ ] **T6 — `Dockerfile.builder` COPY `hallucination.py`.** — done when: grep shows it.
