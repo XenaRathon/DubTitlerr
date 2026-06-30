@@ -3,8 +3,11 @@ testpaths = ["tests"]
 addopts = "-q"
 
 [tool.ruff]
-line-length = 110
+line-length = 130
 target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]
+# The existing scripts use a deliberate terse one-liner house style
+# (`if x: return`, `a; b`). Keep the real-bug rules; don't fight the style.
+ignore = ["E701", "E702"]

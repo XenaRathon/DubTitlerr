@@ -36,7 +36,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable done criterion. Built
       pipeline together; handle `None` timestamps (interpolate) and empty cards (drop).
       — done when: confidence + edge-case tests pass; coverage ≥90% on `reflow.py`.
 
-- [ ] **T7 — Wire into `generate.py`.** Build word dicts from `segment.words`
+- [x] **T7 — Wire into `generate.py`.** Build word dicts from `segment.words`
       (capture `probability` + source-seg index); call `reflow`; write `.srt` + per-card
       `conf.json`; keep per-card `BLOCKLIST` + `correct()`; extend summary log
       (`cards= max_dur= over_cps= violations=`). Preserve `.fail`/idempotency/`OUTPUT_ROOT`.
