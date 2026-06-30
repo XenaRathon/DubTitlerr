@@ -10,7 +10,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable. Test-first. Gates gree
 
 ## Tasks
 
-- [ ] **T1 — Scaffold.** `glossary.py` skeleton (`load`, `correct`, `name_suspect`,
+- [x] **T1 — Scaffold.** `glossary.py` skeleton (`load`, `correct`, `name_suspect`,
       `is_english` signatures + constants), `common_words.txt` fallback (seed with the known
       offenders + common English), `tests/test_glossary.py`.
       — done when: ruff clean, pytest collects.
