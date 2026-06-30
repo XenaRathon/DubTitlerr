@@ -27,7 +27,6 @@ Env:
   MEDIA_UID/GID   default 1000/100
 Built with help of Claude (Anthropic).
 """
-import difflib
 import json
 import math
 import os
@@ -38,6 +37,7 @@ import tempfile
 
 from faster_whisper import WhisperModel
 
+import glossary
 import reflow
 
 # OUTPUT_ROOT: write sidecars to this branch path instead of next to the mkv, so writes
@@ -60,44 +60,27 @@ SUFFIX = ".eng.dubtitles.srt"
 WMODEL = None        # the WhisperModel, lazily loaded in main() once there's work to do
 
 # --- Per-show glossary (optional) ---------------------------------------------------
-# Library-wide safety: the franchise name-forcing below is OPT-IN per show, so One
-# Piece's "spell it Luffy/Zoro/Alabasta" tuning can never leak onto another show (which
-# would corrupt e.g. "Sasuke" -> "Sabo"). A show gets franchise-accurate spelling only
-# when GLOSSARY_FILE points at a JSON file shaped:
-#   {"show": "...", "initial_prompt": "...", "names": [...],
-#    "hard_fixes": {"misheard": "Canonical"}}
-# With no file, GLOSSARY/HARD_FIXES are empty (correct() becomes a no-op) and the prompt
-# is a neutral one built from SHOW_NAME — transcription only, zero name substitution.
-GLOSSARY, HARD_FIXES, INITIAL_PROMPT = [], {}, ""
+# Name correction is OPT-IN per show (GLOSSARY_FILE), so One Piece's spellings can never
+# leak onto another show. The tiered correction itself lives in glossary.py (C1). With no
+# file, GLOSS is empty (correct() is a no-op) and the prompt is a neutral one from SHOW_NAME.
+GLOSS = glossary.load("")
+INITIAL_PROMPT = ""
 
 def load_glossary():
-    global GLOSSARY, HARD_FIXES, INITIAL_PROMPT
-    path = os.environ.get("GLOSSARY_FILE", "")
+    global GLOSS, INITIAL_PROMPT
     show = os.environ.get("SHOW_NAME", "")
-    names, hard, prompt = [], {}, ""
-    if path and os.path.exists(path):
-        try:
-            cfg = json.load(open(path))
-            names = cfg.get("names") or []
-            hard = {str(k).lower(): v for k, v in (cfg.get("hard_fixes") or {}).items()}
-            prompt = cfg.get("initial_prompt") or ""
-            show = show or cfg.get("show", "")
-        except Exception as e:
-            print("glossary load failed:", path, e, flush=True)
-    GLOSSARY = sorted({w for w in names if len(w) >= 4})
-    HARD_FIXES = hard
-    INITIAL_PROMPT = prompt or (
+    GLOSS = glossary.load(os.environ.get("GLOSSARY_FILE", ""))
+    show = show or GLOSS.get("show", "")
+    INITIAL_PROMPT = GLOSS["initial_prompt"] or (
         (f"This is {show}, a Japanese anime (English dub). Transcribe the spoken English "
          f"accurately, with natural punctuation.") if show else
         "Japanese anime, English dub. Transcribe the spoken English accurately, with natural punctuation.")
-    print(f"glossary: show={show!r} names={len(GLOSSARY)} hard_fixes={len(HARD_FIXES)} "
-          f"prompt={'custom' if prompt else 'neutral'}", flush=True)
+    print(f"glossary: show={show!r} names={len(GLOSS['names'])} "
+          f"fixes={len(GLOSS['token_fixes']) + len(GLOSS['phrase_fixes'])} "
+          f"prompt={'custom' if GLOSS['initial_prompt'] else 'neutral'}", flush=True)
 # whisper hallucination phrases that surface in music/silence — drop these segments outright
 BLOCKLIST = re.compile(r"amara\.org|thank you for watching|thanks for watching|please subscribe|"
                        r"subtitles by|like and subscribe|see you next time|www\.|http", re.I)
-COMMON = set("the a an and or but of to in on at is was are were be been being have has had "
-             "do does did will would can could should i you he she it we they me him her us them "
-             "this that these those with from for not no yes all out up down here there what who".split())
 
 
 # Plex "local extras" subfolders + creditless/scene clips — never real episodes, often
@@ -153,29 +136,6 @@ def extract_wav(video, idx, wav):
     return os.path.exists(wav) and os.path.getsize(wav) > 1000
 
 
-def fix_word(tok):
-    """Correct a single token toward the glossary; return (token, changed)."""
-    m = re.match(r"^([^\w]*)(\w[\w'-]*?)([^\w]*)$", tok)
-    if not m: return tok, False
-    pre, core, post = m.groups()
-    low = core.lower()
-    if low in COMMON or len(core) < 4: return tok, False
-    if low in HARD_FIXES: return pre + HARD_FIXES[low] + post, True
-    # already a correct glossary word?
-    if any(low == g.lower() for g in GLOSSARY): return tok, False
-    cand = difflib.get_close_matches(core.title(), GLOSSARY, n=1, cutoff=0.86)
-    if cand and cand[0].lower() != low:
-        return pre + cand[0] + post, True
-    return tok, False
-
-
-def correct(text):
-    out, n = [], 0
-    for tok in text.split():
-        new, ch = fix_word(tok); out.append(new); n += ch
-    return " ".join(out), n
-
-
 def ts(t):
     h = int(t // 3600); m = int((t % 3600) // 60); s = t % 60
     return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
@@ -229,7 +189,7 @@ def process(video):
             dropped += 1; continue
         lines, n = [], 0
         for ln in c["text"].split("\n"):          # correct per line so the wrap is preserved
-            fixed, k = correct(ln); lines.append(fixed); n += k
+            fixed, k = glossary.correct(ln, GLOSS); lines.append(fixed); n += k
         txt = "\n".join(lines); fixes += n
         rows.append((c["start"], c["end"], txt))
         conf.append({"start": round(c["start"], 3), "end": round(c["end"], 3),
