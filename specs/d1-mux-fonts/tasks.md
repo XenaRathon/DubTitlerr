@@ -34,12 +34,12 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
 
 ## Closing (the *close* phase — always keep last)
 
-- [ ] **FULL A1→D1 end-to-end on the server** (the user's requirement): a random episode each from
+- [x] **FULL A1→D1 end-to-end on the server** (the user's requirement): a random episode each from
       **One Pace, Reborn as a Vending Machine, JoJo (2012), Fullmetal Alchemist Brotherhood, + 1–2
       random shows**; generate→repair→assemble→mux; verify reflow timing, names, no hallucinations,
       and an embedded default Dubtitles track WITH fonts (esp. JoJo signs/songs). — done when: all pass.
 - [x] CI: add `mux.py` to the ruff scope — done when: pipeline green.
-- [ ] Push `feat/d1-mux-fonts`; merge to `main`. — done when: merged + pushed.
+- [x] Push `feat/d1-mux-fonts`; merge to `main`. — done when: merged + pushed.
 - [ ] **Then:** GitHub mirror of the whole repo + rollout (rebuild image, sync glossaries→`/config`,
       mux/regenerate library) — tracked in [[project_dubtitle_builder]], separate from D1.
 
