@@ -1,72 +1,84 @@
-# Anime Library dubtitle rollout — REPRIORITIZED by Tautulli user watch history (2026-06-22).
-# Shows users have actually started come first. Edit freely; gen loop re-reads each sweep.
-
-# ---- in progress / done (idempotent skip) ----
+# DubTitlerr show order — priority by Tautulli watch history (2026-06-30).
+# One Pace first (S19 pre-run at deploy), then JoJo, Reborn, recent-watch, then the rest.
+One Pace
 JoJo's Bizarre Adventure (2012) {tvdb-262954}
-MARRIAGETOXIN (2026) {tvdb-468734}
-
-# ---- WATCHED by users (Tautulli, by engagement) — dubbed ----
-JUJUTSU KAISEN (2020) {tvdb-377543}
-Cyberpunk Edgerunners (2022) {tvdb-384541}
-Trigun (1998) {tvdb-77680}
 Reborn as a Vending Machine, I Now Wander the Dungeon (2023) {tvdb-423121}
 TRIGUN STAMPEDE (2023) {tvdb-421378}
-SPY x FAMILY (2022) {tvdb-405920}
+JUJUTSU KAISEN (2020) {tvdb-377543}
 Serial Experiments Lain (1998) {tvdb-78814}
 Darker Than Black (2007) {tvdb-80042}
-My Hero Academia {tvdb-305074}
-Cowboy Bebop (1998) {tvdb-76885}
-Fire Force (2019) {tvdb-355480}
-My Hero Academia Vigilantes (2025) {tvdb-458058}
-Frieren Beyond Journey's End (2023) {tvdb-424536}
-Delicious in Dungeon (2024) {tvdb-423257}
-Life With an Ordinary Guy Who Reincarnated Into a Total Fantasy Knockout (2022) {tvdb-405227}
-Mother of the Goddess' Dormitory (2021) {tvdb-400642}
-
-# ---- rest of dubbed anime (no watch history yet) ----
-Sword Art Online (2012) {tvdb-259640}
-Black Butler (2008) {tvdb-83996}
-Fullmetal Alchemist Brotherhood (2009) {tvdb-85249}
-Demon Slayer Kimetsu no Yaiba (2019) {tvdb-348545}
-To Your Eternity (2021) {tvdb-375271}
-Fullmetal Alchemist (2003) {tvdb-75579}
-Death Note (2006) {tvdb-79481}
-FateZero (2011) {tvdb-275798}
-FateStay Night Unlimited Blade Works (2014) {tvdb-278626}
-FateStay Night (2006) {tvdb-79151}
-Solo Leveling (2024) {tvdb-389597}
-FateApocrypha (2017) {tvdb-326332}
-My Dress-Up Darling (2022) {tvdb-401233}
-Komi Can't Communicate (2021) {tvdb-402412}
-DAN DA DAN (2024) {tvdb-432832}
-Chainsaw Man (2022) {tvdb-397934}
-Chained Soldier (2024) {tvdb-412656}
-Why the Hell Are You Here, Teacher! (2019) {tvdb-359646}
-Sword Art Online Alternative Gun Gale Online (2018) {tvdb-335815}
-SK8 the Infinity (2021) {tvdb-388858}
-Lazarus (2025) {tvdb-437408}
-JoJo's Bizarre Adventure (1993) {tvdb-83950}
-Citrus (2018) {tvdb-337120}
-Akiba Maid War (2022) {tvdb-421676}
-I'm in Love With the Villainess (2023) {tvdb-428350}
-I Parry Everything (2024) {tvdb-441727}
-Demon Lord 2099 (2024) {tvdb-432847}
-My Status as an Assassin Obviously Exceeds the Hero's (2025) {tvdb-460341}
-The Dark History of the Reincarnated Villainess (2025) {tvdb-446238}
-Suicide Squad Isekai (2024) {tvdb-436846}
-Disney Twisted-Wonderland The Animation (2025) {tvdb-411393}
-
-# ---- WATCHED but English-only (captions) ----
-Pokémon (1997) {tvdb-76703}
 Speed Racer (1967) {tvdb-77777}
-
-# ---- rest of English-only ----
-Pokémon Concierge (2023) {tvdb-431703}
-Yu-Gi-Oh! Duel Monsters (2000) {tvdb-76894}
-Pokémon Horizons {tvdb-220150}
+Trigun (1998) {tvdb-77680}
+SPY x FAMILY (2022) {tvdb-405920}
+Cowboy Bebop (1998) {tvdb-76885}
+# --- remaining (REQUIRE_ENG auto-skips sub-only) ---
+Akiba Maid War (2022) {tvdb-421676}
+BEASTARS (2019) {tvdb-361013}
+Black Butler (2008) {tvdb-83996}
+Carnival Phantasm (2011) {tvdb-251047}
+Chained Soldier (2024) {tvdb-412656}
+Chainsaw Man (2022) {tvdb-397934}
+Chibi Godzilla Raids Again (2023) {tvdb-434965}
+Citrus (2018) {tvdb-337120}
+Cyberpunk Edgerunners (2022) {tvdb-384541}
+DAN DA DAN (2024) {tvdb-432832}
+Death Note (2006) {tvdb-79481}
+Delicious in Dungeon (2024) {tvdb-423257}
+Demon Lord 2099 (2024) {tvdb-432847}
+Demon Slayer Kimetsu no Yaiba (2019) {tvdb-348545}
+Disney Twisted-Wonderland The Animation (2025) {tvdb-411393}
+FateApocrypha (2017) {tvdb-326332}
+FateExtra Last Encore (2018) {tvdb-337018}
+FateStay Night (2006) {tvdb-79151}
+FateStay Night Unlimited Blade Works (2014) {tvdb-278626}
+FateZero (2011) {tvdb-275798}
+Fire Force (2019) {tvdb-355480}
+Frieren Beyond Journey's End (2023) {tvdb-424536}
+Fullmetal Alchemist (2003) {tvdb-75579}
+Fullmetal Alchemist Brotherhood (2009) {tvdb-85249}
+Girls Band Cry (2024) {tvdb-434127}
+Gushing Over Magical Girls (2024) {tvdb-432449}
+Himegoto (2014) {tvdb-279530}
+I Parry Everything (2024) {tvdb-441727}
+I'm in Love With the Villainess (2023) {tvdb-428350}
+JoJo's Bizarre Adventure (1993) {tvdb-83950}
+Komi Can't Communicate (2021) {tvdb-402412}
+Lazarus (2025) {tvdb-437408}
+Life With an Ordinary Guy Who Reincarnated Into a Total Fantasy Knockout (2022) {tvdb-405227}
+Love Stage!! (2014) {tvdb-280327}
+MARRIAGETOXIN (2026) {tvdb-468734}
+MASHLE MAGIC AND MUSCLES (2023) {tvdb-421737}
+Mayonaka Punch (2024) {tvdb-445256}
+Mother of the Goddess' Dormitory (2021) {tvdb-400642}
+My Dress-Up Darling (2022) {tvdb-401233}
+My Hero Academia Vigilantes (2025) {tvdb-458058}
+My Hero Academia {tvdb-305074}
+My Life as Inukai-san's Dog (2023) {tvdb-418185}
+My Status as an Assassin Obviously Exceeds the Hero's (2025) {tvdb-460341}
+Pokémon (1997) {tvdb-76703}
 Pokémon Chronicles (1998) {tvdb-72975}
-Yu-Gi-Oh! Capsule Monsters (2006) {tvdb-267996}
-X-Men (2011) {tvdb-236061}
-Wolverine (2011) {tvdb-220141}
-Pokémon Origins (2013) {tvdb-273616}
+Pokémon Concierge (2023) {tvdb-431703}
 Pokémon Generations (2016) {tvdb-316998}
+Pokémon Horizons {tvdb-220150}
+Pokémon Origins (2013) {tvdb-273616}
+SK8 the Infinity (2021) {tvdb-388858}
+Seduced by My Best Friend (2021) {tvdb-397617}
+Solo Leveling (2024) {tvdb-389597}
+Sorairo Utility (2025) {tvdb-445890}
+Suicide Squad Isekai (2024) {tvdb-436846}
+Sword Art Online (2012) {tvdb-259640}
+Sword Art Online Alternative Gun Gale Online (2018) {tvdb-335815}
+The Dark History of the Reincarnated Villainess (2025) {tvdb-446238}
+The Exiled Heavy Knight Knows How to Game the System (2026) {tvdb-453028}
+The Summer Hikaru Died (2025) {tvdb-450428}
+To Your Eternity (2021) {tvdb-375271}
+Train to the End of the World (2024) {tvdb-426018}
+Whisper Me a Love Song (2024) {tvdb-429626}
+Why the Hell Are You Here, Teacher! (2019) {tvdb-359646}
+Wolverine (2011) {tvdb-220141}
+X-Men (2011) {tvdb-236061}
+Yu-Gi-Oh! (1998) {tvdb-113561}
+Yu-Gi-Oh! 5D's (2008) {tvdb-84911}
+Yu-Gi-Oh! Capsule Monsters (2006) {tvdb-267996}
+Yu-Gi-Oh! Duel Monsters (2000) {tvdb-76894}
+Yu-Gi-Oh! GX (2004) {tvdb-76113}
