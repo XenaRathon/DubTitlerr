@@ -188,3 +188,53 @@ def test_time_cards_never_overlaps_next_card():
     groups = [[mkword("a" * 50, 0.0, 0.3)], [mkword("b" * 50, 1.5, 1.8)]]
     times = reflow.time_cards(groups)
     assert times[0][1] <= times[1][0] - reflow.MIN_GAP + 1e-9
+
+
+# --- T6: card_confidence + reflow() + edges ----------------------------------
+
+def test_card_confidence_avg_logprob_is_mean_word_logprob():
+    import math
+    words = [mkword("a", 0, 0.3, prob=0.9), mkword("b", 0.4, 0.7, prob=0.9)]
+    segs = [{"start": 0, "end": 1, "no_speech_prob": 0.1}]
+    avg, _ = reflow.card_confidence(words, segs)
+    assert avg == pytest.approx(math.log(0.9))
+
+
+def test_card_confidence_no_speech_prob_is_max_over_source_segments():
+    words = [mkword("a", 0, 0.3, seg=0), mkword("b", 0.4, 0.7, seg=1)]
+    segs = [{"no_speech_prob": 0.1}, {"no_speech_prob": 0.7}]
+    _, nsp = reflow.card_confidence(words, segs)
+    assert nsp == 0.7
+
+
+def test_card_confidence_clamps_zero_probability():
+    import math
+    words = [mkword("a", 0, 0.3, prob=0.0)]
+    segs = [{"no_speech_prob": 0.1}]
+    avg, _ = reflow.card_confidence(words, segs)
+    assert avg == pytest.approx(math.log(reflow.PROB_FLOOR))
+
+
+def test_reflow_end_to_end_two_sentences_across_a_gap():
+    words = sentence(["Hello", "there."], t0=0.0, seg=0) + \
+        sentence(["General", "Kenobi."], t0=2.0, seg=1)
+    segs = [{"no_speech_prob": 0.1}, {"no_speech_prob": 0.2}]
+    cards = reflow.reflow(words, segs)
+    assert [c["text"] for c in cards] == ["Hello there.", "General Kenobi."]
+    assert cards[0]["no_speech_prob"] == 0.1 and cards[1]["no_speech_prob"] == 0.2
+    assert all({"start", "end", "text", "avg_logprob", "no_speech_prob"} <= c.keys() for c in cards)
+    assert cards[0]["start"] == 0.0
+
+
+def test_reflow_tolerates_missing_word_timestamps():
+    words = [mkword("Hi", None, None, seg=0), mkword("there.", 0.5, 0.8, seg=0)]
+    segs = [{"no_speech_prob": 0.1}]
+    cards = reflow.reflow(words, segs)        # must not raise
+    assert len(cards) >= 1
+    assert all(isinstance(c["start"], float) and isinstance(c["end"], float) for c in cards)
+
+
+def test_reflow_drops_blank_cards():
+    words = [mkword("   ", 0.0, 0.3, seg=0)]
+    segs = [{"no_speech_prob": 0.1}]
+    assert reflow.reflow(words, segs) == []

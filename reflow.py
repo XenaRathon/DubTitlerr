@@ -20,6 +20,8 @@ Built with help of Claude (Anthropic).
 """
 from __future__ import annotations
 
+import math
+
 # --- Netflix readability profile (the acceptance criteria, in code) ----------
 MAX_LINE = 42            # chars per line
 MAX_LINES = 2
@@ -166,9 +168,43 @@ def time_cards(groups: list[list[dict]]) -> list[tuple[float, float]]:
 def card_confidence(words: list[dict], segments: list[dict]) -> tuple[float, float]:
     """Per-card confidence: avg_logprob = mean ln(max(prob, PROB_FLOOR)) over the
     card's words; no_speech_prob = max over the segments the words came from."""
-    raise NotImplementedError
+    logs = [math.log(max(w.get("prob", PROB_FLOOR), PROB_FLOOR)) for w in words]
+    avg = sum(logs) / len(logs) if logs else math.log(PROB_FLOOR)
+    segs = {w.get("seg", 0) for w in words}
+    nsp = max((segments[s].get("no_speech_prob", 0.0) for s in segs if s < len(segments)),
+              default=0.0)
+    return avg, nsp
+
+
+def _normalize(words: list[dict]) -> list[dict]:
+    """Fill missing timestamps by carrying forward, so downstream timing never
+    sees None. Mutates copies; preserves text/prob/seg."""
+    out: list[dict] = []
+    t = 0.0
+    for w in words:
+        start = w["start"] if w.get("start") is not None else t
+        end = w["end"] if w.get("end") is not None else start
+        if end < start:
+            end = start
+        out.append({**w, "start": float(start), "end": float(end)})
+        t = end
+    return out
 
 
 def reflow(words: list[dict], segments: list[dict]) -> list[dict]:
     """Turn whisper word/segment data into finished Cards (see module docstring)."""
-    raise NotImplementedError
+    groups: list[list[dict]] = []
+    for span in split_spans(_normalize(words)):
+        for g in segment_span(span):
+            if _text(g).strip():           # drop blank cards
+                groups.append(g)
+    if not groups:
+        return []
+    cards = []
+    for (start, end), g in zip(time_cards(groups), groups):
+        avg, nsp = card_confidence(g, segments)
+        cards.append({
+            "start": start, "end": end, "text": wrap_balance(_text(g)),
+            "avg_logprob": avg, "no_speech_prob": nsp,
+        })
+    return cards
