@@ -36,7 +36,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable. Test-first. Gates gree
       anchor (don't skip); `REPAIR_MODEL` from env. — done when: target-selection + prompt-build
       unit tests pass (LLM call stubbed).
 
-- [ ] **T7 — `Dockerfile.builder`.** `apt-get install wamerican`; `COPY glossary.py
+- [x] **T7 — `Dockerfile.builder`.** `apt-get install wamerican`; `COPY glossary.py
       common_words.txt`. — done when: grep shows both + the apt line.
 
 - [ ] **T8 — Glossary curation (USER-GATED).** Draft cleaned + expanded `One Pace.json`
