@@ -11,7 +11,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable done criterion. Built
 
 ## Tasks
 
-- [ ] **T1 — Scaffold + contracts.** Add `pyproject.toml` (`[tool.pytest]`, `[tool.ruff]`),
+- [x] **T1 — Scaffold + contracts.** Add `pyproject.toml` (`[tool.pytest]`, `[tool.ruff]`),
       `tests/`, and `reflow.py` skeleton: `Card` shape, `reflow(words, segments)` +
       helper signatures (docstringed, `NotImplementedError`). Constants for the
       Netflix profile (42, 2, 17 cps, 0.83, 7.0, 0.5 gap, 2-frame=0.083).
