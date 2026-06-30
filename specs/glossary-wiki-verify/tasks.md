@@ -20,7 +20,7 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
 - [x] **T4 — incremental skip.** terms already in `verified` are not re-checked. — done when: skip test passes.
 - [x] **T5 — `build_adjudication_prompt`.** term + candidate titles + dub-first instruction + JSON
       output contract. — done when: prompt-content unit tests pass.
-- [ ] **T6 — wiki I/O (`resolve_wiki`, `fetch_titles`).** Fandom search-resolve + cached allpages
+- [x] **T6 — wiki I/O (`resolve_wiki`, `fetch_titles`).** Fandom search-resolve + cached allpages
       via stdlib urllib; URL/parse logic unit-tested with stubbed HTTP. — done when: url/parse tests pass.
 - [ ] **T7 — `adjudicate` + `verify` orchestration + CLI.** wire pre-match→LLM→apply; resilient
       (timeout/failure → no-op); `python3 glossary_verify.py <show.json> [--wiki] [--force]`.

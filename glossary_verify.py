@@ -18,6 +18,10 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import re
+import time
+import urllib.parse
+import urllib.request
 
 TOPK = 6                  # candidate titles per term handed to the LLM
 CAND_CUTOFF = 0.5         # min similarity for a title to be a candidate
@@ -92,14 +96,87 @@ def apply_results(gloss: dict, results: dict) -> dict:
     return g
 
 
+def _clean_title(title: str) -> str:
+    return re.sub(r"\s*\(\d{4}\)|\s*\{[^}]*\}", "", title).strip()
+
+
+def wiki_candidates(title: str) -> list[str]:
+    """Candidate Fandom api.php URLs derived from a (messy) show title, best first."""
+    t = _clean_title(title).lower()
+    slug = re.sub(r"[^a-z0-9]", "", t)
+    hyph = re.sub(r"[^a-z0-9]+", "-", t).strip("-")
+    first = (t.split() or [slug])[0]
+    out: list[str] = []
+    for s in (slug, hyph, first):
+        api = f"https://{s}.fandom.com/api.php"
+        if s and api not in out:
+            out.append(api)
+    return out
+
+
+def normalize_api(url: str) -> str:
+    """Reduce any wiki URL to its `<scheme>://<host>/api.php`."""
+    m = re.match(r"(https?://[^/]+)", url)
+    return (m.group(1) if m else url).rstrip("/") + "/api.php"
+
+
+def allpages_url(api: str, apcontinue: str | None = None) -> str:
+    u = (api + "?action=query&list=allpages&apnamespace=0&aplimit=500"
+         "&apfilterredir=nonredirects&format=json")
+    if apcontinue:
+        u += "&apcontinue=" + urllib.parse.quote(apcontinue)
+    return u
+
+
+def parse_allpages(resp: dict) -> tuple[list[str], str | None]:
+    titles = [p["title"] for p in resp.get("query", {}).get("allpages", [])]
+    return titles, resp.get("continue", {}).get("apcontinue")
+
+
+def _http_json(url: str) -> dict:
+    req = urllib.request.Request(url, headers={"User-Agent": "DubTitlerr-glossary-verify"})
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+        return json.loads(r.read())
+
+
 def resolve_wiki(title: str, override: str | None = None) -> str | None:
-    """Resolve the show's Fandom MediaWiki API base (override wins; else search + pick)."""
-    raise NotImplementedError
+    """Resolve the show's Fandom MediaWiki API base (override wins; else probe candidates)."""
+    if override:
+        return normalize_api(override)
+    for api in wiki_candidates(title):
+        try:
+            j = _http_json(api + "?action=query&meta=siteinfo&format=json")
+            if j.get("query", {}).get("general"):
+                return api
+        except Exception:
+            continue
+    return None
 
 
 def fetch_titles(wiki_api: str, show_key: str) -> list[str]:
     """Cached main-namespace (ns=0) page-title list for the wiki."""
-    raise NotImplementedError
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    cache = os.path.join(CACHE_DIR, re.sub(r"[^A-Za-z0-9]+", "_", show_key) + ".json")
+    try:
+        c = json.load(open(cache))
+        if c.get("api") == wiki_api and (time.time() - c.get("fetched_at", 0)) < WIKI_TTL:
+            return c["titles"]
+    except (OSError, ValueError):
+        pass
+    titles: list[str] = []
+    cont = None
+    for _ in range(40):                          # page cap (40 * 500 = 20k titles)
+        try:
+            resp = _http_json(allpages_url(wiki_api, cont))
+        except Exception:
+            break
+        ts, cont = parse_allpages(resp)
+        titles += ts
+        if not cont:
+            break
+    if titles:
+        json.dump({"api": wiki_api, "fetched_at": time.time(), "titles": titles}, open(cache, "w"))
+    return titles
 
 
 def verify(gloss_path: str, override: str | None = None, force: bool = False) -> dict:
