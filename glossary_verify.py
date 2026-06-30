@@ -15,13 +15,19 @@ specs/glossary-wiki-verify/spec.md.  Built with help of Claude (Anthropic).
 """
 from __future__ import annotations
 
+import argparse
 import difflib
 import json
 import os
 import re
+import sys
 import time
 import urllib.parse
 import urllib.request
+
+
+def log(*a):
+    print(*a, flush=True)
 
 TOPK = 6                  # candidate titles per term handed to the LLM
 CAND_CUTOFF = 0.5         # min similarity for a title to be a candidate
@@ -66,9 +72,37 @@ def build_adjudication_prompt(term: str, cands: list[str], show: str) -> str:
         '"confidence": "high|low|none", "dub_note": "<short or empty>"}')
 
 
+def parse_adjudication(text: str) -> dict:
+    """Parse the LLM's JSON reply (tolerating surrounding prose) into a normalized adjudication."""
+    none = {"canonical": "", "confidence": "none", "dub_note": ""}
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return none
+    try:
+        d = json.loads(m.group(0))
+    except ValueError:
+        return none
+    conf = str(d.get("confidence", "none")).lower()
+    if conf not in ("high", "low", "none"):
+        conf = "low"
+    return {"canonical": str(d.get("canonical", "") or ""), "confidence": conf,
+            "dub_note": str(d.get("dub_note", "") or "")}
+
+
 def adjudicate(term: str, cands: list[str], show: str) -> dict:
     """LLM pick -> {'canonical': str, 'confidence': 'high'|'low'|'none', 'dub_note': str}."""
-    raise NotImplementedError
+    if not cands:
+        return {"canonical": "", "confidence": "none", "dub_note": ""}
+    body = {"model": VERIFY_MODEL, "prompt": build_adjudication_prompt(term, cands, show),
+            "stream": False, "think": False, "options": {"temperature": 0}}
+    try:
+        req = urllib.request.Request(OLLAMA, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return parse_adjudication(json.loads(r.read()).get("response", ""))
+    except Exception as e:
+        log("  adjudicate fail:", term, e)
+        return {"canonical": "", "confidence": "none", "dub_note": ""}
 
 
 def apply_results(gloss: dict, results: dict) -> dict:
@@ -180,5 +214,48 @@ def fetch_titles(wiki_api: str, show_key: str) -> list[str]:
 
 
 def verify(gloss_path: str, override: str | None = None, force: bool = False) -> dict:
-    """Orchestrate verification of one glossary file; returns a report. Resilient."""
-    raise NotImplementedError
+    """Orchestrate verification of one glossary file; returns a report. Resilient — any failure
+    leaves the glossary unchanged and is reported in `note`, never raised."""
+    try:
+        gloss = json.load(open(gloss_path))
+    except (OSError, ValueError) as e:
+        return {"note": f"load-failed: {e}"}
+    show = gloss.get("show") or os.path.splitext(os.path.basename(gloss_path))[0]
+    if force:
+        gloss["verified"] = []
+    terms = pending_terms(gloss)
+    rep = {"show": show, "checked": 0, "applied": 0, "flagged": 0}
+    if not terms:
+        return {**rep, "note": "nothing pending"}
+    api = resolve_wiki(show, override or gloss.get("wiki"))
+    if not api:
+        return {**rep, "note": "wiki unresolved (set a 'wiki' override)"}
+    titles = fetch_titles(api, show)
+    if not titles:
+        return {**rep, "wiki": api, "note": "no titles fetched"}
+    results = {t: adjudicate(t, candidates(t, titles), show) for t in terms}
+    new = apply_results(gloss, results)
+    new.setdefault("wiki", api)
+    try:
+        json.dump(new, open(gloss_path, "w"), indent=2, ensure_ascii=False)
+    except OSError as e:
+        return {**rep, "wiki": api, "note": f"write-failed: {e}"}
+    applied = sum(1 for t, a in results.items()
+                  if a["confidence"] == "high" and a["canonical"] and a["canonical"] != t)
+    return {"show": show, "wiki": api, "checked": len(terms),
+            "applied": applied, "flagged": len(new.get("flagged", {}))}
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Wiki-verify a DubTitlerr glossary.")
+    ap.add_argument("glossary", help="path to <show>.json")
+    ap.add_argument("--wiki", help="override wiki URL/api.php")
+    ap.add_argument("--force", action="store_true", help="re-verify all terms (ignore 'verified')")
+    a = ap.parse_args()
+    rep = verify(a.glossary, a.wiki, a.force)
+    log(json.dumps(rep, ensure_ascii=False))
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
