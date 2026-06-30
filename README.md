@@ -25,14 +25,26 @@ They're complementary — one is bottom-of-screen dialogue, the other is positio
 
 ## What it does
 
-For every `…eng.dubtitles.srt` it finds, it:
+DubTitlerr runs as one restart-safe container that watches your anime library and, for every
+show with an **English dub**, runs a full pipeline per episode:
 
-1. finds the matching video and its internal **"Signs and Songs"** stream,
-2. extracts that track (keeping its styling + positioning),
-3. appends the dub dialogue as a bottom-aligned **Dubtitles** style,
-4. writes `…eng.dubtitles.ass` and removes the now-redundant `.srt`.
+1. **Transcribe** — pick the English-dub audio and run Whisper (large-v3), then **reflow** the
+   words into clean, well-timed cards (sentence-split, ≤2 lines/≤42 chars, ~17 cps, never shown
+   before they're spoken).
+2. **Name correction** — fix proper nouns against a **per-show glossary** (curated `hard_fixes` +
+   a guarded fuzzy that won't touch real English words). The glossary is **auto-built by mining**
+   the embedded subs and **wiki-verified** (canonical, dub-preferred spellings — see below).
+3. **LLM repair** — a local model (qwen3:8b) fixes mid-/low-confidence and name-suspect lines,
+   anchored on the embedded fansub dialogue when present.
+4. **Hallucination gate** — drop music/silence/blocklist lines and within-card loops, collapse
+   runaway repeat runs, flag the merely-uncertain.
+5. **Signs & songs merge** — lift the on-screen signs/song-lyric events into the same subtitle.
+6. **Mux + fonts** — embed the result **with the MKV's fonts** as a default "Dubtitles" track so
+   signs render in their real typeface (mp4 episodes are remuxed to mkv); English audio set default.
 
-Files with no signs track are left as plain `.srt`. It's **idempotent** — safe to run on a schedule.
+Idempotent (a `.dubtitles.done` stamp + embedded-track check make re-runs safe), incremental, and
+per-episode (Plex refreshes as each finishes). The **glossary wiki-verifier** is reusable on its
+own — it makes any mined or community-submitted glossary as accurate as a hand-curated one.
 
 ## Quick start
 
@@ -86,9 +98,6 @@ Everything is an env var, so nothing host-specific is baked in:
   status, live logs), queue or reorder shows, kick off a re-scan, and edit per-show glossaries
   — instead of tailing logs over SSH.
 - **Per-show glossary editor** — manage the name/spelling glossaries from the UI.
-- **Wiki-verify glossaries** — after mining auto-builds a per-show dictionary, verify its
-  proper-noun spellings against the show's wiki / official publisher (the canonical source of
-  truth), preferring the form the English dub actually uses; flag any it can't confirm.
 - **Community glossary repo** — a shared, TitleCardMaker-blueprints-style repository of per-show
   glossaries that instances can fetch on startup and submit their mined dictionaries back to
   (keyed by show + tvdb-id, with dedup/merge).
