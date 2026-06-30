@@ -51,7 +51,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable. Test-first. Gates gree
       — done when: winner locked.
 - [ ] **Integration verify:** run a repair pass on a sample (offline harness / live Ollama),
       confirm the S19E16 name errors are fixed and no over-correction. — done when: eyeball-pass.
-- [ ] CI: extend ruff/pytest scope to `glossary.py` — done when: pipeline green.
+- [x] CI: extend ruff/pytest scope to `glossary.py` — done when: pipeline green.
 - [ ] Push `feat/c1-glossary-precision`; merge to `main` (no PR, per the build's flow).
       — done when: merged + pushed.
 
