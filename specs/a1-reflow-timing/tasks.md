@@ -17,7 +17,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable done criterion. Built
       Netflix profile (42, 2, 17 cps, 0.83, 7.0, 0.5 gap, 2-frame=0.083).
       — done when: `ruff check` clean and `pytest` collects (skeleton tests xfail/skip).
 
-- [ ] **T2 — `split_spans`.** Test-first: words split into spans wherever inter-word
+- [x] **T2 — `split_spans`.** Test-first: words split into spans wherever inter-word
       gap > 0.5 s. — done when: gap-split unit tests pass.
 
 - [ ] **T3 — `segment_span`.** Sentence split (`. ! ? …`); overflow (>2×42 or >7 s)
