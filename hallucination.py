@@ -66,7 +66,11 @@ def drop_reason(card: dict) -> str | None:
 
 def flag_reason(card: dict) -> str | None:
     """A weaker single-signal suspicion for a KEPT card ('low_conf' | 'maybe_silence' | None)."""
-    raise NotImplementedError
+    if card.get("avg_logprob", 0.0) < LP_FLAG:
+        return "low_conf"
+    if card.get("no_speech_prob", 0.0) > NSP_FLAG:
+        return "maybe_silence"
+    return None
 
 
 def collapse_runs(cards: list[dict]) -> list[dict]:

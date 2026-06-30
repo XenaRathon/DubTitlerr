@@ -14,7 +14,7 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
       constants), `tests/test_hallucination.py`. — done when: ruff clean, pytest collects.
 - [x] **T2 — `is_repetition` + `drop_reason`.** within-card loop detector; drop = blocklist ∨
       repetition ∨ (nsp>0.8 ∧ lp<-1.0). — done when: drop-signal unit tests pass.
-- [ ] **T3 — `flag_reason`.** weaker single signal (mid nsp OR mid lp) → flag, not drop.
+- [x] **T3 — `flag_reason`.** weaker single signal (mid nsp OR mid lp) → flag, not drop.
       — done when: flag-tier tests pass (flag set, drop None).
 - [ ] **T4 — `collapse_runs`.** merge runs of ≥4 near-identical consecutive cards to one
       (first start, last end); ≤3 untouched. — done when: collapse tests pass.

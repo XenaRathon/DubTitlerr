@@ -48,3 +48,17 @@ def test_drop_reason_music_requires_both_signals():
 
 def test_drop_reason_keeps_normal_line():
     assert h.drop_reason(card("Don't let your guard down")) is None
+
+
+# --- T3: flag_reason ---------------------------------------------------------
+
+def test_flag_reason_low_confidence():
+    assert h.flag_reason(card("mumbled bit", lp=-0.8, nsp=0.2)) == "low_conf"
+
+
+def test_flag_reason_maybe_silence():
+    assert h.flag_reason(card("faint line", lp=-0.3, nsp=0.6)) == "maybe_silence"
+
+
+def test_flag_reason_none_for_clean_line():
+    assert h.flag_reason(card("Don't let your guard down")) is None
