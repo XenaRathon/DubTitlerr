@@ -12,6 +12,7 @@ Pure stdlib, deterministic, runs in the subgen image. Card dicts are
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 # DROP thresholds (the music/silence combo — both must hold)
 NSP_DROP = 0.8           # no_speech_prob above this AND...
@@ -20,8 +21,8 @@ LP_DROP = -1.0           # ...avg_logprob below this => invented text over music
 NSP_FLAG = 0.5
 LP_FLAG = -0.6
 # repetition
-REPEAT_WORD_MIN = 4      # a single word repeated >= this many times
-REPEAT_COVERAGE = 0.6    # a repeated 1-3-gram covering >= this fraction of the card
+REPEAT_MIN_TOKENS = 6    # below this a card is too short to call a loop (protects emphasis)
+REPEAT_COVERAGE = 0.6    # a repeated word/1-3-gram covering >= this fraction of the card
 RUN_COLLAPSE = 4         # collapse a run of >= this many near-identical consecutive cards
 
 # Known whisper hallucination phrases (music/credits/UGC boilerplate). Conservative —
@@ -37,12 +38,30 @@ BLOCKLIST = re.compile(
 
 def is_repetition(text: str) -> bool:
     """True if the card is dominated by a repeated word or short n-gram (a within-line loop)."""
-    raise NotImplementedError
+    toks = re.findall(r"[a-z0-9']+", text.lower())
+    n = len(toks)
+    if n < REPEAT_MIN_TOKENS:
+        return False
+    if Counter(toks).most_common(1)[0][1] / n >= REPEAT_COVERAGE:   # one word dominates
+        return True
+    for k in (3, 2):                                                # a 2-3-gram loops
+        grams = [tuple(toks[i:i + k]) for i in range(n - k + 1)]
+        top = Counter(grams).most_common(1)[0][1]
+        if top >= 3 and top * k / n >= REPEAT_COVERAGE:
+            return True
+    return False
 
 
 def drop_reason(card: dict) -> str | None:
     """'blocklist' | 'repetition' | 'music' | None — near-certain garbage only."""
-    raise NotImplementedError
+    text = card.get("text", "")
+    if BLOCKLIST.search(text):
+        return "blocklist"
+    if is_repetition(text):
+        return "repetition"
+    if card.get("no_speech_prob", 0.0) > NSP_DROP and card.get("avg_logprob", 0.0) < LP_DROP:
+        return "music"
+    return None
 
 
 def flag_reason(card: dict) -> str | None:
