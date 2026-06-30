@@ -31,7 +31,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable. Test-first. Gates gree
       `glossary.correct`; load the glossary once. Keep A1's per-line application + wrap.
       — done when: ruff clean, full pytest green, `generate.py` ast-parses.
 
-- [ ] **T6 — `repair.py` enhancements.** Targets = mid-confidence band OR `name_suspect`;
+- [x] **T6 — `repair.py` enhancements.** Targets = mid-confidence band OR `name_suspect`;
       inject glossary (names + phrases) into the prompt; glossary-only context when no fansub
       anchor (don't skip); `REPAIR_MODEL` from env. — done when: target-selection + prompt-build
       unit tests pass (LLM call stubbed).
