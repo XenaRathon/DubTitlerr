@@ -6,8 +6,9 @@ FROM mccloud/subgen:2026.06.2
 
 # subgen ships python3 + ffmpeg but no pip; bootstrap pip to add pysubs2 (for the merge step).
 # wamerican = /usr/share/dict/american-english, the English-word gate for glossary.py (C1).
+# mkvtoolnix = mkvmerge for the D1 mux stage (embed .ass + fonts as a default Dubtitles track).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3-pip wamerican \
+    && apt-get install -y --no-install-recommends python3-pip wamerican mkvtoolnix \
     && python3 -m pip install --no-cache-dir pysubs2 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -19,7 +20,7 @@ RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('large-v3'
 
 WORKDIR /app
 COPY generate.py reflow.py glossary.py hallucination.py common_words.txt repair.py \
-     dub_signs_merge.py plex_refresh.py mine_glossary.py merge_pass.sh gen_loop.sh \
+     dub_signs_merge.py mux.py plex_refresh.py mine_glossary.py merge_pass.sh gen_loop.sh \
      container_run.sh /app/
 RUN chmod +x /app/*.sh
 

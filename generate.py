@@ -39,6 +39,7 @@ from faster_whisper import WhisperModel
 
 import glossary
 import hallucination
+import mux
 import reflow
 
 # OUTPUT_ROOT: write sidecars to this branch path instead of next to the mkv, so writes
@@ -141,6 +142,8 @@ def ts(t):
 
 def process(video):
     stem = os.path.splitext(video)[0]
+    if mux.stamp_valid(mux.read_stamp(stem + mux.STAMP_SUFFIX), video):  # muxed (stat-only) -> skip
+        return "already-muxed"
     if os.path.exists(stem + ".eng.dubtitles.ass"):     # assembled already -> skip (idempotent)
         return "already-ass"
     if os.environ.get("SKIP_IF_SRT", "1") == "1" and os.path.exists(stem + ".eng.dubtitles.srt"):
@@ -244,6 +247,7 @@ def main():
     # re-scan doesn't pay the ~40s model load when there's nothing new to transcribe.
     def needs_work(v):
         stem = os.path.splitext(v)[0]
+        if mux.stamp_valid(mux.read_stamp(stem + mux.STAMP_SUFFIX), v): return False  # muxed -> done
         if os.path.exists(stem + ".eng.dubtitles.ass"): return False
         if os.environ.get("SKIP_IF_SRT", "1") == "1" and os.path.exists(stem + ".eng.dubtitles.srt"): return False
         if os.path.exists(stem + ".dubtitles.fail"): return False
