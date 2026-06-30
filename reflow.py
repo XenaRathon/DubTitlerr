@@ -122,7 +122,23 @@ def segment_span(span: list[dict]) -> list[list[dict]]:
 def wrap_balance(text: str) -> str:
     """Wrap ``text`` to <=MAX_LINES lines of <=MAX_LINE chars, balanced. Returns
     the text with at most one embedded newline."""
-    raise NotImplementedError
+    text = text.strip()
+    if len(text) <= MAX_LINE:
+        return text
+    words = text.split()
+    best = None          # split where both lines fit, most balanced
+    fallback = None      # otherwise minimize the longer line
+    for i in range(1, len(words)):
+        l1, l2 = " ".join(words[:i]), " ".join(words[i:])
+        if max(len(l1), len(l2)) < (fallback[0] if fallback else float("inf")):
+            fallback = (max(len(l1), len(l2)), l1 + "\n" + l2)
+        if len(l1) <= MAX_LINE and len(l2) <= MAX_LINE:
+            score = abs(len(l1) - len(l2))
+            if best is None or score < best[0]:
+                best = (score, l1 + "\n" + l2)
+    if best:
+        return best[1]
+    return fallback[1] if fallback else text
 
 
 def time_cards(groups: list[list[dict]]) -> list[tuple[float, float]]:

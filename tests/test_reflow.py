@@ -116,3 +116,34 @@ def test_segment_span_overflow_by_duration_even_when_text_short():
 def test_segment_span_single_unsplittable_word_returned_as_is():
     span = [mkword("x" * 200, 0.0, 12.0)]   # too long AND too long-duration
     assert len(reflow.segment_span(span)) == 1
+
+
+# --- T4: wrap_balance --------------------------------------------------------
+
+def test_wrap_balance_short_text_stays_one_line():
+    assert reflow.wrap_balance("short enough") == "short enough"
+
+
+def test_wrap_balance_text_at_limit_stays_one_line():
+    text = "x" * 42
+    assert reflow.wrap_balance(text) == text
+
+
+def test_wrap_balance_long_text_becomes_two_lines_each_within_limit():
+    text = " ".join(["wordy"] * 12)   # 12*5 + 11 = 71 chars > 42
+    out = reflow.wrap_balance(text)
+    lines = out.split("\n")
+    assert len(lines) == 2
+    assert all(len(ln) <= reflow.MAX_LINE for ln in lines)
+    assert out.replace("\n", " ") == text     # content + order preserved
+
+
+def test_wrap_balance_splits_evenly():
+    text = " ".join(["abcde"] * 10)    # 59 chars -> balanced 5/5
+    a, b = reflow.wrap_balance(text).split("\n")
+    assert abs(len(a) - len(b)) <= 5
+
+
+def test_wrap_balance_single_overlong_word_returned_unwrapped():
+    word = "z" * 60
+    assert reflow.wrap_balance(word) == word    # nothing to split on, no crash
