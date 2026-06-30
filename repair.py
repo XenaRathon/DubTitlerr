@@ -194,8 +194,9 @@ def overlap_ref(ivals, a, b):
 
 
 def llm(prompt):
-    body = {"model": MODEL, "prompt": prompt,
-            "stream": False, "options": {"temperature": 0}}
+    # think=False keeps qwen3/qwen3.5 from emitting <think> blocks (ignored by qwen2.5)
+    body = {"model": MODEL, "prompt": prompt, "stream": False, "think": False,
+            "options": {"temperature": 0}}
     try:
         req = urllib.request.Request(OLLAMA, data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})

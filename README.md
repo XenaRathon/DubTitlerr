@@ -86,7 +86,12 @@ Everything is an env var, so nothing host-specific is baked in:
   status, live logs), queue or reorder shows, kick off a re-scan, and edit per-show glossaries
   — instead of tailing logs over SSH.
 - **Per-show glossary editor** — manage the name/spelling glossaries from the UI.
-- **Auto-mux** — optionally embed the finished `.ass` into the MKV as a tagged "Dubtitles" track.
+- **Wiki-verify glossaries** — after mining auto-builds a per-show dictionary, verify its
+  proper-noun spellings against the show's wiki / official publisher (the canonical source of
+  truth), preferring the form the English dub actually uses; flag any it can't confirm.
+- **Community glossary repo** — a shared, TitleCardMaker-blueprints-style repository of per-show
+  glossaries that instances can fetch on startup and submit their mined dictionaries back to
+  (keyed by show + tvdb-id, with dedup/merge).
 
 ## License
 
