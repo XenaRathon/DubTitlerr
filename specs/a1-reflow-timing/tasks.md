@@ -27,7 +27,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable done criterion. Built
 - [x] **T4 — `wrap_balance`.** Each card text → ≤2 lines, ≤42/line, balanced.
       — done when: wrap/balance unit tests pass (no line >42, ≤2 lines, balance check).
 
-- [ ] **T5 — `time_cards`.** start = first-word onset (pinned); extend END into trailing
+- [x] **T5 — `time_cards`.** start = first-word onset (pinned); extend END into trailing
       silence to satisfy ≥0.83 s and ≤17 cps, capped 7 s; enforce ≥2-frame gap (no overlap).
       — done when: timing unit tests pass (start-pin, hold-time, cap, gap).
 
