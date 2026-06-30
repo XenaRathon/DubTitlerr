@@ -27,7 +27,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable. Test-first. Gates gree
       glossary name but isn't exact, or a capitalized non-glossary proper-noun-like token.
       — done when: flags suspect lines, ignores clean lines (unit tests).
 
-- [ ] **T5 — Wire into `generate.py`.** Replace inline `fix_word`/`correct` with
+- [x] **T5 — Wire into `generate.py`.** Replace inline `fix_word`/`correct` with
       `glossary.correct`; load the glossary once. Keep A1's per-line application + wrap.
       — done when: ruff clean, full pytest green, `generate.py` ast-parses.
 
