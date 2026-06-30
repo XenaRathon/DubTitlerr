@@ -129,4 +129,18 @@ def correct(text: str, gloss: dict) -> tuple[str, int]:
 def name_suspect(text: str, gloss: dict) -> bool:
     """True if the line likely contains a mis-spelled name (near a glossary name but not
     exact) or an unknown capitalized proper-noun-like token — a candidate for LLM repair."""
-    raise NotImplementedError
+    names = gloss["names"]
+    names_lower = {n.lower() for n in names}
+    for tok in text.split():
+        m = _TOKEN_RE.match(tok)
+        if not m:
+            continue
+        core = m.group(2)
+        low = core.lower()
+        if len(core) < MIN_FUZZY_LEN or low in names_lower or is_english(low):
+            continue
+        if core[0].isupper():                                  # unknown proper noun
+            return True
+        if names and difflib.get_close_matches(core.title(), names, n=1, cutoff=0.78):
+            return True                                        # lowercase near-name mishear
+    return False

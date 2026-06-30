@@ -82,3 +82,22 @@ def test_correct_phrase_runs_before_token_and_noop_without_glossary():
     g = gloss(phrases=["Water Seven"], hard_fixes={"water seven": "Water Seven"})
     assert glossary.correct("from water seven port", g)[0] == "from Water Seven port"
     assert glossary.correct("anything at all", gloss()) == ("anything at all", 0)
+
+
+# --- T4: name_suspect --------------------------------------------------------
+
+def test_name_suspect_flags_unknown_capitalized_proper_noun():
+    assert glossary.name_suspect("I saw Krieg coming", gloss(names=["Luffy"]))
+
+
+def test_name_suspect_flags_lowercase_near_name_misspelling():
+    assert glossary.name_suspect("we beat zorro today", gloss(names=["Zoro"]))
+
+
+def test_name_suspect_ignores_clean_line_of_english_and_known_names():
+    assert not glossary.name_suspect("Luffy hit the pirates", gloss(names=["Luffy"]))
+
+
+def test_name_suspect_ignores_sentence_initial_english_word():
+    # a capitalized word that IS a known English word must not be flagged as a name
+    assert not glossary.name_suspect("Maybe the people come", gloss(names=["Luffy"]))
