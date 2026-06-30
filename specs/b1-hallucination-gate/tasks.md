@@ -12,7 +12,7 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
 
 - [x] **T1 — Scaffold.** `hallucination.py` skeleton (BLOCKLIST + signatures + threshold
       constants), `tests/test_hallucination.py`. — done when: ruff clean, pytest collects.
-- [ ] **T2 — `is_repetition` + `drop_reason`.** within-card loop detector; drop = blocklist ∨
+- [x] **T2 — `is_repetition` + `drop_reason`.** within-card loop detector; drop = blocklist ∨
       repetition ∨ (nsp>0.8 ∧ lp<-1.0). — done when: drop-signal unit tests pass.
 - [ ] **T3 — `flag_reason`.** weaker single signal (mid nsp OR mid lp) → flag, not drop.
       — done when: flag-tier tests pass (flag set, drop None).
