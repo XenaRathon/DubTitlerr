@@ -98,3 +98,24 @@ def test_allpages_url_and_parse():
     assert titles == ["Spandam", "Enies Lobby"] and cont == "Foo"
     t2, c2 = gv.parse_allpages({"query": {"allpages": [{"title": "A"}]}})
     assert t2 == ["A"] and c2 is None
+
+
+# --- T7: LLM reply parsing ---------------------------------------------------
+
+def test_parse_adjudication_clean_json():
+    d = gv.parse_adjudication('{"canonical": "Spandam", "confidence": "high", "dub_note": ""}')
+    assert d["canonical"] == "Spandam" and d["confidence"] == "high"
+
+
+def test_parse_adjudication_json_with_prose():
+    d = gv.parse_adjudication('Sure!\n{"canonical":"Water 7","confidence":"high","dub_note":"numeral"}\nDone')
+    assert d["canonical"] == "Water 7" and d["dub_note"] == "numeral"
+
+
+def test_parse_adjudication_garbage_is_none():
+    assert gv.parse_adjudication("no json here")["confidence"] == "none"
+
+
+def test_parse_adjudication_bad_confidence_defaults_low():
+    d = gv.parse_adjudication('{"canonical":"X","confidence":"pretty sure"}')
+    assert d["confidence"] == "low"

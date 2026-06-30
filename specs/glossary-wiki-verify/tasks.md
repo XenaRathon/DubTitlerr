@@ -22,7 +22,7 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
       output contract. — done when: prompt-content unit tests pass.
 - [x] **T6 — wiki I/O (`resolve_wiki`, `fetch_titles`).** Fandom search-resolve + cached allpages
       via stdlib urllib; URL/parse logic unit-tested with stubbed HTTP. — done when: url/parse tests pass.
-- [ ] **T7 — `adjudicate` + `verify` orchestration + CLI.** wire pre-match→LLM→apply; resilient
+- [x] **T7 — `adjudicate` + `verify` orchestration + CLI.** wire pre-match→LLM→apply; resilient
       (timeout/failure → no-op); `python3 glossary_verify.py <show.json> [--wiki] [--force]`.
       — done when: ruff clean, full pytest green, module imports.
 - [ ] **T8 — `gen_loop.sh` hook.** run verifier after mine (timeout, swallow failure). — done when: grep shows it.
