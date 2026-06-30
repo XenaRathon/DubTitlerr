@@ -12,5 +12,5 @@ jobs:
       - run: pip install ruff pytest
       # Scoped to the reflow module + its tests (the quality-build surface);
       # the other legacy scripts are linted as later steps touch them.
-      - run: ruff check reflow.py generate.py glossary.py repair.py tools/ tests/
+      - run: ruff check reflow.py generate.py glossary.py hallucination.py repair.py tools/ tests/
       - run: pytest
