@@ -26,11 +26,11 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
       `process()`: free-space gate; mkv→embed `.ass`; mp4→remux to mkv embed `.srt` + remove old
       `.mp4` link only; verify→finalize→write stamp→remove sidecar; never delete partners.
       — done when: ruff clean, pytest green, mp4/mkv branch unit-tested (subprocess stubbed).
-- [ ] **T7 — Wire into `merge_pass.sh`** (per-episode mux after assemble / terminal mp4 srt, root).
+- [x] **T7 — Wire into `merge_pass.sh`** (per-episode mux after assemble / terminal mp4 srt, root).
       — done when: script invokes mux, skips stamped.
-- [ ] **T8 — `generate.py` stamp skip.** `needs_work()` + `process()` skip on valid `.done`.
+- [x] **T8 — `generate.py` stamp skip.** `needs_work()` + `process()` skip on valid `.done`.
       — done when: full pytest green, generate.py parses.
-- [ ] **T9 — `Dockerfile.builder` `mkvtoolnix`.** — done when: grep shows it.
+- [x] **T9 — `Dockerfile.builder` `mkvtoolnix`.** — done when: grep shows it.
 
 ## Closing (the *close* phase — always keep last)
 
@@ -38,7 +38,7 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
       **One Pace, Reborn as a Vending Machine, JoJo (2012), Fullmetal Alchemist Brotherhood, + 1–2
       random shows**; generate→repair→assemble→mux; verify reflow timing, names, no hallucinations,
       and an embedded default Dubtitles track WITH fonts (esp. JoJo signs/songs). — done when: all pass.
-- [ ] CI: add `mux.py` to the ruff scope — done when: pipeline green.
+- [x] CI: add `mux.py` to the ruff scope — done when: pipeline green.
 - [ ] Push `feat/d1-mux-fonts`; merge to `main`. — done when: merged + pushed.
 - [ ] **Then:** GitHub mirror of the whole repo + rollout (rebuild image, sync glossaries→`/config`,
       mux/regenerate library) — tracked in [[project_dubtitle_builder]], separate from D1.
