@@ -20,6 +20,12 @@ while :; do
     echo "#### MINE $show $(date)"
     GLOSSARY_DIR="$GLOSS_DIR" python3 /app/mine_glossary.py "$ANIME/$show" 2>&1 || echo "  mine failed (continuing)"
     GLOSS="$GLOSS_DIR/$show.json"; [ -f "$GLOSS" ] || GLOSS=""
+    # wiki-verify the (mined/updated) glossary: canonical, dub-preferred spellings. Incremental +
+    # cached, and timeout-bounded + failure-swallowed so a slow/down wiki never stalls the sweep.
+    if [ -n "$GLOSS" ]; then
+        echo "#### VERIFY $show $(date)"
+        timeout 300 python3 /app/glossary_verify.py "$GLOSS" 2>&1 || echo "  verify skipped (continuing)"
+    fi
     echo "#### GENERATE $show $(date)"
     # crash-resume: re-run until clean exit or no progress (poison files get a .fail marker)
     attempt=0
