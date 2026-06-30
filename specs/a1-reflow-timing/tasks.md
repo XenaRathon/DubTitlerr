@@ -20,7 +20,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable done criterion. Built
 - [x] **T2 — `split_spans`.** Test-first: words split into spans wherever inter-word
       gap > 0.5 s. — done when: gap-split unit tests pass.
 
-- [ ] **T3 — `segment_span`.** Sentence split (`. ! ? …`); overflow (>2×42 or >7 s)
+- [x] **T3 — `segment_span`.** Sentence split (`. ! ? …`); overflow (>2×42 or >7 s)
       cut order = largest internal pause → clause `, ; :` near midpoint → word-wrap.
       — done when: segmentation-order + overflow unit tests pass.
 
