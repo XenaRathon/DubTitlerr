@@ -24,7 +24,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable done criterion. Built
       cut order = largest internal pause → clause `, ; :` near midpoint → word-wrap.
       — done when: segmentation-order + overflow unit tests pass.
 
-- [ ] **T4 — `wrap_balance`.** Each card text → ≤2 lines, ≤42/line, balanced.
+- [x] **T4 — `wrap_balance`.** Each card text → ≤2 lines, ≤42/line, balanced.
       — done when: wrap/balance unit tests pass (no line >42, ≤2 lines, balance check).
 
 - [ ] **T5 — `time_cards`.** start = first-word onset (pinned); extend END into trailing
