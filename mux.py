@@ -26,8 +26,11 @@ partner hardlinks, default = same as MUX_ROOTS), DELETE_BROKEN_HARDLINKS (1/0,
 default 1), DUR_TOL (seconds, default 2), MEDIA_UID/GID.
 Requires mkvtoolnix (mkvmerge) + ffprobe.  Built with help of Claude (Anthropic).
 """
-import argparse, json, os, shutil, subprocess, sys
-import importlib.util
+import argparse
+import json
+import os
+import re
+import subprocess
 
 ROOTS = os.environ.get("MUX_ROOTS", "/data/Media/Anime Library").split(":")
 # Base audio/subtitle languages to KEEP. The title's ORIGINAL language is detected
@@ -36,15 +39,48 @@ ROOTS = os.environ.get("MUX_ROOTS", "/data/Media/Anime Library").split(":")
 # ger, …) is dropped. Video + the new Dubtitles track + all font attachments always kept.
 KEEP_LANGS = set(os.environ.get("KEEP_LANGS", "eng,en,dut,nld,nl,und,").split(","))
 HL_ROOTS = os.environ.get("HARDLINK_ROOTS", "").split(":") if os.environ.get("HARDLINK_ROOTS") else ROOTS
-DELETE_BROKEN = os.environ.get("DELETE_BROKEN_HARDLINKS", "1") == "1"
+# D1: default OFF — never delete a seeding download hardlink; the orphan-reaper owns that
+# (seed-until-orphan policy). Muxing only replaces the library's own file.
+DELETE_BROKEN = os.environ.get("DELETE_BROKEN_HARDLINKS", "0") == "1"
 DUR_TOL = float(os.environ.get("DUR_TOL", "2"))
 MEDIA_UID = int(os.environ.get("MEDIA_UID", "1000"))
 MEDIA_GID = int(os.environ.get("MEDIA_GID", "100"))
+MIN_FREE_GB = float(os.environ.get("MIN_FREE_GB", "5"))   # skip a remux if the pool is this low
+SIZE_FACTOR = 1.1                                         # temp ~ source size (+headroom)
 ASS_SUFFIX = ".eng.dubtitles.ass"
+SRT_SUFFIX = ".eng.dubtitles.srt"
+STAMP_SUFFIX = ".dubtitles.done"
 TRACK_NAME = "Dubtitles"
+# subtitle track names that mark a signs/songs track worth keeping regardless of language
+SIGNS_RE = re.compile(r"sign|song|karaoke|lyric|caption|title|credit|insert", re.I)
 
 
 def log(*a): print(*a, flush=True)
+
+
+def has_room(free_bytes: float, src_size: int) -> bool:
+    """True if there's room for a full-size temp plus the MIN_FREE_GB safety margin."""
+    raise NotImplementedError
+
+
+def write_stamp(path: str, video: str) -> None:
+    """Write the .dubtitles.done idempotency stamp recording the muxed file's size+mtime."""
+    raise NotImplementedError
+
+
+def read_stamp(path: str) -> dict | None:
+    raise NotImplementedError
+
+
+def stamp_valid(stamp: dict | None, video: str) -> bool:
+    """True if the stamp matches the current file (size+mtime) — i.e. still muxed, not replaced."""
+    raise NotImplementedError
+
+
+def keep_sub(track: dict, keep_langs: set) -> bool:
+    """Keep an mkvmerge subtitle track if its language is wanted, it's multi-language ('mul'),
+    or its name reads as signs/songs (so weird JoJo signs tracks survive)."""
+    raise NotImplementedError
 
 
 def identify(path):

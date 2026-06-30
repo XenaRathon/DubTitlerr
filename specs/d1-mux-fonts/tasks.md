@@ -10,7 +10,7 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
 
 ## Tasks
 
-- [ ] **T1 — Scaffold + extract pure helpers.** In `mux.py`: `tests/test_mux.py`; extract/define
+- [x] **T1 — Scaffold + extract pure helpers.** In `mux.py`: `tests/test_mux.py`; extract/define
       `read_stamp`/`write_stamp`/`stamp_valid`, `has_room`, `keep_sub`, `is_muxed` signatures +
       constants (`MIN_FREE_GB`, `DELETE_BROKEN_HARDLINKS=0`). — done when: ruff clean, pytest collects.
 - [ ] **T2 — Stamp helpers.** `.dubtitles.done` write (size+mtime+muxed) / read / `stamp_valid`
