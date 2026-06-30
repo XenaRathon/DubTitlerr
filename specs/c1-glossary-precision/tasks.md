@@ -15,7 +15,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable. Test-first. Gates gree
       offenders + common English), `tests/test_glossary.py`.
       — done when: ruff clean, pytest collects.
 
-- [ ] **T2 — `is_english` gate.** Load wordlist from `WORDLIST_PATH` ∪ bundled
+- [x] **T2 — `is_english` gate.** Load wordlist from `WORDLIST_PATH` ∪ bundled
       `common_words.txt`; `is_english(token)` case-insensitive. — done when: gate unit tests pass.
 
 - [ ] **T3 — `correct()` tiered.** phrase hard_fixes (word-boundary, case-insensitive) →
