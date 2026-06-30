@@ -31,7 +31,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable done criterion. Built
       silence to satisfy ≥0.83 s and ≤17 cps, capped 7 s; enforce ≥2-frame gap (no overlap).
       — done when: timing unit tests pass (start-pin, hold-time, cap, gap).
 
-- [ ] **T6 — `card_confidence` + assemble `reflow()` + edges.** Per-card avg_logprob =
+- [x] **T6 — `card_confidence` + assemble `reflow()` + edges.** Per-card avg_logprob =
       mean `ln(max(prob,1e-4))`; no_speech_prob = max over overlapping segments. Tie the
       pipeline together; handle `None` timestamps (interpolate) and empty cards (drop).
       — done when: confidence + edge-case tests pass; coverage ≥90% on `reflow.py`.
