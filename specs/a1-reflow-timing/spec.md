@@ -64,8 +64,16 @@ Every card written to the `.srt` MUST satisfy:
 1. **Flatten:** collect all words (text, start, end, probability) across all
    segments in order; remember which source segment each word came from (for
    `no_speech_prob`).
+1a. **De-jitter (verification finding):** faster-whisper sometimes pins a segment's
+   leading word(s) to the segment's too-early start while the real speech is 0.5–104 s
+   later (observed in 28/204 segments of S19E16). Within a segment those words are one
+   continuous utterance, so any gap is an alignment artifact, not silence — close it
+   (threshold == the split threshold) by shifting the early cluster forward to the body.
+   This keeps real splits only at **segment boundaries**, where genuine pauses land, and
+   prevents leading-word orphans being shown long before their line. Words are also
+   clamped into their segment's `[start, end]`.
 2. **Span split (hard guard):** start a new span wherever the gap between word[i].end
-   and word[i+1].start > **0.5 s**. Spans never glue across pauses.
+   and word[i+1].start > **0.5 s**. After de-jitter these are segment boundaries.
 3. **Card segmentation within a span:**
    - Primary: split at sentence-final punctuation `. ! ? …`.
    - If a resulting piece exceeds 2 lines × 42 chars **or** > 7 s: break it by, in
@@ -87,6 +95,7 @@ Every card written to the `.srt` MUST satisfy:
 | Case | Expected behavior |
 |---|---|
 | Word with `None` start/end | Interpolate from adjacent words / segment bounds; never crash, never drop the word silently. |
+| Leading word(s) mis-timed seconds/minutes before the segment body (whisper DTW artifact) | De-jitter: pull the early cluster forward to the body so it isn't an orphan card; never shown early. |
 | Card text empty after strip | Skip the card (no SRT entry, no conf entry). |
 | Single sentence > 7 s with no internal gap/punctuation | Force a break by largest micro-gap → clause → word-wrap; each card still ≤ 7 s and ≤ 2 lines. |
 | Sung dub lyrics (whisper transcribes songs as dialogue) | Treated identically; the > 0.5 s gap rule naturally breaks lyric lines at musical pauses. |
