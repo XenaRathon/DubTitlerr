@@ -12,13 +12,13 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
 
 - [x] **T1 — Scaffold.** `glossary_verify.py` skeleton (signatures + constants: top-K, cutoffs,
       `VERIFY_MODEL`, cache dir) + `tests/test_glossary_verify.py`. — done when: ruff clean, pytest collects.
-- [ ] **T2 — `candidates`.** deterministic top-K title pre-match by similarity (cutoff floors junk).
+- [x] **T2 — `candidates`.** deterministic top-K title pre-match by similarity (cutoff floors junk).
       — done when: top-K + cutoff unit tests pass.
-- [ ] **T3 — `apply_results`.** given per-term adjudications, write high-confidence corrections to
+- [x] **T3 — `apply_results`.** given per-term adjudications, write high-confidence corrections to
       names/phrases, add low/no-match to `flagged`, mark `verified`, regen `initial_prompt`; prefer
       the dub form; preserve unknown JSON fields. — done when: apply/flag/dub/preserve tests pass.
-- [ ] **T4 — incremental skip.** terms already in `verified` are not re-checked. — done when: skip test passes.
-- [ ] **T5 — `build_adjudication_prompt`.** term + candidate titles + dub-first instruction + JSON
+- [x] **T4 — incremental skip.** terms already in `verified` are not re-checked. — done when: skip test passes.
+- [x] **T5 — `build_adjudication_prompt`.** term + candidate titles + dub-first instruction + JSON
       output contract. — done when: prompt-content unit tests pass.
 - [ ] **T6 — wiki I/O (`resolve_wiki`, `fetch_titles`).** Fandom search-resolve + cached allpages
       via stdlib urllib; URL/parse logic unit-tested with stubbed HTTP. — done when: url/parse tests pass.
