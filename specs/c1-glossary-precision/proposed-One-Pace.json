@@ -1,6 +1,6 @@
 {
   "show": "One Piece (the One Pace edit)",
-  "initial_prompt": "This is One Piece (the One Pace edit). Spell names correctly: Luffy, Zoro, Nami, Usopp, Sanji, Tony Tony Chopper, Nico Robin, Franky, Cutty Flam, Brook, Vivi, Crocodile, Smoker, Spandam, Lucci, Kaku, Kalifa, Blueno, Jabra, Kumadori, Fukurou, Iceburg, Aokiji, Sengoku, Garp, Cipher Pol, CP9, Buster Call, Enies Lobby, Gates of Justice, Water 7, Ohara, Pluton, Robin, Going Merry, Thousand Sunny, Grand Line, Devil Fruit, Den Den Mushi, Log Pose, Haki, Straw Hat.",
+  "initial_prompt": "This is One Piece (the One Pace edit). Spell names correctly: Luffy, Zoro, Nami, Usopp, Sanji, Tony Tony Chopper, Nico Robin, Franky, Cutty Flam, Brook, Vivi, Crocodile, Smoker, Spandam, Lucci, Kaku, Kalifa, Blueno, Jabra, Kumadori, Fukurou, Iceburg, Aokiji, Sengoku, Garp, Cipher Pol, CP9, Buster Call, Enies Lobby, Gates of Justice, Water Seven, Ohara, Pluton, Robin, Going Merry, Thousand Sunny, Grand Line, Devil Fruit, Den Den Mushi, Log Pose, Haki, Straw Hat.",
   "names": [
     "Luffy", "Zoro", "Nami", "Usopp", "Sanji", "Chopper", "Robin", "Franky", "Brook",
     "Jinbe", "Vivi", "Nefertari", "Cobra", "Crocodile", "Smoker", "Tashigi", "Kohza",
@@ -8,15 +8,15 @@
     "Karoo", "Bellamy", "Cricket", "Masira", "Shoujou", "Montblanc", "Noland", "Sarquiss",
     "Jaya", "Skypiea", "Enel", "Wiper", "Conis", "Iceburg", "Paulie", "Kaku", "Lucci",
     "Kalifa", "Blueno", "Jabra", "Kumadori", "Fukurou", "Spandam", "Kokoro", "Yokozuna",
-    "Aokiji", "Kuzan", "Sengoku", "Garp", "Ohara", "Pluton", "Moria", "Perona", "Oars",
-    "Kuma", "Hancock", "Rayleigh", "Sabo", "Whitebeard", "Marco", "Doflamingo", "Trafalgar",
+    "Aokiji", "Sengoku", "Garp", "Ohara", "Pluton", "Moria", "Perona", "Oars", "Kuma",
+    "Hancock", "Rayleigh", "Sabo", "Whitebeard", "Marco", "Doflamingo", "Trafalgar",
     "Kaido", "Katakuri", "Alabasta", "Enies", "Sabaody", "Marineford", "Dressrosa", "Wano",
-    "Haki", "Baratie", "Arlong", "Buggy", "Shanks", "Roger", "Raftel"
+    "Haki", "Baratie", "Arlong", "Buggy", "Shanks", "Raftel"
   ],
   "phrases": [
     "Tony Tony Chopper", "Nico Robin", "Bon Clay", "Baroque Works", "Mock Town",
     "Going Merry", "Thousand Sunny", "Grand Line", "Devil Fruit", "Den Den Mushi",
-    "Log Pose", "Straw Hat", "Straw Hats", "Water 7", "Enies Lobby", "Thriller Bark",
+    "Log Pose", "Straw Hat", "Straw Hats", "Water Seven", "Enies Lobby", "Thriller Bark",
     "Montblanc Cricket", "Montblanc Noland", "Trafalgar Law", "Cutty Flam",
     "Gates of Justice", "Buster Call", "Cipher Pol", "Galley-La", "Sea Train"
   ],
@@ -34,12 +34,6 @@
     "enie's lobby": "Enies Lobby", "any's lobby": "Enies Lobby",
     "cypher pol": "Cipher Pol", "cipher pole": "Cipher Pol", "cypherpull": "CP9",
     "buster cold": "Buster Call", "buster called": "Buster Call",
-    "water seven": "Water 7", "den den mushi": "Den Den Mushi", "log pose": "Log Pose",
-    "cali fa": "Kalifa",
-    "buster call": "Buster Call", "gates of justice": "Gates of Justice",
-    "enies lobby": "Enies Lobby", "grand line": "Grand Line", "devil fruit": "Devil Fruit",
-    "going merry": "Going Merry", "thousand sunny": "Thousand Sunny",
-    "straw hat": "Straw Hat", "straw hats": "Straw Hats", "thriller bark": "Thriller Bark",
-    "mock town": "Mock Town", "sea train": "Sea Train", "gomu gomu": "Gomu Gomu"
+    "den den mushi": "Den Den Mushi", "log pose": "Log Pose", "cali fa": "Kalifa"
   }
 }
