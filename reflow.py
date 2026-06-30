@@ -145,7 +145,22 @@ def time_cards(groups: list[list[dict]]) -> list[tuple[float, float]]:
     """Assign (start, end) to each group in global order. start = first word
     onset (pinned); end extended into trailing silence to satisfy MIN_DUR/MAX_CPS,
     capped at MAX_DUR and at MIN_GAP before the next group's start."""
-    raise NotImplementedError
+    out: list[tuple[float, float]] = []
+    n = len(groups)
+    for j, g in enumerate(groups):
+        start = g[0]["start"]
+        natural_end = g[-1]["end"]
+        chars = len(_text(g))
+        # extend (never shrink below the spoken span) to satisfy min duration + reading speed
+        target = max(natural_end, start + MIN_DUR, start + chars / MAX_CPS)
+        cap = start + MAX_DUR
+        if j + 1 < n:                       # never overlap the next card; keep a 2-frame gap
+            cap = min(cap, groups[j + 1][0]["start"] - MIN_GAP)
+        end = min(target, cap)
+        if end <= start:                    # degenerate (next card starts almost immediately)
+            end = start + MIN_GAP
+        out.append((start, end))
+    return out
 
 
 def card_confidence(words: list[dict], segments: list[dict]) -> tuple[float, float]:

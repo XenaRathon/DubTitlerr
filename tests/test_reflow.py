@@ -1,4 +1,6 @@
 """Unit tests for reflow.py (A1). Pure functions, no whisper/CUDA needed."""
+import pytest
+
 import reflow
 
 
@@ -147,3 +149,42 @@ def test_wrap_balance_splits_evenly():
 def test_wrap_balance_single_overlong_word_returned_unwrapped():
     word = "z" * 60
     assert reflow.wrap_balance(word) == word    # nothing to split on, no crash
+
+
+# --- T5: time_cards ----------------------------------------------------------
+
+def test_time_cards_start_is_pinned_to_first_word_onset():
+    groups = [sentence(["Hello", "world."], t0=3.2)]
+    (start, _end), = reflow.time_cards(groups)
+    assert start == 3.2
+
+
+def test_time_cards_extends_short_card_to_minimum_duration():
+    groups = [[mkword("Oh", 0.5, 0.7)]]      # 0.2s spoken, no trailing card
+    (start, end), = reflow.time_cards(groups)
+    assert end == pytest.approx(start + reflow.MIN_DUR)
+
+
+def test_time_cards_extends_dense_card_for_reading_speed():
+    groups = [[mkword("a" * 68, 1.0, 2.0)]]  # 68 chars / 17 cps = 4.0s needed
+    (start, end), = reflow.time_cards(groups)
+    assert end == pytest.approx(start + 68 / reflow.MAX_CPS)
+
+
+def test_time_cards_never_exceeds_max_duration():
+    groups = [[mkword("a" * 150, 0.0, 0.5)]]  # would want ~8.8s for cps
+    (_start, end), = reflow.time_cards(groups)
+    assert end == pytest.approx(reflow.MAX_DUR)
+
+
+def test_time_cards_extension_capped_by_next_card_with_gap():
+    groups = [[mkword("a" * 50, 0.0, 0.3)], [mkword("b", 1.5, 1.8)]]
+    times = reflow.time_cards(groups)
+    end0 = times[0][1]
+    assert end0 == pytest.approx(1.5 - reflow.MIN_GAP)   # held off the next card
+
+
+def test_time_cards_never_overlaps_next_card():
+    groups = [[mkword("a" * 50, 0.0, 0.3)], [mkword("b" * 50, 1.5, 1.8)]]
+    times = reflow.time_cards(groups)
+    assert times[0][1] <= times[1][0] - reflow.MIN_GAP + 1e-9
