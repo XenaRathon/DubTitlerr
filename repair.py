@@ -14,10 +14,11 @@ never copy the subtitle verbatim (dub != sub — localization differs).
 Then the ``.srt`` is rewritten from the (possibly repaired) confidence rows and a
 ``<stem>.dubtitles.repair.csv`` audit (orig -> repaired) is written. Timing untouched.
 
-C1: targets are now broadened to mid-confidence-AND-lower OR name-suspect lines, the
-show glossary is injected into the prompt (canonical spellings), the LLM still runs even
-with no embedded-sub anchor (glossary-only context), and its output is run back through
-the deterministic glossary correction to enforce canon.
+C1: targets are broadened to mid-confidence-AND-lower OR name-suspect lines; the show
+glossary is injected into a STRICT prompt (canonical spellings, never invent/swap a name);
+the LLM only runs on lines with a fansub anchor (the bake-off showed glossary-only repair
+hallucinates names even on qwen3:8b, so no-anchor lines keep the deterministic text); the
+LLM output is run back through the deterministic correction to enforce canon.
 
 CPU/network only — the LLM runs on the 2070 (Ollama). Env:
   OLLAMA_URL    default http://ollama.local:11434/api/generate
@@ -103,19 +104,27 @@ def _glossary_terms(gloss):
 
 
 def build_prompt(asr, sub, gloss):
-    """Build the repair prompt: glossary names always; the fansub reference only when present
-    (graceful glossary-only fallback for mp4 episodes with no embedded sub)."""
+    """Build a STRICT repair prompt: glossary names always; the fansub reference only when
+    present (graceful glossary-only fallback for mp4). The strictness is deliberate — the
+    bake-off showed a loose prompt makes models hallucinate glossary names into lines."""
     names = _glossary_terms(gloss)
-    ref_intro = ("For context, the official subtitle for this moment is a DIFFERENT translation "
-                 "(do NOT copy it) — use it only as a meaning/name hint. ") if sub else ""
-    head = ("You are correcting an English-dub subtitle line that ASR may have garbled. " + ref_intro)
-    name_line = (f"Known proper nouns — use these EXACT spellings if the line refers to them: "
-                 f"{names}.\n") if names else ""
-    body = ("Return the most likely actual English DUB line: keep the ASR wording where plausible, "
-            "fix only clearly garbled parts and misspelled names. Keep about the same length. If it "
-            "already reads fine, return it unchanged. Return ONLY the corrected line, no quotes, no notes.\n\n")
-    ref_line = f"Official subtitle (context only): {sub}\n" if sub else ""
-    return f"{head}{name_line}{body}ASR attempt: {asr}\n{ref_line}Corrected dub line:"
+    ref_intro = ("For reference, the official subtitle for this moment (a DIFFERENT translation — "
+                 "do NOT copy its wording) is given below; use it only to resolve garbled words and "
+                 "confirm names. ") if sub else ""
+    head = "You fix speech-recognition errors in one English-dub subtitle line. " + ref_intro
+    name_line = f"Canonical spellings of known proper nouns: {names}.\n" if names else ""
+    rules = (
+        "Rules:\n"
+        "- Change a word ONLY if it is clearly garbled, or a clear MISSPELLING of one of the "
+        "canonical names above (close in sound/spelling) — then use the canonical spelling.\n"
+        "- NEVER introduce a name that is not already in the line. NEVER replace a name in the line "
+        "with a different name. If a name in the line is NOT in the list, leave it EXACTLY as written "
+        "— it may be a character that isn't listed.\n"
+        "- Do NOT turn ordinary words into names. Keep the wording and length almost identical.\n"
+        "- If the line already reads fine, or you are unsure, return it UNCHANGED.\n"
+        "Return ONLY the line — no quotes, no notes.\n\n")
+    ref_line = f"Official subtitle (reference only): {sub}\n" if sub else ""
+    return f"{head}{name_line}{rules}ASR line: {asr}\n{ref_line}Corrected line:"
 
 
 def find_video(stem):
@@ -217,7 +226,11 @@ def process(conf_path):
     ivals = dialogue_intervals(video)
     audit, fixed = [], 0
     for c in targets:
-        ref = overlap_ref(ivals, c["start"], c["end"])   # "" for mp4 -> glossary-only prompt
+        ref = overlap_ref(ivals, c["start"], c["end"])
+        if not ref:
+            continue        # no fansub anchor -> skip the LLM. The bake-off showed glossary-only
+                            # repair hallucinates names (Oimo->Zoro) even on qwen3:8b; without a
+                            # reference the deterministic layer (hard_fixes) is the safe ceiling.
         new = llm(build_prompt(c["text"], ref, gloss))
         if new:
             new = glossary.correct(new, gloss)[0]         # enforce canonical spelling on output
