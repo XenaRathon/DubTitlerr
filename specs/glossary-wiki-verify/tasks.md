@@ -30,10 +30,10 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
 
 ## Closing (the *close* phase — always keep last)
 
-- [ ] **Integration (server):** verifier vs live Fandom + qwen3:8b — re-derive One Pace canon
+- [x] **Integration (server):** verifier vs live Fandom + qwen3:8b — re-derive One Pace canon
       (Spandam/Enies Lobby/Water 7) + a fresh show (Reborn/JoJo) gets correct names; eyeball `flagged`.
 - [x] CI: add `glossary_verify.py` to the ruff scope — done when: pipeline green.
-- [ ] Push `feat/glossary-wiki-verify`; merge to `main`. — done when: merged + pushed.
+- [x] Push `feat/glossary-wiki-verify`; merge to `main`. — done when: merged + pushed.
 
 ## Done
 <move [x] tasks here, preserving the done criterion>
