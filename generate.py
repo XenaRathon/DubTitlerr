@@ -40,6 +40,7 @@ from faster_whisper import WhisperModel
 import glossary
 import hallucination
 import mux
+import ordering
 import reflow
 
 # OUTPUT_ROOT: write sidecars to this branch path instead of next to the mkv, so writes
@@ -248,7 +249,9 @@ def main():
             for fn in fs:
                 if fn.lower().endswith((".mkv", ".mp4")) and not SKIP_FILE_RE.search(fn):
                     files.append(os.path.join(dp, fn))
-        files.sort()
+        # Watch-order priority: process seasons >= a per-show start season first (the arc
+        # the viewer is about to watch), then earlier ones. Absent config -> plain sort.
+        files = ordering.order_files(files, ordering.read_start(os.environ.get("SHOW_NAME", "")))
     else:
         files = args
     load_glossary()
