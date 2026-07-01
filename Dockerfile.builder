@@ -19,7 +19,7 @@ ENV MODEL_DIR=/models
 RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('large-v3', device='cpu', compute_type='int8', download_root='/models')"
 
 WORKDIR /app
-COPY generate.py reflow.py glossary.py glossary_verify.py hallucination.py common_words.txt \
+COPY generate.py reflow.py glossary.py glossary_verify.py hallucination.py ordering.py common_words.txt \
      repair.py dub_signs_merge.py mux.py plex_refresh.py mine_glossary.py merge_pass.sh \
      gen_loop.sh container_run.sh /app/
 RUN chmod +x /app/*.sh
