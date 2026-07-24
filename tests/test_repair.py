@@ -1,8 +1,8 @@
-"""Unit tests for repair.py pure helpers (C1) plus V2 A1/A2 coverage: backend dispatch and
-explicit connect/read timeouts + per-call latency. The llama.cpp box and Ollama are NOT
-reachable from this environment -- every HTTP-touching test here mocks repair._post_json,
-its underlying http.client connection, or the llm_* functions; no live LLM call is ever
-made. Live llama.cpp integration is PENDING manual verification on real hardware."""
+"""Unit tests for repair.py pure helpers (C1) plus V2 A1/A2/A3 coverage: backend dispatch,
+explicit connect/read timeouts + per-call latency, and two-pass repair. The llama.cpp box
+and Ollama are NOT reachable from this environment -- every HTTP-touching test here mocks
+repair._post_json, its underlying http.client connection, or the llm_*/llm functions; no
+live LLM call is ever made. Live llama.cpp integration is PENDING manual verification."""
 import csv
 import json
 
@@ -271,3 +271,92 @@ def test_process_writes_latency_ms_column(tmp_path, monkeypatch):
     assert len(rows) == 2
     assert rows[1][0] == "garbled line" and rows[1][1] == "a fixed line"
     assert int(rows[1][3]) >= 0        # latency recorded (mocked llm -> ~0ms, never negative)
+
+
+# --- A3: two-pass repair ------------------------------------------------------
+
+def test_needs_secondary_check_true_on_length_ratio_shrink():
+    g = gl()
+    assert repair._needs_secondary_check("a reasonably long original line here", "short", g) is True
+
+
+def test_needs_secondary_check_true_on_length_ratio_grow():
+    g = gl()
+    assert repair._needs_secondary_check("short", "a much much much longer replacement line", g) is True
+
+
+def test_needs_secondary_check_true_on_new_glossary_name():
+    g = gl(names=["Spandam"])
+    # similar length, no ratio trigger -- only the new-name condition should fire
+    assert repair._needs_secondary_check("I saw spondum there", "I saw Spandam there", g) is True
+
+
+def test_needs_secondary_check_false_when_name_already_in_orig():
+    g = gl(names=["Spandam"])
+    assert repair._needs_secondary_check("I saw Spandam already", "I saw Spandam again", g) is False
+
+
+def test_needs_secondary_check_false_on_stable_similar_line():
+    g = gl(names=["Spandam"])
+    assert repair._needs_secondary_check("a clean line here", "a clean line there", g) is False
+
+
+def _write_conf(conf_path, srt_path, conf_rows):
+    open(srt_path, "w").close()
+    with open(conf_path, "w") as f:
+        json.dump(conf_rows, f)
+
+
+def test_process_two_pass_reverifies_name_change(tmp_path, monkeypatch):
+    stem = str(tmp_path / "ep_2pass")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(conf_path, srt_path,
+                [{"start": 0.0, "end": 1.0, "text": "I saw spondum",
+                  "avg_logprob": -0.6, "no_speech_prob": 0.1}])
+
+    g = gl(names=["Spandam"])
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_2pass.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+
+    def fake_llm(prompt, model=None):
+        if model == "secondary-model":
+            return "I saw Spandam there"        # secondary "confirms" + extends the fix
+        return "I saw Spandam"                  # primary already inserts the glossary name
+    monkeypatch.setattr(repair, "llm", fake_llm)
+    monkeypatch.setattr(repair, "MODEL_SECONDARY", "secondary-model")
+
+    assert repair.process(conf_path) == "repaired"
+    with open(stem + ".dubtitles.repair.csv") as f:
+        rows = list(csv.reader(f))
+    assert len(rows) == 2
+    assert rows[1][0] == "I saw spondum"
+    assert rows[1][1] == "I saw Spandam there"        # secondary's output won (name-change trigger)
+    assert int(rows[1][3]) >= 0                       # latency includes both calls
+
+
+def test_process_two_pass_is_noop_when_secondary_equals_primary(tmp_path, monkeypatch):
+    stem = str(tmp_path / "ep_noop")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(conf_path, srt_path,
+                [{"start": 0.0, "end": 1.0, "text": "I saw spondum",
+                  "avg_logprob": -0.6, "no_speech_prob": 0.1}])
+
+    g = gl(names=["Spandam"])
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_noop.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+
+    calls = []
+
+    def fake_llm(prompt, model=None):
+        calls.append(model)
+        return "I saw Spandam"       # would trigger the two-pass check if secondary != primary
+    monkeypatch.setattr(repair, "llm", fake_llm)
+    # MODEL_SECONDARY left at its module default (== MODEL) -> two-pass must be a no-op
+
+    assert repair.MODEL_SECONDARY == repair.MODEL
+    repair.process(conf_path)
+    assert calls == [None]           # only the primary call, no secondary re-check
