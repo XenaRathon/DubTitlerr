@@ -41,7 +41,7 @@ import glossary
 import hallucination
 import ordering
 import reflow
-from common import EXTRA_DIRS, STAMP_SUFFIX, out_for, read_stamp, stamp_valid, ts_srt
+from common import EXTRA_DIRS, STAMP_SUFFIX, VIDEO_EXTS, out_for, read_stamp, stamp_valid, ts_srt
 
 MODEL = os.environ.get("WHISPER_MODEL", "large-v3")
 COMPUTE = os.environ.get("COMPUTE_TYPE", "int8")
@@ -229,7 +229,7 @@ def main():
         for dp, dns, fs in os.walk(args[1]):
             dns[:] = [d for d in dns if d.lower() not in EXTRA_DIRS]   # prune extras dirs
             for fn in fs:
-                if fn.lower().endswith((".mkv", ".mp4")) and not SKIP_FILE_RE.search(fn):
+                if fn.lower().endswith(VIDEO_EXTS) and not SKIP_FILE_RE.search(fn):
                     files.append(os.path.join(dp, fn))
         # Watch-order priority: process seasons >= a per-show start season first (the arc
         # the viewer is about to watch), then earlier ones. Absent config -> plain sort.
