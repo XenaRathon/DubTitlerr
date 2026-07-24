@@ -165,3 +165,31 @@ def test_word_probs_written_to_conf_json(monkeypatch, tmp_path):
     assert len(conf) == 1
     assert conf[0]["word_probs"] == [0.95, 0.1]
     assert len(conf[0]["word_probs"]) == len(conf[0]["text"].split())
+
+
+# --- V2 A8: WHISPER_AUDIO_FILTER in extract_wav() -----------------------------
+
+def test_extract_wav_appends_audio_filter_by_default(monkeypatch, tmp_path):
+    """The default WHISPER_AUDIO_FILTER (highpass+compand) is appended as -af to the
+    ffmpeg command, right before the output path."""
+    calls = []
+    monkeypatch.setattr(generate.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(b"x" * 2000)   # extract_wav's success check is stat-only; run() is faked
+    assert generate.extract_wav("ep.mkv", 1, str(wav)) is True
+    cmd = calls[0]
+    assert cmd[-1] == str(wav)
+    assert cmd[-3:-1] == ["-af", generate.AUDIO_FILTER]
+    assert generate.AUDIO_FILTER.startswith("highpass=f=80")  # matches the spec's Data contracts default
+
+
+def test_extract_wav_no_filter_when_empty(monkeypatch, tmp_path):
+    """Empty WHISPER_AUDIO_FILTER ("" -- the pre-A8 opt-out) must NOT add -af at all,
+    reproducing the exact pre-A8 ffmpeg command."""
+    calls = []
+    monkeypatch.setattr(generate, "AUDIO_FILTER", "")
+    monkeypatch.setattr(generate.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(b"x" * 2000)
+    generate.extract_wav("ep.mkv", 1, str(wav))
+    assert "-af" not in calls[0]

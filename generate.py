@@ -21,9 +21,13 @@ Usage:
   python3 generate.py --root "/media/Anime Library/One Pace/Season 15"  # walk dir
 
 Env:
-  WHISPER_MODEL   default large-v3
+  WHISPER_MODEL   default large-v3  (V2 A9: large-v3-turbo not bench-tested in this
+                  dev environment -- no GPU here -- PENDING manual test on the real
+                  GTX 1060 6GB server; default stays large-v3 until that confirms it)
   COMPUTE_TYPE    default int8  (Pascal-friendly, fits 6GB; try float16 for max quality)
   MODEL_DIR       default /subgen/models  (reuse subgen's downloaded model)
+  WHISPER_AUDIO_FILTER  default highpass=f=80,compand=... (V2 A8; "" disables it, the
+                  pre-A8 ffmpeg command)
   MEDIA_UID/GID   default 1000/100
 Built with help of Claude (Anthropic).
 """
@@ -43,9 +47,21 @@ import ordering
 import reflow
 from common import EXTRA_DIRS, STAMP_SUFFIX, VIDEO_EXTS, out_for, read_stamp, stamp_valid, ts_srt
 
+# V2 A9: large-v3-turbo not bench-tested in this dev environment (no GPU here -- see
+# extract_wav()'s WHISPER_AUDIO_FILTER note for the analogous CPU-only caveat elsewhere
+# in this module) -- PENDING a manual test on the real GTX 1060 6GB server. Default
+# stays large-v3 until that test confirms turbo doesn't OOM/regress accuracy on Pascal
+# + int8. WHISPER_MODEL is already env-configurable (below), so switching to try turbo
+# needs no code change -- just `WHISPER_MODEL=large-v3-turbo` on that box.
 MODEL = os.environ.get("WHISPER_MODEL", "large-v3")
 COMPUTE = os.environ.get("COMPUTE_TYPE", "int8")
 MODEL_DIR = os.environ.get("MODEL_DIR", "/subgen/models")
+# V2 A8: optional pre-transcription audio cleanup (default highpass + dynamic-range
+# compand, tuned for noisy/quiet anime dub tracks). Empty string ("") disables it
+# entirely (the old, pre-A8 ffmpeg command) -- set WHISPER_AUDIO_FILTER="" to opt out.
+AUDIO_FILTER = os.environ.get(
+    "WHISPER_AUDIO_FILTER",
+    "highpass=f=80,compand=attacks=0.001:decays=0.2:points=-80/-80|-30/-15|0/-3|20/-3")
 UID = int(os.environ.get("MEDIA_UID", "1000")); GID = int(os.environ.get("MEDIA_GID", "100"))
 SUFFIX = ".eng.dubtitles.srt"
 WMODEL = None        # the WhisperModel, lazily loaded in main() once there's work to do
@@ -117,9 +133,12 @@ def eng_audio_index(video):
 
 
 def extract_wav(video, idx, wav):
-    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}",
-                    "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav],
-                   capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
+    cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}",
+           "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"]
+    if AUDIO_FILTER:                    # V2 A8: empty WHISPER_AUDIO_FILTER = no filter (pre-A8 behavior)
+        cmd += ["-af", AUDIO_FILTER]
+    cmd.append(wav)
+    subprocess.run(cmd, capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
     return os.path.exists(wav) and os.path.getsize(wav) > 1000
 
 
