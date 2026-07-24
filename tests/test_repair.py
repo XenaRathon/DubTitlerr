@@ -1,7 +1,9 @@
-"""Unit tests for repair.py pure helpers (C1) plus V2 A1 backend-dispatch coverage. The
-llama.cpp box and Ollama are NOT reachable from this environment -- every HTTP-touching
-test here mocks urllib.request.urlopen or the llm_* functions; no live LLM call is ever
+"""Unit tests for repair.py pure helpers (C1) plus V2 A1/A2 coverage: backend dispatch and
+explicit connect/read timeouts + per-call latency. The llama.cpp box and Ollama are NOT
+reachable from this environment -- every HTTP-touching test here mocks repair._post_json,
+its underlying http.client connection, or the llm_* functions; no live LLM call is ever
 made. Live llama.cpp integration is PENDING manual verification on real hardware."""
+import csv
 import json
 
 import glossary
@@ -123,32 +125,14 @@ def test_llm_dispatch_passes_explicit_model_through(monkeypatch):
     assert calls == ["secondary-model"]
 
 
-class _FakeHTTPResponse:
-    """Minimal context-manager stand-in for urllib.request.urlopen()'s return value."""
-
-    def __init__(self, payload):
-        self._payload = payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def read(self):
-        return json.dumps(self._payload).encode()
-
-
 def test_llm_ollama_request_shape_and_response_parsing(monkeypatch):
     """Byte-for-byte the pre-A1 request body + response parsing (first line, unquoted)."""
     captured = {}
 
-    def fake_urlopen(req, timeout=None):
-        captured["url"] = req.full_url
-        captured["body"] = json.loads(req.data)
-        captured["timeout"] = timeout
-        return _FakeHTTPResponse({"response": '  "fixed line"  \nignored second line'})
-    monkeypatch.setattr(repair.urllib.request, "urlopen", fake_urlopen)
+    def fake_post(url, body):
+        captured["url"] = url; captured["body"] = body
+        return {"response": '  "fixed line"  \nignored second line'}
+    monkeypatch.setattr(repair, "_post_json", fake_post)
     out = repair.llm_ollama("the prompt")
     assert captured["url"] == repair.OLLAMA
     assert captured["body"] == {"model": repair.MODEL, "prompt": "the prompt", "stream": False,
@@ -158,30 +142,25 @@ def test_llm_ollama_request_shape_and_response_parsing(monkeypatch):
 
 def test_llm_ollama_explicit_model_overrides_default(monkeypatch):
     captured = {}
-
-    def fake_urlopen(req, timeout=None):
-        captured["body"] = json.loads(req.data)
-        return _FakeHTTPResponse({"response": "x"})
-    monkeypatch.setattr(repair.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(repair, "_post_json", lambda url, body: captured.update(body) or {"response": "x"})
     repair.llm_ollama("p", model="other-model")
-    assert captured["body"]["model"] == "other-model"
+    assert captured["model"] == "other-model"
 
 
 def test_llm_ollama_swallows_transport_failure(monkeypatch):
-    def boom(req, timeout=None):
+    def boom(url, body):
         raise OSError("connection refused")
-    monkeypatch.setattr(repair.urllib.request, "urlopen", boom)
+    monkeypatch.setattr(repair, "_post_json", boom)
     assert repair.llm_ollama("p") == ""      # same fail-soft behavior as before A1
 
 
 def test_llm_llamacpp_request_shape_and_response_parsing(monkeypatch):
     captured = {}
 
-    def fake_urlopen(req, timeout=None):
-        captured["url"] = req.full_url
-        captured["body"] = json.loads(req.data)
-        return _FakeHTTPResponse({"content": '"quoted fix"\nsecond line'})
-    monkeypatch.setattr(repair.urllib.request, "urlopen", fake_urlopen)
+    def fake_post(url, body):
+        captured["url"] = url; captured["body"] = body
+        return {"content": '"quoted fix"\nsecond line'}
+    monkeypatch.setattr(repair, "_post_json", fake_post)
     out = repair.llm_llamacpp("the prompt", "some-model")
     assert captured["url"] == repair.LLAMACPP_URL
     assert captured["body"] == {"prompt": "the prompt", "temperature": 0, "n_predict": 50, "stop": ["\n"]}
@@ -190,5 +169,105 @@ def test_llm_llamacpp_request_shape_and_response_parsing(monkeypatch):
 
 
 def test_llm_llamacpp_swallows_transport_failure(monkeypatch):
-    monkeypatch.setattr(repair.urllib.request, "urlopen", lambda req, timeout=None: (_ for _ in ()).throw(OSError("down")))
+    monkeypatch.setattr(repair, "_post_json", lambda url, body: (_ for _ in ()).throw(OSError("down")))
     assert repair.llm_llamacpp("p", "m") == ""
+
+
+# --- A2: explicit connect/read timeouts + latency ----------------------------
+
+def test_timeout_env_defaults():
+    assert repair.TIMEOUT_CONNECT == 10.0
+    assert repair.TIMEOUT_READ == 120.0
+
+
+class _FakeSock:
+    def __init__(self):
+        self.timeout = None
+
+    def settimeout(self, t):
+        self.timeout = t
+
+
+class _FakeResponse:
+    def __init__(self, payload, status=200):
+        self._payload = payload
+        self.status = status
+
+    def read(self):
+        return json.dumps(self._payload).encode()
+
+
+class _FakeConn:
+    instances = []
+
+    def __init__(self, host, port=None, timeout=None):
+        self.host, self.port, self.timeout = host, port, timeout
+        self.sock = _FakeSock()
+        self.requested = None
+        _FakeConn.instances.append(self)
+
+    def connect(self):
+        pass
+
+    def request(self, method, path, body=None, headers=None):
+        self.requested = (method, path, body, headers)
+
+    def getresponse(self):
+        return _FakeResponse({"response": "ok"})
+
+    def close(self):
+        pass
+
+
+def test_post_json_uses_explicit_connect_and_read_timeouts(monkeypatch):
+    _FakeConn.instances.clear()
+    monkeypatch.setattr(repair.http.client, "HTTPConnection", _FakeConn)
+    monkeypatch.setattr(repair, "TIMEOUT_CONNECT", 3.0)
+    monkeypatch.setattr(repair, "TIMEOUT_READ", 42.0)
+    out = repair._post_json("http://example.local:1234/x", {"a": 1})
+    assert out == {"response": "ok"}
+    conn = _FakeConn.instances[0]
+    assert conn.host == "example.local" and conn.port == 1234
+    assert conn.timeout == 3.0            # connect timeout, passed at construction/connect()
+    assert conn.sock.timeout == 42.0      # read timeout, set on the socket after connecting
+    assert conn.requested[0] == "POST"
+    assert conn.requested[1] == "/x"
+
+
+def test_post_json_raises_on_http_error_status(monkeypatch):
+    class ErrConn(_FakeConn):
+        def getresponse(self):
+            return _FakeResponse({"error": "boom"}, status=500)
+    monkeypatch.setattr(repair.http.client, "HTTPConnection", ErrConn)
+    try:
+        repair._post_json("http://example.local/x", {})
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError:
+        pass
+
+
+def test_process_writes_latency_ms_column(tmp_path, monkeypatch):
+    """process() is exercised end-to-end with find_video/glossary_for/dialogue_intervals/llm
+    all monkeypatched -- no ffmpeg/ffprobe/pysubs2/network touched, matching the pattern
+    used for generate.process() in test_generate.py."""
+    stem = str(tmp_path / "ep")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    open(srt_path, "w").close()
+    with open(conf_path, "w") as f:
+        json.dump([{"start": 0.0, "end": 1.0, "text": "garbled line",
+                    "avg_logprob": -0.6, "no_speech_prob": 0.1}], f)
+
+    g = gl()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "a fixed line")
+
+    assert repair.process(conf_path) == "repaired"
+    with open(stem + ".dubtitles.repair.csv") as f:
+        rows = list(csv.reader(f))
+    assert rows[0] == ["orig", "repaired", "ref", "latency_ms"]
+    assert len(rows) == 2
+    assert rows[1][0] == "garbled line" and rows[1][1] == "a fixed line"
+    assert int(rows[1][3]) >= 0        # latency recorded (mocked llm -> ~0ms, never negative)

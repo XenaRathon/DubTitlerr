@@ -24,8 +24,10 @@ CPU/network only — the LLM runs on the 2070 (Ollama) or, optionally, a llama.c
 Env:
   OLLAMA_URL           default http://ollama.local:11434/api/generate
   REPAIR_MODEL         default qwen3:8b   (locked by the C1 bake-off)
-  REPAIR_BACKEND       ollama | llamacpp  (default ollama — V2 A1)
-  REPAIR_LLAMACPP_URL  default http://192.168.1.232:8080/completion  (V2 A1)
+  REPAIR_BACKEND         ollama | llamacpp  (default ollama — V2 A1)
+  REPAIR_LLAMACPP_URL    default http://192.168.1.232:8080/completion  (V2 A1)
+  REPAIR_TIMEOUT_CONNECT default 10   (seconds; V2 A2)
+  REPAIR_TIMEOUT_READ    default 120  (seconds; V2 A2)
   LOGPROB_MIN   default -0.4   (mid-confidence-and-lower; below this is a repair target)
   NSP_MAX       default 0.5    (…and below this no_speech_prob — i.e. it IS speech)
   GLOSSARY_DIR  default /config/glossaries   (per-show glossary, resolved from the path)
@@ -34,12 +36,14 @@ Env:
 Requires ffmpeg/ffprobe + pysubs2.  Built with help of Claude (Anthropic).
 """
 import csv
+import http.client
 import json
 import os
 import re
 import sys
 import tempfile
-import urllib.request
+import time
+import urllib.parse
 
 import pysubs2
 
@@ -51,6 +55,8 @@ OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
 MODEL = os.environ.get("REPAIR_MODEL", "qwen3:8b")
 REPAIR_BACKEND = os.environ.get("REPAIR_BACKEND", "ollama")
 LLAMACPP_URL = os.environ.get("REPAIR_LLAMACPP_URL", "http://192.168.1.232:8080/completion")
+TIMEOUT_CONNECT = float(os.environ.get("REPAIR_TIMEOUT_CONNECT", "10"))
+TIMEOUT_READ = float(os.environ.get("REPAIR_TIMEOUT_READ", "120"))
 LOGPROB_MIN = float(os.environ.get("LOGPROB_MIN", "-0.4"))   # mid-confidence-and-lower (C1)
 NSP_MAX = float(os.environ.get("NSP_MAX", "0.5"))
 GLOSSARY_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
@@ -159,6 +165,32 @@ def overlap_ref(ivals, a, b):
     return " ".join(hits)[:300]
 
 
+def _post_json(url, body):
+    """POST body (dict) as JSON to url with separate connect (TIMEOUT_CONNECT) and read
+    (TIMEOUT_READ) timeouts (V2 A2). stdlib's urllib.request.urlopen only exposes a single
+    timeout for the whole call (connect + every read), so we go one layer lower via
+    http.client: the connect timeout is set on the connection itself (used for connect()),
+    then the read timeout is set on the underlying socket right after connecting."""
+    parsed = urllib.parse.urlsplit(url)
+    conn_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    conn = conn_cls(parsed.hostname, parsed.port, timeout=TIMEOUT_CONNECT)
+    try:
+        conn.connect()
+        conn.sock.settimeout(TIMEOUT_READ)
+        path = parsed.path or "/"
+        if parsed.query:
+            path += "?" + parsed.query
+        conn.request("POST", path, body=json.dumps(body).encode(),
+                     headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        data = resp.read()
+        if resp.status >= 400:
+            raise RuntimeError(f"HTTP {resp.status}: {data[:200]!r}")
+        return json.loads(data)
+    finally:
+        conn.close()
+
+
 def llm_ollama(prompt, model=None):
     """Ollama /api/generate backend (the original/default path — byte-for-byte the same
     request shape and response parsing as before A1's dispatch refactor)."""
@@ -166,12 +198,8 @@ def llm_ollama(prompt, model=None):
     body = {"model": model or MODEL, "prompt": prompt, "stream": False, "think": False,
             "options": {"temperature": 0}}
     try:
-        req = urllib.request.Request(OLLAMA, data=json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=120) as r:
-            out = json.loads(r.read()).get("response", "").strip()
-        out = out.splitlines()[0].strip().strip('"').strip() if out else ""
-        return out
+        out = _post_json(OLLAMA, body).get("response", "").strip()
+        return out.splitlines()[0].strip().strip('"').strip() if out else ""
     except Exception as e:
         log("  llm fail:", e); return ""
 
@@ -183,12 +211,8 @@ def llm_llamacpp(prompt, model):
     but is not sent), and the response key is "content" instead of "response"."""
     body = {"prompt": prompt, "temperature": 0, "n_predict": 50, "stop": ["\n"]}
     try:
-        req = urllib.request.Request(LLAMACPP_URL, data=json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=120) as r:
-            out = json.loads(r.read()).get("content", "").strip()
-        out = out.splitlines()[0].strip().strip('"').strip() if out else ""
-        return out
+        out = _post_json(LLAMACPP_URL, body).get("content", "").strip()
+        return out.splitlines()[0].strip().strip('"').strip() if out else ""
     except Exception as e:
         log("  llm fail:", e); return ""
 
@@ -223,18 +247,20 @@ def process(conf_path):
                             # reference the deterministic layer (hard_fixes) is the safe ceiling.
         prev_text = conf[i - 1]["text"] if i > 0 else ""
         next_text = conf[i + 1]["text"] if i + 1 < len(conf) else ""
+        t0 = time.monotonic()                              # V2 A2: per-call latency
         new = llm(build_prompt(c["text"], ref, gloss, prev_text, next_text))
+        latency_ms = round((time.monotonic() - t0) * 1000)
         if new:
             new = glossary.correct(new, gloss)[0]         # enforce canonical spelling on output
         if new and new.lower() != c["text"].lower() and 0.4 <= len(new) / max(1, len(c["text"])) <= 2.5:
-            audit.append((c["text"], new, ref[:80])); c["text"] = new; fixed += 1
+            audit.append((c["text"], new, ref[:80], latency_ms)); c["text"] = new; fixed += 1
     # rewrite srt from (possibly repaired) conf rows
     srt_out = out_for(srt); rep_out = out_for(stem + ".dubtitles.repair.csv")
     with open(srt_out, "w") as f:
         for i, c in enumerate(conf, 1):
             f.write(f"{i}\n{ts_srt(c['start'])} --> {ts_srt(c['end'])}\n{c['text']}\n\n")
     with open(rep_out, "w", newline="") as f:
-        w = csv.writer(f); w.writerow(["orig", "repaired", "ref"]); w.writerows(audit)
+        w = csv.writer(f); w.writerow(["orig", "repaired", "ref", "latency_ms"]); w.writerows(audit)
     for p in (srt_out, rep_out):
         try: os.chown(p, MEDIA_UID, MEDIA_GID)
         except OSError: pass
