@@ -1,4 +1,6 @@
 """Unit tests for mux.py pure helpers (D1). mkvmerge/ffprobe calls are integration."""
+import os
+
 import mux
 
 
@@ -85,6 +87,26 @@ def test_build_cmd_audio_and_sub_flags():
 
 
 # --- T6: sub_source selection ------------------------------------------------
+
+# --- C3: partners() inode cache -----------------------------------------------
+
+def test_partners_cached_by_inode(tmp_path):
+    a = tmp_path / "a.mkv"; a.write_bytes(b"x" * 10)
+    b = tmp_path / "b.mkv"
+    os.link(str(a), str(b))
+    mux._partners_cache.clear()
+    orig_hl_roots = mux.HL_ROOTS
+    mux.HL_ROOTS = [str(tmp_path)]
+    try:
+        first = mux.partners(str(a))
+        assert str(b) in first
+        mux.HL_ROOTS = ["/nonexistent-root-xyz"]      # a fresh (uncached) walk would find nothing here
+        second = mux.partners(str(a))
+        assert second == first                        # cache hit: HL_ROOTS change had no effect
+        assert (os.stat(str(a)).st_ino, os.stat(str(a)).st_dev) in mux._partners_cache
+    finally:
+        mux.HL_ROOTS = orig_hl_roots
+
 
 def test_sub_source_prefers_ass_then_srt(tmp_path):
     stem = str(tmp_path / "ep")
