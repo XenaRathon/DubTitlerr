@@ -12,9 +12,9 @@
 #      MIN_FREE_GB, KEEP_LANGS.
 ROOT="${MERGE_ROOTS:-/media/Anime Library}"
 APP="${APP_DIR:-/scripts}"
-command -v ffmpeg  >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq ffmpeg >/dev/null 2>&1; }
-command -v mkvmerge >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq mkvtoolnix >/dev/null 2>&1; }
-python3 -c "import pysubs2" >/dev/null 2>&1 || pip install -q pysubs2 >/dev/null 2>&1
+command -v ffmpeg   >/dev/null 2>&1 || { echo "FATAL: ffmpeg not found — image is misbuilt"; exit 1; }
+command -v mkvmerge >/dev/null 2>&1 || { echo "FATAL: mkvmerge not found — image is misbuilt"; exit 1; }
+python3 -c "import pysubs2" >/dev/null 2>&1 || { echo "FATAL: pysubs2 not found — image is misbuilt"; exit 1; }
 cd "$ROOT" || { echo "merge_pass: missing $ROOT"; exit 1; }
 
 before=$(find . -type f -name "*.dubtitles.done" | wc -l)
