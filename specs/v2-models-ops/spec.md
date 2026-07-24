@@ -135,8 +135,10 @@ observability; the signs/songs phase (D) covers the lower-priority formatting it
 - [ ] `build()` forces `ScaledBorderAndShadow: yes` in the merged output's
       Script Info for consistent cross-player rendering.
 - [ ] Resolution mismatch check: `build()` verifies all source tracks share the
-      same `PlayResX`/`PlayResY`; if not, logs a loud warning and skips the
-      mismatched track (don't silently misposition).
+      same `PlayResX`/`PlayResY`; if not, logs a loud warning (WARN-ONLY — do NOT
+      skip or transform the track; full coordinate handling is deferred to V3, per
+      the "Decisions taken" table and tasks.md D5). Skipping a mismatched track
+      would drop its signs entirely, which is worse than a warning.
 
 ## Out of scope (explicit)
 

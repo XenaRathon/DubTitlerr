@@ -19,13 +19,18 @@ import tempfile
 
 import pysubs2
 
-from common import EXTRA_DIRS
+from common import load_extras
+
+EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_extras)
 
 GLOSS_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
 MIN_COUNT = int(os.environ.get("MINE_MIN_COUNT", "3"))
 SKIP_FILE_RE = re.compile(r"\bNC(ED|OP|BD)\b|-\s*scene\b|creditless", re.I)
-# words that are capitalized for position/grammar, not proper nouns — never mine these
-COMMON = set("""the a an and or but of to in on at is was are were be been being have has had do does did
+# words that are capitalized for position/grammar, not proper nouns — never mine these.
+# V2 C8: sourced from data/common_proper_noun_deny.txt (one word per line, # comments
+# allowed) so the deny-list can be tuned without a code change; falls back to this exact
+# inline set if the file is missing/unreadable (backward-compatible).
+_COMMON_FALLBACK = """the a an and or but of to in on at is was are were be been being have has had do does did
 will would can could should shall may might must i you he she it we they me him her us them my your his
 her its our their this that these those with from for not no nor yes all out up down here there then now
 what who whom whose when where why how which while because if so as than too very just only even still
@@ -35,7 +40,19 @@ make made take took give gave find found let look looked good bad great little b
 three four five six seven eight nine ten first last next every some any many much more most right left
 wait stop help yes mom dad mother father brother sister friend everyone someone something nothing
 today tomorrow yesterday day night morning time year hand way thing people man woman boy girl
-master lady lord king queen captain general doctor mister""".split())
+master lady lord king queen captain general doctor mister""".split()
+
+
+def _load_common(path: str = "data/common_proper_noun_deny.txt") -> set:
+    try:
+        with open(path, encoding="utf-8") as f:
+            words = {ln.strip().lower() for ln in f if ln.strip() and not ln.startswith("#")}
+    except OSError:
+        words = set()
+    return words or set(_COMMON_FALLBACK)
+
+
+COMMON = _load_common()
 
 
 def eng_sub_text(video):

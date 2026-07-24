@@ -76,6 +76,8 @@ def build(video, dub_srt, out_ass):
     base = None         # the merged ScriptInfo/styles canvas
     kept = []           # (event, source_style_name)
     seen = set()
+    base_ws = None       # D3: base track's WrapStyle, for cross-track comparison
+    resolutions = []     # D5: (PlayResX, PlayResY) per source track, for mismatch warning
     for _n, idx in enumerate(eng_sub_streams(video, SUB_LANGS)):
         with tempfile.TemporaryDirectory() as td:
             ex = os.path.join(td, "s.ass")
@@ -86,12 +88,23 @@ def build(video, dub_srt, out_ass):
             except Exception as e:
                 log("  load fail", idx, e); continue
         src_events = list(subs.events)   # snapshot BEFORE any clearing (base may alias subs)
+        resolutions.append((subs.info.get("PlayResX"), subs.info.get("PlayResY")))   # D5
         if base is None:
             base = subs
             base.events = []
+            base.info["ScaledBorderAndShadow"] = "yes"   # D4: consistent cross-player rendering
+            base_ws = base.info.get("WrapStyle")          # D3
         else:
+            track_ws = subs.info.get("WrapStyle")         # D3
+            if track_ws != base_ws:
+                log(f"WrapStyle differs: base={base_ws} track={track_ws} — using base")
             for sname, sty in subs.styles.items():   # carry styles from later tracks
-                base.styles.setdefault(sname, sty)
+                if sname in base.styles:
+                    existing = base.styles[sname]     # D1: flag conflicting redefinitions
+                    if existing.fontname != sty.fontname or existing.fontsize != sty.fontsize:
+                        log(f"  style conflict: '{sname}' — font/size differ, using first definition")
+                else:
+                    base.styles[sname] = sty
         for ev in src_events:
             if not keep_event(ev):
                 continue
@@ -102,6 +115,8 @@ def build(video, dub_srt, out_ass):
             kept.append(ev)
     if base is None:
         return "no-signs", 0, 0
+    if len(set(resolutions)) > 1:   # D5: warn only — no coordinate transform (deferred to V3)
+        log("WARNING: resolution mismatch between subtitle tracks — signs may be mispositioned")
     # bottom dub dialogue style
     play_y = 0
     try: play_y = int(base.info.get("PlayResY") or 0)
@@ -147,7 +162,7 @@ def process_one(srt):
     if res != "ok" or dub == 0:
         return res if res != "ok" else "empty"
     try: os.chown(out_ass, MEDIA_UID, MEDIA_GID)
-    except OSError: pass
+    except OSError as e: log(f"chown failed for {out_ass}: {e}")
     try: os.remove(srt)
     except OSError: pass
     log(f"  signs/songs/credits kept={signs}  dub lines={dub}")

@@ -4,12 +4,13 @@
 # DockHand can't build images -> build on the host and reference fasc/dubtitle-builder:latest.
 FROM mccloud/subgen:2026.06.2
 
-# subgen ships python3 + ffmpeg but no pip; bootstrap pip to add pysubs2 (for the merge step).
+# subgen ships python3 + ffmpeg but no pip; bootstrap pip to add pysubs2 (for the merge step)
+# and jellyfish (Metaphone, glossary.py tier-4 phonetic match -- V2 A4/A5).
 # wamerican = /usr/share/dict/american-english, the English-word gate for glossary.py (C1).
 # mkvtoolnix = mkvmerge for the D1 mux stage (embed .ass + fonts as a default Dubtitles track).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-pip wamerican mkvtoolnix \
-    && python3 -m pip install --no-cache-dir pysubs2 \
+    && python3 -m pip install --no-cache-dir pysubs2 jellyfish \
     && rm -rf /var/lib/apt/lists/*
 
 # Bake the Whisper large-v3 model into the image (~3GB) so the container is fully
@@ -19,9 +20,16 @@ ENV MODEL_DIR=/models
 RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('large-v3', device='cpu', compute_type='int8', download_root='/models')"
 
 WORKDIR /app
-COPY generate.py reflow.py glossary.py glossary_verify.py hallucination.py ordering.py common_words.txt \
+# NOTE (V2-U3 B7/B9): common.py was missing from this COPY list since V1 introduced it --
+# every `from common import ...` (generate.py, mine_glossary.py, mux.py, repair.py,
+# dub_signs_merge.py) would ImportError at container start. Added here alongside the new
+# data/ (EXTRA_DIRS data file) and shell/ (extras_grep_pattern lib) directories that
+# merge_pass.sh now sources from $APP/shell/lib.sh + $APP/data/extras.txt.
+COPY generate.py reflow.py glossary.py glossary_verify.py hallucination.py ordering.py common.py common_words.txt \
      repair.py dub_signs_merge.py mux.py plex_refresh.py mine_glossary.py merge_pass.sh \
      gen_loop.sh container_run.sh /app/
+COPY data/ /app/data/
+COPY shell/ /app/shell/
 RUN chmod +x /app/*.sh
 
 # Bypass subgen's init (we only want its runtime); run our two-loop supervisor as root so

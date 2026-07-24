@@ -39,7 +39,8 @@ ROOTS = os.environ.get("MUX_ROOTS", "/data/Media/Anime Library").split(":")
 # actually is for other content) and added to this set. Everything else (fre, spa,
 # ger, …) is dropped. Video + the new Dubtitles track + all font attachments always kept.
 KEEP_LANGS = set(os.environ.get("KEEP_LANGS", "eng,en,dut,nld,nl,und,").split(","))
-HL_ROOTS = os.environ.get("HARDLINK_ROOTS", "").split(":") if os.environ.get("HARDLINK_ROOTS") else ROOTS
+_val = os.environ.get("HARDLINK_ROOTS")
+HL_ROOTS = _val.split(":") if _val else ROOTS
 # D1: default OFF — never delete a seeding download hardlink; the orphan-reaper owns that
 # (seed-until-orphan policy). Muxing only replaces the library's own file.
 DELETE_BROKEN = os.environ.get("DELETE_BROKEN_HARDLINKS", "0") == "1"
@@ -98,11 +99,19 @@ def duration(path):
         return 0.0
 
 
+_partners_cache: dict[tuple[int, int], list[str]] = {}
+
+
 def partners(orig):
-    """Other paths hardlinked to orig (same inode), searched within HL_ROOTS."""
+    """Other paths hardlinked to orig (same inode), searched within HL_ROOTS. Cached by
+    (st_ino, st_dev) for the process lifetime (one mux sweep) -- a full HL_ROOTS walk
+    per file is expensive and hardlink partners don't change mid-sweep."""
     st = os.stat(orig)
     if st.st_nlink <= 1:
         return []
+    key = (st.st_ino, st.st_dev)
+    if key in _partners_cache:
+        return _partners_cache[key]
     found = []
     for root in HL_ROOTS:
         if not os.path.isdir(root):
@@ -117,8 +126,8 @@ def partners(orig):
                 except OSError:
                     continue
                 if s2.st_ino == st.st_ino and s2.st_dev == st.st_dev and s2.st_size == st.st_size:
-                    if os.path.samefile(p, orig):
-                        found.append(p)
+                    found.append(p)
+    _partners_cache[key] = found
     return found
 
 
@@ -160,8 +169,9 @@ def build_cmd(info, orig, ass, out):
 
 
 def verify(orig, out):
-    if not (os.path.exists(out) and os.path.getsize(out) > os.path.getsize(orig) * 0.5):
-        return "too-small"
+    """The half-size heuristic (C16) is gone -- it false-positived on compact muxes where
+    mkvmerge shrinks the CUES or drops a large embedded .ass. The duration-tolerance check
+    below is the real truncation canary: it runs unconditionally on the only path to "ok"."""
     info = identify(out)
     types = {t["type"] for t in info.get("tracks", [])}
     if "video" not in types or "audio" not in types:
@@ -170,6 +180,16 @@ def verify(orig, out):
         return "no-dubtitles-track"
     if abs(duration(out) - duration(orig)) > DUR_TOL:
         return "duration-mismatch"
+    # D2: font-attachment audit -- mkvmerge -J reports attachments as a top-level
+    # "attachments" array (sibling of "tracks"), NOT as track entries; .get(..., [])
+    # treats a fontless file (key absent) as 0, so equal-zero still returns "ok".
+    src_fonts = identify(orig).get("attachments", [])
+    out_fonts = info.get("attachments", [])
+    if len(src_fonts) != len(out_fonts):
+        return "font-count-mismatch"
+    for f in out_fonts:
+        if f.get("content_type") == "application/octet-stream":
+            log(f"  font attachment '{f.get('file_name')}' has generic MIME type — may not be a valid font")
     return "ok"
 
 

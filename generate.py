@@ -21,12 +21,19 @@ Usage:
   python3 generate.py --root "/media/Anime Library/One Pace/Season 15"  # walk dir
 
 Env:
-  WHISPER_MODEL   default large-v3
+  WHISPER_MODEL   default large-v3  (V2 A9: large-v3-turbo not bench-tested in this
+                  dev environment -- no GPU here -- PENDING manual test on the real
+                  GTX 1060 6GB server; default stays large-v3 until that confirms it)
   COMPUTE_TYPE    default int8  (Pascal-friendly, fits 6GB; try float16 for max quality)
   MODEL_DIR       default /subgen/models  (reuse subgen's downloaded model)
+  WHISPER_AUDIO_FILTER  default highpass=f=80,compand=... (V2 A8; "" disables it, the
+                  pre-A8 ffmpeg command)
   MEDIA_UID/GID   default 1000/100
+  GLOSSARY_DIR    default /config/glossaries  (V2 C1: where <show>.lastrun.json is written,
+                  same dir mine_glossary.py/repair.py use for the show's glossary itself)
 Built with help of Claude (Anthropic).
 """
+import hashlib
 import json
 import math
 import os
@@ -34,6 +41,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 from faster_whisper import WhisperModel
 
@@ -41,11 +49,28 @@ import glossary
 import hallucination
 import ordering
 import reflow
-from common import EXTRA_DIRS, STAMP_SUFFIX, VIDEO_EXTS, out_for, read_stamp, stamp_valid, ts_srt
+from common import STAMP_SUFFIX, VIDEO_EXTS, load_extras, out_for, read_stamp, stamp_valid, ts_srt
 
+EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_extras)
+# V2 C1: where per-show run summaries (<show>.lastrun.json) live -- same GLOSSARY_DIR
+# convention as mine_glossary.py/repair.py, not the per-run GLOSSARY_FILE.
+GLOSS_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
+
+# V2 A9: large-v3-turbo not bench-tested in this dev environment (no GPU here -- see
+# extract_wav()'s WHISPER_AUDIO_FILTER note for the analogous CPU-only caveat elsewhere
+# in this module) -- PENDING a manual test on the real GTX 1060 6GB server. Default
+# stays large-v3 until that test confirms turbo doesn't OOM/regress accuracy on Pascal
+# + int8. WHISPER_MODEL is already env-configurable (below), so switching to try turbo
+# needs no code change -- just `WHISPER_MODEL=large-v3-turbo` on that box.
 MODEL = os.environ.get("WHISPER_MODEL", "large-v3")
 COMPUTE = os.environ.get("COMPUTE_TYPE", "int8")
 MODEL_DIR = os.environ.get("MODEL_DIR", "/subgen/models")
+# V2 A8: optional pre-transcription audio cleanup (default highpass + dynamic-range
+# compand, tuned for noisy/quiet anime dub tracks). Empty string ("") disables it
+# entirely (the old, pre-A8 ffmpeg command) -- set WHISPER_AUDIO_FILTER="" to opt out.
+AUDIO_FILTER = os.environ.get(
+    "WHISPER_AUDIO_FILTER",
+    "highpass=f=80,compand=attacks=0.001:decays=0.2:points=-80/-80|-30/-15|0/-3|20/-3")
 UID = int(os.environ.get("MEDIA_UID", "1000")); GID = int(os.environ.get("MEDIA_GID", "100"))
 SUFFIX = ".eng.dubtitles.srt"
 WMODEL = None        # the WhisperModel, lazily loaded in main() once there's work to do
@@ -78,6 +103,35 @@ SKIP_FILE_RE = re.compile(r"\bNCED\b|\bNCOP\b|\bNCBD\b|-\s*scene\b|creditless", 
 
 
 def log(*a): print(*a, flush=True)
+
+
+# V2 C1: per-show run summary. process() updates this in place on its "ok" (success)
+# path only; main() reads it right after each call to accumulate per-show totals for
+# glossaries/<show>.lastrun.json. A module-level accumulator (rather than widening
+# process()'s return type) keeps every existing "process() returns a status string"
+# call site/test unchanged -- see WMODEL above for the same lazy-module-global pattern.
+_LAST_STATS: dict = {}
+
+
+def _model_version() -> str:
+    """faster_whisper's package version, for the lastrun.json audit trail. Reads the
+    already-imported module from sys.modules (real or the tests' stub) rather than
+    importing it again, so this stays a no-op in the CPU-only dev/test environment."""
+    fw = sys.modules.get("faster_whisper")
+    return getattr(fw, "__version__", "unknown") if fw is not None else "unknown"
+
+
+def _glossary_version() -> str:
+    """Short content hash of the active GLOSSARY_FILE (so lastrun.json records exactly
+    which glossary revision produced a run) -- 'none' if no glossary file is configured."""
+    path = os.environ.get("GLOSSARY_FILE", "")
+    if not path or not os.path.exists(path):
+        return "none"
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:12]
+    except OSError:
+        return "none"
 
 
 def has_dubtitles_track(video):
@@ -117,10 +171,28 @@ def eng_audio_index(video):
 
 
 def extract_wav(video, idx, wav):
-    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}",
-                    "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav],
-                   capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
+    cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}",
+           "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"]
+    if AUDIO_FILTER:                    # V2 A8: empty WHISPER_AUDIO_FILTER = no filter (pre-A8 behavior)
+        cmd += ["-af", AUDIO_FILTER]
+    cmd.append(wav)
+    subprocess.run(cmd, capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
     return os.path.exists(wav) and os.path.getsize(wav) > 1000
+
+
+def _card_word_probs(card, words):
+    """Per-word linear probabilities for one card (V2 A6), joined by time overlap
+    against the full per-episode word list built in process()'s transcribe loop.
+    reflow.Card doesn't retain which whisper words it was built from, so this
+    re-derives the association here rather than threading it through reflow.py.
+
+    Must be called with the card's PRE-collapse boundaries (i.e. inside the per-card
+    loop below, before hallucination.collapse_runs()): a later run-collapse keeps
+    run[0]'s text verbatim, so computing word_probs against that same card's own
+    [start, end] window -- rather than re-querying after the merge widens the window
+    to cover the whole repeated run -- keeps the list aligned with the text it
+    actually describes."""
+    return [round(w["prob"], 3) for w in words if w["end"] > card["start"] and w["start"] < card["end"]]
 
 
 def process(video):
@@ -186,6 +258,7 @@ def process(video):
         fixes += n
         kc = dict(c); kc["text"] = "\n".join(lines)
         kc["flag"] = hallucination.flag_reason(c)  # weaker single signal -> kept but marked
+        kc["word_probs"] = _card_word_probs(c, words)  # V2 A6: per-word confidence for repair
         kept.append(kc)
     collapsed = hallucination.collapse_runs(kept)
     rows = [(c["start"], c["end"], c["text"]) for c in collapsed]
@@ -197,6 +270,8 @@ def process(video):
                "text": c["text"].replace("\n", " ")}
         if c.get("flag"):
             row["flag"] = c["flag"]
+        if c.get("word_probs"):
+            row["word_probs"] = c["word_probs"]  # optional/backward-compat (V2 A6/A7)
         conf.append(row)
     srt = out_for(stem + SUFFIX); confp = out_for(stem + ".dubtitles.conf.json")
     with open(srt, "w") as f:
@@ -206,7 +281,7 @@ def process(video):
         json.dump(conf, f)
     for p in (srt, confp):
         try: os.chown(p, UID, GID)
-        except OSError: pass
+        except OSError as e: log(f"chown failed for {p}: {e}")
     low = sum(1 for c in conf if c["avg_logprob"] < -0.8 or c["no_speech_prob"] > 0.6)
     max_dur = max((b - a for a, b, _ in rows), default=0.0)
     over_cps = sum(1 for a, b, t in rows
@@ -219,6 +294,9 @@ def process(video):
         f"collapsed={collapsed_n} flagged={flagged} low-conf={low} "
         f"max_dur={max_dur:.1f}s over_cps={over_cps} violations={bad} "
         f"meanlp={sum(c['avg_logprob'] for c in conf)/max(1,len(conf)):.2f}")
+    _LAST_STATS.clear()  # V2 C1: this episode's contribution to the show's lastrun.json
+    _LAST_STATS.update({"cards_written": len(rows), "dropped_hallucination": dropped,
+                         "collapsed_runs": collapsed_n, "flagged": flagged})
     return "ok"
 
 
@@ -251,21 +329,63 @@ def main():
     if not todo:
         log("nothing to transcribe (all done) — skipping model load"); return
     globals()["WMODEL"] = WhisperModel(MODEL, device="cuda", compute_type=COMPUTE, download_root=MODEL_DIR)
+    t0 = time.monotonic()                                      # V2 C1: per-show run summary
+    transcribed = 0
+    totals = {"cards_written": 0, "dropped_hallucination": 0, "collapsed_runs": 0, "flagged": 0}
     for v in todo:
         log("→", os.path.basename(v))
         try:
-            log("  ", process(v))                 # one bad episode must not abort the show
+            status = process(v)                 # one bad episode must not abort the show
+            log("  ", status)
+            if status == "ok":
+                transcribed += 1
+                for k in totals:
+                    totals[k] += _LAST_STATS.get(k, 0)
         except Exception as e:
             log("  ERROR", type(e).__name__, e)
-            if any(k in str(e).lower() for k in ("cuda", "out of memory", "device ordinal", "cublas")):
+            # V2 C15: gate on the exception TYPE, not a substring match on "cuda" in the
+            # message/stacktrace. faster-whisper/ctranslate2 raise RuntimeError for real
+            # GPU errors (OOM, device ordinal, cuBLAS) -- the old `"cuda" in str(e).lower()`
+            # check also fired on a plain ValueError/ZeroDivisionError that merely mentions
+            # "cuda" somewhere in its text, which would falsely poison (and exit-3) on a bug
+            # that has nothing to do with the GPU context.
+            if isinstance(e, RuntimeError):
                 # A CUDA OOM/device error poisons the context — every later file would also
                 # fail and get falsely marked. Exit so the loop relauncher restarts with a
                 # fresh context; the OOM'd file keeps its .fail (skipped on resume), the rest
                 # transcribe cleanly. (Usually means another process grabbed the GPU.)
-                log("  CUDA error -> exiting to rebuild a clean GPU context (show resumes on restart)")
+                log("  CUDA/GPU error (RuntimeError) -> exiting to rebuild a clean GPU context "
+                    "(show resumes on restart)")
                 sys.exit(3)
-            try: os.remove(os.path.splitext(v)[0] + ".dubtitles.fail")  # non-CUDA: let it retry
+            # Non-RuntimeError: NOT a GPU error -> don't poison the episode. Clear the .fail
+            # marker so the next sweep retries it, and persist a small JSON record of what
+            # happened (V2 C15's retry log) for later triage.
+            stem = os.path.splitext(v)[0]
+            try: os.remove(stem + ".dubtitles.fail")
             except OSError: pass
+            try:
+                with open(out_for(stem + ".dubtitles.crash.json"), "w") as f:
+                    json.dump({"path": v, "exc_type": type(e).__name__, "msg": str(e),
+                               "time": time.time()}, f)
+            except OSError:
+                pass
+    # V2 C1: per-show run summary (glossaries/<show>.lastrun.json) -- one file per --root
+    # invocation, since SHOW_NAME/GLOSSARY_FILE are per-run env (see load_glossary()).
+    show = os.environ.get("SHOW_NAME", "") or GLOSS.get("show", "") or "unknown_show"
+    lastrun = {
+        "show": show, "elapsed_s": round(time.monotonic() - t0, 1),
+        "episodes_total": len(todo), "episodes_transcribed": transcribed,
+        "cards_written": totals["cards_written"],
+        "dropped_hallucination": totals["dropped_hallucination"],
+        "collapsed_runs": totals["collapsed_runs"], "flagged": totals["flagged"],
+        "model": MODEL, "model_version": _model_version(), "glossary_version": _glossary_version(),
+    }
+    try:
+        os.makedirs(GLOSS_DIR, exist_ok=True)
+        with open(os.path.join(GLOSS_DIR, show + ".lastrun.json"), "w") as f:
+            json.dump(lastrun, f, indent=2)
+    except OSError as e:
+        log("  lastrun.json write failed:", e)
 
 
 if __name__ == "__main__":

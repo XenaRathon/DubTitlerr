@@ -9,8 +9,9 @@ the viewer's forward watch order), then the earlier seasons — without changing
 files get processed, only the sequence.
 
 The start season is config-driven (no rebuild): a line "Show Name:NN" in
-/config/season_priority.txt (SEASON_PRIORITY_FILE), with SEASON_START as an env
-fallback. Absent config, order_files() is a plain sort — behaviour unchanged.
+SEASON_PRIORITY_FILE, with SEASON_START as a legitimate global env fallback when
+no priority file is configured. Absent both, read_start() returns 0 and logs that
+watch-order is disabled; order_files() then does a plain sort — behaviour unchanged.
 
 Pure stdlib, deterministic. Built with help of Claude (Anthropic)."""
 from __future__ import annotations
@@ -20,7 +21,9 @@ import re
 
 NO_SEASON = 10**6         # sentinel: files with no SxxExx tag sort after all real seasons
 _SE = re.compile(r"[Ss](\d+)[Ee](\d+)")
-DEFAULT_PRIORITY_FILE = "/config/season_priority.txt"
+
+
+def log(*a): print(*a, flush=True)
 
 
 def season_ep(path: str) -> tuple[int, int]:
@@ -48,23 +51,40 @@ def order_files(files: list[str], start: int) -> list[str]:
 
 def read_start(show: str, path: str | None = None) -> int:
     """Start season for `show`: from the priority file ("Show:NN" lines, # comments allowed),
-    else the SEASON_START env var, else 0 (disabled). File takes precedence over env."""
-    path = path or os.environ.get("SEASON_PRIORITY_FILE", DEFAULT_PRIORITY_FILE)
+    else the SEASON_START env var, else 0 (disabled). File takes precedence over env, and
+    SEASON_START is a legitimate global fallback in its own right -- not just a leftover of
+    the disabled path.
+
+    ``path`` resolves from SEASON_PRIORITY_FILE (no more hardcoded default file path). When
+    neither a path nor a per-show file match is available, SEASON_START/0 is the result: a
+    non-zero SEASON_START is honored (logged as such, since watch-order IS active), and only
+    an unset/zero SEASON_START is logged as watch-order disabled (V2 C4). A non-integer value
+    for the matched show logs a warning instead of silently returning 0, so a typo'd priority
+    file doesn't fail invisibly."""
+    path = path or os.environ.get("SEASON_PRIORITY_FILE")
+    if path:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                for ln in fh:
+                    ln = ln.strip()
+                    if not ln or ln.startswith("#") or ":" not in ln:
+                        continue
+                    name, _, val = ln.rpartition(":")
+                    if name.strip() == show:
+                        try:
+                            return int(val.strip())
+                        except ValueError:
+                            log(f"ordering: non-integer start for {show!r}: {val.strip()!r}")
+                            return 0
+        except OSError:
+            pass
     try:
-        with open(path, encoding="utf-8") as fh:
-            for ln in fh:
-                ln = ln.strip()
-                if not ln or ln.startswith("#") or ":" not in ln:
-                    continue
-                name, _, val = ln.rpartition(":")
-                if name.strip() == show:
-                    try:
-                        return int(val.strip())
-                    except ValueError:
-                        return 0
-    except OSError:
-        pass
-    try:
-        return int(os.environ.get("SEASON_START", "0"))
+        start = int(os.environ.get("SEASON_START", "0"))
     except ValueError:
-        return 0
+        start = 0
+    if not path:
+        if start:
+            log(f"ordering: using SEASON_START={start} (no priority file)")
+        else:
+            log("ordering: SEASON_PRIORITY_FILE not set -- watch-order disabled")
+    return start

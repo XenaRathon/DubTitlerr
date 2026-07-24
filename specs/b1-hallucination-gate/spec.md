@@ -84,6 +84,17 @@ dialogue.
 - Pure stdlib, deterministic, subgen image. No new deps.
 - Must not regress A1 timing/conf or C1 correction (B1 runs after both, on the cards).
 
+## Authorization
+
+- **Who can execute:** nobody separately — `drop_reason()`/`flag_reason()`/`collapse_runs()`
+  are pure in-process functions called from the same `generate.py:process()` run as A1/C1,
+  inside the subgen container. No credentials, no external endpoint, no execution surface
+  of its own.
+- **Behavior without permission:** N/A directly (no I/O, no auth boundary of its own). If
+  `generate.py` as a whole can't write its output (see A1's Authorization), the
+  hallucination gate's classifications never reach disk either — **generate skips** the
+  episode, same as any other write failure in that run.
+
 ## Open questions (risks)
 
 - [ ] Exact within-card repetition thresholds tuned in implementation against real data (low risk).

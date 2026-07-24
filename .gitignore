@@ -5,3 +5,14 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# Pipeline artifacts (per-episode sidecars/stamps written into the media tree, never
+# meant to be committed to this repo -- see specs/v2-models-ops/spec.md, Phase B).
+*.eng.dubtitles.srt
+*.eng.dubtitles.ass
+*.dubtitles.conf.json
+*.dubtitles.done
+*.dubtitles.fail
+*.dubtitles.repair.csv
+*.dubtitles.mux.log
+*.muxtmp.mkv

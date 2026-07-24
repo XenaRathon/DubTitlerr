@@ -1,0 +1,20 @@
+# Known whisper hallucination phrases (music/credits/UGC boilerplate) -- see
+# hallucination.py::BLOCKLIST. One regex alternative per line, case-insensitive
+# (re.I applied by the loader); joined with "|" and compiled as a single regex, so
+# this file must reproduce the original inline pattern EXACTLY. # comments allowed.
+# Falls back to the inline pattern if missing (specs/v2-models-ops/spec.md, V2 C8).
+amara\.org
+thank you for watching
+thanks for watching
+thanks for your support
+please subscribe
+subscribe to (the|our|my) channel
+like and subscribe
+see you (in the )?next (video|time)
+subtitles by
+captions? by
+transcri(bed|ption) by
+translated by
+copyright
+www\.
+http
