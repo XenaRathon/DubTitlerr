@@ -89,12 +89,25 @@ def glossary_for(path, gloss_dir=GLOSSARY_DIR):
     return glossary.load("")
 
 
+LOW_WORD_PROB = 0.25   # V2 A7: a single word this unconfident marks the whole card a target
+
+
+def has_low_prob_word(c):
+    """True if any per-word linear probability in ``word_probs`` (V2 A6, generate.py) is
+    below LOW_WORD_PROB -- catches a single wildly-mis-heard word hiding inside a card
+    whose avg_logprob still looks fine overall. Missing/empty ``word_probs`` (older
+    conf.json files predating A6, or a card generate.py couldn't join any words to) ->
+    False, backward-compatible."""
+    return any(p < LOW_WORD_PROB for p in c.get("word_probs", []))
+
+
 def is_target(c, gloss):
     """A conf row to send to the LLM: it must be speech (low no_speech_prob) AND either
-    mid-confidence-or-lower OR name-suspect."""
+    mid-confidence-or-lower, name-suspect, OR containing a very-low-confidence word."""
     if c.get("no_speech_prob", 1.0) > NSP_MAX:
         return False
-    return c.get("avg_logprob", 0.0) < LOGPROB_MIN or glossary.name_suspect(c.get("text", ""), gloss)
+    return (c.get("avg_logprob", 0.0) < LOGPROB_MIN or has_low_prob_word(c)
+            or glossary.name_suspect(c.get("text", ""), gloss))
 
 
 def _glossary_terms(gloss):
