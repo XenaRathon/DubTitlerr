@@ -180,6 +180,16 @@ def verify(orig, out):
         return "no-dubtitles-track"
     if abs(duration(out) - duration(orig)) > DUR_TOL:
         return "duration-mismatch"
+    # D2: font-attachment audit -- mkvmerge -J reports attachments as a top-level
+    # "attachments" array (sibling of "tracks"), NOT as track entries; .get(..., [])
+    # treats a fontless file (key absent) as 0, so equal-zero still returns "ok".
+    src_fonts = identify(orig).get("attachments", [])
+    out_fonts = info.get("attachments", [])
+    if len(src_fonts) != len(out_fonts):
+        return "font-count-mismatch"
+    for f in out_fonts:
+        if f.get("content_type") == "application/octet-stream":
+            log(f"  font attachment '{f.get('file_name')}' has generic MIME type — may not be a valid font")
     return "ok"
 
 
