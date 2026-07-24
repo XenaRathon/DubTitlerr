@@ -123,6 +123,21 @@ def extract_wav(video, idx, wav):
     return os.path.exists(wav) and os.path.getsize(wav) > 1000
 
 
+def _card_word_probs(card, words):
+    """Per-word linear probabilities for one card (V2 A6), joined by time overlap
+    against the full per-episode word list built in process()'s transcribe loop.
+    reflow.Card doesn't retain which whisper words it was built from, so this
+    re-derives the association here rather than threading it through reflow.py.
+
+    Must be called with the card's PRE-collapse boundaries (i.e. inside the per-card
+    loop below, before hallucination.collapse_runs()): a later run-collapse keeps
+    run[0]'s text verbatim, so computing word_probs against that same card's own
+    [start, end] window -- rather than re-querying after the merge widens the window
+    to cover the whole repeated run -- keeps the list aligned with the text it
+    actually describes."""
+    return [round(w["prob"], 3) for w in words if w["end"] > card["start"] and w["start"] < card["end"]]
+
+
 def process(video):
     stem = os.path.splitext(video)[0]
     if stamp_valid(read_stamp(stem + STAMP_SUFFIX), video):  # muxed (stat-only) -> skip
@@ -186,6 +201,7 @@ def process(video):
         fixes += n
         kc = dict(c); kc["text"] = "\n".join(lines)
         kc["flag"] = hallucination.flag_reason(c)  # weaker single signal -> kept but marked
+        kc["word_probs"] = _card_word_probs(c, words)  # V2 A6: per-word confidence for repair
         kept.append(kc)
     collapsed = hallucination.collapse_runs(kept)
     rows = [(c["start"], c["end"], c["text"]) for c in collapsed]
@@ -197,6 +213,8 @@ def process(video):
                "text": c["text"].replace("\n", " ")}
         if c.get("flag"):
             row["flag"] = c["flag"]
+        if c.get("word_probs"):
+            row["word_probs"] = c["word_probs"]  # optional/backward-compat (V2 A6/A7)
         conf.append(row)
     srt = out_for(stem + SUFFIX); confp = out_for(stem + ".dubtitles.conf.json")
     with open(srt, "w") as f:

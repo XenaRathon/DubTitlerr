@@ -11,6 +11,7 @@ pre-filter (stat only, no ffprobe/model)") -- and never calls ffprobe. The ffpro
 SKIP_IF_MUXED. Cases 1-6 below are tested against the real needs_work(); case 7 is
 retargeted to process() instead of being force-fit into needs_work().
 """
+import json
 import sys
 import types
 
@@ -101,3 +102,66 @@ def test_ffprobe_muxed_backstop_in_process(monkeypatch, tmp_path):
     monkeypatch.setenv("SKIP_IF_MUXED", "1")
     monkeypatch.setattr(generate, "has_dubtitles_track", lambda video: True)
     assert generate.process(str(v)) == "already-muxed"
+
+
+# --- V2 A6: word_probs field on dubtitles.conf.json --------------------------
+
+def test_card_word_probs_selects_by_time_overlap():
+    """_card_word_probs() joins a card's [start, end] window against the full
+    per-episode word list by time overlap (reflow's Card doesn't retain which whisper
+    words built it -- see the function's docstring). A word entirely outside the
+    window is excluded; a word overlapping it is included, rounded to 3 places."""
+    words = [
+        {"text": "Hello", "start": 0.0, "end": 0.3, "prob": 0.9512, "seg": 0},
+        {"text": "there.", "start": 0.3, "end": 0.8, "prob": 0.10004, "seg": 0},
+        {"text": "Later.", "start": 5.0, "end": 5.4, "prob": 0.99, "seg": 1},
+    ]
+    card = {"start": 0.0, "end": 0.8}
+    assert generate._card_word_probs(card, words) == [0.951, 0.1]
+
+
+def test_card_word_probs_empty_when_no_overlap():
+    words = [{"text": "x", "start": 10.0, "end": 10.5, "prob": 0.5, "seg": 0}]
+    assert generate._card_word_probs({"start": 0.0, "end": 1.0}, words) == []
+
+
+class _FakeWord:
+    def __init__(self, text, start, end, prob):
+        self.word, self.start, self.end, self.probability = text, start, end, prob
+
+
+class _FakeSegment:
+    def __init__(self, start, end, nsp, words):
+        self.start, self.end, self.no_speech_prob, self.words = start, end, nsp, words
+        self.avg_logprob = -0.1  # only used by the no-word-timestamps fallback (unused here)
+
+
+class _FakeModel:
+    def __init__(self, segs):
+        self._segs = segs
+
+    def transcribe(self, *a, **kw):
+        return self._segs, object()
+
+
+def test_word_probs_written_to_conf_json(monkeypatch, tmp_path):
+    """End-to-end through process(): a low-probability word inside an otherwise
+    fine-avg_logprob card still shows up in dubtitles.conf.json's word_probs list
+    (the field repair.has_low_prob_word() -- A7 -- reads), matching the card's word
+    count in this no-correction, no-collapse case."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "has_dubtitles_track", lambda video: False)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+
+    words = [_FakeWord(" Hello", 0.0, 0.3, 0.95), _FakeWord(" there.", 0.3, 0.9, 0.10)]
+    seg = _FakeSegment(0.0, 0.9, 0.05, words)
+    monkeypatch.setattr(generate, "WMODEL", _FakeModel([seg]))
+
+    assert generate.process(str(v)) == "ok"
+    conf = json.loads((tmp_path / "ep.dubtitles.conf.json").read_text())
+    assert len(conf) == 1
+    assert conf[0]["word_probs"] == [0.95, 0.1]
+    assert len(conf[0]["word_probs"]) == len(conf[0]["text"].split())
