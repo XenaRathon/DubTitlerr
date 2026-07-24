@@ -16,6 +16,7 @@ specs/glossary-wiki-verify/spec.md.  Built with help of Claude (Anthropic).
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import difflib
 import json
 import os
@@ -36,6 +37,7 @@ OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
 CACHE_DIR = os.environ.get("WIKI_CACHE_DIR", "/config/wiki_cache")
 HTTP_TIMEOUT = int(os.environ.get("WIKI_HTTP_TIMEOUT", "20"))
 WIKI_TTL = int(os.environ.get("WIKI_CACHE_TTL", str(30 * 24 * 3600)))   # refresh index monthly
+VERIFY_WORKERS = int(os.environ.get("VERIFY_WORKERS", "4"))   # V2 C2: concurrent adjudicate() calls
 
 
 def candidates(term: str, titles: list[str], k: int = TOPK) -> list[str]:
@@ -244,7 +246,14 @@ def verify(gloss_path: str, override: str | None = None, force: bool = False) ->
         tl = {t.lower() for t in titles}
         if not any(n.lower() in tl for n in gloss.get("names", [])):
             return {**rep, "wiki": api, "note": "wiki mismatch (no known names found) — set a 'wiki' override"}
-    results = {t: adjudicate(t, candidates(t, titles), show) for t in terms}
+    # V2 C2: adjudicate() is one blocking HTTP call to the local Ollama server per term --
+    # a glossary with dozens of pending terms serialized those one at a time. Run them
+    # concurrently (I/O-bound, so threads are fine); ThreadPoolExecutor.map preserves the
+    # input order in its output, so zipping it back onto `terms` keeps the exact same
+    # dict ordering/semantics as the old comprehension, just built concurrently.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=VERIFY_WORKERS) as ex:
+        adjudications = ex.map(lambda t: adjudicate(t, candidates(t, titles), show), terms)
+        results = dict(zip(terms, adjudications))
     new = apply_results(gloss, results)
     new.setdefault("wiki", api)
     try:

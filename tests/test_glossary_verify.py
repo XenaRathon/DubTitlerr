@@ -1,4 +1,8 @@
 """Unit tests for glossary_verify.py pure core (wiki HTTP + LLM are integration)."""
+import json
+import threading
+import time
+
 import glossary_verify as gv
 
 
@@ -12,6 +16,7 @@ def test_constants_present():
     assert gv.TOPK >= 3
     assert 0 < gv.CAND_CUTOFF < 1
     assert gv.VERIFY_MODEL
+    assert gv.VERIFY_WORKERS >= 1
 
 
 # --- T2: candidates ----------------------------------------------------------
@@ -119,3 +124,55 @@ def test_parse_adjudication_garbage_is_none():
 def test_parse_adjudication_bad_confidence_defaults_low():
     d = gv.parse_adjudication('{"canonical":"X","confidence":"pretty sure"}')
     assert d["confidence"] == "low"
+
+
+# --- V2 C2: verify() parallelizes adjudicate() with ThreadPoolExecutor -----------------
+
+def test_verify_adjudicates_terms_concurrently(monkeypatch, tmp_path):
+    """4 pending terms with VERIFY_WORKERS=4 (default) must all be IN FLIGHT
+    simultaneously -- a threading.Barrier(4) only releases once all 4 callers have
+    reached it, which is impossible under the old serial dict-comprehension."""
+    gloss_path = tmp_path / "g.json"
+    gloss_path.write_text(json.dumps(gl(names=["A", "B", "C", "D"])))
+    monkeypatch.setattr(gv, "resolve_wiki", lambda show, override=None: "https://x.fandom.com/api.php")
+    monkeypatch.setattr(gv, "fetch_titles", lambda api, show: ["A", "B", "C", "D"])
+    monkeypatch.setattr(gv, "candidates", lambda term, titles, k=gv.TOPK: [term])
+
+    barrier = threading.Barrier(4, timeout=5)
+    seen = []
+    lock = threading.Lock()
+
+    def fake_adjudicate(term, cands, show):
+        barrier.wait()  # deadlocks (-> BrokenBarrierError) unless all 4 run concurrently
+        with lock:
+            seen.append(term)
+        return {"canonical": term, "confidence": "low", "dub_note": ""}
+
+    monkeypatch.setattr(gv, "adjudicate", fake_adjudicate)
+    rep = gv.verify(str(gloss_path))
+    assert rep["checked"] == 4
+    assert set(seen) == {"A", "B", "C", "D"}
+
+
+def test_verify_preserves_term_result_pairing_despite_completion_order(monkeypatch, tmp_path):
+    """Results must map back to the TERM that produced them, not the order threads
+    happen to finish in. One term's adjudicate() call sleeps (finishes last); the
+    resulting glossary edit must still land on the correct original name."""
+    gloss_path = tmp_path / "g.json"
+    gloss_path.write_text(json.dumps(gl(names=["Spandom", "Ruffy"])))
+    monkeypatch.setattr(gv, "resolve_wiki", lambda show, override=None: "https://x.fandom.com/api.php")
+    monkeypatch.setattr(gv, "fetch_titles", lambda api, show: ["Spandam", "Luffy"])
+    canon = {"Spandom": "Spandam", "Ruffy": "Luffy"}
+    monkeypatch.setattr(gv, "candidates", lambda term, titles, k=gv.TOPK: [canon[term]])
+
+    def fake_adjudicate(term, cands, show):
+        if term == "Spandom":              # submitted first, finishes LAST
+            time.sleep(0.05)
+        return {"canonical": cands[0], "confidence": "high", "dub_note": ""}
+
+    monkeypatch.setattr(gv, "adjudicate", fake_adjudicate)
+    rep = gv.verify(str(gloss_path))
+    assert rep["applied"] == 2
+    new = json.load(open(gloss_path))
+    assert "Spandam" in new["names"] and "Luffy" in new["names"]
+    assert "Spandom" not in new["names"] and "Ruffy" not in new["names"]
