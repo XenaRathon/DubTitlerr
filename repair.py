@@ -177,18 +177,20 @@ def process(conf_path):
         return "skip"
     conf = json.load(open(conf_path))
     gloss = glossary_for(video)
-    targets = [c for c in conf if is_target(c, gloss)]
+    targets = [(i, c) for i, c in enumerate(conf) if is_target(c, gloss)]
     if not targets:
         return "clean"          # nothing to repair (e.g. S15E01)
     ivals = dialogue_intervals(video)
     audit, fixed = [], 0
-    for c in targets:
+    for i, c in targets:
         ref = overlap_ref(ivals, c["start"], c["end"])
         if not ref:
             continue        # no fansub anchor -> skip the LLM. The bake-off showed glossary-only
                             # repair hallucinates names (Oimo->Zoro) even on qwen3:8b; without a
                             # reference the deterministic layer (hard_fixes) is the safe ceiling.
-        new = llm(build_prompt(c["text"], ref, gloss))
+        prev_text = conf[i - 1]["text"] if i > 0 else ""
+        next_text = conf[i + 1]["text"] if i + 1 < len(conf) else ""
+        new = llm(build_prompt(c["text"], ref, gloss, prev_text, next_text))
         if new:
             new = glossary.correct(new, gloss)[0]         # enforce canonical spelling on output
         if new and new.lower() != c["text"].lower() and 0.4 <= len(new) / max(1, len(c["text"])) <= 2.5:
