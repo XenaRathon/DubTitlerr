@@ -13,7 +13,7 @@ cd "/media/Anime Library/$SHOW_DIR" || { echo "POST: missing $SHOW_DIR"; exit 1;
 # inline fallback (the pre-consolidation regex) if the lib or data file isn't present
 # (this script's only caller, anime_library.sh, is deprecated and mounts $DB -> /scripts,
 # which may not carry these new files -- the fallback keeps behavior unchanged either way).
-source /scripts/shell/lib.sh 2>/dev/null || true
+. /scripts/shell/lib.sh 2>/dev/null || true
 PATTERN=$(extras_grep_pattern /scripts/data/extras.txt 2>/dev/null || echo '(Behind The Scenes|Deleted Scenes|Featurettes|Interviews|Scenes|Shorts|Trailers|Other|Extras)')
 
 n=0
