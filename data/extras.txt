@@ -1,0 +1,13 @@
+# Plex "local extras" subfolders + creditless/scene clips -- never real episodes,
+# often mismatched junk from the scraper. Pruned from library walks by
+# common.load_extras() (Python) and shell/lib.sh::extras_grep_pattern() (shell).
+# One directory name per line, case-insensitive; # comments allowed.
+behind the scenes
+deleted scenes
+featurettes
+interviews
+scenes
+shorts
+trailers
+other
+extras
