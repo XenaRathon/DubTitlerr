@@ -46,6 +46,37 @@ def test_is_target_fencepost():
     assert repair.is_target(c, g)
 
 
+# --- V2 A7: per-word confidence gate ------------------------------------------
+
+def test_is_target_by_word_prob():
+    # avg_logprob and name_suspect both look fine -- only a single low word_probs
+    # entry (one badly-mis-heard word buried in an otherwise-clean line) makes it a
+    # repair target.
+    g = gl()
+    c = {"avg_logprob": -0.05, "no_speech_prob": 0.1, "text": "hi there friend",
+         "word_probs": [0.95, 0.91, 0.1]}
+    assert repair.has_low_prob_word(c)
+    assert repair.is_target(c, g)
+
+
+def test_is_target_no_word_probs_field():
+    # older conf.json (pre-A6) has no word_probs key at all -- must not be treated as
+    # "has a low-prob word"; is_target falls back to avg_logprob/name_suspect exactly
+    # as before A7.
+    g = gl()
+    c = {"avg_logprob": -0.05, "no_speech_prob": 0.1, "text": "hi there friend"}
+    assert not repair.has_low_prob_word(c)
+    assert not repair.is_target(c, g)
+
+
+def test_is_target_word_probs_all_confident_no_gate():
+    g = gl()
+    c = {"avg_logprob": -0.05, "no_speech_prob": 0.1, "text": "hi there friend",
+         "word_probs": [0.95, 0.91, 0.88]}
+    assert not repair.has_low_prob_word(c)
+    assert not repair.is_target(c, g)
+
+
 # --- prompt building ---------------------------------------------------------
 
 def test_build_prompt_includes_glossary_names():
