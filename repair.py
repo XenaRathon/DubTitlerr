@@ -26,6 +26,7 @@ Env:
   REPAIR_MODEL         default qwen3:8b   (locked by the C1 bake-off)
   REPAIR_BACKEND         ollama | llamacpp  (default ollama — V2 A1)
   REPAIR_LLAMACPP_URL    default http://192.168.1.232:8080/completion  (V2 A1)
+  REPAIR_MODEL_SECONDARY default REPAIR_MODEL — two-pass re-check model (V2 A3; no-op if equal)
   REPAIR_TIMEOUT_CONNECT default 10   (seconds; V2 A2)
   REPAIR_TIMEOUT_READ    default 120  (seconds; V2 A2)
   LOGPROB_MIN   default -0.4   (mid-confidence-and-lower; below this is a repair target)
@@ -55,6 +56,7 @@ OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
 MODEL = os.environ.get("REPAIR_MODEL", "qwen3:8b")
 REPAIR_BACKEND = os.environ.get("REPAIR_BACKEND", "ollama")
 LLAMACPP_URL = os.environ.get("REPAIR_LLAMACPP_URL", "http://192.168.1.232:8080/completion")
+MODEL_SECONDARY = os.environ.get("REPAIR_MODEL_SECONDARY", MODEL)
 TIMEOUT_CONNECT = float(os.environ.get("REPAIR_TIMEOUT_CONNECT", "10"))
 TIMEOUT_READ = float(os.environ.get("REPAIR_TIMEOUT_READ", "120"))
 LOGPROB_MIN = float(os.environ.get("LOGPROB_MIN", "-0.4"))   # mid-confidence-and-lower (C1)
@@ -226,6 +228,23 @@ def llm(prompt, model=None):
     return llm_ollama(prompt, model)
 
 
+def _needs_secondary_check(orig, new, gloss):
+    """A3 two-pass trigger: the first-pass repair looks divergent enough to re-verify with
+    the (usually stronger/slower) secondary model — either the length changed a lot, or a
+    glossary name showed up in the output that wasn't in the original line. NOTE (spec
+    correction): the name-appeared condition fires on ~every successful name repair by
+    design — inserting the correct name IS the point of repair — so this is "re-verify all
+    name-changing repairs," not a rare-case optimization."""
+    ratio = len(new) / max(1, len(orig))
+    if ratio < 0.6 or ratio > 1.5:
+        return True
+    for name in gloss["names"]:
+        pat = r"\b" + re.escape(name) + r"\b"
+        if re.search(pat, new, re.I) and not re.search(pat, orig, re.I):
+            return True
+    return False
+
+
 def process(conf_path):
     stem = conf_path[:-len(CONF_SUFFIX)]
     srt = stem + SRT_SUFFIX
@@ -247,12 +266,23 @@ def process(conf_path):
                             # reference the deterministic layer (hard_fixes) is the safe ceiling.
         prev_text = conf[i - 1]["text"] if i > 0 else ""
         next_text = conf[i + 1]["text"] if i + 1 < len(conf) else ""
+        prompt = build_prompt(c["text"], ref, gloss, prev_text, next_text)
         t0 = time.monotonic()                              # V2 A2: per-call latency
-        new = llm(build_prompt(c["text"], ref, gloss, prev_text, next_text))
+        new = llm(prompt)
         latency_ms = round((time.monotonic() - t0) * 1000)
         if new:
             new = glossary.correct(new, gloss)[0]         # enforce canonical spelling on output
         if new and new.lower() != c["text"].lower() and 0.4 <= len(new) / max(1, len(c["text"])) <= 2.5:
+            # A3: re-verify divergent-looking repairs (esp. name changes) with the secondary
+            # model. No-op by default (REPAIR_MODEL_SECONDARY == REPAIR_MODEL).
+            if MODEL_SECONDARY != MODEL and _needs_secondary_check(c["text"], new, gloss):
+                t1 = time.monotonic()
+                new2 = llm(prompt, model=MODEL_SECONDARY)
+                latency_ms += round((time.monotonic() - t1) * 1000)
+                if new2:
+                    new2 = glossary.correct(new2, gloss)[0]
+                    if new2:
+                        new = new2
             audit.append((c["text"], new, ref[:80], latency_ms)); c["text"] = new; fixed += 1
     # rewrite srt from (possibly repaired) conf rows
     srt_out = out_for(srt); rep_out = out_for(stem + ".dubtitles.repair.csv")
