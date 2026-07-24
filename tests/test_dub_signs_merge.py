@@ -213,3 +213,30 @@ def test_scaled_border_and_shadow_forced_yes(tmp_path, monkeypatch):
     assert status == "ok"
     result = pysubs2.load(out_ass)
     assert result.info.get("ScaledBorderAndShadow") == "yes"
+
+
+def test_resolution_mismatch_warns_without_dropping_events(tmp_path, monkeypatch, capsys):
+    track0 = _sign_track(text="first")
+    track0.info["PlayResX"] = "1280"; track0.info["PlayResY"] = "720"
+    track1 = _sign_track(text="second")
+    track1.info["PlayResX"] = "1920"; track1.info["PlayResY"] = "1080"
+
+    status, signs, _dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+
+    assert status == "ok"
+    assert "WARNING: resolution mismatch between subtitle tracks" in capsys.readouterr().out
+    assert signs == 2   # WARN ONLY -- both tracks' events still kept, no coordinate transform (V3)
+    result = pysubs2.load(out_ass)
+    assert {e.plaintext.strip() for e in result.events if e.style == "Sign"} == {"first", "second"}
+
+
+def test_resolution_no_mismatch_no_warning(tmp_path, monkeypatch, capsys):
+    track0 = _sign_track(text="first")
+    track0.info["PlayResX"] = "1280"; track0.info["PlayResY"] = "720"
+    track1 = _sign_track(text="second")
+    track1.info["PlayResX"] = "1280"; track1.info["PlayResY"] = "720"
+
+    status, *_ = _two_track_build(tmp_path, monkeypatch, track0, track1)
+
+    assert status == "ok"
+    assert "resolution mismatch" not in capsys.readouterr().out

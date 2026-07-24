@@ -77,6 +77,7 @@ def build(video, dub_srt, out_ass):
     kept = []           # (event, source_style_name)
     seen = set()
     base_ws = None       # D3: base track's WrapStyle, for cross-track comparison
+    resolutions = []     # D5: (PlayResX, PlayResY) per source track, for mismatch warning
     for _n, idx in enumerate(eng_sub_streams(video, SUB_LANGS)):
         with tempfile.TemporaryDirectory() as td:
             ex = os.path.join(td, "s.ass")
@@ -87,6 +88,7 @@ def build(video, dub_srt, out_ass):
             except Exception as e:
                 log("  load fail", idx, e); continue
         src_events = list(subs.events)   # snapshot BEFORE any clearing (base may alias subs)
+        resolutions.append((subs.info.get("PlayResX"), subs.info.get("PlayResY")))   # D5
         if base is None:
             base = subs
             base.events = []
@@ -113,6 +115,8 @@ def build(video, dub_srt, out_ass):
             kept.append(ev)
     if base is None:
         return "no-signs", 0, 0
+    if len(set(resolutions)) > 1:   # D5: warn only — no coordinate transform (deferred to V3)
+        log("WARNING: resolution mismatch between subtitle tracks — signs may be mispositioned")
     # bottom dub dialogue style
     play_y = 0
     try: play_y = int(base.info.get("PlayResY") or 0)
