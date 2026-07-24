@@ -13,6 +13,8 @@ never copy the subtitle verbatim (dub != sub — localization differs).
 
 Then the ``.srt`` is rewritten from the (possibly repaired) confidence rows and a
 ``<stem>.dubtitles.repair.csv`` audit (orig -> repaired) is written. Timing untouched.
+A ``<stem>.dubtitles.repair-summary.json`` (targets/repaired/skipped/latency stats/model(s))
+is written alongside it (V2 A10).
 
 C1: targets are broadened to mid-confidence-AND-lower OR name-suspect lines; the show
 glossary is injected into a STRICT prompt (canonical spellings, never invent/swap a name);
@@ -245,6 +247,14 @@ def _needs_secondary_check(orig, new, gloss):
     return False
 
 
+def _p95(values):
+    """Nearest-rank 95th percentile; no numpy dependency for one summary stat (A10)."""
+    if not values:
+        return 0.0
+    s = sorted(values)
+    return s[min(len(s) - 1, round(0.95 * (len(s) - 1)))]
+
+
 def process(conf_path):
     stem = conf_path[:-len(CONF_SUFFIX)]
     srt = stem + SRT_SUFFIX
@@ -257,10 +267,12 @@ def process(conf_path):
     if not targets:
         return "clean"          # nothing to repair (e.g. S15E01)
     ivals = dialogue_intervals(video)
-    audit, fixed = [], 0
+    audit, fixed, skipped_no_ref = [], 0, 0
+    repaired_lines = []                              # A10: per-line detail for the summary
     for i, c in targets:
         ref = overlap_ref(ivals, c["start"], c["end"])
         if not ref:
+            skipped_no_ref += 1
             continue        # no fansub anchor -> skip the LLM. The bake-off showed glossary-only
                             # repair hallucinates names (Oimo->Zoro) even on qwen3:8b; without a
                             # reference the deterministic layer (hard_fixes) is the safe ceiling.
@@ -283,7 +295,9 @@ def process(conf_path):
                     new2 = glossary.correct(new2, gloss)[0]
                     if new2:
                         new = new2
-            audit.append((c["text"], new, ref[:80], latency_ms)); c["text"] = new; fixed += 1
+            audit.append((c["text"], new, ref[:80], latency_ms))
+            repaired_lines.append({"orig": c["text"], "repaired": new, "ref": ref[:80], "latency_ms": latency_ms})
+            c["text"] = new; fixed += 1
     # rewrite srt from (possibly repaired) conf rows
     srt_out = out_for(srt); rep_out = out_for(stem + ".dubtitles.repair.csv")
     with open(srt_out, "w") as f:
@@ -291,7 +305,22 @@ def process(conf_path):
             f.write(f"{i}\n{ts_srt(c['start'])} --> {ts_srt(c['end'])}\n{c['text']}\n\n")
     with open(rep_out, "w", newline="") as f:
         w = csv.writer(f); w.writerow(["orig", "repaired", "ref", "latency_ms"]); w.writerows(audit)
-    for p in (srt_out, rep_out):
+    # A10: per-show repair summary, written alongside the srt/csv
+    lat_values = [r["latency_ms"] for r in repaired_lines]
+    summary = {
+        "targets": len(targets),
+        "repaired": fixed,
+        "skipped_no_ref": skipped_no_ref,
+        "mean_latency_ms": round(sum(lat_values) / len(lat_values)) if lat_values else 0,
+        "p95_latency_ms": round(_p95(lat_values)) if lat_values else 0,
+        "model": MODEL,
+        "model_secondary": MODEL_SECONDARY,
+        "repaired_lines": repaired_lines,
+    }
+    summary_out = out_for(stem + ".dubtitles.repair-summary.json")
+    with open(summary_out, "w") as f:
+        json.dump(summary, f, indent=2)
+    for p in (srt_out, rep_out, summary_out):
         try: os.chown(p, MEDIA_UID, MEDIA_GID)
         except OSError: pass
     log(f"  targets={len(targets)} repaired={fixed}")
