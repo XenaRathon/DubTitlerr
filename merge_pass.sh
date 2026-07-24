@@ -17,10 +17,16 @@ command -v mkvmerge >/dev/null 2>&1 || { echo "FATAL: mkvmerge not found — ima
 python3 -c "import pysubs2" >/dev/null 2>&1 || { echo "FATAL: pysubs2 not found — image is misbuilt"; exit 1; }
 cd "$ROOT" || { echo "merge_pass: missing $ROOT"; exit 1; }
 
+# EXTRA_DIRS single source of truth (B7/B9): data/extras.txt via shell/lib.sh, with an
+# inline fallback (the pre-consolidation regex) if the lib or data file isn't present
+# (e.g. run under the deprecated $APP=/scripts flow, which doesn't ship these files).
+source "$APP/shell/lib.sh" 2>/dev/null || true
+PATTERN=$(extras_grep_pattern "$APP/data/extras.txt" 2>/dev/null || echo '(Behind The Scenes|Deleted Scenes|Featurettes|Interviews|Scenes|Shorts|Trailers|Other|Extras)')
+
 before=$(find . -type f -name "*.dubtitles.done" | wc -l)
 # episodes with a sidecar (srt or ass) -> dedup to the stem
 find . -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) \
-  | grep -ivE '/(Behind The Scenes|Deleted Scenes|Featurettes|Interviews|Scenes|Shorts|Trailers|Other|Extras)/' \
+  | grep -ivE "/$PATTERN/" \
   | sed -E 's/\.eng\.dubtitles\.(srt|ass)$//' | sort -u | while IFS= read -r stem; do
     [ -f "$stem.dubtitles.fail" ] && continue            # generate crashed on it -> skip
     if [ ! -f "$stem.eng.dubtitles.ass" ] && [ -f "$stem.eng.dubtitles.srt" ]; then
