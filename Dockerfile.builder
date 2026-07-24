@@ -4,12 +4,13 @@
 # DockHand can't build images -> build on the host and reference fasc/dubtitle-builder:latest.
 FROM mccloud/subgen:2026.06.2
 
-# subgen ships python3 + ffmpeg but no pip; bootstrap pip to add pysubs2 (for the merge step).
+# subgen ships python3 + ffmpeg but no pip; bootstrap pip to add pysubs2 (for the merge step)
+# and jellyfish (Metaphone, glossary.py tier-4 phonetic match -- V2 A4/A5).
 # wamerican = /usr/share/dict/american-english, the English-word gate for glossary.py (C1).
 # mkvtoolnix = mkvmerge for the D1 mux stage (embed .ass + fonts as a default Dubtitles track).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-pip wamerican mkvtoolnix \
-    && python3 -m pip install --no-cache-dir pysubs2 \
+    && python3 -m pip install --no-cache-dir pysubs2 jellyfish \
     && rm -rf /var/lib/apt/lists/*
 
 # Bake the Whisper large-v3 model into the image (~3GB) so the container is fully
