@@ -101,3 +101,30 @@ def test_name_suspect_ignores_clean_line_of_english_and_known_names():
 def test_name_suspect_ignores_sentence_initial_english_word():
     # a capitalized word that IS a known English word must not be flagged as a name
     assert not glossary.name_suspect("Maybe the people come", gloss(names=["Luffy"]))
+
+
+# --- T5: tier-4 phonetic match (V2 A4) ---------------------------------------
+
+def test_phonetic_matches_spondum():
+    # "spondum"/"Spandam" both Metaphone to "SPNTM", but the letters diverge enough
+    # (SequenceMatcher ratio ~0.71) to fail the guarded-fuzzy cutoff (0.90 at len 7) --
+    # exactly the far-mishear case tier 4 exists to recover.
+    g = gloss(names=["Spandam"])
+    assert glossary.correct("it was Spondum today", g)[0] == "it was Spandam today"
+
+
+def test_phonetic_does_not_match_english_word():
+    # "frank" Metaphones identically to "Franky" (FRNK) but is a real English word --
+    # the is_english() gate (checked before any correction tier fires) must still block
+    # it, same as it already does for the fuzzy tier.
+    g = gloss(names=["Franky"])
+    assert glossary.correct("frank told him so", g) == ("frank told him so", 0)
+
+
+def test_phonetic_graceful_if_jellyfish_missing(monkeypatch):
+    monkeypatch.setattr(glossary, "jellyfish", None)
+    assert glossary._phonetic_match("spondum", ["Spandam"]) is None
+    g = gloss(names=["Spandam"])
+    # No hard_fix and the fuzzy cutoff rejects it (see test_phonetic_matches_spondum) --
+    # without jellyfish this must degrade to a no-op, not raise.
+    assert glossary.correct("it was Spondum today", g) == ("it was Spondum today", 0)
