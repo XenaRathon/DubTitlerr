@@ -23,10 +23,24 @@ OUTPUT_ROOT = os.environ.get("OUTPUT_ROOT", "")
 
 VIDEO_EXTS = (".mkv", ".mp4", ".m4v")
 
+def load_extras(path="data/extras.txt"):
+    """Load the EXTRA_DIRS set (Plex "local extras" subfolders + creditless/scene clips --
+    never real episodes, often mismatched junk from the scraper -- pruned from library
+    walks) from the single-source-of-truth data file (see specs/v2-models-ops/spec.md,
+    "EXTRA_DIRS consolidation"). Falls back to the pre-consolidation hardcoded set if the
+    file is missing/unreadable, so the pipeline still runs correctly without it (e.g. a
+    dev checkout, or an image built before the data file existed)."""
+    try:
+        with open(path) as f:
+            return {ln.strip().lower() for ln in f if ln.strip() and not ln.startswith("#")}
+    except OSError:
+        return {"behind the scenes", "deleted scenes", "featurettes", "interviews",
+                "scenes", "shorts", "trailers", "other", "extras"}
+
+
 # Plex "local extras" subfolders + creditless/scene clips — never real episodes, often
 # mismatched junk from the scraper. Pruned from library walks.
-EXTRA_DIRS = {"behind the scenes", "deleted scenes", "featurettes", "interviews",
-              "scenes", "shorts", "trailers", "other", "extras"}
+EXTRA_DIRS = load_extras()
 
 STAMP_SUFFIX = ".dubtitles.done"
 
