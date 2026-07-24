@@ -114,10 +114,18 @@ def _glossary_terms(gloss):
     terms = list(gloss["names"]) + list(gloss["phrases"])
     terms += list(gloss["token_fixes"].values()) + list(gloss["phrase_fixes"].values())
     seen, out = set(), []
-    for t in terms:                       # de-dup, preserve order, cap the prompt size
+    for t in terms:                       # de-dup, preserve order
         if t not in seen:
             seen.add(t); out.append(t)
-    return ", ".join(out)[:1000]
+    # C12: cap the prompt size on WHOLE-TERM boundaries -- a raw [:1000] slice can cut a
+    # name in half mid-word, which would feed the model a garbled "canonical spelling".
+    result = ""
+    for t in out:
+        candidate = t if not result else f"{result}, {t}"
+        if len(candidate) > 1000:
+            break
+        result = candidate
+    return result
 
 
 def build_prompt(asr, sub, gloss, prev_text="", next_text=""):
