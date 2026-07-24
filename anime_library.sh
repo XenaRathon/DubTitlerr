@@ -1,4 +1,8 @@
 #!/bin/sh
+# DEPRECATED as of 2026-07-24: use container_run.sh instead.
+# This script reloads the Whisper model per show (~40s × N shows).
+# container_run.sh loads it once and keeps it resident.
+# This file is retained for reference; no functional changes.
 # HOST orchestrator (docker user) for the WHOLE Anime Library — the generalization of
 # all_seasons.sh from One Pace to every dubbed show. For each show folder listed in
 # anime_order.txt (priority order), it:

@@ -1,4 +1,9 @@
 #!/bin/sh
+# DEPRECATED as of 2026-07-24: use container_run.sh instead.
+# This script docker-runs a fresh container every INTERVAL just to execute merge_pass.sh.
+# container_run.sh's background merge loop runs merge_pass.sh in-process on the same
+# interval, without the per-cycle container spin-up.
+# This file is retained for reference; no functional changes.
 # HOST watcher: every INTERVAL seconds, run one merge_pass over the whole Anime Library so
 # dubtitles appear in Plex PER-EPISODE as each finishes — decoupled from the GPU generate
 # rollout (anime_library.sh GENERATE_ONLY=1), so the CPU/LLM merge runs in parallel with
