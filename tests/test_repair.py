@@ -33,6 +33,13 @@ def test_is_target_skips_music_silence():
     assert not repair.is_target({"avg_logprob": -2.0, "no_speech_prob": 0.9, "text": "la la"}, g)
 
 
+def test_is_target_fencepost():
+    # a card at exactly NSP_MAX (0.5) is speech, not silence — was excluded by the old >= check
+    g = gl()
+    c = {"avg_logprob": -0.6, "no_speech_prob": 0.5, "text": "hi"}
+    assert repair.is_target(c, g)
+
+
 # --- prompt building ---------------------------------------------------------
 
 def test_build_prompt_includes_glossary_names():
@@ -48,6 +55,23 @@ def test_build_prompt_uses_reference_when_present_else_glossary_only():
     no_ref = repair.build_prompt("asr line", "", g)
     assert "the official sub" in with_ref
     assert "the official sub" not in no_ref          # graceful glossary-only fallback
+
+
+def test_build_prompt_no_prev_next_matches_old_prompt():
+    g = gl(names=["Spandam"])
+    explicit_empty = repair.build_prompt("asr line", "the official sub", g, "", "")
+    default_call = repair.build_prompt("asr line", "the official sub", g)
+    assert explicit_empty == default_call            # backward-compat: defaults == old signature
+
+
+def test_build_prompt_includes_context():
+    g = gl()
+    p = repair.build_prompt("asr line", "", g, prev_text="earlier line", next_text="later line")
+    assert '"earlier line"' in p
+    assert '"later line"' in p
+    # context lines absent when not provided
+    no_ctx = repair.build_prompt("asr line", "", g)
+    assert "earlier line" not in no_ctx and "later line" not in no_ctx
 
 
 # --- per-episode glossary resolution ----------------------------------------

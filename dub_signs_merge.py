@@ -26,63 +26,28 @@ Idempotent. Env: MERGE_ROOTS (colon list), DUB_SUFFIX, MEDIA_UID/GID, SUB_LANGS
 (comma list of accepted subtitle languages, default eng,und).
 Requires ffmpeg/ffprobe + pysubs2.  Built with help of Claude (Anthropic).
 """
-import json, os, re, subprocess, sys, tempfile
+import os
+import re
+import sys
+import tempfile
+
 import pysubs2
 
-# OUTPUT_ROOT: write the .ass to this branch path (disk with space) instead of next to the
-# mkv; mergerfs unifies branches so it still shows in the pool view. Reads use mergerfs path.
-MEDIA_ROOT = os.environ.get("MEDIA_ROOT", "/media")
-OUTPUT_ROOT = os.environ.get("OUTPUT_ROOT", "")
-def out_for(p):
-    if OUTPUT_ROOT and p.startswith(MEDIA_ROOT):
-        q = OUTPUT_ROOT + p[len(MEDIA_ROOT):]
-        os.makedirs(os.path.dirname(q), exist_ok=True)
-        return q
-    return p
+from common import MEDIA_GID, MEDIA_UID, eng_sub_streams, find_video, log, out_for
+from common import extract_sub as extract
 
 ROOTS = os.environ.get("MERGE_ROOTS", "/data/Media/Anime Library").split(":")
 SUFFIX = os.environ.get("DUB_SUFFIX", ".eng.dubtitles.srt")
 SUB_LANGS = set(os.environ.get("SUB_LANGS", "eng,en,und,").split(","))
-MEDIA_UID = int(os.environ.get("MEDIA_UID", "1000"))
-MEDIA_GID = int(os.environ.get("MEDIA_GID", "100"))
-VIDEO_EXTS = (".mkv", ".mp4", ".m4v")
 
 KARAOKE = re.compile(r"\\[kK][fo]?\d")
+HAS_DRAWING = re.compile(r"\\p\d|\\clip|\\iclip")
+ANIMATED = re.compile(r"\\t\(|\\fade?\(|\\move\(")
 POSITIONED = re.compile(r"\\(?:pos|move)\(|\\an[134567 89]")
 # KEEP the Japanese romaji karaoke (top) + signs/credits. DROP the fansub English song
 # TRANSLATION — it's replaced by whisper's transcribed English-dub lyrics (bottom Dubtitles).
 KEEP_STYLE = re.compile(r"karaoke|sign|song|caption|title|credit|note|lyric|romaji|kashi|insert", re.I)
 DROP_STYLE = re.compile(r"main|dialog|default|flashback|thought|secondary|monolog|narrat|warning|italics|translat|^alt", re.I)
-
-
-def log(*a): print(*a, flush=True)
-
-
-def find_video(stem):
-    for ext in VIDEO_EXTS:
-        if os.path.exists(stem + ext):
-            return stem + ext
-    return None
-
-
-def eng_sub_streams(video):
-    """Indices of ASS/SSA subtitle streams in an accepted language."""
-    try:
-        r = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "s",
-             "-show_entries", "stream=index,codec_name:stream_tags=language",
-             "-of", "json", video], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=90)
-        streams = json.loads(r.stdout).get("streams", [])
-    except Exception as e:
-        log("ffprobe failed:", video, e); return []
-    out = []
-    for st in streams:
-        if st.get("codec_name") not in ("ass", "ssa"):
-            continue
-        lang = ((st.get("tags") or {}).get("language", "") or "").lower()
-        if lang in SUB_LANGS:
-            out.append(st["index"])
-    return out
 
 
 def keep_event(ev):
@@ -98,27 +63,20 @@ def keep_event(ev):
     t = ev.text
     if KARAOKE.search(t):                  # Japanese romaji karaoke (top) -> keep
         return True
-    if POSITIONED.search(t):              # positioned sign -> keep
+    if HAS_DRAWING.search(t):             # vector-drawn sign (\p/\clip/\iclip) -> keep
         return True
+    if POSITIONED.search(t) or ANIMATED.search(t):   # positioned/animated sign -> keep
+        return True                                  # (ANIMATED's \move overlaps POSITIONED; merged into one check)
     if KEEP_STYLE.search(style):
         return True
     return False  # unknown plain event -> assume dialogue, Whisper has it
-
-
-def extract(video, idx, out_ass):
-    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}",
-                    "-c:s", "copy", out_ass], capture_output=True, stdin=subprocess.DEVNULL, timeout=180)
-    if not (os.path.exists(out_ass) and os.path.getsize(out_ass) > 0):
-        subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}", out_ass],
-                       capture_output=True, stdin=subprocess.DEVNULL, timeout=180)
-    return os.path.exists(out_ass) and os.path.getsize(out_ass) > 0
 
 
 def build(video, dub_srt, out_ass):
     base = None         # the merged ScriptInfo/styles canvas
     kept = []           # (event, source_style_name)
     seen = set()
-    for n, idx in enumerate(eng_sub_streams(video)):
+    for _n, idx in enumerate(eng_sub_streams(video, SUB_LANGS)):
         with tempfile.TemporaryDirectory() as td:
             ex = os.path.join(td, "s.ass")
             if not extract(video, idx, ex):
@@ -162,6 +120,14 @@ def build(video, dub_srt, out_ass):
         if ev.is_comment:
             continue
         ev.style = "Dubtitles"; base.events.append(ev); added += 1
+    # Dubtitles dialogue on the floor (layer 0); every sign/song event bumped one
+    # layer up so it renders on top. Shift (not zero) keeps the relative z-order
+    # among multi-layer sign compositions.
+    for ev in base.events:
+        if ev.style == "Dubtitles":
+            ev.layer = 0
+        else:
+            ev.layer = ev.layer + 1
     base.sort()
     base.save(out_ass)
     ok = os.path.exists(out_ass) and os.path.getsize(out_ass) > 0

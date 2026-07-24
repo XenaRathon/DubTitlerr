@@ -10,13 +10,19 @@ CPU only (ffmpeg + pysubs2). Env: GLOSSARY_DIR (default /config/glossaries),
 MINE_MIN_COUNT (a name must recur >= this across the new episodes, default 3).
 Built with help of Claude (Anthropic).
 """
-import os, sys, re, json, subprocess, tempfile
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
 import pysubs2
+
+from common import EXTRA_DIRS
 
 GLOSS_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
 MIN_COUNT = int(os.environ.get("MINE_MIN_COUNT", "3"))
-EXTRA_DIRS = {"behind the scenes","deleted scenes","featurettes","interviews",
-              "scenes","shorts","trailers","other","extras"}
 SKIP_FILE_RE = re.compile(r"\bNC(ED|OP|BD)\b|-\s*scene\b|creditless", re.I)
 # words that are capitalized for position/grammar, not proper nouns — never mine these
 COMMON = set("""the a an and or but of to in on at is was are were be been being have has had do does did

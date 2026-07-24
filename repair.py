@@ -34,7 +34,6 @@ import csv
 import json
 import os
 import re
-import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -42,15 +41,8 @@ import urllib.request
 import pysubs2
 
 import glossary
-
-MEDIA_ROOT = os.environ.get("MEDIA_ROOT", "/media")
-OUTPUT_ROOT = os.environ.get("OUTPUT_ROOT", "")   # write sidecars to a branch with space
-def out_for(p):
-    if OUTPUT_ROOT and p.startswith(MEDIA_ROOT):
-        q = OUTPUT_ROOT + p[len(MEDIA_ROOT):]
-        os.makedirs(os.path.dirname(q), exist_ok=True)
-        return q
-    return p
+from common import MEDIA_GID, MEDIA_UID, eng_sub_streams, find_video, out_for, ts_srt
+from common import extract_sub as extract
 
 OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
 MODEL = os.environ.get("REPAIR_MODEL", "qwen3:8b")
@@ -59,9 +51,6 @@ NSP_MAX = float(os.environ.get("NSP_MAX", "0.5"))
 GLOSSARY_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
 SUB_LANGS = set(os.environ.get("SUB_LANGS", "eng,en,und,").split(","))
 ROOTS = os.environ.get("MERGE_ROOTS", "/data/Media/Anime Library").split(":")
-MEDIA_UID = int(os.environ.get("MEDIA_UID", "1000"))
-MEDIA_GID = int(os.environ.get("MEDIA_GID", "100"))
-VIDEO_EXTS = (".mkv", ".mp4", ".m4v")
 CONF_SUFFIX = ".dubtitles.conf.json"
 SRT_SUFFIX = ".eng.dubtitles.srt"
 
@@ -88,7 +77,7 @@ def glossary_for(path, gloss_dir=GLOSSARY_DIR):
 def is_target(c, gloss):
     """A conf row to send to the LLM: it must be speech (low no_speech_prob) AND either
     mid-confidence-or-lower OR name-suspect."""
-    if c.get("no_speech_prob", 1.0) >= NSP_MAX:
+    if c.get("no_speech_prob", 1.0) > NSP_MAX:
         return False
     return c.get("avg_logprob", 0.0) < LOGPROB_MIN or glossary.name_suspect(c.get("text", ""), gloss)
 
@@ -103,10 +92,14 @@ def _glossary_terms(gloss):
     return ", ".join(out)[:1000]
 
 
-def build_prompt(asr, sub, gloss):
+def build_prompt(asr, sub, gloss, prev_text="", next_text=""):
     """Build a STRICT repair prompt: glossary names always; the fansub reference only when
     present (graceful glossary-only fallback for mp4). The strictness is deliberate — the
-    bake-off showed a loose prompt makes models hallucinate glossary names into lines."""
+    bake-off showed a loose prompt makes models hallucinate glossary names into lines.
+
+    prev_text/next_text (C1 Phase 3): the neighboring lines' text, when available, given as
+    extra context only — never part of what gets corrected. Omitted from the prompt entirely
+    when empty, so a call with no prev/next produces the exact same prompt as before."""
     names = _glossary_terms(gloss)
     ref_intro = ("For reference, the official subtitle for this moment (a DIFFERENT translation — "
                  "do NOT copy its wording) is given below; use it only to resolve garbled words and "
@@ -123,48 +116,16 @@ def build_prompt(asr, sub, gloss):
         "- Do NOT turn ordinary words into names. Keep the wording and length almost identical.\n"
         "- If the line already reads fine, or you are unsure, return it UNCHANGED.\n"
         "Return ONLY the line — no quotes, no notes.\n\n")
+    prev_line = f'Previous line (for context): "{prev_text}"\n' if prev_text else ""
+    next_line = f'Next line (for context): "{next_text}"\n' if next_text else ""
     ref_line = f"Official subtitle (reference only): {sub}\n" if sub else ""
-    return f"{head}{name_line}{rules}ASR line: {asr}\n{ref_line}Corrected line:"
-
-
-def find_video(stem):
-    for e in VIDEO_EXTS:
-        if os.path.exists(stem + e):
-            return stem + e
-    return None
-
-
-def eng_sub_streams(video):
-    try:
-        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "s",
-                            "-show_entries", "stream=index,codec_name:stream_tags=language",
-                            "-of", "json", video], capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL, timeout=90)
-        streams = json.loads(r.stdout).get("streams", [])
-    except Exception:
-        return []
-    out = []
-    for st in streams:
-        if st.get("codec_name") not in ("ass", "ssa"):
-            continue
-        if ((st.get("tags") or {}).get("language", "") or "").lower() in SUB_LANGS:
-            out.append(st["index"])
-    return out
-
-
-def extract(video, idx, out):
-    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}",
-                    "-c:s", "copy", out], capture_output=True, stdin=subprocess.DEVNULL, timeout=180)
-    if not (os.path.exists(out) and os.path.getsize(out) > 0):
-        subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}", out],
-                       capture_output=True, stdin=subprocess.DEVNULL, timeout=180)
-    return os.path.exists(out) and os.path.getsize(out) > 0
+    return f"{head}{name_line}{rules}ASR line: {asr}\n{prev_line}{next_line}{ref_line}Corrected line:"
 
 
 def dialogue_intervals(video):
     """Embedded DIALOGUE lines (the translation track) as (start_s, end_s, text)."""
     ivals = []
-    for idx in eng_sub_streams(video):
+    for idx in eng_sub_streams(video, SUB_LANGS):
         with tempfile.TemporaryDirectory() as td:
             ex = os.path.join(td, "s.ass")
             if not extract(video, idx, ex):
@@ -208,11 +169,6 @@ def llm(prompt):
         log("  llm fail:", e); return ""
 
 
-def ts(t):
-    h = int(t // 3600); m = int((t % 3600) // 60); s = t % 60
-    return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
-
-
 def process(conf_path):
     stem = conf_path[:-len(CONF_SUFFIX)]
     srt = stem + SRT_SUFFIX
@@ -221,18 +177,20 @@ def process(conf_path):
         return "skip"
     conf = json.load(open(conf_path))
     gloss = glossary_for(video)
-    targets = [c for c in conf if is_target(c, gloss)]
+    targets = [(i, c) for i, c in enumerate(conf) if is_target(c, gloss)]
     if not targets:
         return "clean"          # nothing to repair (e.g. S15E01)
     ivals = dialogue_intervals(video)
     audit, fixed = [], 0
-    for c in targets:
+    for i, c in targets:
         ref = overlap_ref(ivals, c["start"], c["end"])
         if not ref:
             continue        # no fansub anchor -> skip the LLM. The bake-off showed glossary-only
                             # repair hallucinates names (Oimo->Zoro) even on qwen3:8b; without a
                             # reference the deterministic layer (hard_fixes) is the safe ceiling.
-        new = llm(build_prompt(c["text"], ref, gloss))
+        prev_text = conf[i - 1]["text"] if i > 0 else ""
+        next_text = conf[i + 1]["text"] if i + 1 < len(conf) else ""
+        new = llm(build_prompt(c["text"], ref, gloss, prev_text, next_text))
         if new:
             new = glossary.correct(new, gloss)[0]         # enforce canonical spelling on output
         if new and new.lower() != c["text"].lower() and 0.4 <= len(new) / max(1, len(c["text"])) <= 2.5:
@@ -241,7 +199,7 @@ def process(conf_path):
     srt_out = out_for(srt); rep_out = out_for(stem + ".dubtitles.repair.csv")
     with open(srt_out, "w") as f:
         for i, c in enumerate(conf, 1):
-            f.write(f"{i}\n{ts(c['start'])} --> {ts(c['end'])}\n{c['text']}\n\n")
+            f.write(f"{i}\n{ts_srt(c['start'])} --> {ts_srt(c['end'])}\n{c['text']}\n\n")
     with open(rep_out, "w", newline="") as f:
         w = csv.writer(f); w.writerow(["orig", "repaired", "ref"]); w.writerows(audit)
     for p in (srt_out, rep_out):
