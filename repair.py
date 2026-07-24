@@ -92,10 +92,14 @@ def _glossary_terms(gloss):
     return ", ".join(out)[:1000]
 
 
-def build_prompt(asr, sub, gloss):
+def build_prompt(asr, sub, gloss, prev_text="", next_text=""):
     """Build a STRICT repair prompt: glossary names always; the fansub reference only when
     present (graceful glossary-only fallback for mp4). The strictness is deliberate — the
-    bake-off showed a loose prompt makes models hallucinate glossary names into lines."""
+    bake-off showed a loose prompt makes models hallucinate glossary names into lines.
+
+    prev_text/next_text (C1 Phase 3): the neighboring lines' text, when available, given as
+    extra context only — never part of what gets corrected. Omitted from the prompt entirely
+    when empty, so a call with no prev/next produces the exact same prompt as before."""
     names = _glossary_terms(gloss)
     ref_intro = ("For reference, the official subtitle for this moment (a DIFFERENT translation — "
                  "do NOT copy its wording) is given below; use it only to resolve garbled words and "
@@ -112,8 +116,10 @@ def build_prompt(asr, sub, gloss):
         "- Do NOT turn ordinary words into names. Keep the wording and length almost identical.\n"
         "- If the line already reads fine, or you are unsure, return it UNCHANGED.\n"
         "Return ONLY the line — no quotes, no notes.\n\n")
+    prev_line = f'Previous line (for context): "{prev_text}"\n' if prev_text else ""
+    next_line = f'Next line (for context): "{next_text}"\n' if next_text else ""
     ref_line = f"Official subtitle (reference only): {sub}\n" if sub else ""
-    return f"{head}{name_line}{rules}ASR line: {asr}\n{ref_line}Corrected line:"
+    return f"{head}{name_line}{rules}ASR line: {asr}\n{prev_line}{next_line}{ref_line}Corrected line:"
 
 
 def dialogue_intervals(video):

@@ -50,6 +50,23 @@ def test_build_prompt_uses_reference_when_present_else_glossary_only():
     assert "the official sub" not in no_ref          # graceful glossary-only fallback
 
 
+def test_build_prompt_no_prev_next_matches_old_prompt():
+    g = gl(names=["Spandam"])
+    explicit_empty = repair.build_prompt("asr line", "the official sub", g, "", "")
+    default_call = repair.build_prompt("asr line", "the official sub", g)
+    assert explicit_empty == default_call            # backward-compat: defaults == old signature
+
+
+def test_build_prompt_includes_context():
+    g = gl()
+    p = repair.build_prompt("asr line", "", g, prev_text="earlier line", next_text="later line")
+    assert '"earlier line"' in p
+    assert '"later line"' in p
+    # context lines absent when not provided
+    no_ctx = repair.build_prompt("asr line", "", g)
+    assert "earlier line" not in no_ctx and "later line" not in no_ctx
+
+
 # --- per-episode glossary resolution ----------------------------------------
 
 def test_glossary_for_finds_show_glossary_by_walking_up(tmp_path):
