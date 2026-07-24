@@ -108,3 +108,72 @@ def test_process_one_logs_chown_failure_instead_of_swallowing(tmp_path, monkeypa
 
     assert dsm.process_one(srt) == "merged"  # chown failure must not abort the episode
     assert "chown failed for" in capsys.readouterr().out
+
+
+# --- V2 Phase D: diagnostic logging (D1/D3/D4/D5) ----------------------------
+
+def _two_track_build(tmp_path, monkeypatch, track0, track1):
+    """Common scaffold: two fake source tracks (SSAFile objects), one dub line."""
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\nDub line\n\n",
+        encoding="utf-8",
+    )
+
+    def fake_eng_sub_streams(video, langs):
+        return [0, 1]
+
+    tracks = {0: track0, 1: track1}
+
+    def fake_extract(video, idx, out_path):
+        tracks[idx].save(out_path)
+        return True
+
+    monkeypatch.setattr(dsm, "eng_sub_streams", fake_eng_sub_streams)
+    monkeypatch.setattr(dsm, "extract", fake_extract)
+
+    out_ass = str(tmp_path / "out.ass")
+    status, signs, dub = dsm.build("fake-video.mkv", str(dub_srt), out_ass)
+    return status, signs, dub, out_ass
+
+
+def _sign_track(style_name="Sign", fontname="Arial", fontsize=40.0, text="a sign"):
+    t = pysubs2.SSAFile()
+    st = pysubs2.SSAStyle(); st.fontname = fontname; st.fontsize = fontsize
+    t.styles[style_name] = st
+    t.events = [pysubs2.SSAEvent(start=0, end=1000, style=style_name,
+                                  text=r"{\pos(100,200)}" + text)]
+    return t
+
+
+def test_style_conflict_logged_when_font_or_size_differ(tmp_path, monkeypatch, capsys):
+    track0 = _sign_track(fontname="Arial", fontsize=40.0, text="first")
+    track1 = _sign_track(fontname="Comic Sans MS", fontsize=50.0, text="second")
+
+    status, *_ = _two_track_build(tmp_path, monkeypatch, track0, track1)
+
+    assert status == "ok"
+    out = capsys.readouterr().out
+    assert "style conflict: 'Sign' — font/size differ, using first definition" in out
+
+
+def test_style_no_conflict_logged_when_identical(tmp_path, monkeypatch, capsys):
+    track0 = _sign_track(fontname="Arial", fontsize=40.0, text="first")
+    track1 = _sign_track(fontname="Arial", fontsize=40.0, text="second")
+
+    status, *_ = _two_track_build(tmp_path, monkeypatch, track0, track1)
+
+    assert status == "ok"
+    assert "style conflict" not in capsys.readouterr().out
+
+
+def test_style_conflict_keeps_first_definition(tmp_path, monkeypatch):
+    track0 = _sign_track(fontname="Arial", fontsize=40.0, text="first")
+    track1 = _sign_track(fontname="Comic Sans MS", fontsize=50.0, text="second")
+
+    status, _signs, _dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+
+    assert status == "ok"
+    result = pysubs2.load(out_ass)
+    assert result.styles["Sign"].fontname == "Arial"     # first definition wins (unchanged)
+    assert result.styles["Sign"].fontsize == 40.0
