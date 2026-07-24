@@ -20,7 +20,7 @@ cd "$ROOT" || { echo "merge_pass: missing $ROOT"; exit 1; }
 # EXTRA_DIRS single source of truth (B7/B9): data/extras.txt via shell/lib.sh, with an
 # inline fallback (the pre-consolidation regex) if the lib or data file isn't present
 # (e.g. run under the deprecated $APP=/scripts flow, which doesn't ship these files).
-source "$APP/shell/lib.sh" 2>/dev/null || true
+. "$APP/shell/lib.sh" 2>/dev/null || true
 PATTERN=$(extras_grep_pattern "$APP/data/extras.txt" 2>/dev/null || echo '(Behind The Scenes|Deleted Scenes|Featurettes|Interviews|Scenes|Shorts|Trailers|Other|Extras)')
 
 before=$(find . -type f -name "*.dubtitles.done" | wc -l)
