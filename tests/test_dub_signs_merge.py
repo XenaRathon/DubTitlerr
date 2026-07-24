@@ -177,3 +177,27 @@ def test_style_conflict_keeps_first_definition(tmp_path, monkeypatch):
     result = pysubs2.load(out_ass)
     assert result.styles["Sign"].fontname == "Arial"     # first definition wins (unchanged)
     assert result.styles["Sign"].fontsize == 40.0
+
+
+def test_wrapstyle_difference_logged(tmp_path, monkeypatch, capsys):
+    track0 = _sign_track(text="first")
+    track0.info["WrapStyle"] = "0"
+    track1 = _sign_track(text="second")
+    track1.info["WrapStyle"] = "2"
+
+    status, *_ = _two_track_build(tmp_path, monkeypatch, track0, track1)
+
+    assert status == "ok"
+    assert "WrapStyle differs: base=0 track=2 — using base" in capsys.readouterr().out
+
+
+def test_wrapstyle_no_log_when_same(tmp_path, monkeypatch, capsys):
+    track0 = _sign_track(text="first")
+    track0.info["WrapStyle"] = "1"
+    track1 = _sign_track(text="second")
+    track1.info["WrapStyle"] = "1"
+
+    status, *_ = _two_track_build(tmp_path, monkeypatch, track0, track1)
+
+    assert status == "ok"
+    assert "WrapStyle differs" not in capsys.readouterr().out
