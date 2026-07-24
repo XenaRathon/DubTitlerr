@@ -118,8 +118,7 @@ def partners(orig):
                 except OSError:
                     continue
                 if s2.st_ino == st.st_ino and s2.st_dev == st.st_dev and s2.st_size == st.st_size:
-                    if os.path.samefile(p, orig):
-                        found.append(p)
+                    found.append(p)
     return found
 
 
