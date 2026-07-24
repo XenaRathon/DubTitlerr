@@ -19,7 +19,9 @@ import tempfile
 
 import pysubs2
 
-from common import EXTRA_DIRS
+from common import load_extras
+
+EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_extras)
 
 GLOSS_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
 MIN_COUNT = int(os.environ.get("MINE_MIN_COUNT", "3"))

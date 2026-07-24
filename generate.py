@@ -45,7 +45,9 @@ import glossary
 import hallucination
 import ordering
 import reflow
-from common import EXTRA_DIRS, STAMP_SUFFIX, VIDEO_EXTS, out_for, read_stamp, stamp_valid, ts_srt
+from common import STAMP_SUFFIX, VIDEO_EXTS, load_extras, out_for, read_stamp, stamp_valid, ts_srt
+
+EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_extras)
 
 # V2 A9: large-v3-turbo not bench-tested in this dev environment (no GPU here -- see
 # extract_wav()'s WHISPER_AUDIO_FILTER note for the analogous CPU-only caveat elsewhere
