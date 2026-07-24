@@ -343,15 +343,32 @@ def main():
                     totals[k] += _LAST_STATS.get(k, 0)
         except Exception as e:
             log("  ERROR", type(e).__name__, e)
-            if any(k in str(e).lower() for k in ("cuda", "out of memory", "device ordinal", "cublas")):
+            # V2 C15: gate on the exception TYPE, not a substring match on "cuda" in the
+            # message/stacktrace. faster-whisper/ctranslate2 raise RuntimeError for real
+            # GPU errors (OOM, device ordinal, cuBLAS) -- the old `"cuda" in str(e).lower()`
+            # check also fired on a plain ValueError/ZeroDivisionError that merely mentions
+            # "cuda" somewhere in its text, which would falsely poison (and exit-3) on a bug
+            # that has nothing to do with the GPU context.
+            if isinstance(e, RuntimeError):
                 # A CUDA OOM/device error poisons the context — every later file would also
                 # fail and get falsely marked. Exit so the loop relauncher restarts with a
                 # fresh context; the OOM'd file keeps its .fail (skipped on resume), the rest
                 # transcribe cleanly. (Usually means another process grabbed the GPU.)
-                log("  CUDA error -> exiting to rebuild a clean GPU context (show resumes on restart)")
+                log("  CUDA/GPU error (RuntimeError) -> exiting to rebuild a clean GPU context "
+                    "(show resumes on restart)")
                 sys.exit(3)
-            try: os.remove(os.path.splitext(v)[0] + ".dubtitles.fail")  # non-CUDA: let it retry
+            # Non-RuntimeError: NOT a GPU error -> don't poison the episode. Clear the .fail
+            # marker so the next sweep retries it, and persist a small JSON record of what
+            # happened (V2 C15's retry log) for later triage.
+            stem = os.path.splitext(v)[0]
+            try: os.remove(stem + ".dubtitles.fail")
             except OSError: pass
+            try:
+                with open(out_for(stem + ".dubtitles.crash.json"), "w") as f:
+                    json.dump({"path": v, "exc_type": type(e).__name__, "msg": str(e),
+                               "time": time.time()}, f)
+            except OSError:
+                pass
     # V2 C1: per-show run summary (glossaries/<show>.lastrun.json) -- one file per --root
     # invocation, since SHOW_NAME/GLOSSARY_FILE are per-run env (see load_glossary()).
     show = os.environ.get("SHOW_NAME", "") or GLOSS.get("show", "") or "unknown_show"

@@ -12,8 +12,11 @@ SKIP_IF_MUXED. Cases 1-6 below are tested against the real needs_work(); case 7 
 retargeted to process() instead of being force-fit into needs_work().
 """
 import json
+import os
 import sys
 import types
+
+import pytest
 
 import common
 
@@ -276,3 +279,58 @@ def test_lastrun_json_show_falls_back_when_unset(monkeypatch, tmp_path):
     assert not (tmp_path / ".lastrun.json").exists()
     lr = json.loads((tmp_path / "unknown_show.lastrun.json").read_text())
     assert lr["show"] == "unknown_show"
+
+
+# --- V2 C15: CUDA error gating uses exception TYPE, not a "cuda" substring match -------
+
+def _fail_marker(video):
+    return os.path.splitext(video)[0] + ".dubtitles.fail"
+
+
+def test_runtimeerror_poisons_episode_and_exits(monkeypatch, tmp_path):
+    """A RuntimeError (what faster-whisper/ctranslate2 actually raise for a real GPU
+    error) must exit(3) and leave the .fail marker in place -- the episode stays
+    poisoned so the loop relauncher's fresh-GPU-context restart skips it, matching the
+    pre-C15 behavior for a genuine CUDA/OOM failure."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "WhisperModel", lambda *a, **kw: object())
+
+    def _boom(video):
+        open(_fail_marker(video), "w").close()   # simulate process()'s in-flight marker
+        raise RuntimeError("CUDA error: out of memory")
+
+    monkeypatch.setattr(generate, "process", _boom)
+    monkeypatch.setattr(sys, "argv", ["generate.py", str(v)])
+
+    with pytest.raises(SystemExit) as ei:
+        generate.main()
+    assert ei.value.code == 3
+    assert os.path.exists(_fail_marker(str(v)))  # NOT removed -- stays poisoned
+
+
+def test_non_runtimeerror_mentioning_cuda_does_not_poison(monkeypatch, tmp_path):
+    """The OLD substring-match gate (`"cuda" in str(e).lower()`) would have falsely
+    poisoned/exited on this: a ValueError that merely mentions "cuda" in its message,
+    with nothing to do with the GPU context. The new isinstance(e, RuntimeError) gate
+    must NOT exit, must clear the .fail marker so the episode retries next sweep, and
+    must persist a JSON crash record."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "WhisperModel", lambda *a, **kw: object())
+    monkeypatch.setattr(generate, "GLOSS_DIR", str(tmp_path))  # let main() finish (C1 write)
+
+    def _boom(video):
+        open(_fail_marker(video), "w").close()
+        raise ValueError("bad value near a cuda-adjacent buffer index")
+
+    monkeypatch.setattr(generate, "process", _boom)
+    monkeypatch.setattr(sys, "argv", ["generate.py", str(v)])
+
+    generate.main()  # must NOT sys.exit
+
+    assert not os.path.exists(_fail_marker(str(v)))  # cleared -- retries next sweep
+    crash = json.loads((tmp_path / "ep.dubtitles.crash.json").read_text())
+    assert crash["exc_type"] == "ValueError"
+    assert crash["path"] == str(v)
+    assert "cuda" in crash["msg"].lower()
