@@ -76,6 +76,7 @@ def build(video, dub_srt, out_ass):
     base = None         # the merged ScriptInfo/styles canvas
     kept = []           # (event, source_style_name)
     seen = set()
+    base_ws = None       # D3: base track's WrapStyle, for cross-track comparison
     for _n, idx in enumerate(eng_sub_streams(video, SUB_LANGS)):
         with tempfile.TemporaryDirectory() as td:
             ex = os.path.join(td, "s.ass")
@@ -89,7 +90,11 @@ def build(video, dub_srt, out_ass):
         if base is None:
             base = subs
             base.events = []
+            base_ws = base.info.get("WrapStyle")          # D3
         else:
+            track_ws = subs.info.get("WrapStyle")         # D3
+            if track_ws != base_ws:
+                log(f"WrapStyle differs: base={base_ws} track={track_ws} — using base")
             for sname, sty in subs.styles.items():   # carry styles from later tracks
                 if sname in base.styles:
                     existing = base.styles[sname]     # D1: flag conflicting redefinitions
