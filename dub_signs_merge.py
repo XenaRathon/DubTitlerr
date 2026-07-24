@@ -90,6 +90,7 @@ def build(video, dub_srt, out_ass):
         if base is None:
             base = subs
             base.events = []
+            base.info["ScaledBorderAndShadow"] = "yes"   # D4: consistent cross-player rendering
             base_ws = base.info.get("WrapStyle")          # D3
         else:
             track_ws = subs.info.get("WrapStyle")         # D3
