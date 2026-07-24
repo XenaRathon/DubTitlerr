@@ -281,7 +281,7 @@ def process(video):
         json.dump(conf, f)
     for p in (srt, confp):
         try: os.chown(p, UID, GID)
-        except OSError: pass
+        except OSError as e: log(f"chown failed for {p}: {e}")
     low = sum(1 for c in conf if c["avg_logprob"] < -0.8 or c["no_speech_prob"] > 0.6)
     max_dur = max((b - a for a, b, _ in rows), default=0.0)
     over_cps = sum(1 for a, b, t in rows

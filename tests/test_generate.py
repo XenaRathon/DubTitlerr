@@ -183,6 +183,29 @@ def test_extract_wav_appends_audio_filter_by_default(monkeypatch, tmp_path):
     assert generate.AUDIO_FILTER.startswith("highpass=f=80")  # matches the spec's Data contracts default
 
 
+def test_process_logs_chown_failure_instead_of_swallowing(monkeypatch, tmp_path, capsys):
+    """V2 C10: a chown failure (e.g. not running as root) is logged, not silently
+    swallowed, and must not abort the episode."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "has_dubtitles_track", lambda video: False)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+
+    words = [_FakeWord(" Hello", 0.0, 0.3, 0.95)]
+    seg = _FakeSegment(0.0, 0.3, 0.05, words)
+    monkeypatch.setattr(generate, "WMODEL", _FakeModel([seg]))
+
+    def _boom(*a, **kw):
+        raise OSError("Operation not permitted")
+    monkeypatch.setattr(generate.os, "chown", _boom)
+
+    assert generate.process(str(v)) == "ok"
+    out = capsys.readouterr().out
+    assert out.count("chown failed for") == 2  # srt + confp
+
+
 def test_extract_wav_no_filter_when_empty(monkeypatch, tmp_path):
     """Empty WHISPER_AUDIO_FILTER ("" -- the pre-A8 opt-out) must NOT add -af at all,
     reproducing the exact pre-A8 ffmpeg command."""
