@@ -22,6 +22,11 @@ import json
 import os
 import re
 
+try:                     # V2 A4: tier-4 phonetic match. Optional dep -- degrade to the
+    import jellyfish  # existing 3-tier behavior if it isn't installed (see Dockerfile.builder).
+except ImportError:
+    jellyfish = None
+
 # Guarded-fuzzy thresholds: short words demand near-identical matches.
 MIN_FUZZY_LEN = 4
 def fuzzy_cutoff(n: int) -> float:
@@ -93,6 +98,29 @@ def _one_indel(a: str, b: str) -> bool:
 _TOKEN_RE = re.compile(r"^([^\w']*)([\w'][\w'-]*?)([^\w']*)$")
 
 
+def _phonetic_match(token: str, names: list[str]) -> str | None:
+    """Tier 4 (V2 A4): match ``token`` to a glossary name by Metaphone code when the
+    guarded-fuzzy tier (edit-distance based) misses -- e.g. "spondum" -> "Spandam",
+    where the letters diverge enough to fail the fuzzy cutoff but the phonetics don't
+    (both -> Metaphone "SPNTM"). Recall for far mishears without a curated hard_fix.
+
+    Callers are expected to have already applied the English-word gate (``is_english``)
+    to ``token`` -- this function does not re-check it, so it must never be called on a
+    known English word (see ``_fix_token``, which gates before reaching any tier).
+
+    Returns None (no-op) if ``jellyfish`` isn't installed -- the try/except ImportError
+    at module load degrades this whole tier away gracefully."""
+    if jellyfish is None or not names:
+        return None
+    code = jellyfish.metaphone(token)
+    if not code:
+        return None
+    for nm in names:
+        if jellyfish.metaphone(nm) == code:
+            return nm
+    return None
+
+
 def _fix_token(tok: str, names: list[str], token_fixes: dict) -> tuple[str, int]:
     m = _TOKEN_RE.match(tok)
     if not m:
@@ -108,6 +136,13 @@ def _fix_token(tok: str, names: list[str], token_fixes: dict) -> tuple[str, int]
     cand = difflib.get_close_matches(core.title(), names, n=1, cutoff=fuzzy_cutoff(len(core)))
     if cand and cand[0].lower() != low and not _one_indel(low, cand[0].lower()):
         return pre + cand[0] + post, 1
+    phon = _phonetic_match(low, names)
+    if phon and phon.lower() != low and not _one_indel(low, phon.lower()):
+        # Same one-char-indel exclusion as the fuzzy tier just above: a one-char
+        # insert/delete mishear (e.g. "spandm"/"Spandam") also Metaphones identically,
+        # but is exactly the risky-edit case the fuzzy tier already defers to the LLM --
+        # tier 4 must not undercut that guard just because it arrived via a different path.
+        return pre + phon + post, 1
     return tok, 0
 
 
