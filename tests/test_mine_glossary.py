@@ -46,3 +46,25 @@ def test_mine_text():
     mine_glossary.mine_text("I saw Oz today", counter, mid)
     assert counter == {}
     assert mid == set()
+
+
+# --- V2 C8: COMMON loaded from data/common_proper_noun_deny.txt, inline fallback -------
+
+def test_common_loads_from_data_file():
+    """The real data/common_proper_noun_deny.txt (repo-relative, present in this
+    checkout) reproduces the exact same set as the inline fallback."""
+    loaded = mine_glossary._load_common("data/common_proper_noun_deny.txt")
+    fallback = mine_glossary._load_common("data/does_not_exist.txt")
+    assert loaded == fallback == set(mine_glossary._COMMON_FALLBACK)
+
+
+def test_common_falls_back_when_data_file_missing():
+    common = mine_glossary._load_common("data/nope_this_file_does_not_exist.txt")
+    assert "doctor" in common and "luffy" not in common
+
+
+def test_common_data_file_comments_and_blanks_are_skipped(tmp_path):
+    f = tmp_path / "deny.txt"
+    f.write_text("# a comment\n\nFoo\n  \nBAR\n")
+    common = mine_glossary._load_common(str(f))
+    assert common == {"foo", "bar"}
