@@ -91,7 +91,12 @@ def build(video, dub_srt, out_ass):
             base.events = []
         else:
             for sname, sty in subs.styles.items():   # carry styles from later tracks
-                base.styles.setdefault(sname, sty)
+                if sname in base.styles:
+                    existing = base.styles[sname]     # D1: flag conflicting redefinitions
+                    if existing.fontname != sty.fontname or existing.fontsize != sty.fontsize:
+                        log(f"  style conflict: '{sname}' — font/size differ, using first definition")
+                else:
+                    base.styles[sname] = sty
         for ev in src_events:
             if not keep_event(ev):
                 continue
