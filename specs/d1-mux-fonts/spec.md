@@ -106,6 +106,19 @@ muxed file (whose sidecar is gone) is never re-transcribed.
 - Idempotent + restart-safe; never crash a sweep on one bad file.
 - Must not regress A1/C1/B1 (mux is the final stage, after the `.ass` exists).
 
+## Authorization
+
+- **Who can execute:** `mux.py --apply` needs **root** in its container — the atomic
+  `os.replace()`/cross-branch copy on mergerfs and the `os.chown()` of the muxed output
+  both assume root; `main()` already warns ("not root — atomic replace may fail") if run
+  unprivileged. `dub_signs_merge.py` needs write access to the media tree (it `chown`s
+  the merged `.ass` after writing it; V2 C10 now logs a failure instead of swallowing it).
+- **Behavior without permission:** without root, `os.replace()`/`os.chown()` can raise;
+  `process()`'s outer `except Exception` catches it, logs `"mux error"`, removes the
+  partial `.muxtmp.mkv`, and returns `"error"` for that file — **mux skips** that episode
+  and moves to the next rather than crashing the sweep. Signs/songs merge without chown
+  permission still writes the `.ass` (the chown failure is logged, per C10) and continues.
+
 ## Open questions (risks)
 
 - [ ] mergerfs EXDEV behavior on the atomic finalize — validated on the server during D1 verify.

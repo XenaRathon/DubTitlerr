@@ -121,6 +121,19 @@ Every card written to the `.srt` MUST satisfy:
 - Must not regress the existing crash-resilience (`.fail` poison marker), idempotency
   skips, or `OUTPUT_ROOT` sidecar redirection in `generate.py`.
 
+## Authorization
+
+- **Who can execute:** whoever can run the subgen CUDA container (root inside that
+  container, per its image). No API key/token gates reflow — it's in-process logic
+  inside `generate.py:process()`, not a separate service. Write access to the media
+  tree (or `OUTPUT_ROOT`) is the only real precondition.
+- **Behavior without permission:** if the container can't write `<stem>.eng.dubtitles.srt`
+  / `.dubtitles.conf.json` (read-only mount, wrong ownership), the write raises,
+  `main()`'s per-episode try/except catches it (one bad episode must not abort the
+  show), logs the error, and — for a non-CUDA exception — clears the `.fail` marker so
+  the episode retries next sweep (V2 C15). Net effect: **generate skips** that episode
+  rather than corrupting/half-writing its sidecars.
+
 ## Open questions (risks)
 
 - [ ] Line-balancing algorithm for 2-line wrap is unspecified beyond "≤42/line";
