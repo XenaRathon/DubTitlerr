@@ -77,6 +77,25 @@ def test_is_target_word_probs_all_confident_no_gate():
     assert not repair.is_target(c, g)
 
 
+# --- C12: glossary term string cap boundary ----------------------------------
+
+def test_glossary_terms_no_truncation_mid_name():
+    # Long enough names that a naive [:1000] slice would land mid-name; the fix must
+    # only ever emit WHOLE terms, never a dangling fragment.
+    names = [f"Character{i:02d}WithAVeryLongNameToForceTheCapBoundary" for i in range(50)]
+    g = gl(names=names)
+    terms = repair._glossary_terms(g)
+    assert terms and len(terms) <= 1000
+    parts = terms.split(", ")
+    assert all(p in names for p in parts)     # every chunk is a complete name, never a fragment
+    assert len(parts) < len(names)             # confirms the cap actually engaged
+
+
+def test_glossary_terms_under_cap_unchanged():
+    g = gl(names=["Luffy", "Zoro", "Nami"])
+    assert repair._glossary_terms(g) == "Luffy, Zoro, Nami"
+
+
 # --- prompt building ---------------------------------------------------------
 
 def test_build_prompt_includes_glossary_names():
