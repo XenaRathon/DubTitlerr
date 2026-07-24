@@ -39,7 +39,8 @@ ROOTS = os.environ.get("MUX_ROOTS", "/data/Media/Anime Library").split(":")
 # actually is for other content) and added to this set. Everything else (fre, spa,
 # ger, …) is dropped. Video + the new Dubtitles track + all font attachments always kept.
 KEEP_LANGS = set(os.environ.get("KEEP_LANGS", "eng,en,dut,nld,nl,und,").split(","))
-HL_ROOTS = os.environ.get("HARDLINK_ROOTS", "").split(":") if os.environ.get("HARDLINK_ROOTS") else ROOTS
+_val = os.environ.get("HARDLINK_ROOTS")
+HL_ROOTS = _val.split(":") if _val else ROOTS
 # D1: default OFF — never delete a seeding download hardlink; the orphan-reaper owns that
 # (seed-until-orphan policy). Muxing only replaces the library's own file.
 DELETE_BROKEN = os.environ.get("DELETE_BROKEN_HARDLINKS", "0") == "1"
