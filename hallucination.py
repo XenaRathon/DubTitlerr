@@ -28,14 +28,28 @@ REPEAT_COVERAGE = 0.6    # a repeated word/1-3-gram covering >= this fraction of
 RUN_COLLAPSE = 4         # collapse a run of >= this many near-identical consecutive cards
 
 # Known whisper hallucination phrases (music/credits/UGC boilerplate). Conservative —
-# only phrases that are never real dub dialogue.
-BLOCKLIST = re.compile(
+# only phrases that are never real dub dialogue. V2 C8: sourced from
+# data/hallucination_blocklist.txt (one regex alternative per line, # comments allowed)
+# so it can be tuned without a code change; falls back to this exact inline pattern if
+# the file is missing/unreadable (backward-compatible, e.g. a dev checkout without data/).
+_BLOCKLIST_PATTERN_FALLBACK = (
     r"amara\.org|thank you for watching|thanks for watching|thanks for your support|"
     r"please subscribe|subscribe to (the|our|my) channel|like and subscribe|"
     r"see you (in the )?next (video|time)|subtitles by|captions? by|transcri(bed|ption) by|"
-    r"translated by|copyright|www\.|http",
-    re.I,
+    r"translated by|copyright|www\.|http"
 )
+
+
+def _load_blocklist(path: str = "data/hallucination_blocklist.txt") -> re.Pattern:
+    try:
+        with open(path, encoding="utf-8") as f:
+            alts = [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
+    except OSError:
+        alts = []
+    return re.compile("|".join(alts) if alts else _BLOCKLIST_PATTERN_FALLBACK, re.I)
+
+
+BLOCKLIST = _load_blocklist()
 
 
 def is_repetition(text: str) -> bool:

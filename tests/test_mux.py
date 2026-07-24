@@ -1,4 +1,6 @@
 """Unit tests for mux.py pure helpers (D1). mkvmerge/ffprobe calls are integration."""
+import os
+
 import mux
 
 
@@ -84,7 +86,105 @@ def test_build_cmd_audio_and_sub_flags():
     assert "0:yes" in cmd            # new Dubtitles track default
 
 
+# --- C16: verify() duration check is the truncation canary --------------------
+
+def _ok_info():
+    return {"tracks": [
+        {"id": 0, "type": "video", "properties": {}},
+        aud(1, "eng"),
+        subt(2, "eng", mux.TRACK_NAME),
+    ]}
+
+
+def test_verify_duration_mismatch_catches_truncated_output(monkeypatch):
+    monkeypatch.setattr(mux, "identify", lambda p: _ok_info())
+    monkeypatch.setattr(mux, "duration", lambda p: 100.0 if p == "orig.mkv" else 10.0)  # truncated out
+    assert mux.verify("orig.mkv", "out.mkv") == "duration-mismatch"
+
+
+def test_verify_ok_when_duration_within_tolerance(monkeypatch):
+    monkeypatch.setattr(mux, "identify", lambda p: _ok_info())
+    monkeypatch.setattr(mux, "duration", lambda p: 100.0)
+    assert mux.verify("orig.mkv", "out.mkv") == "ok"
+
+
+# --- D2: font-attachment audit -------------------------------------------------
+
+def _font(name="Arial.ttf", ctype="application/x-truetype-font"):
+    return {"content_type": ctype, "file_name": name}
+
+
+def _info_with_fonts(fonts=None):
+    d = _ok_info()
+    if fonts is not None:
+        d["attachments"] = fonts
+    return d
+
+
+def test_verify_font_count_mismatch_is_non_ok(monkeypatch):
+    infos = {
+        "orig.mkv": _info_with_fonts([_font(), _font(name="Comic.ttf")]),
+        "out.mkv": _info_with_fonts([_font()]),   # one font dropped by the remux
+    }
+    monkeypatch.setattr(mux, "identify", lambda p: infos[p])
+    monkeypatch.setattr(mux, "duration", lambda p: 100.0)
+    assert mux.verify("orig.mkv", "out.mkv") == "font-count-mismatch"
+
+
+def test_verify_ok_when_font_counts_equal_nonzero(monkeypatch):
+    infos = {
+        "orig.mkv": _info_with_fonts([_font(), _font(name="Comic.ttf")]),
+        "out.mkv": _info_with_fonts([_font(), _font(name="Comic.ttf")]),
+    }
+    monkeypatch.setattr(mux, "identify", lambda p: infos[p])
+    monkeypatch.setattr(mux, "duration", lambda p: 100.0)
+    assert mux.verify("orig.mkv", "out.mkv") == "ok"
+
+
+def test_verify_ok_when_no_fonts_either_side(monkeypatch):
+    # "attachments" key absent entirely on both sides -- .get(..., []) must treat
+    # this as 0 == 0, not KeyError, and still return "ok".
+    infos = {
+        "orig.mkv": _info_with_fonts(None),
+        "out.mkv": _info_with_fonts(None),
+    }
+    monkeypatch.setattr(mux, "identify", lambda p: infos[p])
+    monkeypatch.setattr(mux, "duration", lambda p: 100.0)
+    assert mux.verify("orig.mkv", "out.mkv") == "ok"
+
+
+def test_verify_warns_on_generic_font_mime_but_still_ok(monkeypatch, capsys):
+    infos = {
+        "orig.mkv": _info_with_fonts([_font(name="Weird.ttf", ctype="application/octet-stream")]),
+        "out.mkv": _info_with_fonts([_font(name="Weird.ttf", ctype="application/octet-stream")]),
+    }
+    monkeypatch.setattr(mux, "identify", lambda p: infos[p])
+    monkeypatch.setattr(mux, "duration", lambda p: 100.0)
+    assert mux.verify("orig.mkv", "out.mkv") == "ok"   # generic MIME warns, doesn't fail
+    assert "Weird.ttf" in capsys.readouterr().out
+
+
 # --- T6: sub_source selection ------------------------------------------------
+
+# --- C3: partners() inode cache -----------------------------------------------
+
+def test_partners_cached_by_inode(tmp_path):
+    a = tmp_path / "a.mkv"; a.write_bytes(b"x" * 10)
+    b = tmp_path / "b.mkv"
+    os.link(str(a), str(b))
+    mux._partners_cache.clear()
+    orig_hl_roots = mux.HL_ROOTS
+    mux.HL_ROOTS = [str(tmp_path)]
+    try:
+        first = mux.partners(str(a))
+        assert str(b) in first
+        mux.HL_ROOTS = ["/nonexistent-root-xyz"]      # a fresh (uncached) walk would find nothing here
+        second = mux.partners(str(a))
+        assert second == first                        # cache hit: HL_ROOTS change had no effect
+        assert (os.stat(str(a)).st_ino, os.stat(str(a)).st_dev) in mux._partners_cache
+    finally:
+        mux.HL_ROOTS = orig_hl_roots
+
 
 def test_sub_source_prefers_ass_then_srt(tmp_path):
     stem = str(tmp_path / "ep")
