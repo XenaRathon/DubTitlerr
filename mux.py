@@ -169,8 +169,9 @@ def build_cmd(info, orig, ass, out):
 
 
 def verify(orig, out):
-    if not (os.path.exists(out) and os.path.getsize(out) > os.path.getsize(orig) * 0.5):
-        return "too-small"
+    """The half-size heuristic (C16) is gone -- it false-positived on compact muxes where
+    mkvmerge shrinks the CUES or drops a large embedded .ass. The duration-tolerance check
+    below is the real truncation canary: it runs unconditionally on the only path to "ok"."""
     info = identify(out)
     types = {t["type"] for t in info.get("tracks", [])}
     if "video" not in types or "audio" not in types:

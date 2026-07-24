@@ -86,6 +86,28 @@ def test_build_cmd_audio_and_sub_flags():
     assert "0:yes" in cmd            # new Dubtitles track default
 
 
+# --- C16: verify() duration check is the truncation canary --------------------
+
+def _ok_info():
+    return {"tracks": [
+        {"id": 0, "type": "video", "properties": {}},
+        aud(1, "eng"),
+        subt(2, "eng", mux.TRACK_NAME),
+    ]}
+
+
+def test_verify_duration_mismatch_catches_truncated_output(monkeypatch):
+    monkeypatch.setattr(mux, "identify", lambda p: _ok_info())
+    monkeypatch.setattr(mux, "duration", lambda p: 100.0 if p == "orig.mkv" else 10.0)  # truncated out
+    assert mux.verify("orig.mkv", "out.mkv") == "duration-mismatch"
+
+
+def test_verify_ok_when_duration_within_tolerance(monkeypatch):
+    monkeypatch.setattr(mux, "identify", lambda p: _ok_info())
+    monkeypatch.setattr(mux, "duration", lambda p: 100.0)
+    assert mux.verify("orig.mkv", "out.mkv") == "ok"
+
+
 # --- T6: sub_source selection ------------------------------------------------
 
 # --- C3: partners() inode cache -----------------------------------------------
