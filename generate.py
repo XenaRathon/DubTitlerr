@@ -29,8 +29,11 @@ Env:
   WHISPER_AUDIO_FILTER  default highpass=f=80,compand=... (V2 A8; "" disables it, the
                   pre-A8 ffmpeg command)
   MEDIA_UID/GID   default 1000/100
+  GLOSSARY_DIR    default /config/glossaries  (V2 C1: where <show>.lastrun.json is written,
+                  same dir mine_glossary.py/repair.py use for the show's glossary itself)
 Built with help of Claude (Anthropic).
 """
+import hashlib
 import json
 import math
 import os
@@ -38,6 +41,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 from faster_whisper import WhisperModel
 
@@ -48,6 +52,9 @@ import reflow
 from common import STAMP_SUFFIX, VIDEO_EXTS, load_extras, out_for, read_stamp, stamp_valid, ts_srt
 
 EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_extras)
+# V2 C1: where per-show run summaries (<show>.lastrun.json) live -- same GLOSSARY_DIR
+# convention as mine_glossary.py/repair.py, not the per-run GLOSSARY_FILE.
+GLOSS_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
 
 # V2 A9: large-v3-turbo not bench-tested in this dev environment (no GPU here -- see
 # extract_wav()'s WHISPER_AUDIO_FILTER note for the analogous CPU-only caveat elsewhere
@@ -96,6 +103,35 @@ SKIP_FILE_RE = re.compile(r"\bNCED\b|\bNCOP\b|\bNCBD\b|-\s*scene\b|creditless", 
 
 
 def log(*a): print(*a, flush=True)
+
+
+# V2 C1: per-show run summary. process() updates this in place on its "ok" (success)
+# path only; main() reads it right after each call to accumulate per-show totals for
+# glossaries/<show>.lastrun.json. A module-level accumulator (rather than widening
+# process()'s return type) keeps every existing "process() returns a status string"
+# call site/test unchanged -- see WMODEL above for the same lazy-module-global pattern.
+_LAST_STATS: dict = {}
+
+
+def _model_version() -> str:
+    """faster_whisper's package version, for the lastrun.json audit trail. Reads the
+    already-imported module from sys.modules (real or the tests' stub) rather than
+    importing it again, so this stays a no-op in the CPU-only dev/test environment."""
+    fw = sys.modules.get("faster_whisper")
+    return getattr(fw, "__version__", "unknown") if fw is not None else "unknown"
+
+
+def _glossary_version() -> str:
+    """Short content hash of the active GLOSSARY_FILE (so lastrun.json records exactly
+    which glossary revision produced a run) -- 'none' if no glossary file is configured."""
+    path = os.environ.get("GLOSSARY_FILE", "")
+    if not path or not os.path.exists(path):
+        return "none"
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:12]
+    except OSError:
+        return "none"
 
 
 def has_dubtitles_track(video):
@@ -258,6 +294,9 @@ def process(video):
         f"collapsed={collapsed_n} flagged={flagged} low-conf={low} "
         f"max_dur={max_dur:.1f}s over_cps={over_cps} violations={bad} "
         f"meanlp={sum(c['avg_logprob'] for c in conf)/max(1,len(conf)):.2f}")
+    _LAST_STATS.clear()  # V2 C1: this episode's contribution to the show's lastrun.json
+    _LAST_STATS.update({"cards_written": len(rows), "dropped_hallucination": dropped,
+                         "collapsed_runs": collapsed_n, "flagged": flagged})
     return "ok"
 
 
@@ -290,10 +329,18 @@ def main():
     if not todo:
         log("nothing to transcribe (all done) — skipping model load"); return
     globals()["WMODEL"] = WhisperModel(MODEL, device="cuda", compute_type=COMPUTE, download_root=MODEL_DIR)
+    t0 = time.monotonic()                                      # V2 C1: per-show run summary
+    transcribed = 0
+    totals = {"cards_written": 0, "dropped_hallucination": 0, "collapsed_runs": 0, "flagged": 0}
     for v in todo:
         log("→", os.path.basename(v))
         try:
-            log("  ", process(v))                 # one bad episode must not abort the show
+            status = process(v)                 # one bad episode must not abort the show
+            log("  ", status)
+            if status == "ok":
+                transcribed += 1
+                for k in totals:
+                    totals[k] += _LAST_STATS.get(k, 0)
         except Exception as e:
             log("  ERROR", type(e).__name__, e)
             if any(k in str(e).lower() for k in ("cuda", "out of memory", "device ordinal", "cublas")):
@@ -305,6 +352,23 @@ def main():
                 sys.exit(3)
             try: os.remove(os.path.splitext(v)[0] + ".dubtitles.fail")  # non-CUDA: let it retry
             except OSError: pass
+    # V2 C1: per-show run summary (glossaries/<show>.lastrun.json) -- one file per --root
+    # invocation, since SHOW_NAME/GLOSSARY_FILE are per-run env (see load_glossary()).
+    show = os.environ.get("SHOW_NAME", "") or GLOSS.get("show", "") or "unknown_show"
+    lastrun = {
+        "show": show, "elapsed_s": round(time.monotonic() - t0, 1),
+        "episodes_total": len(todo), "episodes_transcribed": transcribed,
+        "cards_written": totals["cards_written"],
+        "dropped_hallucination": totals["dropped_hallucination"],
+        "collapsed_runs": totals["collapsed_runs"], "flagged": totals["flagged"],
+        "model": MODEL, "model_version": _model_version(), "glossary_version": _glossary_version(),
+    }
+    try:
+        os.makedirs(GLOSS_DIR, exist_ok=True)
+        with open(os.path.join(GLOSS_DIR, show + ".lastrun.json"), "w") as f:
+            json.dump(lastrun, f, indent=2)
+    except OSError as e:
+        log("  lastrun.json write failed:", e)
 
 
 if __name__ == "__main__":

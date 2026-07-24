@@ -193,3 +193,63 @@ def test_extract_wav_no_filter_when_empty(monkeypatch, tmp_path):
     wav.write_bytes(b"x" * 2000)
     generate.extract_wav("ep.mkv", 1, str(wav))
     assert "-af" not in calls[0]
+
+
+# --- V2 C1: glossaries/<show>.lastrun.json ------------------------------------
+
+def test_lastrun_json_written_after_show(monkeypatch, tmp_path):
+    """End-to-end through main(): after processing every episode in a --root-less,
+    explicit-file run (one file = "a show" here), main() writes GLOSS_DIR's
+    <show>.lastrun.json with the run's totals. GLOSS_DIR is redirected to tmp_path
+    (module-level constant, not re-read from env at call time -- monkeypatch the
+    attribute, same as AUDIO_FILTER above)."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "has_dubtitles_track", lambda video: False)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+    monkeypatch.setenv("SHOW_NAME", "Test Show")
+    monkeypatch.setattr(generate, "GLOSS_DIR", str(tmp_path))
+
+    words = [_FakeWord(" Hello", 0.0, 0.3, 0.95), _FakeWord(" there.", 0.3, 0.9, 0.10)]
+    seg = _FakeSegment(0.0, 0.9, 0.05, words)
+    monkeypatch.setattr(generate, "WhisperModel", lambda *a, **kw: _FakeModel([seg]))
+    monkeypatch.setattr(sys, "argv", ["generate.py", str(v)])
+
+    generate.main()
+
+    lr = json.loads((tmp_path / "Test Show.lastrun.json").read_text())
+    assert lr["show"] == "Test Show"
+    assert lr["episodes_total"] == 1 and lr["episodes_transcribed"] == 1
+    assert lr["cards_written"] == 1
+    assert lr["dropped_hallucination"] == 0
+    assert lr["collapsed_runs"] == 0
+    assert lr["flagged"] == 1  # the low-prob "there." word drags avg_logprob into flag_reason()
+    assert lr["model"] == generate.MODEL
+    assert lr["elapsed_s"] >= 0
+    assert "model_version" in lr and "glossary_version" in lr
+
+
+def test_lastrun_json_show_falls_back_when_unset(monkeypatch, tmp_path):
+    """No SHOW_NAME env and no glossary 'show' field -> falls back to a safe filename
+    instead of writing a leading-dot ".lastrun.json" hidden file."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "has_dubtitles_track", lambda video: False)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+    monkeypatch.delenv("SHOW_NAME", raising=False)
+    monkeypatch.setattr(generate, "GLOSS_DIR", str(tmp_path))
+
+    words = [_FakeWord(" Hello", 0.0, 0.3, 0.95)]
+    seg = _FakeSegment(0.0, 0.3, 0.05, words)
+    monkeypatch.setattr(generate, "WhisperModel", lambda *a, **kw: _FakeModel([seg]))
+    monkeypatch.setattr(sys, "argv", ["generate.py", str(v)])
+
+    generate.main()
+
+    assert not (tmp_path / ".lastrun.json").exists()
+    lr = json.loads((tmp_path / "unknown_show.lastrun.json").read_text())
+    assert lr["show"] == "unknown_show"
