@@ -1,4 +1,8 @@
 #!/bin/sh
+# DEPRECATED as of 2026-07-24: use container_run.sh instead.
+# This script reloads the Whisper model per show (~40s × N shows).
+# container_run.sh loads it once and keeps it resident.
+# This file is retained for reference; no functional changes.
 # HOST orchestrator (docker user): for each One Pace season in priority order,
 # generate dubtitles on the 1060, then repair+assemble+Plex-refresh per episode.
 # S13/S14 first (showcase the romaji+transcribed karaoke), then the rest. Skips S15
