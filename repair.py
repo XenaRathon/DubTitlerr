@@ -20,9 +20,12 @@ the LLM only runs on lines with a fansub anchor (the bake-off showed glossary-on
 hallucinates names even on qwen3:8b, so no-anchor lines keep the deterministic text); the
 LLM output is run back through the deterministic correction to enforce canon.
 
-CPU/network only — the LLM runs on the 2070 (Ollama). Env:
-  OLLAMA_URL    default http://ollama.local:11434/api/generate
-  REPAIR_MODEL  default qwen3:8b   (locked by the C1 bake-off)
+CPU/network only — the LLM runs on the 2070 (Ollama) or, optionally, a llama.cpp server.
+Env:
+  OLLAMA_URL           default http://ollama.local:11434/api/generate
+  REPAIR_MODEL         default qwen3:8b   (locked by the C1 bake-off)
+  REPAIR_BACKEND       ollama | llamacpp  (default ollama — V2 A1)
+  REPAIR_LLAMACPP_URL  default http://192.168.1.232:8080/completion  (V2 A1)
   LOGPROB_MIN   default -0.4   (mid-confidence-and-lower; below this is a repair target)
   NSP_MAX       default 0.5    (…and below this no_speech_prob — i.e. it IS speech)
   GLOSSARY_DIR  default /config/glossaries   (per-show glossary, resolved from the path)
@@ -46,6 +49,8 @@ from common import extract_sub as extract
 
 OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
 MODEL = os.environ.get("REPAIR_MODEL", "qwen3:8b")
+REPAIR_BACKEND = os.environ.get("REPAIR_BACKEND", "ollama")
+LLAMACPP_URL = os.environ.get("REPAIR_LLAMACPP_URL", "http://192.168.1.232:8080/completion")
 LOGPROB_MIN = float(os.environ.get("LOGPROB_MIN", "-0.4"))   # mid-confidence-and-lower (C1)
 NSP_MAX = float(os.environ.get("NSP_MAX", "0.5"))
 GLOSSARY_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
@@ -154,9 +159,11 @@ def overlap_ref(ivals, a, b):
     return " ".join(hits)[:300]
 
 
-def llm(prompt):
+def llm_ollama(prompt, model=None):
+    """Ollama /api/generate backend (the original/default path — byte-for-byte the same
+    request shape and response parsing as before A1's dispatch refactor)."""
     # think=False keeps qwen3/qwen3.5 from emitting <think> blocks (ignored by qwen2.5)
-    body = {"model": MODEL, "prompt": prompt, "stream": False, "think": False,
+    body = {"model": model or MODEL, "prompt": prompt, "stream": False, "think": False,
             "options": {"temperature": 0}}
     try:
         req = urllib.request.Request(OLLAMA, data=json.dumps(body).encode(),
@@ -167,6 +174,32 @@ def llm(prompt):
         return out
     except Exception as e:
         log("  llm fail:", e); return ""
+
+
+def llm_llamacpp(prompt, model):
+    """llama.cpp /completion backend (V2 A1). Different schema from Ollama: no streaming
+    flag, no "model" selector in the request (the server has exactly one model loaded —
+    `model` is accepted here for signature parity with llm_ollama/the two-pass dispatch
+    but is not sent), and the response key is "content" instead of "response"."""
+    body = {"prompt": prompt, "temperature": 0, "n_predict": 50, "stop": ["\n"]}
+    try:
+        req = urllib.request.Request(LLAMACPP_URL, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            out = json.loads(r.read()).get("content", "").strip()
+        out = out.splitlines()[0].strip().strip('"').strip() if out else ""
+        return out
+    except Exception as e:
+        log("  llm fail:", e); return ""
+
+
+def llm(prompt, model=None):
+    """Dispatch to the backend configured by REPAIR_BACKEND (ollama|llamacpp, default
+    ollama — matches pre-A1 behavior exactly). model=None uses the backend's default
+    (REPAIR_MODEL); pass it explicitly for the two-pass secondary-model re-check (A3)."""
+    if REPAIR_BACKEND == "llamacpp":
+        return llm_llamacpp(prompt, model or MODEL)
+    return llm_ollama(prompt, model)
 
 
 def process(conf_path):

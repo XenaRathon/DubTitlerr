@@ -1,4 +1,7 @@
-"""Unit tests for repair.py pure helpers (C1). The LLM call itself is integration."""
+"""Unit tests for repair.py pure helpers (C1) plus V2 A1 backend-dispatch coverage. The
+llama.cpp box and Ollama are NOT reachable from this environment -- every HTTP-touching
+test here mocks urllib.request.urlopen or the llm_* functions; no live LLM call is ever
+made. Live llama.cpp integration is PENDING manual verification on real hardware."""
 import json
 
 import glossary
@@ -90,3 +93,102 @@ def test_glossary_for_finds_show_glossary_by_walking_up(tmp_path):
 def test_glossary_for_missing_is_noop(tmp_path):
     g = repair.glossary_for(str(tmp_path / "Show" / "ep.mkv"), str(tmp_path / "glossaries"))
     assert g["names"] == [] and g["token_fixes"] == {}
+
+
+# --- A1: llm() backend dispatch ----------------------------------------------
+
+def test_llm_dispatch_default_is_ollama(monkeypatch):
+    assert repair.REPAIR_BACKEND == "ollama"           # default, backward-compat
+    calls = []
+    monkeypatch.setattr(repair, "llm_ollama", lambda prompt, model=None: calls.append(("ollama", prompt, model)) or "ok")
+    monkeypatch.setattr(repair, "llm_llamacpp", lambda prompt, model: calls.append(("llamacpp", prompt, model)) or "bad")
+    assert repair.llm("hi") == "ok"
+    assert calls == [("ollama", "hi", None)]
+
+
+def test_llm_dispatch_routes_to_llamacpp_when_configured(monkeypatch):
+    calls = []
+    monkeypatch.setattr(repair, "REPAIR_BACKEND", "llamacpp")
+    monkeypatch.setattr(repair, "llm_ollama", lambda prompt, model=None: calls.append(("ollama", prompt, model)) or "bad")
+    monkeypatch.setattr(repair, "llm_llamacpp", lambda prompt, model: calls.append(("llamacpp", prompt, model)) or "ok")
+    assert repair.llm("hi") == "ok"
+    assert calls == [("llamacpp", "hi", repair.MODEL)]   # model=None -> defaults to REPAIR_MODEL
+
+
+def test_llm_dispatch_passes_explicit_model_through(monkeypatch):
+    calls = []
+    monkeypatch.setattr(repair, "REPAIR_BACKEND", "llamacpp")
+    monkeypatch.setattr(repair, "llm_llamacpp", lambda prompt, model: calls.append(model) or "ok")
+    repair.llm("hi", model="secondary-model")
+    assert calls == ["secondary-model"]
+
+
+class _FakeHTTPResponse:
+    """Minimal context-manager stand-in for urllib.request.urlopen()'s return value."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return json.dumps(self._payload).encode()
+
+
+def test_llm_ollama_request_shape_and_response_parsing(monkeypatch):
+    """Byte-for-byte the pre-A1 request body + response parsing (first line, unquoted)."""
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["body"] = json.loads(req.data)
+        captured["timeout"] = timeout
+        return _FakeHTTPResponse({"response": '  "fixed line"  \nignored second line'})
+    monkeypatch.setattr(repair.urllib.request, "urlopen", fake_urlopen)
+    out = repair.llm_ollama("the prompt")
+    assert captured["url"] == repair.OLLAMA
+    assert captured["body"] == {"model": repair.MODEL, "prompt": "the prompt", "stream": False,
+                                 "think": False, "options": {"temperature": 0}}
+    assert out == "fixed line"
+
+
+def test_llm_ollama_explicit_model_overrides_default(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data)
+        return _FakeHTTPResponse({"response": "x"})
+    monkeypatch.setattr(repair.urllib.request, "urlopen", fake_urlopen)
+    repair.llm_ollama("p", model="other-model")
+    assert captured["body"]["model"] == "other-model"
+
+
+def test_llm_ollama_swallows_transport_failure(monkeypatch):
+    def boom(req, timeout=None):
+        raise OSError("connection refused")
+    monkeypatch.setattr(repair.urllib.request, "urlopen", boom)
+    assert repair.llm_ollama("p") == ""      # same fail-soft behavior as before A1
+
+
+def test_llm_llamacpp_request_shape_and_response_parsing(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["body"] = json.loads(req.data)
+        return _FakeHTTPResponse({"content": '"quoted fix"\nsecond line'})
+    monkeypatch.setattr(repair.urllib.request, "urlopen", fake_urlopen)
+    out = repair.llm_llamacpp("the prompt", "some-model")
+    assert captured["url"] == repair.LLAMACPP_URL
+    assert captured["body"] == {"prompt": "the prompt", "temperature": 0, "n_predict": 50, "stop": ["\n"]}
+    assert "model" not in captured["body"]     # llama.cpp /completion has no model selector
+    assert out == "quoted fix"
+
+
+def test_llm_llamacpp_swallows_transport_failure(monkeypatch):
+    monkeypatch.setattr(repair.urllib.request, "urlopen", lambda req, timeout=None: (_ for _ in ()).throw(OSError("down")))
+    assert repair.llm_llamacpp("p", "m") == ""
