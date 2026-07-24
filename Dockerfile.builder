@@ -20,9 +20,16 @@ ENV MODEL_DIR=/models
 RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('large-v3', device='cpu', compute_type='int8', download_root='/models')"
 
 WORKDIR /app
-COPY generate.py reflow.py glossary.py glossary_verify.py hallucination.py ordering.py common_words.txt \
+# NOTE (V2-U3 B7/B9): common.py was missing from this COPY list since V1 introduced it --
+# every `from common import ...` (generate.py, mine_glossary.py, mux.py, repair.py,
+# dub_signs_merge.py) would ImportError at container start. Added here alongside the new
+# data/ (EXTRA_DIRS data file) and shell/ (extras_grep_pattern lib) directories that
+# merge_pass.sh now sources from $APP/shell/lib.sh + $APP/data/extras.txt.
+COPY generate.py reflow.py glossary.py glossary_verify.py hallucination.py ordering.py common.py common_words.txt \
      repair.py dub_signs_merge.py mux.py plex_refresh.py mine_glossary.py merge_pass.sh \
      gen_loop.sh container_run.sh /app/
+COPY data/ /app/data/
+COPY shell/ /app/shell/
 RUN chmod +x /app/*.sh
 
 # Bypass subgen's init (we only want its runtime); run our two-loop supervisor as root so
