@@ -41,6 +41,8 @@ SUFFIX = os.environ.get("DUB_SUFFIX", ".eng.dubtitles.srt")
 SUB_LANGS = set(os.environ.get("SUB_LANGS", "eng,en,und,").split(","))
 
 KARAOKE = re.compile(r"\\[kK][fo]?\d")
+HAS_DRAWING = re.compile(r"\\p\d|\\clip|\\iclip")
+ANIMATED = re.compile(r"\\t\(|\\fade?\(|\\move\(")
 POSITIONED = re.compile(r"\\(?:pos|move)\(|\\an[134567 89]")
 # KEEP the Japanese romaji karaoke (top) + signs/credits. DROP the fansub English song
 # TRANSLATION — it's replaced by whisper's transcribed English-dub lyrics (bottom Dubtitles).
@@ -61,8 +63,10 @@ def keep_event(ev):
     t = ev.text
     if KARAOKE.search(t):                  # Japanese romaji karaoke (top) -> keep
         return True
-    if POSITIONED.search(t):              # positioned sign -> keep
+    if HAS_DRAWING.search(t):             # vector-drawn sign (\p/\clip/\iclip) -> keep
         return True
+    if POSITIONED.search(t) or ANIMATED.search(t):   # positioned/animated sign -> keep
+        return True                                  # (ANIMATED's \move overlaps POSITIONED; merged into one check)
     if KEEP_STYLE.search(style):
         return True
     return False  # unknown plain event -> assume dialogue, Whisper has it
@@ -116,6 +120,14 @@ def build(video, dub_srt, out_ass):
         if ev.is_comment:
             continue
         ev.style = "Dubtitles"; base.events.append(ev); added += 1
+    # Dubtitles dialogue on the floor (layer 0); every sign/song event bumped one
+    # layer up so it renders on top. Shift (not zero) keeps the relative z-order
+    # among multi-layer sign compositions.
+    for ev in base.events:
+        if ev.style == "Dubtitles":
+            ev.layer = 0
+        else:
+            ev.layer = ev.layer + 1
     base.sort()
     base.save(out_ass)
     ok = os.path.exists(out_ass) and os.path.getsize(out_ass) > 0
