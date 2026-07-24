@@ -92,3 +92,19 @@ def test_layer_ordering_dub_below_signs(tmp_path, monkeypatch):
     assert low_after.layer == 1
     assert high_after.layer == 2
     assert low_after.layer < high_after.layer
+
+
+# --- V2 C10: chown failures are logged, not silently swallowed -------------------------
+
+def test_process_one_logs_chown_failure_instead_of_swallowing(tmp_path, monkeypatch, capsys):
+    srt = str(tmp_path / ("ep" + dsm.SUFFIX))
+    open(srt, "w").close()
+    monkeypatch.setattr(dsm, "find_video", lambda stem: str(tmp_path / "ep.mkv"))
+    monkeypatch.setattr(dsm, "build", lambda video, srt, out_ass: ("ok", 0, 1))
+
+    def _boom(*a, **kw):
+        raise OSError("Operation not permitted")
+    monkeypatch.setattr(dsm.os, "chown", _boom)
+
+    assert dsm.process_one(srt) == "merged"  # chown failure must not abort the episode
+    assert "chown failed for" in capsys.readouterr().out

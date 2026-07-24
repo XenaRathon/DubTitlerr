@@ -346,7 +346,7 @@ def process(conf_path):
         json.dump(summary, f, indent=2)
     for p in (srt_out, rep_out, summary_out):
         try: os.chown(p, MEDIA_UID, MEDIA_GID)
-        except OSError: pass
+        except OSError as e: log(f"chown failed for {p}: {e}")
     log(f"  targets={len(targets)} repaired={fixed}")
     return "repaired"
 

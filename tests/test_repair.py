@@ -460,6 +460,31 @@ def test_process_writes_repair_summary_json(tmp_path, monkeypatch):
                                            "ref": "the official sub", "latency_ms": summary["mean_latency_ms"]}]
 
 
+# --- V2 C10: chown failures are logged, not silently swallowed -------------------------
+
+def test_process_logs_chown_failure_instead_of_swallowing(tmp_path, monkeypatch, capsys):
+    stem = str(tmp_path / "ep_chown")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(conf_path, srt_path,
+                [{"start": 0.0, "end": 1.0, "text": "garbled line",
+                  "avg_logprob": -0.6, "no_speech_prob": 0.1}])
+
+    g = gl()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_chown.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "a fixed line")
+
+    def _boom(*a, **kw):
+        raise OSError("Operation not permitted")
+    monkeypatch.setattr(repair.os, "chown", _boom)
+
+    assert repair.process(conf_path) == "repaired"  # chown failure must not abort the show
+    out = capsys.readouterr().out
+    assert out.count("chown failed for") == 3  # srt_out, rep_out, summary_out
+
+
 def test_process_counts_skipped_no_ref_and_never_calls_llm(tmp_path, monkeypatch):
     stem = str(tmp_path / "ep_noref")
     conf_path = stem + repair.CONF_SUFFIX

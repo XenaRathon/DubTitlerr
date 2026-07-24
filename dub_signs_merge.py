@@ -147,7 +147,7 @@ def process_one(srt):
     if res != "ok" or dub == 0:
         return res if res != "ok" else "empty"
     try: os.chown(out_ass, MEDIA_UID, MEDIA_GID)
-    except OSError: pass
+    except OSError as e: log(f"chown failed for {out_ass}: {e}")
     try: os.remove(srt)
     except OSError: pass
     log(f"  signs/songs/credits kept={signs}  dub lines={dub}")
