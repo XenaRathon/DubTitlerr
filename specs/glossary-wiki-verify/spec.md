@@ -100,6 +100,20 @@ correct (dub-preferred) spelling for confident matches, and flag the rest.
 - stdlib-only HTTP; runs in the subgen image; resilient (never stall the GPU loop).
 - Per-show incremental + cached; deterministic pre-match is unit-tested; LLM/wiki are integration.
 
+## Authorization
+
+- **Who can execute:** outbound HTTPS to the show's Fandom wiki (`api.php`) for
+  `resolve_wiki()`/`fetch_titles()`, plus `OLLAMA_URL` reachable for `adjudicate()`.
+  Neither needs an auth token (public wiki API; LAN-only Ollama). `WIKI_CACHE_DIR` must
+  be writable to persist the page-index cache.
+- **Behavior without permission:** an unreachable wiki or `OLLAMA_URL` is caught inside
+  `resolve_wiki()`/`adjudicate()` (both wrap their HTTP calls in `try/except`), leaving
+  the glossary unchanged and reporting a `note` in `verify()`'s return value — **repair
+  of that glossary's terms skips**, never raised, matching the module's "any failure is
+  a no-op" design. Caveat: `fetch_titles()`'s `os.makedirs(CACHE_DIR, ...)` is NOT
+  wrapped — an unwritable `WIKI_CACHE_DIR` will raise uncaught. That's a pre-existing gap,
+  outside this task's docs-only scope.
+
 ## Open questions (risks)
 
 - [ ] Dub-vs-manga: the wiki title is usually the publisher (Viz) form; the dub variant may not be on

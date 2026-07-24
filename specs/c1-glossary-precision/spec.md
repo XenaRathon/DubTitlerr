@@ -104,6 +104,18 @@ One Pace episodes (no embedded subs), so for One Pace the curated glossary is th
 - LLM repair: Ollama on the PC (`192.168.1.196:11434`), model fits the 8 GB 2070.
 - Per-show opt-in correction; no cross-show leakage.
 
+## Authorization
+
+- **Who can execute:** the deterministic tiered correction (`glossary.py`) runs inline
+  in `generate.py`, same container-user as A1/B1 — no credentials needed. LLM repair
+  (`repair.py`) additionally needs `OLLAMA_URL` (or `REPAIR_LLAMACPP_URL` for the
+  `llamacpp` backend, V2 A1) reachable; no API key by default (LAN-only Ollama/llama.cpp).
+- **Behavior without permission:** an unreachable `OLLAMA_URL`/`REPAIR_LLAMACPP_URL`
+  is caught inside `llm_ollama()`/`llm_llamacpp()`, which returns `""` on failure; `process()`
+  treats an empty result as "no repair produced," keeps the original whisper text for that
+  line, and moves to the next target. **Repair skips** that line rather than crashing the
+  show; the deterministic correction (which needs no network) still applies regardless.
+
 ## Open questions (risks)
 
 - [ ] Exact mid-confidence threshold + name-suspect heuristic tuned during implementation
