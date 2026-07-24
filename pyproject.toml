@@ -1,3 +1,19 @@
+[project]
+name = "dubtitlerr"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["pysubs2>=1.7", "faster-whisper>=1.2"]
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+# This is a flat collection of top-level pipeline scripts (mux.py, generate.py, ...),
+# not an importable library — tests reach them via conftest.py's sys.path insert, not
+# a package import. Tell setuptools there's nothing to package so `pip install -e
+# ".[dev]"` (used purely to pull in the runtime + dev dependencies) doesn't choke on
+# auto-discovering specs/, glossaries/, tests/, tools/ as spurious top-level packages.
+[tool.setuptools]
+py-modules = []
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

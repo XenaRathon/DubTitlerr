@@ -31,6 +31,8 @@ import re
 import shutil
 import subprocess
 
+from common import MEDIA_GID, MEDIA_UID, STAMP_SUFFIX, log, read_stamp, stamp_valid, write_stamp
+
 ROOTS = os.environ.get("MUX_ROOTS", "/data/Media/Anime Library").split(":")
 # Base audio/subtitle languages to KEEP. The title's ORIGINAL language is detected
 # per-file (the default audio track's language — Japanese for anime, but whatever it
@@ -42,50 +44,18 @@ HL_ROOTS = os.environ.get("HARDLINK_ROOTS", "").split(":") if os.environ.get("HA
 # (seed-until-orphan policy). Muxing only replaces the library's own file.
 DELETE_BROKEN = os.environ.get("DELETE_BROKEN_HARDLINKS", "0") == "1"
 DUR_TOL = float(os.environ.get("DUR_TOL", "2"))
-MEDIA_UID = int(os.environ.get("MEDIA_UID", "1000"))
-MEDIA_GID = int(os.environ.get("MEDIA_GID", "100"))
 MIN_FREE_GB = float(os.environ.get("MIN_FREE_GB", "5"))   # skip a remux if the pool is this low
 SIZE_FACTOR = 1.1                                         # temp ~ source size (+headroom)
 ASS_SUFFIX = ".eng.dubtitles.ass"
 SRT_SUFFIX = ".eng.dubtitles.srt"
-STAMP_SUFFIX = ".dubtitles.done"
 TRACK_NAME = "Dubtitles"
 # subtitle track names that mark a signs/songs track worth keeping regardless of language
 SIGNS_RE = re.compile(r"sign|song|karaoke|lyric|caption|title|credit|insert", re.I)
 
 
-def log(*a): print(*a, flush=True)
-
-
 def has_room(free_bytes: float, src_size: int) -> bool:
     """True if there's room for a full-size temp plus the MIN_FREE_GB safety margin."""
     return free_bytes >= src_size * SIZE_FACTOR + MIN_FREE_GB * (1 << 30)
-
-
-def write_stamp(path: str, video: str) -> None:
-    """Write the .dubtitles.done idempotency stamp recording the muxed file's size+mtime."""
-    st = os.stat(video)
-    with open(path, "w") as f:
-        json.dump({"size": st.st_size, "mtime": st.st_mtime, "muxed": True}, f)
-
-
-def read_stamp(path: str) -> dict | None:
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return None
-
-
-def stamp_valid(stamp: dict | None, video: str) -> bool:
-    """True if the stamp matches the current file (size+mtime) — i.e. still muxed, not replaced."""
-    if not stamp or not stamp.get("muxed"):
-        return False
-    try:
-        st = os.stat(video)
-    except OSError:
-        return False
-    return stamp.get("size") == st.st_size and abs(stamp.get("mtime", 0) - st.st_mtime) < 1.0
 
 
 def keep_sub(track: dict, keep_langs: set) -> bool:
@@ -98,10 +68,17 @@ def keep_sub(track: dict, keep_langs: set) -> bool:
     return bool(SIGNS_RE.search(props.get("track_name") or ""))
 
 
+_IDENTIFY_CACHE: dict = {}
+
+
 def identify(path):
-    r = subprocess.run(["mkvmerge", "-J", path], capture_output=True, text=True,
-                       stdin=subprocess.DEVNULL, timeout=120)
-    return json.loads(r.stdout)
+    """mkvmerge -J, cached per path — process() checks the file (stamp/ffprobe backstop)
+    then re-identifies it in build_cmd(); caching avoids the double subprocess call."""
+    if path not in _IDENTIFY_CACHE:
+        r = subprocess.run(["mkvmerge", "-J", path], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=120)
+        _IDENTIFY_CACHE[path] = json.loads(r.stdout)
+    return _IDENTIFY_CACHE[path]
 
 
 def has_dubtitles_track(info):

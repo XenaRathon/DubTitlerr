@@ -39,21 +39,9 @@ from faster_whisper import WhisperModel
 
 import glossary
 import hallucination
-import mux
 import ordering
 import reflow
-
-# OUTPUT_ROOT: write sidecars to this branch path instead of next to the mkv, so writes
-# land on a disk with space (mergerfs unifies branches, so the file still shows next to the
-# mkv in the pool view). READS still use the mergerfs path. Empty = write in place.
-MEDIA_ROOT = os.environ.get("MEDIA_ROOT", "/media")
-OUTPUT_ROOT = os.environ.get("OUTPUT_ROOT", "")
-def out_for(p):
-    if OUTPUT_ROOT and p.startswith(MEDIA_ROOT):
-        q = OUTPUT_ROOT + p[len(MEDIA_ROOT):]
-        os.makedirs(os.path.dirname(q), exist_ok=True)
-        return q
-    return p
+from common import EXTRA_DIRS, STAMP_SUFFIX, VIDEO_EXTS, out_for, read_stamp, stamp_valid, ts_srt
 
 MODEL = os.environ.get("WHISPER_MODEL", "large-v3")
 COMPUTE = os.environ.get("COMPUTE_TYPE", "int8")
@@ -86,8 +74,6 @@ def load_glossary():
 # Plex "local extras" subfolders + creditless/scene clips — never real episodes, often
 # mismatched junk from the scraper, and a frequent source of malformed-clip crashes. The
 # --root walk prunes these so a library run only ever transcribes actual episodes.
-EXTRA_DIRS = {"behind the scenes", "deleted scenes", "featurettes", "interviews",
-              "scenes", "shorts", "trailers", "other", "extras"}
 SKIP_FILE_RE = re.compile(r"\bNCED\b|\bNCOP\b|\bNCBD\b|-\s*scene\b|creditless", re.I)
 
 
@@ -137,14 +123,9 @@ def extract_wav(video, idx, wav):
     return os.path.exists(wav) and os.path.getsize(wav) > 1000
 
 
-def ts(t):
-    h = int(t // 3600); m = int((t % 3600) // 60); s = t % 60
-    return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
-
-
 def process(video):
     stem = os.path.splitext(video)[0]
-    if mux.stamp_valid(mux.read_stamp(stem + mux.STAMP_SUFFIX), video):  # muxed (stat-only) -> skip
+    if stamp_valid(read_stamp(stem + STAMP_SUFFIX), video):  # muxed (stat-only) -> skip
         return "already-muxed"
     if os.path.exists(stem + ".eng.dubtitles.ass"):     # assembled already -> skip (idempotent)
         return "already-ass"
@@ -162,8 +143,9 @@ def process(video):
         if not extract_wav(video, idx, wav): return "extract-failed"
         try: open(fail, "w").close()             # mark in-flight (a segfault here leaves the
         except OSError: pass                     # marker, so a resume skips this poison file)
+        beam_size = int(os.environ.get("WHISPER_BEAM_SIZE", "7"))
         segs, _info = WMODEL.transcribe(
-            wav, language="en", task="transcribe", beam_size=5,
+            wav, language="en", task="transcribe", beam_size=beam_size, best_of=beam_size,
             word_timestamps=True, vad_filter=False, condition_on_previous_text=False,
             no_speech_threshold=0.9, log_prob_threshold=-2.0,   # max coverage: VAD was removing
             initial_prompt=INITIAL_PROMPT)                       # music-masked dialogue (the 18-20min
@@ -219,7 +201,7 @@ def process(video):
     srt = out_for(stem + SUFFIX); confp = out_for(stem + ".dubtitles.conf.json")
     with open(srt, "w") as f:
         for i, (a, b, t) in enumerate(rows, 1):
-            f.write(f"{i}\n{ts(a)} --> {ts(b)}\n{t}\n\n")
+            f.write(f"{i}\n{ts_srt(a)} --> {ts_srt(b)}\n{t}\n\n")
     with open(confp, "w") as f:
         json.dump(conf, f)
     for p in (srt, confp):
@@ -247,7 +229,7 @@ def main():
         for dp, dns, fs in os.walk(args[1]):
             dns[:] = [d for d in dns if d.lower() not in EXTRA_DIRS]   # prune extras dirs
             for fn in fs:
-                if fn.lower().endswith((".mkv", ".mp4")) and not SKIP_FILE_RE.search(fn):
+                if fn.lower().endswith(VIDEO_EXTS) and not SKIP_FILE_RE.search(fn):
                     files.append(os.path.join(dp, fn))
         # Watch-order priority: process seasons >= a per-show start season first (the arc
         # the viewer is about to watch), then earlier ones. Absent config -> plain sort.
@@ -259,7 +241,7 @@ def main():
     # re-scan doesn't pay the ~40s model load when there's nothing new to transcribe.
     def needs_work(v):
         stem = os.path.splitext(v)[0]
-        if mux.stamp_valid(mux.read_stamp(stem + mux.STAMP_SUFFIX), v): return False  # muxed -> done
+        if stamp_valid(read_stamp(stem + STAMP_SUFFIX), v): return False  # muxed -> done
         if os.path.exists(stem + ".eng.dubtitles.ass"): return False
         if os.environ.get("SKIP_IF_SRT", "1") == "1" and os.path.exists(stem + ".eng.dubtitles.srt"): return False
         if os.path.exists(stem + ".dubtitles.fail"): return False
