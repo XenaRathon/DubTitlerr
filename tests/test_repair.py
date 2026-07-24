@@ -1,8 +1,9 @@
-"""Unit tests for repair.py pure helpers (C1) plus V2 A1/A2/A3 coverage: backend dispatch,
-explicit connect/read timeouts + per-call latency, and two-pass repair. The llama.cpp box
-and Ollama are NOT reachable from this environment -- every HTTP-touching test here mocks
-repair._post_json, its underlying http.client connection, or the llm_*/llm functions; no
-live LLM call is ever made. Live llama.cpp integration is PENDING manual verification."""
+"""Unit tests for repair.py pure helpers (C1) plus V2 A1/A2/A3/A10 coverage: backend
+dispatch, explicit connect/read timeouts + per-call latency, two-pass repair, and the
+repair-summary.json writer. The llama.cpp box and Ollama are NOT reachable from this
+environment -- every HTTP-touching test here mocks repair._post_json, its underlying
+http.client connection, or the llm_*/llm functions; no live LLM call is ever made. Live
+llama.cpp integration is PENDING manual verification on real hardware."""
 import csv
 import json
 
@@ -360,3 +361,64 @@ def test_process_two_pass_is_noop_when_secondary_equals_primary(tmp_path, monkey
     assert repair.MODEL_SECONDARY == repair.MODEL
     repair.process(conf_path)
     assert calls == [None]           # only the primary call, no secondary re-check
+
+
+# --- A10: repair-summary.json -------------------------------------------------
+
+def test_p95_empty_is_zero():
+    assert repair._p95([]) == 0.0
+
+
+def test_p95_nearest_rank_on_small_set():
+    # 5 values -> rank index round(0.95*4)=4 -> the max
+    assert repair._p95([10, 20, 30, 40, 100]) == 100
+
+
+def test_process_writes_repair_summary_json(tmp_path, monkeypatch):
+    stem = str(tmp_path / "ep_summary")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(conf_path, srt_path,
+                [{"start": 0.0, "end": 1.0, "text": "garbled line",
+                  "avg_logprob": -0.6, "no_speech_prob": 0.1}])
+
+    g = gl()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_summary.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "a fixed line")
+
+    assert repair.process(conf_path) == "repaired"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["targets"] == 1
+    assert summary["repaired"] == 1
+    assert summary["skipped_no_ref"] == 0
+    assert summary["model"] == repair.MODEL
+    assert summary["model_secondary"] == repair.MODEL_SECONDARY
+    assert summary["mean_latency_ms"] >= 0 and summary["p95_latency_ms"] >= 0
+    assert summary["repaired_lines"] == [{"orig": "garbled line", "repaired": "a fixed line",
+                                           "ref": "the official sub", "latency_ms": summary["mean_latency_ms"]}]
+
+
+def test_process_counts_skipped_no_ref_and_never_calls_llm(tmp_path, monkeypatch):
+    stem = str(tmp_path / "ep_noref")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(conf_path, srt_path,
+                [{"start": 0.0, "end": 1.0, "text": "garbled line",
+                  "avg_logprob": -0.9, "no_speech_prob": 0.1}])
+
+    g = gl()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_noref.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])   # no fansub anchor anywhere
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: (_ for _ in ()).throw(
+        AssertionError("llm must not be called when there's no fansub anchor")))
+
+    assert repair.process(conf_path) == "repaired"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["targets"] == 1
+    assert summary["repaired"] == 0
+    assert summary["skipped_no_ref"] == 1
+    assert summary["repaired_lines"] == []
+    assert summary["mean_latency_ms"] == 0 and summary["p95_latency_ms"] == 0
