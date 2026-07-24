@@ -201,3 +201,15 @@ def test_wrapstyle_no_log_when_same(tmp_path, monkeypatch, capsys):
 
     assert status == "ok"
     assert "WrapStyle differs" not in capsys.readouterr().out
+
+
+def test_scaled_border_and_shadow_forced_yes(tmp_path, monkeypatch):
+    track0 = _sign_track(text="first")
+    track0.info["ScaledBorderAndShadow"] = "no"       # source disagrees; must be overridden
+    track1 = _sign_track(text="second")
+
+    status, _signs, _dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+
+    assert status == "ok"
+    result = pysubs2.load(out_ass)
+    assert result.info.get("ScaledBorderAndShadow") == "yes"
