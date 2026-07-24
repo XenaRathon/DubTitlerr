@@ -108,6 +108,62 @@ def test_verify_ok_when_duration_within_tolerance(monkeypatch):
     assert mux.verify("orig.mkv", "out.mkv") == "ok"
 
 
+# --- D2: font-attachment audit -------------------------------------------------
+
+def _font(name="Arial.ttf", ctype="application/x-truetype-font"):
+    return {"content_type": ctype, "file_name": name}
+
+
+def _info_with_fonts(fonts=None):
+    d = _ok_info()
+    if fonts is not None:
+        d["attachments"] = fonts
+    return d
+
+
+def test_verify_font_count_mismatch_is_non_ok(monkeypatch):
+    infos = {
+        "orig.mkv": _info_with_fonts([_font(), _font(name="Comic.ttf")]),
+        "out.mkv": _info_with_fonts([_font()]),   # one font dropped by the remux
+    }
+    monkeypatch.setattr(mux, "identify", lambda p: infos[p])
+    monkeypatch.setattr(mux, "duration", lambda p: 100.0)
+    assert mux.verify("orig.mkv", "out.mkv") == "font-count-mismatch"
+
+
+def test_verify_ok_when_font_counts_equal_nonzero(monkeypatch):
+    infos = {
+        "orig.mkv": _info_with_fonts([_font(), _font(name="Comic.ttf")]),
+        "out.mkv": _info_with_fonts([_font(), _font(name="Comic.ttf")]),
+    }
+    monkeypatch.setattr(mux, "identify", lambda p: infos[p])
+    monkeypatch.setattr(mux, "duration", lambda p: 100.0)
+    assert mux.verify("orig.mkv", "out.mkv") == "ok"
+
+
+def test_verify_ok_when_no_fonts_either_side(monkeypatch):
+    # "attachments" key absent entirely on both sides -- .get(..., []) must treat
+    # this as 0 == 0, not KeyError, and still return "ok".
+    infos = {
+        "orig.mkv": _info_with_fonts(None),
+        "out.mkv": _info_with_fonts(None),
+    }
+    monkeypatch.setattr(mux, "identify", lambda p: infos[p])
+    monkeypatch.setattr(mux, "duration", lambda p: 100.0)
+    assert mux.verify("orig.mkv", "out.mkv") == "ok"
+
+
+def test_verify_warns_on_generic_font_mime_but_still_ok(monkeypatch, capsys):
+    infos = {
+        "orig.mkv": _info_with_fonts([_font(name="Weird.ttf", ctype="application/octet-stream")]),
+        "out.mkv": _info_with_fonts([_font(name="Weird.ttf", ctype="application/octet-stream")]),
+    }
+    monkeypatch.setattr(mux, "identify", lambda p: infos[p])
+    monkeypatch.setattr(mux, "duration", lambda p: 100.0)
+    assert mux.verify("orig.mkv", "out.mkv") == "ok"   # generic MIME warns, doesn't fail
+    assert "Weird.ttf" in capsys.readouterr().out
+
+
 # --- T6: sub_source selection ------------------------------------------------
 
 # --- C3: partners() inode cache -----------------------------------------------
