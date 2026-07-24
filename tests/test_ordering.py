@@ -108,6 +108,17 @@ def test_read_start_no_path_no_env_logs_disabled(monkeypatch, capsys):
     assert "watch-order disabled" in capsys.readouterr().out
 
 
+def test_read_start_no_path_env_start_set_no_disabled_log(monkeypatch, capsys):
+    """No priority file, but SEASON_START=5 -> honored (returns 5) and reordering WILL
+    happen, so the log must NOT claim watch-order is disabled."""
+    monkeypatch.delenv("SEASON_PRIORITY_FILE", raising=False)
+    monkeypatch.setenv("SEASON_START", "5")
+    assert o.read_start("Anything") == 5
+    out = capsys.readouterr().out
+    assert "disabled" not in out
+    assert "SEASON_START=5" in out
+
+
 def test_read_start_resolves_path_from_env(monkeypatch, tmp_path):
     """SEASON_PRIORITY_FILE env (no explicit path arg) is honored, same as before."""
     f = tmp_path / "season_priority.txt"
