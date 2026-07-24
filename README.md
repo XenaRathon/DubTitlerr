@@ -48,19 +48,22 @@ own — it makes any mined or community-submitted glossary as accurate as a hand
 
 ## Quick start
 
+The full pipeline (transcribe → repair → merge → mux) builds from `Dockerfile.builder`
+and runs as one long-lived, restart-safe container (root, so it can rewrite/chown
+sidecars) — no cron needed, it loops on its own:
+
 ```sh
 # build
-docker build -t dub-signs-merge .
+docker build -f Dockerfile.builder -t dubtitle-builder:latest .
 
-# run once over your media (root = container runs as root so it can rewrite sidecars)
-docker run --rm -u 0 -v "/path/to/your/media:/data" dub-signs-merge
+# run continuously against your media (env vars configure roots/models/Plex — see the Wiki)
+docker run --rm -u 0 --gpus all -v "/path/to/your/media:/media" -v "/path/to/config:/config" \
+  -e ANIME_ROOT="/media/Anime Library" dubtitle-builder:latest
 ```
 
-Then schedule `run-dub-merge.sh` from cron (it also nudges Plex to rescan when something changed):
-
-```cron
-*/20 * * * * MEDIA_ROOT=/path/to/media PLEX_URL=http://127.0.0.1:32400 PLEX_TOKEN=xxxx PLEX_SECTION=7 /path/to/run-dub-merge.sh >> /path/to/merge.log 2>&1
-```
+`Dockerfile` (signs+dub merge only, no transcribe/repair) is deprecated — see the comment
+at its top. Its old cron-based quick start (`docker build -t dub-signs-merge .` +
+`run-dub-merge.sh`) still works for that narrower use case but isn't the recommended path.
 
 <details>
 <summary><b>Make it yours — settings</b></summary>
