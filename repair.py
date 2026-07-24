@@ -77,7 +77,7 @@ def glossary_for(path, gloss_dir=GLOSSARY_DIR):
 def is_target(c, gloss):
     """A conf row to send to the LLM: it must be speech (low no_speech_prob) AND either
     mid-confidence-or-lower OR name-suspect."""
-    if c.get("no_speech_prob", 1.0) >= NSP_MAX:
+    if c.get("no_speech_prob", 1.0) > NSP_MAX:
         return False
     return c.get("avg_logprob", 0.0) < LOGPROB_MIN or glossary.name_suspect(c.get("text", ""), gloss)
 

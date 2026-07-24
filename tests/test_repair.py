@@ -33,6 +33,13 @@ def test_is_target_skips_music_silence():
     assert not repair.is_target({"avg_logprob": -2.0, "no_speech_prob": 0.9, "text": "la la"}, g)
 
 
+def test_is_target_fencepost():
+    # a card at exactly NSP_MAX (0.5) is speech, not silence — was excluded by the old >= check
+    g = gl()
+    c = {"avg_logprob": -0.6, "no_speech_prob": 0.5, "text": "hi"}
+    assert repair.is_target(c, g)
+
+
 # --- prompt building ---------------------------------------------------------
 
 def test_build_prompt_includes_glossary_names():
