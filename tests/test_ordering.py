@@ -95,3 +95,32 @@ def test_read_start_file_beats_env(monkeypatch, tmp_path):
     f = tmp_path / "season_priority.txt"
     f.write_text("One Pace:20\n")
     assert o.read_start("One Pace", str(f)) == 20
+
+
+# --- read_start: V2 C4 -- no hardcoded default path; explicit "disabled" logging -------
+
+def test_read_start_no_path_no_env_logs_disabled(monkeypatch, capsys):
+    """No explicit path AND no SEASON_PRIORITY_FILE env -> watch-order is disabled,
+    logged explicitly (not the old silent attempt to open a hardcoded default file)."""
+    monkeypatch.delenv("SEASON_PRIORITY_FILE", raising=False)
+    monkeypatch.delenv("SEASON_START", raising=False)
+    assert o.read_start("Anything") == 0
+    assert "watch-order disabled" in capsys.readouterr().out
+
+
+def test_read_start_resolves_path_from_env(monkeypatch, tmp_path):
+    """SEASON_PRIORITY_FILE env (no explicit path arg) is honored, same as before."""
+    f = tmp_path / "season_priority.txt"
+    f.write_text("One Pace:20\n")
+    monkeypatch.setenv("SEASON_PRIORITY_FILE", str(f))
+    assert o.read_start("One Pace") == 20
+
+
+def test_read_start_non_integer_value_logs_warning(tmp_path, capsys):
+    """A malformed 'Show:NN' value logs a warning (instead of the old silent 0) and
+    still returns 0 -- a typo'd priority file should be visible, not invisible."""
+    f = tmp_path / "season_priority.txt"
+    f.write_text("One Pace:not-a-number\n")
+    assert o.read_start("One Pace", str(f)) == 0
+    out = capsys.readouterr().out
+    assert "non-integer" in out and "One Pace" in out
