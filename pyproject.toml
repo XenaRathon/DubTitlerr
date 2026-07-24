@@ -2,7 +2,7 @@
 name = "dubtitlerr"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["pysubs2>=1.7", "faster-whisper>=1.2"]
+dependencies = ["pysubs2>=1.7", "faster-whisper>=1.2", "jellyfish>=1.0"]
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
 
