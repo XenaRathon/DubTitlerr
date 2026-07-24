@@ -99,11 +99,19 @@ def duration(path):
         return 0.0
 
 
+_partners_cache: dict[tuple[int, int], list[str]] = {}
+
+
 def partners(orig):
-    """Other paths hardlinked to orig (same inode), searched within HL_ROOTS."""
+    """Other paths hardlinked to orig (same inode), searched within HL_ROOTS. Cached by
+    (st_ino, st_dev) for the process lifetime (one mux sweep) -- a full HL_ROOTS walk
+    per file is expensive and hardlink partners don't change mid-sweep."""
     st = os.stat(orig)
     if st.st_nlink <= 1:
         return []
+    key = (st.st_ino, st.st_dev)
+    if key in _partners_cache:
+        return _partners_cache[key]
     found = []
     for root in HL_ROOTS:
         if not os.path.isdir(root):
@@ -119,6 +127,7 @@ def partners(orig):
                     continue
                 if s2.st_ino == st.st_ino and s2.st_dev == st.st_dev and s2.st_size == st.st_size:
                     found.append(p)
+    _partners_cache[key] = found
     return found
 
 
