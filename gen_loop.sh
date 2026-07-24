@@ -4,6 +4,9 @@
 # newly added anime get dubtitled automatically. generate.py skips the model load entirely
 # when a sweep finds nothing new, so idle rescans are cheap.
 set -u
+set -e   # fail loud (exit, taking down the entrypoint) on anything NOT explicitly tolerated
+         # below; mine/verify/generate keep their `||` fallthroughs so crash-resume +
+         # stall-detection (the $after -le $before comparison) still runs even when one fails.
 ORDER="${ANIME_ORDER:-/config/anime_order.txt}"
 ANIME="${ANIME_ROOT:-/media/Anime Library}"
 GLOSS_DIR="${GLOSSARY_DIR:-/config/glossaries}"
@@ -32,9 +35,11 @@ while :; do
     while :; do
       attempt=$((attempt+1))
       before=$(find "$ANIME/$show" \( -name "*.eng.dubtitles.srt" -o -name "*.dubtitles.fail" \) 2>/dev/null | wc -l)
+      # `&& rc=0 || rc=$?` (not a bare command + `rc=$?` on the next line) so a nonzero
+      # exit from generate.py doesn't trip `set -e` and kill the container before the
+      # crash-resume logic below ever sees it — while still capturing the real exit code.
       SHOW_NAME="$show" GLOSSARY_FILE="$GLOSS" REQUIRE_ENG=1 COMPUTE_TYPE="${COMPUTE_TYPE:-int8}" \
-        python3 /app/generate.py --root "$ANIME/$show" </dev/null
-      rc=$?
+        python3 /app/generate.py --root "$ANIME/$show" </dev/null && rc=0 || rc=$?
       after=$(find "$ANIME/$show" \( -name "*.eng.dubtitles.srt" -o -name "*.dubtitles.fail" \) 2>/dev/null | wc -l)
       [ "$rc" = "0" ] && break
       if [ "$after" -le "$before" ]; then echo "GENERATE stalled on $show (rc=$rc) — moving on"; break; fi
