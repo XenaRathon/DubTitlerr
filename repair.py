@@ -146,7 +146,10 @@ def build_prompt(asr, sub, gloss, prev_text="", next_text=""):
         "Return ONLY the line — no quotes, no notes.\n\n")
     prev_line = f'Previous line (for context): "{prev_text}"\n' if prev_text else ""
     next_line = f'Next line (for context): "{next_text}"\n' if next_text else ""
-    ref_line = f"Official subtitle (reference only): {sub}\n" if sub else ""
+    # C9: wrap the fansub reference in an XML tag so it reads as quoted DATA, not
+    # instructions -- the reference text comes from an untrusted third-party fansub file,
+    # and this is a prompt-injection guard against text embedded inside it.
+    ref_line = f"<official_subtitle_reference>{sub}</official_subtitle_reference>\n" if sub else ""
     return f"{head}{name_line}{rules}ASR line: {asr}\n{prev_line}{next_line}{ref_line}Corrected line:"
 
 

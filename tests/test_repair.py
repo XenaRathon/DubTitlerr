@@ -94,6 +94,16 @@ def test_build_prompt_uses_reference_when_present_else_glossary_only():
     assert "the official sub" not in no_ref          # graceful glossary-only fallback
 
 
+def test_build_prompt_wraps_reference_in_xml_tag():
+    # C9: prompt-injection guard -- the fansub reference (untrusted third-party text) is
+    # wrapped in an XML tag so the model reads it as quoted data, not instructions.
+    g = gl()
+    p = repair.build_prompt("asr line", "the official sub", g)
+    assert "<official_subtitle_reference>the official sub</official_subtitle_reference>" in p
+    no_ref = repair.build_prompt("asr line", "", g)
+    assert "<official_subtitle_reference>" not in no_ref
+
+
 def test_build_prompt_no_prev_next_matches_old_prompt():
     g = gl(names=["Spandam"])
     explicit_empty = repair.build_prompt("asr line", "the official sub", g, "", "")
