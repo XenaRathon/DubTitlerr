@@ -97,3 +97,30 @@ def test_collapse_runs_mixed_sequence():
     cards = run("loop", 4) + [card("a distinct ending line")]
     out = h.collapse_runs(cards)
     assert len(out) == 2 and out[1]["text"] == "a distinct ending line"
+
+
+# --- V2 C8: BLOCKLIST loaded from data/hallucination_blocklist.txt, inline fallback ----
+
+def test_blocklist_loads_from_data_file():
+    """The real data/hallucination_blocklist.txt (repo-relative, present in this checkout)
+    reproduces the exact same compiled pattern as the inline fallback."""
+    loaded = h._load_blocklist("data/hallucination_blocklist.txt")
+    fallback = h._load_blocklist("data/does_not_exist.txt")
+    assert loaded.pattern == fallback.pattern == h._BLOCKLIST_PATTERN_FALLBACK
+
+
+def test_blocklist_falls_back_when_data_file_missing():
+    """Missing/unreadable data file -> falls back to the pre-C8 inline pattern, not an
+    empty (always-matching-nothing) regex."""
+    bl = h._load_blocklist("data/nope_this_file_does_not_exist.txt")
+    assert bl.search("please subscribe to our channel")
+    assert not bl.search("I subscribe to that philosophy of life")
+
+
+def test_blocklist_data_file_comments_and_blanks_are_skipped(tmp_path):
+    f = tmp_path / "blocklist.txt"
+    f.write_text("# a comment\n\nfoo-pattern\n  \nbar-pattern\n")
+    bl = h._load_blocklist(str(f))
+    assert bl.search("has a foo-pattern in it")
+    assert bl.search("has a bar-pattern in it")
+    assert not bl.search("neither pattern here")
