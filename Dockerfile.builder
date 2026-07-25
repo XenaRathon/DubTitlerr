@@ -17,7 +17,8 @@ FROM mccloud/subgen:2026.06.2
 # (dep-free, ffmpeg is already in this image).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-pip wamerican mkvtoolnix \
-    && python3 -m pip install --no-cache-dir pysubs2 jellyfish webrtcvad \
+    && python3 -m pip install --no-cache-dir pysubs2 jellyfish \
+    && (python3 -m pip install --no-cache-dir webrtcvad || echo "webrtcvad install failed -- analytics-only, use --vad ffmpeg-silencedetect; NOT fatal for generation") \
     && rm -rf /var/lib/apt/lists/*
 
 # Bake the Whisper large-v3 model into the image (~3GB) so the container is fully
