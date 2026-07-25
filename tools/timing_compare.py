@@ -483,7 +483,13 @@ def main(argv=None):
     ap = build_arg_parser()
     a = ap.parse_args(argv)
     tolerance = max(TOLERANCE_MIN, min(TOLERANCE_MAX, a.tolerance))
-    lang = {s.strip().lower() for s in a.lang.split(",") if s.strip()}
+    # Mirror common.SUB_LANGS's construction (no `if s.strip()` filter): the default
+    # "eng,en,und," must keep the blank token so untagged subtitle streams (language ==
+    # "", as returned by common.eng_sub_streams for streams with no language tag) match
+    # here the same way they do in the rest of the pipeline. Dropping "" here would make
+    # this tool's --lang stricter than common.SUB_LANGS, wrongly marking episodes whose
+    # only usable dialogue track is untagged as no-reference.
+    lang = {s.strip().lower() for s in a.lang.split(",")}
 
     videos = find_episodes(a.show_dir)
     counts: dict = {}

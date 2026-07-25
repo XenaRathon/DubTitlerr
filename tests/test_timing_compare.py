@@ -51,6 +51,47 @@ def test_main_clamps_tolerance_out_of_range(tmp_path, monkeypatch, capsys):
     assert seen["tolerance"] == tc.TOLERANCE_MIN
 
 
+def test_main_default_lang_matches_common_sub_langs_including_untagged(tmp_path, monkeypatch):
+    """The blank token ("") must survive the --lang parse so untagged subtitle streams
+    (language == "", as common.eng_sub_streams treats a stream with no <language> tag)
+    are matched, exactly like common.SUB_LANGS does. Regression test for the bug where
+    `if s.strip()` silently dropped "" from the default --lang set, making this tool
+    stricter than the pipeline it reports on and wrongly marking untagged-only episodes
+    as no-reference."""
+    monkeypatch.chdir(tmp_path)
+    seen = {}
+
+    def fake_process_episode(video, lang, tolerance, **kw):
+        seen["lang"] = lang
+        return {"video": video, "status": "no-conf"}
+
+    (tmp_path / "Show" / "S01").mkdir(parents=True)
+    (tmp_path / "Show" / "S01" / "ep.mkv").write_bytes(b"")
+    monkeypatch.setattr(tc, "process_episode", fake_process_episode)
+
+    tc.main(["Show"])
+    assert "" in seen["lang"]
+    assert seen["lang"] == tc.common.SUB_LANGS
+
+
+def test_main_explicit_lang_keeps_blank_token_like_common_sub_langs(tmp_path, monkeypatch):
+    """An explicit --lang string is parsed the same way common.SUB_LANGS parses its env
+    var -- no `if s.strip()` filtering -- so a trailing/embedded blank token is kept."""
+    monkeypatch.chdir(tmp_path)
+    seen = {}
+
+    def fake_process_episode(video, lang, tolerance, **kw):
+        seen["lang"] = lang
+        return {"video": video, "status": "no-conf"}
+
+    (tmp_path / "Show" / "S01").mkdir(parents=True)
+    (tmp_path / "Show" / "S01" / "ep.mkv").write_bytes(b"")
+    monkeypatch.setattr(tc, "process_episode", fake_process_episode)
+
+    tc.main(["Show", "--lang", "fre,fr,"])
+    assert seen["lang"] == {"fre", "fr", ""}
+
+
 def test_find_episodes_walks_and_prunes_extra_dirs_and_sorts(tmp_path):
     show = tmp_path / "Show A"
     (show / "S01").mkdir(parents=True)
