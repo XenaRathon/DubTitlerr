@@ -9,7 +9,11 @@ of the pipeline (and without risking a circular import).
 """
 import json
 import os
+import re
 import subprocess
+import tempfile
+
+import pysubs2
 
 MEDIA_UID = int(os.environ.get("MEDIA_UID", "1000"))
 MEDIA_GID = int(os.environ.get("MEDIA_GID", "100"))
@@ -22,6 +26,19 @@ MEDIA_ROOT = os.environ.get("MEDIA_ROOT", "/media")
 OUTPUT_ROOT = os.environ.get("OUTPUT_ROOT", "")
 
 VIDEO_EXTS = (".mkv", ".mp4", ".m4v")
+
+# SUB_LANGS: accepted embedded-sub languages for dialogue_intervals()'s default (all-stream)
+# path -- same env var/default repair.py has always read (T1 hoist: single source of truth).
+SUB_LANGS = set(os.environ.get("SUB_LANGS", "eng,en,und,").split(","))
+
+# Dialogue-vs-sign/karaoke predicate (hoisted verbatim from repair.py's pre-refactor
+# dialogue_intervals -- do not tweak without checking dub_signs_merge.py's classifier too,
+# which uses a related but NOT identical KEEP_STYLE/DROP_STYLE pair for its own purpose).
+KARAOKE = re.compile(r"\\[kK][fo]?\d")
+POSITIONED = re.compile(r"\\(?:pos|move)\(|\\an[134567 89]")
+DROP_STYLE = re.compile(r"warning", re.I)        # junk, never a dialogue reference
+DIALOGUE_EXCLUDE_STYLE = re.compile(
+    r"karaoke|translat|sign|song|caption|title|credit|note|lyric|romaji|kashi|insert", re.I)
 
 def load_extras(path="data/extras.txt"):
     """Load the EXTRA_DIRS set (Plex "local extras" subfolders + creditless/scene clips --
@@ -128,3 +145,71 @@ def extract_sub(video, idx, out):
         subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}", out],
                        capture_output=True, stdin=subprocess.DEVNULL, timeout=180)
     return os.path.exists(out) and os.path.getsize(out) > 0
+
+
+def is_dialogue_event(ev: "pysubs2.SSAEvent") -> bool:
+    """True if a pysubs2 event is a *plain dialogue* line -- not a comment, not a
+    positioned/animated sign, not karaoke, and not on an excluded (sign/song/karaoke/etc.)
+    style -- and has non-empty rendered text. This is the exact predicate T1 hoisted out of
+    repair.py's pre-refactor dialogue_intervals(); reused by dialogue_intervals(),
+    dialogue_event_count(), and the pure dialogue_density_score() scorer below."""
+    if ev.is_comment:
+        return False
+    t = ev.text
+    if KARAOKE.search(t) or POSITIONED.search(t):        # sign/song, not dialogue
+        return False
+    style = ev.style or ""
+    if DIALOGUE_EXCLUDE_STYLE.search(style) or DROP_STYLE.search(style):
+        return False
+    return bool(ev.plaintext.strip())
+
+
+def _load_stream_events(video, idx):
+    """Extract subtitle stream ``idx`` to a scratch .ass and return its pysubs2 events, or
+    ``[]`` on any extraction/parse failure (never raises) -- matches the original
+    repair.dialogue_intervals try/except-and-skip behavior exactly."""
+    with tempfile.TemporaryDirectory() as td:
+        ex = os.path.join(td, "s.ass")
+        if not extract_sub(video, idx, ex):
+            return []
+        try:
+            return pysubs2.load(ex).events
+        except Exception:
+            return []
+
+
+def dialogue_intervals(video, stream_indices=None):
+    """Embedded DIALOGUE lines (the translation track) as (start_s, end_s, text), sorted.
+
+    ``stream_indices=None`` (default) reproduces the exact pre-hoist repair.py behavior:
+    every English subtitle stream (``eng_sub_streams(video, SUB_LANGS)``) is scanned and
+    the results merged/sorted together. Pass an explicit iterable of stream indices to
+    score/scan just those streams (e.g. one candidate track at a time, for per-track
+    density scoring) -- the byte-identical default path is what repair.py's live callers
+    (``process``/``overlap_ref``) depend on."""
+    indices = eng_sub_streams(video, SUB_LANGS) if stream_indices is None else stream_indices
+    ivals = []
+    for idx in indices:
+        for ev in _load_stream_events(video, idx):
+            if is_dialogue_event(ev):
+                ivals.append((ev.start / 1000.0, ev.end / 1000.0, ev.plaintext.strip()))
+    ivals.sort()
+    return ivals
+
+
+def dialogue_event_count(video, stream_index: int) -> int:
+    """Count of plain-dialogue cues on a single subtitle stream (see is_dialogue_event)."""
+    return sum(1 for ev in _load_stream_events(video, stream_index) if is_dialogue_event(ev))
+
+
+def dialogue_density_score(events: list) -> tuple:
+    """Pure scorer over a pre-loaded list of pysubs2.SSAEvent (no I/O): returns
+    ``(dialogue_cue_count, plain_event_share)`` where ``dialogue_cue_count`` is the number
+    of plain-dialogue events (is_dialogue_event) and ``plain_event_share`` is that count
+    divided by the number of non-comment events on the track -- i.e. how much of the track
+    is dialogue versus signs/karaoke/songs. ``(0, 0.0)`` for an empty or all-comment track."""
+    non_comment = [ev for ev in events if not ev.is_comment]
+    if not non_comment:
+        return (0, 0.0)
+    dialogue_count = sum(1 for ev in non_comment if is_dialogue_event(ev))
+    return (dialogue_count, dialogue_count / len(non_comment))
