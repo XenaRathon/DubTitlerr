@@ -3,7 +3,7 @@
 repair.py, dub_signs_merge.py, mine_glossary.py, recreate_srt.py).
 
 Single source of truth for the helpers that used to be duplicated per-module (see
-specs/v1-polish/spec.md, Phase 1 — Foundation). Pure stdlib: no imports from other
+specs/v1-polish/spec.md, Phase 1 — Foundation). Stdlib + pysubs2: no imports from other
 project modules, so any pipeline stage can import this without dragging in the rest
 of the pipeline (and without risking a circular import).
 """
@@ -147,12 +147,16 @@ def extract_sub(video, idx, out):
     return os.path.exists(out) and os.path.getsize(out) > 0
 
 
-def is_dialogue_event(ev: "pysubs2.SSAEvent") -> bool:
+def is_dialogue_event(ev: "pysubs2.SSAEvent", txt: str | None = None) -> bool:
     """True if a pysubs2 event is a *plain dialogue* line -- not a comment, not a
     positioned/animated sign, not karaoke, and not on an excluded (sign/song/karaoke/etc.)
     style -- and has non-empty rendered text. This is the exact predicate T1 hoisted out of
     repair.py's pre-refactor dialogue_intervals(); reused by dialogue_intervals(),
-    dialogue_event_count(), and the pure dialogue_density_score() scorer below."""
+    dialogue_event_count(), and the pure dialogue_density_score() scorer below.
+
+    ``txt``, if given, is the caller's already-computed ``ev.plaintext.strip()`` -- lets a
+    caller that also needs the stripped text (dialogue_intervals) avoid recomputing it here.
+    Default (None) computes it internally, so every other call site is unaffected."""
     if ev.is_comment:
         return False
     t = ev.text
@@ -161,7 +165,7 @@ def is_dialogue_event(ev: "pysubs2.SSAEvent") -> bool:
     style = ev.style or ""
     if DIALOGUE_EXCLUDE_STYLE.search(style) or DROP_STYLE.search(style):
         return False
-    return bool(ev.plaintext.strip())
+    return bool(txt if txt is not None else ev.plaintext.strip())
 
 
 def _load_stream_events(video, idx):
@@ -191,8 +195,9 @@ def dialogue_intervals(video, stream_indices=None):
     ivals = []
     for idx in indices:
         for ev in _load_stream_events(video, idx):
-            if is_dialogue_event(ev):
-                ivals.append((ev.start / 1000.0, ev.end / 1000.0, ev.plaintext.strip()))
+            txt = ev.plaintext.strip()
+            if is_dialogue_event(ev, txt):
+                ivals.append((ev.start / 1000.0, ev.end / 1000.0, txt))
     ivals.sort()
     return ivals
 
