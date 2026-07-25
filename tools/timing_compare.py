@@ -7,7 +7,8 @@ English subtitle track, to measure alignment and quantify how many "kept" cards 
 past B1's hallucination gate into a subtitle gap. See specs/timing-compare/spec-v3.md
 for the full spec/schema and specs/timing-compare/tasks.md for the task breakdown.
 
-This module (U2, tasks T2-T6; U3, T7's wiring half) builds the analytical core:
+This module (U2, tasks T2-T6; U3, T7's wiring half; U4, T9-T10) builds the analytical core
+and the report:
   - CLI scaffold + show-dir walking (T2)
   - conf.json load + hardening (T3)
   - English sub-stream extraction + dialogue-track selection (T4)
@@ -17,9 +18,9 @@ This module (U2, tasks T2-T6; U3, T7's wiring half) builds the analytical core:
     its ORIGINAL (un-aligned, Whisper-timebase) [start, end] via ffmpeg and calls
     tools/vad.py's vad_probe() -- see classify_in_gap_cards() below. The VAD decision core
     itself (webrtcvad/ffmpeg-silencedetect backends) lives in tools/vad.py (T7/T8).
-
-Out of scope here (later unit): the full report/aggregate/summary builder (schema_version
-2, U4/T9-T10) -- --out isn't written yet; the printed SUMMARY line is a placeholder.
+  - NSP/LP band bucketing, the schema_version-2 per-episode/per-show/overall report, atomic
+    --out write, and the printed headline summary (T9), plus edge/aggregate null-safety
+    (T10) -- see build_episode_report()/aggregate_episodes()/build_report() below.
 
 Run from the repo root (mirrors tools/bakeoff.py's sys.path convention):
   python tools/timing_compare.py <show_dir> [<show_dir> ...]
@@ -43,6 +44,7 @@ import pysubs2
 
 sys.path.insert(0, ".")
 import common  # noqa: E402
+import hallucination  # noqa: E402  -- pure stdlib (see hallucination.py docstring), no GPU import
 import tools.vad as vad  # noqa: E402
 
 log = common.log
@@ -165,6 +167,15 @@ def load_conf(path: str) -> tuple:
 # verification on the server (see report). Kept deliberately thin/obvious so that
 # manual review is easy.
 
+def resolve_track_selection_thresholds() -> tuple:
+    """(min_cues, min_plain_share), env-overridable (TIMING_COMPARE_MIN_CUES /
+    TIMING_COMPARE_MIN_PLAIN_SHARE). Single source of truth for select_reference_track()
+    AND the report's `config` block (T9) -- so the report always reflects the thresholds
+    actually applied, even when overridden via env."""
+    return (int(os.environ.get("TIMING_COMPARE_MIN_CUES", MIN_CUES_DEFAULT)),
+            float(os.environ.get("TIMING_COMPARE_MIN_PLAIN_SHARE", MIN_PLAIN_SHARE_DEFAULT)))
+
+
 def _sub_codec_map(video: str) -> dict:
     """{stream_index: codec_name} for every subtitle stream (any language) -- used only
     to label the winning reference_track's codec; common.eng_sub_streams() already
@@ -197,8 +208,7 @@ def select_reference_track(video: str, lang: set) -> tuple | None:
     if not indices:
         return None
 
-    min_cues = int(os.environ.get("TIMING_COMPARE_MIN_CUES", MIN_CUES_DEFAULT))
-    min_plain_share = float(os.environ.get("TIMING_COMPARE_MIN_PLAIN_SHARE", MIN_PLAIN_SHARE_DEFAULT))
+    min_cues, min_plain_share = resolve_track_selection_thresholds()
     codecs = _sub_codec_map(video)
 
     best_track, best_cues = None, None
@@ -431,6 +441,23 @@ def classify_card(aligned_start: float, aligned_end: float, cue_intervals: list,
     return "in-gap"
 
 
+def covered_cue_count(cards: list, cue_intervals: list, tolerance: float) -> int:
+    """Count of cue_intervals overlapped (slack-aware, classify_overlap) by at least one
+    card's aligned_start/aligned_end. Feeds the report's pct_cues_covered (T9). Pure, no
+    I/O; in-gap cards contribute nothing by construction (classify_card already found no
+    overlap for them), so scanning every card here (not just on-cue ones) is harmless and
+    keeps this function independent of classify_card's own bookkeeping.
+    O(len(cards) * len(cue_intervals)) -- fine at per-episode scale (hundreds of each)."""
+    if not cards or not cue_intervals:
+        return 0
+    count = 0
+    for cue_start, cue_end, _text in cue_intervals:
+        if any(classify_overlap(c["aligned_start"], c["aligned_end"], cue_start, cue_end, tolerance)
+               for c in cards):
+            count += 1
+    return count
+
+
 # ============================================================================
 # T7 (wiring half) -- VAD split of in-gap cards. select_audio_stream/extract_audio_window
 # do real ffmpeg/ffprobe I/O with no real media available in this environment -- PENDING
@@ -555,7 +582,8 @@ def process_episode(video: str, lang: set, tolerance: float, pair_radius_s: floa
 
     if not rows:                                  # empty conf.json: analyzed, 0 cards, no crash
         return {"video": video, "status": "analyzed", "reference_track": reference_track,
-                "fit": ransac_offset_drift([]), "cue_count": len(cue_intervals), "cards": []}
+                "fit": ransac_offset_drift([]), "cue_count": len(cue_intervals), "cards": [],
+                "cues_covered": 0}
 
     card_starts = [r["start"] for r in rows]
     cue_starts = [c[0] for c in cue_intervals]
@@ -582,8 +610,230 @@ def process_episode(video: str, lang: set, tolerance: float, pair_radius_s: floa
     # are untouched (no key added). Mutates `cards`, which is already the return value.
     classify_in_gap_cards(video, cards, vad_backend=vad_backend, vad_aggressiveness=vad_aggressiveness)
 
+    # T9: cues_covered feeds the report's pct_cues_covered. Computed from aligned_start/
+    # aligned_end, same as classification -- so it reflects the fitted model, not raw
+    # Whisper timestamps.
+    cues_covered = covered_cue_count(cards, cue_intervals, tolerance)
+
     return {"video": video, "status": "analyzed", "reference_track": reference_track,
-            "fit": fit, "cue_count": len(cue_intervals), "cards": cards}
+            "fit": fit, "cue_count": len(cue_intervals), "cards": cards,
+            "cues_covered": cues_covered}
+
+
+# ============================================================================
+# T9/T10 -- band bucketing + schema_version-2 report/aggregate builder (pure functions;
+# no I/O -- take process_episode()-shaped `res` dicts, real or synthetic). Cutpoints match
+# hallucination.py's B1 gate exactly (imported, not re-hardcoded) so the report's bucket
+# labels line up with the thresholds that actually decided drop/flag/keep upstream.
+# ============================================================================
+
+def bucket_nsp(nsp: float) -> str:
+    """Bucket a kept card's no_speech_prob against hallucination.py's NSP_FLAG/NSP_DROP,
+    STRICT per spec-v3.md: <=0.5 clean, >0.5 and <=0.95 flag, >0.95 drop."""
+    if nsp <= hallucination.NSP_FLAG:            # <= 0.5
+        return "clean_le_0.5"
+    if nsp <= hallucination.NSP_DROP:             # 0.5 < nsp <= 0.95
+        return "flag_gt_0.5_le_0.95"
+    return "drop_gt_0.95"                         # > 0.95
+
+
+def bucket_lp(lp: float) -> str:
+    """Bucket a kept card's avg_logprob against hallucination.py's LP_FLAG/LP_DROP, STRICT
+    per spec-v3.md: >=-0.6 clean, <-0.6 and >=-2.0 flag, <-2.0 drop."""
+    if lp >= hallucination.LP_FLAG:               # >= -0.6
+        return "clean_ge_-0.6"
+    if lp >= hallucination.LP_DROP:               # -2.0 <= lp < -0.6
+        return "flag_lt_-0.6_ge_-2.0"
+    return "drop_lt_-2.0"                         # < -2.0
+
+
+def build_episode_report(res: dict) -> dict:
+    """Build the schema_version-2 per-episode report object (spec-v3.md's "Report schema"
+    block) from a process_episode()-shaped `res` dict. Pure/hermetic -- takes `res` as-is
+    (real or synthetic), no I/O.
+
+    Non-"analyzed" statuses (no-conf/bad-conf/no-reference) carry no card/fit/reference
+    data to report, so they collapse to a bare {"status": status}.
+
+    Null semantics (T10, spec-v3.md Edge-cases table):
+      - pct_cards_on_cue / pct_cues_covered: null when the episode has 0 kept cards (empty
+        conf.json) or (for cues_covered) 0 cues -- division is undefined, not a crash.
+      - false_in_gap_rate: 0.0 (via max(1, total)) in the ordinary case, but null in the
+        specific case where the episode HAS in-gap cards and EVERY one of them came back
+        in_gap_vad_error (both VAD backends failed/unavailable) -- reporting 0.0 there would
+        misleadingly read as "no false-in-gap risk" when it's actually "unmeasured"."""
+    status = res["status"]
+    if status != "analyzed":
+        return {"status": status}
+
+    cards = res.get("cards", [])
+    fit = res["fit"]
+    total = len(cards)
+    on_cue = [c for c in cards if c["classification"] == "on-cue"]
+    in_gap = [c for c in cards if c["classification"] == "in-gap"]
+
+    pct_cards_on_cue = (len(on_cue) / total) if total else None
+    cue_count = res.get("cue_count", 0)
+    cues_covered = res.get("cues_covered", 0)
+    pct_cues_covered = (cues_covered / cue_count) if (total and cue_count) else None
+
+    by_nsp = {"clean_le_0.5": 0, "flag_gt_0.5_le_0.95": 0, "drop_gt_0.95": 0}
+    by_lp = {"clean_ge_-0.6": 0, "flag_lt_-0.6_ge_-2.0": 0, "drop_lt_-2.0": 0}
+    by_flag = {"maybe_silence": 0, "low_conf": 0, "none": 0}
+    in_gap_silent = in_gap_speech = in_gap_vad_error = 0
+    for c in in_gap:
+        by_nsp[bucket_nsp(c.get("no_speech_prob", 0.0))] += 1
+        by_lp[bucket_lp(c.get("avg_logprob", 0.0))] += 1
+        flag_key = c.get("flag") or "none"
+        by_flag[flag_key] = by_flag.get(flag_key, 0) + 1
+        verdict = c.get("in_gap_vad_verdict")
+        if verdict == "in_gap_silent":
+            in_gap_silent += 1
+        elif verdict == "in_gap_speech":
+            in_gap_speech += 1
+        elif verdict == "in_gap_vad_error":            # never merged into silent/speech (T10)
+            in_gap_vad_error += 1
+
+    if in_gap and in_gap_speech == 0 and in_gap_silent == 0:
+        # every in-gap card is vad_error -- both VAD backends failed/unavailable for this
+        # whole episode; the true rate is unmeasured, not zero (spec-v3.md Edge-cases).
+        false_in_gap_rate = None
+    else:
+        false_in_gap_rate = in_gap_speech / max(1, total)
+
+    maybe_silence = [c for c in cards if c.get("flag") == "maybe_silence"]
+    flag_validation = {
+        "maybe_silence_in_gap": sum(1 for c in maybe_silence if c["classification"] == "in-gap"),
+        "maybe_silence_on_cue": sum(1 for c in maybe_silence if c["classification"] == "on-cue"),
+    }
+
+    return {
+        "status": "analyzed",
+        "offset_a_s": fit["offset_a_s"], "drift_b": fit["drift_b"],
+        "matched_pairs_count": fit["matched_pairs_count"], "inlier_count": fit["inlier_count"],
+        "residual_median_s": fit["residual_median_s"], "residual_iqr_s": fit["residual_iqr_s"],
+        "look_for_drift": fit["look_for_drift"],
+        "pct_cards_on_cue": pct_cards_on_cue, "pct_cues_covered": pct_cues_covered,
+        "kept_in_gap": {
+            "total": len(in_gap), "in_gap_silent": in_gap_silent, "in_gap_speech": in_gap_speech,
+            "in_gap_vad_error": in_gap_vad_error, "by_nsp": by_nsp, "by_lp": by_lp, "by_flag": by_flag,
+        },
+        "false_in_gap_rate": false_in_gap_rate,
+        "flag_validation": flag_validation,
+        "reference_track": res["reference_track"],
+    }
+
+
+STATUS_TO_COUNT_KEY = {"no-conf": "no_conf", "no-reference": "no_reference",
+                        "bad-conf": "bad_conf", "analyzed": "analyzed"}
+
+
+def aggregate_episodes(results: list) -> dict:
+    """Aggregate a list of process_episode()-shaped `res` dicts into a schema_version-2
+    aggregate object (spec-v3.md) -- used IDENTICALLY for both the per-show and the overall
+    aggregate (same shape, just a different slice of `results`), so the two levels can never
+    drift out of sync. Pure/hermetic -- operates on the raw `res` dicts (not the polished
+    per-episode report shape), so it can pool card counts across episodes directly.
+
+    Status counts (no_conf/no_reference/bad_conf/analyzed) are always numeric, even when
+    every episode is no-reference (T10). applicability_ratio = analyzed / (analyzed +
+    no_reference), null only if that denominator itself is 0 (no analyzed AND no
+    no-reference episodes at all -- e.g. a show that's entirely no-conf/bad-conf).
+    pct_cards_on_cue / false_in_gap_rate are pooled ratios (total on-cue / speech cards over
+    total kept cards across all analyzed episodes in `results`) and null whenever that pool
+    is empty (0 kept cards) -- covers both "zero analyzed episodes" (T10's headline edge
+    case) and "analyzed episodes exist but every one has an empty conf.json"."""
+    counts = {"no_conf": 0, "no_reference": 0, "bad_conf": 0, "analyzed": 0}
+    total_cards = on_cue_cards = kept_in_gap_total = in_gap_speech_total = 0
+    for res in results:
+        counts[STATUS_TO_COUNT_KEY.get(res["status"], res["status"])] += 1
+        if res["status"] != "analyzed":
+            continue
+        cards = res.get("cards", [])
+        total_cards += len(cards)
+        on_cue_cards += sum(1 for c in cards if c["classification"] == "on-cue")
+        in_gap = [c for c in cards if c["classification"] == "in-gap"]
+        kept_in_gap_total += len(in_gap)
+        in_gap_speech_total += sum(1 for c in in_gap if c.get("in_gap_vad_verdict") == "in_gap_speech")
+
+    denom = counts["analyzed"] + counts["no_reference"]
+    applicability_ratio = (counts["analyzed"] / denom) if denom else None
+    pct_cards_on_cue = (on_cue_cards / total_cards) if total_cards else None
+    false_in_gap_rate = (in_gap_speech_total / total_cards) if total_cards else None
+
+    return {
+        "no_conf": counts["no_conf"], "no_reference": counts["no_reference"],
+        "bad_conf": counts["bad_conf"], "analyzed": counts["analyzed"],
+        "applicability_ratio": applicability_ratio,
+        "pct_cards_on_cue": pct_cards_on_cue,
+        "kept_in_gap": kept_in_gap_total,
+        "in_gap_speech": in_gap_speech_total,
+        "false_in_gap_rate": false_in_gap_rate,
+    }
+
+
+def build_report(show_results: dict, config: dict) -> dict:
+    """Assemble the full schema_version-2 report (spec-v3.md) from {show_name: [res, ...]}
+    (process_episode()-shaped raw results grouped by show, insertion order preserved) plus
+    the resolved CLI `config` block. Pure -- no I/O; writing --out and printing the summary
+    are main()'s job (write_report_atomic()/print_summary() below)."""
+    shows = {}
+    for show_name, results in show_results.items():
+        episodes = {os.path.basename(res["video"]): build_episode_report(res) for res in results}
+        shows[show_name] = {"episodes": episodes, "aggregate": aggregate_episodes(results)}
+    all_results = [res for results in show_results.values() for res in results]
+    return {"schema_version": 2, "config": config, "shows": shows,
+            "aggregate": aggregate_episodes(all_results)}
+
+
+def write_report_atomic(report: dict, out_path: str) -> None:
+    """Write `report` as JSON to out_path atomically (tempfile in the same dir + os.replace)
+    so a crash mid-write never leaves a truncated/partial report on disk."""
+    out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=out_dir, prefix=".timing-compare.", suffix=".json.tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(report, f, indent=2)
+        os.replace(tmp_path, out_path)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _fmt(x) -> str:
+    if x is None:
+        return "null"
+    if isinstance(x, float):
+        return f"{x:.3f}"
+    return str(x)
+
+
+def _log_aggregate_headline(label: str, agg: dict) -> None:
+    log(f"[{label}] applicability_ratio={_fmt(agg['applicability_ratio'])} "
+        f"pct_cards_on_cue={_fmt(agg['pct_cards_on_cue'])} "
+        f"kept_in_gap.total={agg['kept_in_gap']} in_gap_speech={agg['in_gap_speech']} "
+        f"false_in_gap_rate={_fmt(agg['false_in_gap_rate'])}")
+
+
+def print_summary(report: dict) -> None:
+    """Print the headline per-show + overall summary (spec-v3.md): applicability_ratio,
+    pct_cards_on_cue, kept_in_gap.total, in_gap_speech, false_in_gap_rate."""
+    for show_name, show in report["shows"].items():
+        _log_aggregate_headline(show_name, show["aggregate"])
+    _log_aggregate_headline("OVERALL", report["aggregate"])
+
+
+def show_name_for_root(root: str) -> str:
+    """Derive a show grouping key from a CLI show_dir argument: the directory's basename
+    (trailing slash stripped), or -- when `root` is itself a single video file (find_episodes
+    accepts that for ad-hoc single-file runs) -- its parent directory's basename."""
+    root = root.rstrip(os.sep)
+    if os.path.isfile(root):
+        root = os.path.dirname(root) or root
+    return os.path.basename(root) or root
 
 
 # ============================================================================
@@ -594,6 +844,9 @@ def main(argv=None):
     ap = build_arg_parser()
     a = ap.parse_args(argv)
     tolerance = max(TOLERANCE_MIN, min(TOLERANCE_MAX, a.tolerance))
+    if tolerance != a.tolerance:
+        log(f"--tolerance {a.tolerance} out of [{TOLERANCE_MIN},{TOLERANCE_MAX}], "
+            f"clamped to {tolerance}")
     # Mirror common.SUB_LANGS's construction (no `if s.strip()` filter): the default
     # "eng,en,und," must keep the blank token so untagged subtitle streams (language ==
     # "", as returned by common.eng_sub_streams for streams with no language tag) match
@@ -601,21 +854,29 @@ def main(argv=None):
     # this tool's --lang stricter than common.SUB_LANGS, wrongly marking episodes whose
     # only usable dialogue track is untagged as no-reference.
     lang = {s.strip().lower() for s in a.lang.split(",")}
+    min_cues, min_plain_share = resolve_track_selection_thresholds()
 
-    videos = find_episodes(a.show_dir)
-    counts: dict = {}
+    # Group by CLI show_dir root (not a single combined find_episodes(a.show_dir) walk) so
+    # the report's "shows" key can name each root -- see show_name_for_root().
+    show_results: dict = {}
     results = []
-    for video in videos:
-        res = process_episode(video, lang, tolerance,
-                               vad_backend=a.vad, vad_aggressiveness=a.vad_aggressiveness)
-        counts[res["status"]] = counts.get(res["status"], 0) + 1
-        results.append(res)
-        if not a.summary_only:
-            log(f"{res['status']:12} {video}")
+    for root in a.show_dir:
+        show_name = show_name_for_root(root)
+        for video in find_episodes([root]):
+            res = process_episode(video, lang, tolerance, vad_backend=a.vad,
+                                   vad_aggressiveness=a.vad_aggressiveness)
+            results.append(res)
+            show_results.setdefault(show_name, []).append(res)
+            if not a.summary_only:
+                log(f"{res['status']:12} {video}")
 
-    log("SUMMARY", counts,
-        f"(vad={a.vad} vad_aggressiveness={a.vad_aggressiveness} tolerance={tolerance} "
-        f"-- {a.out} report writing lands in a later unit)")
+    config = {"tolerance_s": tolerance, "min_cues": min_cues, "min_plain_share": min_plain_share,
+              "pair_radius_s": PAIR_RADIUS_DEFAULT_S, "vad_backend": a.vad,
+              "vad_aggressiveness": a.vad_aggressiveness}
+    report = build_report(show_results, config)
+    write_report_atomic(report, a.out)
+    print_summary(report)
+    log(f"wrote {a.out}")
     return results
 
 
