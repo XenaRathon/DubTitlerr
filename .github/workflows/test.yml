@@ -4,8 +4,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: '3.13' }
-      - run: pip install pysubs2 pytest
+      # faster_whisper is stubbed in tests (test_generate), webrtcvad is monkeypatched
+      # (test_vad); jellyfish is a real dep of the phonetic-match tests.
+      - run: pip install pysubs2 pytest jellyfish
       - run: pytest -q
