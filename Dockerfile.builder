@@ -8,9 +8,16 @@ FROM mccloud/subgen:2026.06.2
 # and jellyfish (Metaphone, glossary.py tier-4 phonetic match -- V2 A4/A5).
 # wamerican = /usr/share/dict/american-english, the English-word gate for glossary.py (C1).
 # mkvtoolnix = mkvmerge for the D1 mux stage (embed .ass + fonts as a default Dubtitles track).
+# webrtcvad (Timing Compare U3/T8): tools/vad.py's --vad webrtcvad backend. tools/ itself
+# isn't COPY'd into this image (offline analytics, run standalone -- matches
+# tools/bakeoff.py, also not baked in); installed here anyway so the dep is available if
+# the tool is ever run inside this image/venv. This image's Debian python3 has a prebuilt
+# wheel for it (unlike the repo's py3.14 dev venv -- see tools/vad.py's module docstring);
+# if that ever regresses, drop this line and use `--vad ffmpeg-silencedetect` instead
+# (dep-free, ffmpeg is already in this image).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-pip wamerican mkvtoolnix \
-    && python3 -m pip install --no-cache-dir pysubs2 jellyfish \
+    && python3 -m pip install --no-cache-dir pysubs2 jellyfish webrtcvad \
     && rm -rf /var/lib/apt/lists/*
 
 # Bake the Whisper large-v3 model into the image (~3GB) so the container is fully

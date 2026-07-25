@@ -5,6 +5,12 @@ requires-python = ">=3.11"
 dependencies = ["pysubs2>=1.7", "faster-whisper>=1.2", "jellyfish>=1.0"]
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
+# analysis: tools/ scripts only (timing_compare.py's --vad webrtcvad backend), never
+# imported by the live pipeline. Split out because webrtcvad is a C-extension with no
+# prebuilt wheel for this repo's py3.14 dev venv (see tools/vad.py's module docstring) --
+# `pip install -e .[dev]` must keep working without it. `--vad ffmpeg-silencedetect` is
+# the dep-free fallback when this extra isn't installed.
+analysis = ["webrtcvad>=2.0"]
 
 # This is a flat collection of top-level pipeline scripts (mux.py, generate.py, ...),
 # not an importable library — tests reach them via conftest.py's sys.path insert, not
