@@ -432,6 +432,18 @@ def test_process_episode_analyzed_classifies_and_aligns_cards(tmp_path, monkeypa
     ref_track = {"stream_index": 3, "codec": "ass", "cue_count": 1, "density_score": 1.0}
     cue_intervals = [(10.5, 11.5, "cue text")]
     monkeypatch.setattr(tc, "select_reference_track", lambda video, lang: (ref_track, cue_intervals))
+    # T7 wiring: no real ffmpeg/ffprobe/webrtcvad in this test -- monkeypatch the I/O seam
+    # exactly like select_reference_track above, same hermetic pattern.
+    monkeypatch.setattr(tc, "select_audio_stream", lambda video: 1)
+    extract_calls = []
+
+    def fake_extract(video, audio_idx, start_s, end_s, out_wav):
+        extract_calls.append((audio_idx, start_s, end_s))
+        return True
+
+    monkeypatch.setattr(tc, "extract_audio_window", fake_extract)
+    monkeypatch.setattr(tc.vad, "vad_probe", lambda wav_path, aggressiveness, backend: True)
+
     res = tc.process_episode(str(video), {"eng"}, tolerance=0.3)
     assert res["status"] == "analyzed"
     assert res["cue_count"] == 1
@@ -440,3 +452,90 @@ def test_process_episode_analyzed_classifies_and_aligns_cards(tmp_path, monkeypa
     assert by_text["in gap"]["classification"] == "in-gap"
     # only 1 nearest-onset pair total -> inlier_count < 10 -> low-confidence alignment
     assert by_text["on cue"]["low_confidence_alignment"] is True
+    # T7: VAD only touches in-gap cards, and only ever probes the card's ORIGINAL
+    # (un-aligned) [start, end] -- never aligned_start/aligned_end.
+    assert "in_gap_vad_verdict" not in by_text["on cue"]
+    assert by_text["in gap"]["in_gap_vad_verdict"] == "in_gap_speech"
+    assert extract_calls == [(1, 50.0, 51.0)]
+
+
+# ============================================================================
+# T7 -- classify_in_gap_cards() orchestration (verdict mapping, on-cue cards untouched,
+# no-audio-stream fallback). select_audio_stream/extract_audio_window themselves are real
+# ffmpeg/ffprobe I/O -- PENDING manual verification on the server, same status as T4's
+# select_reference_track/_sub_codec_map; monkeypatched here exactly like those.
+# ============================================================================
+
+def test_classify_in_gap_cards_no_in_gap_cards_is_noop(monkeypatch):
+    called = []
+    monkeypatch.setattr(tc, "select_audio_stream", lambda video: called.append(video) or 0)
+    cards = [{"classification": "on-cue", "start": 1.0, "end": 2.0}]
+    tc.classify_in_gap_cards("ep.mkv", cards)
+    assert cards == [{"classification": "on-cue", "start": 1.0, "end": 2.0}]
+    assert called == []          # no in-gap cards -> select_audio_stream never even called
+
+
+def test_classify_in_gap_cards_no_audio_stream_all_error_no_extract_attempted(monkeypatch):
+    monkeypatch.setattr(tc, "select_audio_stream", lambda video: None)
+    extract_called = []
+    monkeypatch.setattr(tc, "extract_audio_window", lambda *a: extract_called.append(a) or True)
+    cards = [{"classification": "in-gap", "start": 1.0, "end": 2.0},
+             {"classification": "in-gap", "start": 3.0, "end": 4.0}]
+    tc.classify_in_gap_cards("ep.mkv", cards)
+    assert all(c["in_gap_vad_verdict"] == "in_gap_vad_error" for c in cards)
+    assert extract_called == []
+
+
+def test_classify_in_gap_cards_extract_failure_is_vad_error_and_skips_probe(monkeypatch):
+    monkeypatch.setattr(tc, "select_audio_stream", lambda video: 2)
+    monkeypatch.setattr(tc, "extract_audio_window", lambda video, idx, s, e, out: False)
+    probe_called = []
+    monkeypatch.setattr(tc.vad, "vad_probe", lambda *a, **kw: probe_called.append((a, kw)) or True)
+    cards = [{"classification": "in-gap", "start": 1.0, "end": 2.0}]
+    tc.classify_in_gap_cards("ep.mkv", cards)
+    assert cards[0]["in_gap_vad_verdict"] == "in_gap_vad_error"
+    assert probe_called == []    # extraction failed -> never call vad_probe on a missing window
+
+
+@pytest.mark.parametrize("verdict,expected", [
+    (True, "in_gap_speech"),
+    (False, "in_gap_silent"),
+    (None, "in_gap_vad_error"),
+])
+def test_classify_in_gap_cards_verdict_mapping(monkeypatch, verdict, expected):
+    monkeypatch.setattr(tc, "select_audio_stream", lambda video: 2)
+    monkeypatch.setattr(tc, "extract_audio_window", lambda video, idx, s, e, out: True)
+    monkeypatch.setattr(tc.vad, "vad_probe", lambda *a, **kw: verdict)
+    cards = [{"classification": "in-gap", "start": 5.0, "end": 6.0}]
+    tc.classify_in_gap_cards("ep.mkv", cards)
+    assert cards[0]["in_gap_vad_verdict"] == expected
+
+
+def test_classify_in_gap_cards_only_touches_in_gap_cards(monkeypatch):
+    monkeypatch.setattr(tc, "select_audio_stream", lambda video: 2)
+    monkeypatch.setattr(tc, "extract_audio_window", lambda video, idx, s, e, out: True)
+    monkeypatch.setattr(tc.vad, "vad_probe", lambda *a, **kw: True)
+    on_cue = {"classification": "on-cue", "start": 1.0, "end": 2.0}
+    in_gap = {"classification": "in-gap", "start": 3.0, "end": 4.0}
+    cards = [on_cue, in_gap]
+    tc.classify_in_gap_cards("ep.mkv", cards)
+    assert "in_gap_vad_verdict" not in on_cue
+    assert in_gap["in_gap_vad_verdict"] == "in_gap_speech"
+
+
+def test_classify_in_gap_cards_passes_original_unaligned_window(monkeypatch):
+    """Regression guard for the spec-v3.md requirement that the VAD window is extracted at
+    the card's ORIGINAL Whisper-timebase [start, end], never aligned_start/aligned_end."""
+    monkeypatch.setattr(tc, "select_audio_stream", lambda video: 7)
+    seen = []
+
+    def fake_extract(video, idx, s, e, out):
+        seen.append((s, e))
+        return True
+
+    monkeypatch.setattr(tc, "extract_audio_window", fake_extract)
+    monkeypatch.setattr(tc.vad, "vad_probe", lambda *a, **kw: False)
+    cards = [{"classification": "in-gap", "start": 12.34, "end": 13.5,
+              "aligned_start": 99.0, "aligned_end": 100.0}]
+    tc.classify_in_gap_cards("ep.mkv", cards)
+    assert seen == [(12.34, 13.5)]

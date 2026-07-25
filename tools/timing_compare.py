@@ -7,17 +7,19 @@ English subtitle track, to measure alignment and quantify how many "kept" cards 
 past B1's hallucination gate into a subtitle gap. See specs/timing-compare/spec-v3.md
 for the full spec/schema and specs/timing-compare/tasks.md for the task breakdown.
 
-This module (U2, tasks T2-T6) builds the analytical core:
+This module (U2, tasks T2-T6; U3, T7's wiring half) builds the analytical core:
   - CLI scaffold + show-dir walking (T2)
   - conf.json load + hardening (T3)
   - English sub-stream extraction + dialogue-track selection (T4)
   - RANSAC offset+drift line fit over nearest-onset card/cue pairs (T5)
   - slack-aware on-cue/in-gap overlap classification (T6)
+  - VAD split of in-gap cards (T7 wiring): extracts each in-gap card's dub-audio window at
+    its ORIGINAL (un-aligned, Whisper-timebase) [start, end] via ffmpeg and calls
+    tools/vad.py's vad_probe() -- see classify_in_gap_cards() below. The VAD decision core
+    itself (webrtcvad/ffmpeg-silencedetect backends) lives in tools/vad.py (T7/T8).
 
-Out of scope here (later units): the VAD probe of in-gap cards (tools/vad.py, U3/T7-T8)
-and the full report/aggregate/summary builder (schema_version 2, U4/T9-T10). --vad and
---vad-aggressiveness are accepted and threaded through so the CLI surface is stable, but
-not yet wired to a real probe -- in-gap cards are left unsplit (see process_episode()).
+Out of scope here (later unit): the full report/aggregate/summary builder (schema_version
+2, U4/T9-T10) -- --out isn't written yet; the printed SUMMARY line is a placeholder.
 
 Run from the repo root (mirrors tools/bakeoff.py's sys.path convention):
   python tools/timing_compare.py <show_dir> [<show_dir> ...]
@@ -41,6 +43,7 @@ import pysubs2
 
 sys.path.insert(0, ".")
 import common  # noqa: E402
+import tools.vad as vad  # noqa: E402
 
 log = common.log
 
@@ -429,14 +432,116 @@ def classify_card(aligned_start: float, aligned_end: float, cue_intervals: list,
 
 
 # ============================================================================
-# Per-episode orchestration -- wires T3-T6 together. Produces the per-episode data
-# structure U3 (VAD split of in-gap cards) and U4 (report/aggregates) consume; see the
-# report for the exact shape. Not itself unit-tested here (it's the ffmpeg/track-
-# selection I/O seam -- PENDING manual verification, see the report).
+# T7 (wiring half) -- VAD split of in-gap cards. select_audio_stream/extract_audio_window
+# do real ffmpeg/ffprobe I/O with no real media available in this environment -- PENDING
+# manual verification on the server (see the report), same status as T4's
+# select_reference_track/_sub_codec_map above. classify_in_gap_cards()'s orchestration
+# logic (verdict mapping, on-cue cards left untouched, no-audio-stream fallback) IS
+# covered by tests/test_timing_compare.py via monkeypatching, same pattern as
+# process_episode()'s own tests monkeypatch select_reference_track.
 # ============================================================================
 
-def process_episode(video: str, lang: set, tolerance: float,
-                     pair_radius_s: float = PAIR_RADIUS_DEFAULT_S) -> dict:
+VAD_AUDIO_LANG = ("eng", "en")          # the dub audio track is always English (or the
+                                         # sole audio track) -- independent of --lang,
+                                         # which is the *subtitle* language allowlist.
+
+IN_GAP_VERDICT = {True: "in_gap_speech", False: "in_gap_silent", None: "in_gap_vad_error"}
+
+
+def select_audio_stream(video: str):
+    """Pick the dub audio stream index to VAD-probe. Mirrors generate.py's
+    eng_audio_index() exactly (same eng/en tag preference, same REQUIRE_ENG-gated
+    fallback to the first audio stream) so the VAD probe listens to the SAME audio Whisper
+    actually transcribed -- not a guess at which track is the dub. Deliberately NOT
+    imported from generate.py: generate.py does `from faster_whisper import WhisperModel`
+    at module scope, and this tool's GPU-free / no-faster_whisper-import acceptance
+    criterion (spec-v3.md) forbids pulling that in, even transitively.
+
+    Returns the stream index, or None if ffprobe fails or there's no usable audio stream
+    (REQUIRE_ENG=1, the default, requires an eng/en tag; REQUIRE_ENG=0 falls back to the
+    first audio stream of any language, matching generate.py's own env gate)."""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
+                             "-show_entries", "stream=index:stream_tags=language",
+                             "-of", "json", video], capture_output=True, text=True,
+                            stdin=subprocess.DEVNULL, timeout=90)
+        streams = json.loads(r.stdout).get("streams", [])
+    except Exception as e:
+        log("ffprobe failed (audio):", video, e)
+        return None
+    eng = [s for s in streams if ((s.get("tags") or {}).get("language", "") or "").lower() in VAD_AUDIO_LANG]
+    if eng:
+        return eng[0]["index"]
+    if os.environ.get("REQUIRE_ENG", "1") == "1":
+        return None
+    return streams[0]["index"] if streams else None
+
+
+def extract_audio_window(video: str, audio_idx: int, start_s: float, end_s: float, out_wav: str) -> bool:
+    """Extract dub audio stream `audio_idx`'s [start_s, end_s) window to 16 kHz mono
+    pcm_s16le -- generate.py's extract_wav() encode settings, but windowed via -ss/-to
+    (both as input options: ffmpeg treats -to as an absolute timestamp on the original
+    timeline in that position, so this yields exactly [start_s, end_s), not
+    [start_s, start_s+end_s)). Input-side -ss is sample-accurate for audio-only extraction
+    (no keyframe dependency the way video seeking has), so no re-encode-then-trim needed.
+
+    start_s/end_s MUST be the card's ORIGINAL Whisper-timebase [start, end] -- the audio
+    Whisper actually heard -- NOT the RANSAC-aligned timestamps; the offset/drift model
+    exists only to compare against the *cue* timeline (T5/T6), never to shift where we
+    listen on the dub audio itself (spec-v3.md's VAD acceptance criterion is explicit
+    about this). Returns False (never raises) on any ffmpeg failure or empty output."""
+    cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-ss", str(start_s), "-to", str(end_s),
+           "-i", video, "-map", f"0:{audio_idx}", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", out_wav]
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=120, stdin=subprocess.DEVNULL)
+    except Exception as e:
+        log("ffmpeg audio window extract failed:", video, start_s, end_s, e)
+        return False
+    return os.path.exists(out_wav) and os.path.getsize(out_wav) > 0
+
+
+def classify_in_gap_cards(video: str, cards: list, vad_backend: str = "webrtcvad",
+                           vad_aggressiveness: int = 2) -> None:
+    """Mutates `cards` in place: for every card whose classify_card() result is "in-gap",
+    VAD-probes its dub-audio window (card's ORIGINAL [start, end], not aligned_start/
+    aligned_end -- see extract_audio_window()) and sets
+    card["in_gap_vad_verdict"] = "in_gap_silent" | "in_gap_speech" | "in_gap_vad_error".
+
+    "on-cue" cards are left completely untouched -- no `in_gap_vad_verdict` key is added --
+    per spec-v3.md's constraint that the VAD path only ADDS information to in-gap cards and
+    can never change T6's on-cue/in-gap classification.
+
+    The dub audio stream is resolved ONCE per episode (select_audio_stream), not once per
+    card. If no usable audio stream is found (or ffprobe fails), every in-gap card gets
+    in_gap_vad_error without attempting extraction -- still no crash, still keeps going.
+    All extraction happens into one per-episode tempfile.TemporaryDirectory, removed on
+    return (no sidecar left on the media tree, matching T4's extraction convention)."""
+    in_gap = [c for c in cards if c.get("classification") == "in-gap"]
+    if not in_gap:
+        return
+    audio_idx = select_audio_stream(video)
+    if audio_idx is None:
+        for c in in_gap:
+            c["in_gap_vad_verdict"] = "in_gap_vad_error"
+        return
+    with tempfile.TemporaryDirectory() as td:
+        for i, c in enumerate(in_gap):
+            wav = os.path.join(td, f"gap_{i}.wav")
+            verdict = None
+            if extract_audio_window(video, audio_idx, c["start"], c["end"], wav):
+                verdict = vad.vad_probe(wav, aggressiveness=vad_aggressiveness, backend=vad_backend)
+            c["in_gap_vad_verdict"] = IN_GAP_VERDICT[verdict]
+
+
+# ============================================================================
+# Per-episode orchestration -- wires T3-T7 together. Produces the per-episode data
+# structure U4 (report/aggregates) will consume; see the report for the exact shape. Not
+# itself unit-tested here (it's the ffmpeg/track-selection/VAD I/O seam -- PENDING manual
+# verification, see the report).
+# ============================================================================
+
+def process_episode(video: str, lang: set, tolerance: float, pair_radius_s: float = PAIR_RADIUS_DEFAULT_S,
+                     vad_backend: str = "webrtcvad", vad_aggressiveness: int = 2) -> dict:
     stem, _ext = os.path.splitext(video)
     conf_path = stem + ".dubtitles.conf.json"
     status, rows = load_conf(conf_path)
@@ -466,10 +571,16 @@ def process_episode(video: str, lang: set, tolerance: float,
         card["aligned_start"] = round(aligned_start, 3)
         card["aligned_end"] = round(aligned_end, 3)
         card["classification"] = classification          # "on-cue" | "in-gap"
-        # U3 will split "in-gap" into in_gap_silent/in_gap_speech/in_gap_vad_error via a
-        # VAD probe of the card's ORIGINAL (un-aligned) [start, end] window; left unsplit here.
         card["low_confidence_alignment"] = low_conf
         cards.append(card)
+
+    # T7: split "in-gap" cards into in_gap_silent/in_gap_speech/in_gap_vad_error via an
+    # independent VAD probe of each card's dub-audio window, at the card's ORIGINAL
+    # (un-aligned) [r["start"], r["end"]] -- classify_in_gap_cards() reads `card["start"]`/
+    # `card["end"]` (the untouched conf.json row values `dict(r)` copied above), never
+    # `aligned_start`/`aligned_end`. Sets card["in_gap_vad_verdict"] in place; on-cue cards
+    # are untouched (no key added). Mutates `cards`, which is already the return value.
+    classify_in_gap_cards(video, cards, vad_backend=vad_backend, vad_aggressiveness=vad_aggressiveness)
 
     return {"video": video, "status": "analyzed", "reference_track": reference_track,
             "fit": fit, "cue_count": len(cue_intervals), "cards": cards}
@@ -495,7 +606,8 @@ def main(argv=None):
     counts: dict = {}
     results = []
     for video in videos:
-        res = process_episode(video, lang, tolerance)
+        res = process_episode(video, lang, tolerance,
+                               vad_backend=a.vad, vad_aggressiveness=a.vad_aggressiveness)
         counts[res["status"]] = counts.get(res["status"], 0) + 1
         results.append(res)
         if not a.summary_only:
@@ -503,7 +615,7 @@ def main(argv=None):
 
     log("SUMMARY", counts,
         f"(vad={a.vad} vad_aggressiveness={a.vad_aggressiveness} tolerance={tolerance} "
-        f"-- {a.out} report writing + VAD probe land in later units)")
+        f"-- {a.out} report writing lands in a later unit)")
     return results
 
 
