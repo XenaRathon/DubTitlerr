@@ -34,7 +34,8 @@ Env:
   LOGPROB_MIN   default -0.4   (mid-confidence-and-lower; below this is a repair target)
   NSP_MAX       default 0.5    (…and below this no_speech_prob — i.e. it IS speech)
   GLOSSARY_DIR  default /config/glossaries   (per-show glossary, resolved from the path)
-  SUB_LANGS     accepted embedded-sub languages (default eng,en,und,)
+  SUB_LANGS     accepted embedded-sub languages (default eng,en,und,) -- read by
+                common.dialogue_intervals (T1: hoisted out of this module)
   MEDIA_UID/GID default 1000/100
 Requires ffmpeg/ffprobe + pysubs2.  Built with help of Claude (Anthropic).
 """
@@ -44,15 +45,11 @@ import json
 import os
 import re
 import sys
-import tempfile
 import time
 import urllib.parse
 
-import pysubs2
-
 import glossary
-from common import MEDIA_GID, MEDIA_UID, eng_sub_streams, find_video, out_for, ts_srt
-from common import extract_sub as extract
+from common import MEDIA_GID, MEDIA_UID, dialogue_intervals, find_video, out_for, ts_srt
 
 OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
 MODEL = os.environ.get("REPAIR_MODEL", "qwen3:8b")
@@ -64,15 +61,9 @@ TIMEOUT_READ = float(os.environ.get("REPAIR_TIMEOUT_READ", "120"))
 LOGPROB_MIN = float(os.environ.get("LOGPROB_MIN", "-0.4"))   # mid-confidence-and-lower (C1)
 NSP_MAX = float(os.environ.get("NSP_MAX", "0.5"))
 GLOSSARY_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
-SUB_LANGS = set(os.environ.get("SUB_LANGS", "eng,en,und,").split(","))
 ROOTS = os.environ.get("MERGE_ROOTS", "/data/Media/Anime Library").split(":")
 CONF_SUFFIX = ".dubtitles.conf.json"
 SRT_SUFFIX = ".eng.dubtitles.srt"
-
-KARAOKE = re.compile(r"\\[kK][fo]?\d")
-POSITIONED = re.compile(r"\\(?:pos|move)\(|\\an[134567 89]")
-DROP_STYLE = re.compile(r"warning", re.I)        # junk, never a dialogue reference
-KEEP_STYLE = re.compile(r"karaoke|translat|sign|song|caption|title|credit|note|lyric|romaji|kashi|insert", re.I)
 
 def log(*a): print(*a, flush=True)
 
@@ -159,33 +150,6 @@ def build_prompt(asr, sub, gloss, prev_text="", next_text=""):
     # and this is a prompt-injection guard against text embedded inside it.
     ref_line = f"<official_subtitle_reference>{sub}</official_subtitle_reference>\n" if sub else ""
     return f"{head}{name_line}{rules}ASR line: {asr}\n{prev_line}{next_line}{ref_line}Corrected line:"
-
-
-def dialogue_intervals(video):
-    """Embedded DIALOGUE lines (the translation track) as (start_s, end_s, text)."""
-    ivals = []
-    for idx in eng_sub_streams(video, SUB_LANGS):
-        with tempfile.TemporaryDirectory() as td:
-            ex = os.path.join(td, "s.ass")
-            if not extract(video, idx, ex):
-                continue
-            try:
-                subs = pysubs2.load(ex)
-            except Exception:
-                continue
-        for ev in subs.events:
-            if ev.is_comment:
-                continue
-            t = ev.text
-            if KARAOKE.search(t) or POSITIONED.search(t):   # sign/song, not dialogue
-                continue
-            if KEEP_STYLE.search(ev.style or "") or DROP_STYLE.search(ev.style or ""):
-                continue
-            txt = ev.plaintext.strip()
-            if txt:
-                ivals.append((ev.start / 1000.0, ev.end / 1000.0, txt))
-    ivals.sort()
-    return ivals
 
 
 def overlap_ref(ivals, a, b):

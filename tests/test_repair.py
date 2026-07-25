@@ -7,8 +7,18 @@ llama.cpp integration is PENDING manual verification on real hardware."""
 import csv
 import json
 
+import common
 import glossary
 import repair
+
+# --- T1 hoist: dialogue_intervals now lives in common.py --------------------
+
+def test_dialogue_intervals_is_the_hoisted_common_function():
+    """repair.dialogue_intervals must be common.dialogue_intervals itself (a plain
+    re-export), not a local reimplementation -- pins the T1 hoist's import wiring.
+    (process()'s use of it is still exercised end-to-end via monkeypatch below, same
+    as before the hoist.)"""
+    assert repair.dialogue_intervals is common.dialogue_intervals
 
 
 def gl(names=None, hard_fixes=None):
