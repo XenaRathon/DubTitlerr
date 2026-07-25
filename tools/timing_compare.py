@@ -742,9 +742,14 @@ def aggregate_episodes(results: list) -> dict:
     pct_cards_on_cue / false_in_gap_rate are pooled ratios (total on-cue / speech cards over
     total kept cards across all analyzed episodes in `results`) and null whenever that pool
     is empty (0 kept cards) -- covers both "zero analyzed episodes" (T10's headline edge
-    case) and "analyzed episodes exist but every one has an empty conf.json"."""
+    case) and "analyzed episodes exist but every one has an empty conf.json". Mirrors
+    build_episode_report's other null rule too: if the pool has in-gap cards but EVERY one
+    is `in_gap_vad_error` (both VAD backends failed/unavailable across the whole pool),
+    false_in_gap_rate is null (unmeasured), not a misleading 0.0 -- also surfaced via the
+    in_gap_silent/in_gap_vad_error totals so a reader can see the pool was unmeasured."""
     counts = {"no_conf": 0, "no_reference": 0, "bad_conf": 0, "analyzed": 0}
-    total_cards = on_cue_cards = kept_in_gap_total = in_gap_speech_total = 0
+    total_cards = on_cue_cards = kept_in_gap_total = 0
+    in_gap_speech_total = in_gap_silent_total = in_gap_vad_error_total = 0
     for res in results:
         counts[STATUS_TO_COUNT_KEY.get(res["status"], res["status"])] += 1
         if res["status"] != "analyzed":
@@ -755,11 +760,21 @@ def aggregate_episodes(results: list) -> dict:
         in_gap = [c for c in cards if c["classification"] == "in-gap"]
         kept_in_gap_total += len(in_gap)
         in_gap_speech_total += sum(1 for c in in_gap if c.get("in_gap_vad_verdict") == "in_gap_speech")
+        in_gap_silent_total += sum(1 for c in in_gap if c.get("in_gap_vad_verdict") == "in_gap_silent")
+        in_gap_vad_error_total += sum(
+            1 for c in in_gap if c.get("in_gap_vad_verdict") == "in_gap_vad_error")
 
     denom = counts["analyzed"] + counts["no_reference"]
     applicability_ratio = (counts["analyzed"] / denom) if denom else None
     pct_cards_on_cue = (on_cue_cards / total_cards) if total_cards else None
-    false_in_gap_rate = (in_gap_speech_total / total_cards) if total_cards else None
+    if kept_in_gap_total > 0 and in_gap_speech_total == 0 and in_gap_silent_total == 0:
+        # every in-gap card in the pool is vad_error -- both VAD backends failed/unavailable
+        # for the whole pool; the true rate is unmeasured, not zero (mirrors
+        # build_episode_report's per-episode rule; happens e.g. whenever webrtcvad is
+        # unavailable, including the dev venv and any server run before the wheel is built).
+        false_in_gap_rate = None
+    else:
+        false_in_gap_rate = (in_gap_speech_total / total_cards) if total_cards else None
 
     return {
         "no_conf": counts["no_conf"], "no_reference": counts["no_reference"],
@@ -768,6 +783,8 @@ def aggregate_episodes(results: list) -> dict:
         "pct_cards_on_cue": pct_cards_on_cue,
         "kept_in_gap": kept_in_gap_total,
         "in_gap_speech": in_gap_speech_total,
+        "in_gap_silent": in_gap_silent_total,
+        "in_gap_vad_error": in_gap_vad_error_total,
         "false_in_gap_rate": false_in_gap_rate,
     }
 

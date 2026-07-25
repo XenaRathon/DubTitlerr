@@ -763,7 +763,50 @@ def test_aggregate_episodes_empty_results_list():
     agg = tc.aggregate_episodes([])
     assert agg == {"no_conf": 0, "no_reference": 0, "bad_conf": 0, "analyzed": 0,
                     "applicability_ratio": None, "pct_cards_on_cue": None,
-                    "kept_in_gap": 0, "in_gap_speech": 0, "false_in_gap_rate": None}
+                    "kept_in_gap": 0, "in_gap_speech": 0, "in_gap_silent": 0,
+                    "in_gap_vad_error": 0, "false_in_gap_rate": None}
+
+
+def test_aggregate_episodes_all_vad_error_false_in_gap_rate_is_null():
+    """Mirrors build_episode_report's null rule at the pooled level: if every in-gap card
+    across the whole pool is in_gap_vad_error (both VAD backends failed/unavailable, e.g.
+    webrtcvad missing), false_in_gap_rate must be null (unmeasured) -- not misleadingly
+    0.0. This is the exact case spec-v3's Edge-cases table requires; before the fix
+    aggregate_episodes computed in_gap_speech_total / total_cards == 0.0 here instead."""
+    ep1 = _analyzed_res(video="a.mkv", cards=(
+        [{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 5
+        + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2,
+            "in_gap_vad_verdict": "in_gap_vad_error"}] * 2))
+    ep2 = _analyzed_res(video="b.mkv", cards=(
+        [{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 3
+        + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2,
+            "in_gap_vad_verdict": "in_gap_vad_error"}] * 1))
+    agg = tc.aggregate_episodes([ep1, ep2])
+    assert agg["kept_in_gap"] == 3
+    assert agg["in_gap_speech"] == 0
+    assert agg["in_gap_silent"] == 0
+    assert agg["in_gap_vad_error"] == 3
+    assert agg["false_in_gap_rate"] is None
+
+
+def test_aggregate_episodes_mixed_verdicts_still_computes_ratio():
+    """A normal mix (some vad_error present, but also real speech/silent verdicts measured)
+    must still compute the pooled ratio, not go null -- null is reserved for the
+    all-vad_error case."""
+    ep1 = _analyzed_res(video="a.mkv", cards=(
+        [{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 6
+        + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2,
+            "in_gap_vad_verdict": "in_gap_speech"}] * 1
+        + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2,
+            "in_gap_vad_verdict": "in_gap_silent"}] * 2
+        + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2,
+            "in_gap_vad_verdict": "in_gap_vad_error"}] * 1))
+    agg = tc.aggregate_episodes([ep1])
+    assert agg["kept_in_gap"] == 4
+    assert agg["in_gap_speech"] == 1
+    assert agg["in_gap_silent"] == 2
+    assert agg["in_gap_vad_error"] == 1
+    assert agg["false_in_gap_rate"] == pytest.approx(1 / 10)
 
 
 # ============================================================================
