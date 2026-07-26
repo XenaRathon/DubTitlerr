@@ -113,12 +113,57 @@ All stream-copy; no re-encode; existing suites extended:
   track.
 - New `mine_glossary` coverage: excludes the dubtitle track from mining.
 
+## Robustness & failure analysis
+
+*(Reviewed against a multi-model panel; these are the answers to the hazards it raised.)*
+
+**No new write race between the generate and mux sweeps.** They already run continuously in
+one container today. `generate` only writes **sidecars** (`.srt`/`.conf`); it never writes the
+MKV (it reads the audio stream). `mux` reads sidecars and rewrites the MKV. The two are
+serialized by sidecar existence: `mux` no-ops (`no-sub`) until a sidecar exists, and `generate`
+skips a file once its `.srt`/`.ass` sidecar exists (`SKIP_IF_SRT`). This change adds no new
+shared-write path, so it introduces no new race. The one transient window — after `mux`
+finalizes the new MKV but before it writes the stamp — is covered because `mux` writes the
+stamp **before** removing the sidecar, and the still-present sidecar makes `generate` skip the
+file during that window.
+
+**A file cannot lose its dubtitle or end up with zero subtitle tracks.** `mux` only acts when
+a sidecar exists, and `build_cmd` *always* appends that sidecar as the new track — the old
+track is dropped **in the same pass that adds the new one**, never independently. `verify()`
+then requires `has_dubtitles_track(out)` **and** video+audio present **before** the atomic
+replace; on any failure the temp is deleted and the **original is left untouched**. So the
+worst case is "old dubtitle retained," never "no dubtitle." A file whose only English sub was
+the old dubtitle ends with exactly the new one (≥1 sub track).
+
+**Replace-good-with-bad tradeoff (accepted).** In-place regen means a failed *new* generation
+could, in principle, replace a good old dubtitle. This is bounded: a transcription failure
+writes `.fail`/`.crash` and produces **no sidecar**, so `mux` never runs and the old track is
+kept; and the version bump is a **deliberate operator action taken only after verifying test
+output**. Acceptable given those guards; `mux` `verify()` remains presence-only by design (no
+quality gate).
+
+**Enumeration audit — no other path reads subtitles as context.** Every subtitle-enumeration
+call site was checked: `eng_sub_streams()` (repair, timing-compare, signs-merge) and
+`mine_glossary.py`'s selector are the only two that read subs *as context* — both get the
+`title != TRACK_NAME` exclusion. `generate.has_dubtitles_track()` enumerates subs *to detect*
+the dubtitle (correct as-is); `generate`'s other selector reads **audio**; `timing_compare.
+_sub_codec_map()` only labels the already-chosen track's codec. The exclusion lives in the
+lowest-level enumeration routine, so a future consumer that calls `eng_sub_streams()` inherits
+it automatically.
+
+**Lost sidecar stamp is safe.** Removing the ffprobe "already-muxed" backstop means a file
+with a current dubtitle track but a *missing* stamp reads as stale and is regenerated. That is
+extra work, not incorrect: re-mux is idempotent (drop old + add fresh). Embedding the version
+in the track itself is a possible future hardening (see non-goals).
+
 ## Non-goals
 
 - No re-encode; no change to what the dub content is, only which tracks are read/kept.
 - No automatic version bumping — the operator bumps `PIPELINE_VERSION` deliberately.
 - The existing bulk `strip_op.py` remains usable for one-off manual strips but is no longer
   part of the regeneration workflow.
+- Embedding the pipeline version *inside* the MKV (e.g. in the track name) instead of the
+  sidecar stamp — possible future hardening against a lost stamp; out of scope here.
 
 ---
 *Built with help of Claude (Anthropic).*
