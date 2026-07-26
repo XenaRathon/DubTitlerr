@@ -19,7 +19,7 @@ import tempfile
 
 import pysubs2
 
-from common import load_extras
+from common import TRACK_NAME, _track_title, load_extras
 
 EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_extras)
 
@@ -56,17 +56,24 @@ COMMON = _load_common()
 
 
 def eng_sub_text(video):
-    """Return plaintext of the video's English (or und) ASS/SSA/SRT subtitle, or ''."""
+    """Return plaintext of the video's English (or und) ASS/SSA/SRT subtitle, or ''.
+
+    Our own previously-muxed dubtitle (title == TRACK_NAME) is excluded: this selector
+    bypasses common.eng_sub_streams(), so it needs the same guard, otherwise a
+    regeneration would re-mine last version's spellings out of its own output and
+    reinforce its errors into the glossary. No fallback — a file whose only English sub
+    is our dubtitle mines nothing."""
     try:
         r = subprocess.run(["ffprobe","-v","error","-select_streams","s","-show_entries",
-                            "stream=index,codec_name:stream_tags=language","-of","json","-nostdin",video],
+                            "stream=index,codec_name:stream_tags=language,title","-of","json","-nostdin",video],
                            capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
         streams = json.loads(r.stdout).get("streams", [])
     except Exception:
         return ""
     cand = [s for s in streams
             if (s.get("tags") or {}).get("language","").lower() in ("eng","en","und","")
-            and s.get("codec_name") in ("ass","ssa","subrip")]
+            and s.get("codec_name") in ("ass","ssa","subrip")
+            and _track_title(s) != TRACK_NAME]
     if not cand:
         return ""
     idx = cand[0]["index"]

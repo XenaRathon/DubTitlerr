@@ -42,9 +42,21 @@ show with an **English dub**, runs a full pipeline per episode:
 6. **Mux + fonts** — embed the result **with the MKV's fonts** as a default "Dubtitles" track so
    signs render in their real typeface (mp4 episodes are remuxed to mkv); English audio set default.
 
-Idempotent (a `.dubtitles.done` stamp + embedded-track check make re-runs safe), incremental, and
+Idempotent (a version-stamped `.dubtitles.done` sidecar makes re-runs safe), incremental, and
 per-episode (Plex refreshes as each finishes). The **glossary wiki-verifier** is reusable on its
 own — it makes any mined or community-submitted glossary as accurate as a hand-curated one.
+
+### Regenerating episodes you've already dubbed
+
+The pipeline never reads its **own** previous output as context — every stage that looks at an
+embedded subtitle skips the track named `Dubtitles`, so an improved run is anchored on the human
+fansub (or on nothing) rather than on last version's mistakes. And the mux **replaces** the old
+`Dubtitles` track in the same pass that adds the new one, so re-running is safe and there is no
+separate strip step.
+
+Regeneration is opt-in and library-wide: bump `PIPELINE_VERSION` in `common.py`. Every episode
+whose stamp records an older version is then re-transcribed and re-muxed **in place** on the next
+sweep; a failed run leaves the old track alone (no sidecar is written, so the mux never fires).
 
 ## Quick start
 
@@ -89,6 +101,18 @@ Everything is an env var, so nothing host-specific is baked in:
 - **Plex reads `.ass` sidecars** and renders the styling/positioning on direct-play clients; transcoding clients burn them in.
 - If you use **subgen** with `SKIP_IF_EXTERNAL_SUBTITLES_EXIST`, it already treats `.ass` as an external subtitle, so replacing the `.srt` with the merged `.ass` **won't trigger a re-transcribe loop**.
 - The merged file keeps the **same `…eng.dubtitles.*` name**, so it still shows up as your "Dubtitles" track — just now with signs included.
+- **Upgrading from a build older than the version stamp:** the `.dubtitles.done` stamp is now the
+  only "already done" signal — an embedded `Dubtitles` track by itself no longer counts. Episodes
+  muxed before stamps existed would therefore be regenerated on the first sweep. Run the one-time
+  migration first (dry run by default) to stamp them as v1:
+  ```sh
+  python3 scripts/migrate_write_v1_stamps.py "/media/Anime Library"           # show what it'd do
+  python3 scripts/migrate_write_v1_stamps.py --apply "/media/Anime Library"
+  ```
+  It only writes sidecar stamps — media is never touched — and it never overwrites an existing one.
+- **Track order:** the new `Dubtitles` track is appended last, so if an old one sat mid-list the
+  relative order of the *other* subtitle tracks is unchanged but the dubtitle moves to the end.
+  Players pick it up via the default-track flag; index-based scripts may see a different position.
 </details>
 
 ## Requirements

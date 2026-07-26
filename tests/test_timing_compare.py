@@ -946,3 +946,50 @@ def test_main_no_warning_when_tolerance_in_range(tmp_path, monkeypatch, capsys):
     tc.main(["Show", "--tolerance", "0.5"])
     out = capsys.readouterr().out
     assert "clamped" not in out
+
+
+# ============================================================================
+# Context isolation -- the timing reference is never our own old dubtitle
+# ============================================================================
+#
+# select_reference_track() resolves candidates through common.eng_sub_streams(), so it
+# inherits the TRACK_NAME exclusion with no code of its own. Exercised here against the
+# REAL common.eng_sub_streams (ffprobe stubbed) rather than the monkeypatched
+# select_reference_track used by the process_episode() tests above -- otherwise nothing
+# would actually pin the inheritance. Without it, a regenerated episode would be aligned
+# against the previous version's timing instead of the human fansub's.
+
+def _stub_ffprobe(monkeypatch, streams):
+    import types
+
+    import common
+
+    def run(cmd, **kw):
+        return types.SimpleNamespace(stdout=json.dumps({"streams": streams}), returncode=0)
+
+    monkeypatch.setattr(common, "subprocess", types.SimpleNamespace(run=run, DEVNULL=-3))
+
+
+def _ass(index, title=None, lang="eng"):
+    tags = {"language": lang}
+    if title is not None:
+        tags["title"] = title
+    return {"index": index, "codec_name": "ass", "tags": tags}
+
+
+def test_select_reference_track_ignores_our_own_dubtitles_track(monkeypatch):
+    import common
+    scored = []
+    _stub_ffprobe(monkeypatch, [_ass(2, title="English (Fansub)"), _ass(3, title="Dubtitles")])
+    monkeypatch.setattr(common, "extract_sub", lambda v, idx, out: scored.append(idx) or False)
+    tc.select_reference_track("fake.mkv", {"eng"})
+    assert scored == [2]              # our old track is never even extracted for scoring
+
+
+def test_select_reference_track_reports_no_reference_when_only_sub_is_our_dubtitle(monkeypatch):
+    """No fallback: the episode is compared reference-free rather than against itself."""
+    import common
+    _stub_ffprobe(monkeypatch, [_ass(3, title="Dubtitles")])
+    monkeypatch.setattr(common, "extract_sub",
+                        lambda v, idx, out: pytest.fail("extracted our own dubtitle"))
+    assert tc.select_reference_track("fake.mkv", {"eng"}) is None

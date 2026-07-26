@@ -6,12 +6,16 @@ render in their correct typeface.
 
 Per video that has a sibling dubtitle sidecar (``.eng.dubtitles.ass`` for an mkv with
 signs/songs, else ``.eng.dubtitles.srt`` for an mp4 dialogue-only episode):
-  * SKIP if already muxed — a valid ``.dubtitles.done`` stamp (stat-only) or an embedded
-    "Dubtitles" track (ffprobe backstop); survives sidecar cleanup, makes re-runs safe,
+  * SKIP if already muxed — a valid, current-``PIPELINE_VERSION`` ``.dubtitles.done``
+    stamp (stat-only). This is the ONLY skip guard: the old "embedded Dubtitles track"
+    ffprobe backstop is gone, because a re-mux now REPLACES the old track rather than
+    duplicating it, so re-running is idempotent and self-healing,
   * SKIP if the pool lacks room for a full-size temp (free-space pre-check; never ENOSPC),
-  * mkvmerge remux (stream copy, no re-encode) to an **mkv**: add the sidecar as track-name
-    "Dubtitles" / default; set eng audio default, original-language audio not; keep
-    eng/orig/mul/signs-songs subs (drop other-language dialogue subs); keep all fonts,
+  * mkvmerge remux (stream copy, no re-encode) to an **mkv**: drop any OLD "Dubtitles"
+    track and add the sidecar as track-name "Dubtitles" / default in the same pass (so a
+    regeneration replaces in place — no separate pre-strip); set eng audio default,
+    original-language audio not; keep eng/orig/mul/signs-songs subs (drop other-language
+    dialogue subs); keep all fonts,
   * VERIFY (a/v + the Dubtitles track + duration within tolerance) before touching the original,
   * finalize the muxed mkv (atomic, with a cross-branch fallback), preserving ownership;
     for an mp4 source, remove the OLD ``.mp4`` library link (the seeding download hardlink
@@ -31,7 +35,7 @@ import re
 import shutil
 import subprocess
 
-from common import MEDIA_GID, MEDIA_UID, STAMP_SUFFIX, log, read_stamp, stamp_valid, write_stamp
+from common import MEDIA_GID, MEDIA_UID, STAMP_SUFFIX, TRACK_NAME, log, read_stamp, stamp_valid, write_stamp
 
 ROOTS = os.environ.get("MUX_ROOTS", "/data/Media/Anime Library").split(":")
 # Base audio/subtitle languages to KEEP. The title's ORIGINAL language is detected
@@ -49,7 +53,6 @@ MIN_FREE_GB = float(os.environ.get("MIN_FREE_GB", "5"))   # skip a remux if the 
 SIZE_FACTOR = 1.1                                         # temp ~ source size (+headroom)
 ASS_SUFFIX = ".eng.dubtitles.ass"
 SRT_SUFFIX = ".eng.dubtitles.srt"
-TRACK_NAME = "Dubtitles"
 # subtitle track names that mark a signs/songs track worth keeping regardless of language
 SIGNS_RE = re.compile(r"sign|song|karaoke|lyric|caption|title|credit|insert", re.I)
 
@@ -61,8 +64,16 @@ def has_room(free_bytes: float, src_size: int) -> bool:
 
 def keep_sub(track: dict, keep_langs: set) -> bool:
     """Keep an mkvmerge subtitle track if its language is wanted, it's multi-language ('mul'),
-    or its name reads as signs/songs (so weird JoJo signs tracks survive)."""
-    props = track.get("properties", {})
+    or its name reads as signs/songs (so weird JoJo signs tracks survive).
+
+    Our OWN previously-muxed dubtitle (track_name == TRACK_NAME) is always dropped, and
+    that check comes FIRST: the track is language=eng, so every rule below would keep it
+    and the remux would end up carrying two Dubtitles tracks. Dropping it here is what
+    makes a re-mux a REPLACE (build_cmd re-adds the new one in the same pass) instead of
+    a duplicate — and what retired the separate pre-strip pass."""
+    props = track.get("properties") or {}
+    if props.get("track_name") == TRACK_NAME:
+        return False
     lang = (props.get("language") or "").lower()
     if lang in keep_langs or lang == "mul":
         return True
@@ -73,8 +84,8 @@ _IDENTIFY_CACHE: dict = {}
 
 
 def identify(path):
-    """mkvmerge -J, cached per path — process() checks the file (stamp/ffprobe backstop)
-    then re-identifies it in build_cmd(); caching avoids the double subprocess call."""
+    """mkvmerge -J, cached per path — build_cmd() and verify() both identify files;
+    caching avoids the duplicate subprocess call."""
     if path not in _IDENTIFY_CACHE:
         r = subprocess.run(["mkvmerge", "-J", path], capture_output=True, text=True,
                            stdin=subprocess.DEVNULL, timeout=120)
@@ -83,6 +94,9 @@ def identify(path):
 
 
 def has_dubtitles_track(info):
+    """True if an mkvmerge -J dict carries a subtitle track named TRACK_NAME. Used only
+    by verify(), to confirm the NEW track landed before the atomic replace (it is no
+    longer a skip guard — see process())."""
     for t in info.get("tracks", []):
         if t.get("type") == "subtitles" and (t.get("properties", {}).get("track_name", "") == TRACK_NAME):
             return True
@@ -151,8 +165,12 @@ def build_cmd(info, orig, ass, out):
         if t["type"] == "audio":
             (audio_keep if lang in keep else dropped).append(str(tid) if lang in keep else f"audio:{lang or 'und'}")
         elif t["type"] == "subtitles":
-            (sub_keep if keep_sub(t, keep) else dropped).append(
-                str(tid) if keep_sub(t, keep) else f"sub:{lang or 'und'}")
+            if keep_sub(t, keep):
+                sub_keep.append(str(tid))
+            elif (t.get("properties") or {}).get("track_name") == TRACK_NAME:
+                dropped.append(f"sub:{TRACK_NAME}(old)")   # labelled so the mux log shows the strip
+            else:
+                dropped.append(f"sub:{lang or 'und'}")
     cmd = ["mkvmerge", "-o", out]
     if audio_keep: cmd += ["-a", ",".join(audio_keep)]      # else: keep all audio (safety)
     if sub_keep: cmd += ["-s", ",".join(sub_keep)]
@@ -227,8 +245,8 @@ def process(orig, apply):
     src = sub_source(stem)
     if src is None:
         return "no-sub"
-    if stamp_valid(read_stamp(stamp), orig) or has_dubtitles_track(identify(orig)):
-        return "already-muxed"                     # stat-only stamp first, ffprobe backstop
+    if stamp_valid(read_stamp(stamp), orig):
+        return "already-muxed"                     # stat-only, version-aware stamp is the ONLY guard
     if not has_room(_free_bytes(orig), os.path.getsize(orig)):
         log("  skip (low disk):", os.path.basename(orig))
         return "skip-no-room"

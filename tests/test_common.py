@@ -4,7 +4,15 @@ dialogue_intervals(). The predicate/regexes are byte-identical to repair.py's
 pre-refactor dialogue_intervals() -- these tests pin that selection logic with
 synthetic pysubs2 fixtures (no media, no ffmpeg) plus a hermetic extraction-pipeline
 test that monkeypatches eng_sub_streams/extract_sub the same way
-tests/test_dub_signs_merge.py does for dsm.build()."""
+tests/test_dub_signs_merge.py does for dsm.build().
+
+Also covers the strip-at-mux/context-isolation additions (see
+docs/superpowers/specs/2026-07-26-strip-and-isolate-old-dubtitles-design.md): the
+TRACK_NAME marker + _track_title() helper, eng_sub_streams()'s exclusion of our own
+"Dubtitles" track, and the pipeline-version field on the .dubtitles.done stamp."""
+import json
+import types
+
 import pysubs2
 
 import common
@@ -188,3 +196,127 @@ def test_dialogue_intervals_default_none_uses_eng_sub_streams(monkeypatch):
 
     assert common.dialogue_intervals("fake-video.mkv") == [(2.0, 3.0, "Only line.")]
     assert seen_langs == [common.SUB_LANGS]
+
+
+# --- strip-at-mux: TRACK_NAME marker + _track_title() -------------------------
+
+def test_track_name_and_version_constants():
+    """The canonical marker for our own generated track (mux.py sets it as the mkv
+    track name; every context reader excludes it) plus the stamp version constants."""
+    assert common.TRACK_NAME == "Dubtitles"
+    assert common.PIPELINE_VERSION >= 1
+    assert common.GRANDFATHER_VERSION == 1
+
+
+def test_track_title_reads_and_strips_tag():
+    assert common._track_title({"tags": {"title": "Dubtitles"}}) == "Dubtitles"
+    assert common._track_title({"tags": {"title": "  Dubtitles  "}}) == "Dubtitles"
+
+
+def test_track_title_missing_or_null_tags_is_empty_string():
+    assert common._track_title({}) == ""
+    assert common._track_title({"tags": None}) == ""
+    assert common._track_title({"tags": {"title": None}}) == ""
+
+
+# --- eng_sub_streams(): never return our own Dubtitles track ------------------
+
+def _fake_ffprobe(streams):
+    """Stand in for common.subprocess so eng_sub_streams() sees a canned ffprobe -of json
+    payload; records the argv so the test can assert the query itself asks for the title."""
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        return types.SimpleNamespace(stdout=json.dumps({"streams": streams}), returncode=0)
+
+    return types.SimpleNamespace(run=run, DEVNULL=-3, calls=calls)
+
+
+def _sub(index, lang="eng", codec="ass", title=None):
+    tags = {"language": lang}
+    if title is not None:
+        tags["title"] = title
+    return {"index": index, "codec_name": codec, "tags": tags}
+
+
+def test_eng_sub_streams_ffprobe_query_requests_the_title_tag(monkeypatch):
+    """The title filter is only meaningful if ffprobe is asked for stream_tags=title --
+    without it every stream comes back title-less and the exclusion silently no-ops."""
+    fake = _fake_ffprobe([])
+    monkeypatch.setattr(common, "subprocess", fake)
+    common.eng_sub_streams("fake.mkv", {"eng"})
+    entries = fake.calls[0][fake.calls[0].index("-show_entries") + 1]
+    assert "title" in entries.split(":")[-1]
+
+
+def test_eng_sub_streams_excludes_our_own_dubtitles_track(monkeypatch):
+    monkeypatch.setattr(common, "subprocess", _fake_ffprobe([
+        _sub(2, title="English (Fansub)"),
+        _sub(3, title=common.TRACK_NAME),
+    ]))
+    assert common.eng_sub_streams("fake.mkv", {"eng"}) == [2]
+
+
+def test_eng_sub_streams_excludes_dubtitles_track_with_padded_title(monkeypatch):
+    monkeypatch.setattr(common, "subprocess", _fake_ffprobe([
+        _sub(3, title="  Dubtitles  "),
+    ]))
+    assert common.eng_sub_streams("fake.mkv", {"eng"}) == []
+
+
+def test_eng_sub_streams_keeps_untitled_english_tracks(monkeypatch):
+    """A genuine fansub track usually has no title tag at all -- the exclusion must not
+    swallow it (a missing title is not our marker)."""
+    monkeypatch.setattr(common, "subprocess", _fake_ffprobe([_sub(2), _sub(4, codec="ssa")]))
+    assert common.eng_sub_streams("fake.mkv", {"eng"}) == [2, 4]
+
+
+def test_eng_sub_streams_returns_empty_when_only_track_is_the_dubtitle(monkeypatch):
+    """No fallback: an episode whose only English sub is our own old output yields no
+    reference at all, so the pipeline runs reference-free rather than reading itself."""
+    monkeypatch.setattr(common, "subprocess", _fake_ffprobe([_sub(2, title=common.TRACK_NAME)]))
+    assert common.eng_sub_streams("fake.mkv", {"eng"}) == []
+
+
+# --- pipeline-version stamp ---------------------------------------------------
+
+def test_write_stamp_records_the_pipeline_version(tmp_path):
+    v = tmp_path / "ep.mkv"; v.write_bytes(b"x" * 100)
+    sp = str(tmp_path / ("ep" + common.STAMP_SUFFIX))
+    common.write_stamp(sp, str(v))
+    assert common.read_stamp(sp)["version"] == common.PIPELINE_VERSION
+
+
+def test_stamp_valid_rejects_a_stamp_from_an_older_pipeline_version(tmp_path, monkeypatch):
+    v = tmp_path / "ep.mkv"; v.write_bytes(b"x" * 100)
+    sp = str(tmp_path / ("ep" + common.STAMP_SUFFIX))
+    common.write_stamp(sp, str(v))
+    stamp = common.read_stamp(sp)
+    monkeypatch.setattr(common, "PIPELINE_VERSION", common.PIPELINE_VERSION + 1)
+    assert not common.stamp_valid(stamp, str(v))     # stale output -> regenerate in place
+
+
+def test_stamp_valid_accepts_a_stamp_at_the_current_version(tmp_path):
+    v = tmp_path / "ep.mkv"; v.write_bytes(b"x" * 100)
+    sp = str(tmp_path / ("ep" + common.STAMP_SUFFIX))
+    common.write_stamp(sp, str(v))
+    assert common.stamp_valid(common.read_stamp(sp), str(v))
+
+
+def test_stamp_valid_grandfathers_a_versionless_stamp(tmp_path):
+    """A stamp written before this feature has no "version" key; it counts as
+    GRANDFATHER_VERSION, so the rollout regenerates nothing while
+    PIPELINE_VERSION == GRANDFATHER_VERSION."""
+    v = tmp_path / "ep.mkv"; v.write_bytes(b"x" * 100)
+    st = v.stat()
+    old = {"size": st.st_size, "mtime": st.st_mtime, "muxed": True}
+    assert common.stamp_valid(old, str(v)) is (common.PIPELINE_VERSION == common.GRANDFATHER_VERSION)
+
+
+def test_stamp_valid_rejects_a_versionless_stamp_after_a_version_bump(tmp_path, monkeypatch):
+    v = tmp_path / "ep.mkv"; v.write_bytes(b"x" * 100)
+    st = v.stat()
+    old = {"size": st.st_size, "mtime": st.st_mtime, "muxed": True}
+    monkeypatch.setattr(common, "PIPELINE_VERSION", common.GRANDFATHER_VERSION + 1)
+    assert not common.stamp_valid(old, str(v))

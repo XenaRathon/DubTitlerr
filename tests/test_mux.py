@@ -193,3 +193,86 @@ def test_sub_source_prefers_ass_then_srt(tmp_path):
     assert mux.sub_source(stem).endswith(".srt")
     (tmp_path / "ep.eng.dubtitles.ass").write_text("x")
     assert mux.sub_source(stem).endswith(".ass")   # .ass (signs) preferred over .srt
+
+
+# --- strip-at-mux: an old "Dubtitles" track is replaced, never duplicated ------
+
+def test_keep_sub_drops_our_own_old_dubtitles_track():
+    """The name check must win over language/mul/signs -- our track is language=eng, so
+    every other rule would keep it and the remux would end up with two Dubtitles tracks."""
+    assert not mux.keep_sub(subt(0, "eng", mux.TRACK_NAME), mux.KEEP_LANGS)
+    assert not mux.keep_sub(subt(0, "mul", mux.TRACK_NAME), mux.KEEP_LANGS)
+    assert not mux.keep_sub(subt(0, "fre", mux.TRACK_NAME), mux.KEEP_LANGS)
+
+
+def test_keep_sub_tolerates_null_properties():
+    """mkvmerge can emit a track with no properties block; the new name check must not
+    raise on it. ("" is in KEEP_LANGS by default, so an untagged sub is still kept.)"""
+    assert mux.keep_sub({"type": "subtitles", "properties": None}, mux.KEEP_LANGS)
+    assert not mux.keep_sub({"type": "subtitles", "properties": None}, {"eng"})
+
+
+def test_build_cmd_drops_the_old_dubtitles_track_and_adds_one_fresh():
+    """Drop-then-re-add in a single mkvmerge pass: the old track never survives into -s,
+    it is reported in `dropped`, and the sidecar is appended as the one new Dubtitles."""
+    info = {"tracks": [aud(0, "jpn", default=True), aud(1, "eng"),
+                       subt(2, "eng", "English (Fansub)"), subt(3, "eng", mux.TRACK_NAME)]}
+    cmd, dropped = mux.build_cmd(info, "ep.mkv", "ep.ass", "out.mkv")
+    kept_subs = cmd[cmd.index("-s") + 1].split(",")
+    assert kept_subs == ["2"]                            # fansub kept, old dubtitle gone
+    assert any(mux.TRACK_NAME in d for d in dropped)     # and reported as dropped
+    assert cmd[-1] == "ep.ass"                           # the new track is still appended
+    assert cmd.count(f"0:{mux.TRACK_NAME}") == 1         # exactly one Dubtitles track
+
+
+def test_build_cmd_drops_every_duplicate_dubtitles_track():
+    """A buggy past run could have left two; keep_sub drops any track with the name, so
+    the result self-heals to exactly one (the new one)."""
+    info = {"tracks": [aud(0, "eng"), subt(1, "eng", mux.TRACK_NAME),
+                       subt(2, "eng", mux.TRACK_NAME)]}
+    cmd, dropped = mux.build_cmd(info, "ep.mkv", "ep.ass", "out.mkv")
+    assert "-s" not in cmd                               # nothing left to keep
+    assert len([d for d in dropped if mux.TRACK_NAME in d]) == 2
+
+
+# --- process() skip guard is stamp-only (no ffprobe "already-muxed" backstop) --
+
+def _muxable(tmp_path, monkeypatch, tracks):
+    """A video + sidecar on disk with mkvmerge -J stubbed, so process() can be driven
+    in dry-run without media. Returns the video path."""
+    v = tmp_path / "ep.mkv"; v.write_bytes(b"x" * 100)
+    (tmp_path / ("ep" + mux.ASS_SUFFIX)).write_text("[Script Info]\n")
+    monkeypatch.setattr(mux, "identify", lambda p: {"tracks": tracks})
+    return str(v)
+
+
+def test_process_remuxes_a_file_that_already_has_a_dubtitles_track(tmp_path, monkeypatch):
+    """The old ffprobe backstop is gone: a Dubtitles track alone no longer counts as done,
+    because re-muxing is now idempotent (drop old + add fresh). Without this, every
+    regeneration would silently no-op on already-dubbed files."""
+    v = _muxable(tmp_path, monkeypatch, [aud(0, "eng"), subt(1, "eng", mux.TRACK_NAME)])
+    assert mux.process(v, apply=False) == "plan"
+
+
+def test_process_skips_on_a_current_version_stamp(tmp_path, monkeypatch):
+    v = _muxable(tmp_path, monkeypatch, [aud(0, "eng"), subt(1, "eng", mux.TRACK_NAME)])
+    mux.write_stamp(str(tmp_path / ("ep" + mux.STAMP_SUFFIX)), v)
+    assert mux.process(v, apply=False) == "already-muxed"
+
+
+def test_process_remuxes_a_file_whose_stamp_is_from_an_older_pipeline_version(tmp_path, monkeypatch):
+    """A PIPELINE_VERSION bump is the regeneration trigger: the v1 stamp still matches
+    size+mtime, but its version is behind, so the file is re-muxed in place."""
+    import common
+    v = _muxable(tmp_path, monkeypatch, [aud(0, "eng"), subt(1, "eng", mux.TRACK_NAME)])
+    mux.write_stamp(str(tmp_path / ("ep" + mux.STAMP_SUFFIX)), v)
+    monkeypatch.setattr(common, "PIPELINE_VERSION", common.PIPELINE_VERSION + 1)
+    assert mux.process(v, apply=False) == "plan"
+
+
+def test_process_still_no_ops_without_a_sidecar(tmp_path, monkeypatch):
+    """mux never touches a file that has no new subtitle to embed -- this is what makes
+    "old track dropped" impossible to happen independently of "new track added"."""
+    v = tmp_path / "ep.mkv"; v.write_bytes(b"x" * 100)
+    monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
+    assert mux.process(str(v), apply=False) == "no-sub"

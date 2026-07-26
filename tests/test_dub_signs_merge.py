@@ -1,6 +1,7 @@
 """Unit tests for dub_signs_merge.py: keep_event() classifier + build() layer ordering."""
 import pysubs2
 
+import common
 import dub_signs_merge as dsm
 
 
@@ -240,3 +241,48 @@ def test_resolution_no_mismatch_no_warning(tmp_path, monkeypatch, capsys):
 
     assert status == "ok"
     assert "resolution mismatch" not in capsys.readouterr().out
+
+
+# --- context isolation: the signs/songs source is never our own old dubtitle ---
+#
+# dub_signs_merge imports common.eng_sub_streams directly, so it inherits the TRACK_NAME
+# exclusion with no code of its own. These two cases pin that inheritance end-to-end
+# (real common.eng_sub_streams, ffprobe stubbed) rather than through a monkeypatched
+# eng_sub_streams, which would only ever test the stub.
+
+def _ffprobe_streams(monkeypatch, streams):
+    import json as _json
+    import types as _types
+
+    def run(cmd, **kw):
+        return _types.SimpleNamespace(stdout=_json.dumps({"streams": streams}), returncode=0)
+
+    monkeypatch.setattr(common, "subprocess", _types.SimpleNamespace(run=run, DEVNULL=-3))
+
+
+def _ass_stream(index, title=None, lang="eng"):
+    tags = {"language": lang}
+    if title is not None:
+        tags["title"] = title
+    return {"index": index, "codec_name": "ass", "tags": tags}
+
+
+def test_build_reads_the_fansub_and_never_our_old_dubtitles_track(monkeypatch, tmp_path):
+    extracted = []
+    _ffprobe_streams(monkeypatch, [_ass_stream(2, title="English (Fansub)"),
+                                   _ass_stream(3, title=common.TRACK_NAME)])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: extracted.append(idx) or False)
+    dsm.build("fake-video.mkv", str(tmp_path / "dub.srt"), str(tmp_path / "out.ass"))
+    assert extracted == [2]           # signs are lifted from the fansub only
+
+
+def test_build_finds_no_signs_when_the_only_sub_is_our_dubtitle(monkeypatch, tmp_path):
+    """No fallback: rather than re-lifting last version's signs out of our own output,
+    the merge reports no-signs."""
+    extracted = []
+    _ffprobe_streams(monkeypatch, [_ass_stream(3, title=common.TRACK_NAME)])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: extracted.append(idx) or False)
+    status, signs, added = dsm.build("fake-video.mkv", str(tmp_path / "dub.srt"),
+                                     str(tmp_path / "out.ass"))
+    assert status == "no-signs"
+    assert extracted == []
