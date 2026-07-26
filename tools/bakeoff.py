@@ -116,9 +116,38 @@ def ask_llamacpp(url, prompt):
     return out, time.monotonic() - t0
 
 
-def ask(ollama, model, prompt, llamacpp=None):
-    url = (llamacpp or {}).get(model)
-    return ask_llamacpp(url, prompt) if url else ask_ollama(ollama, model, prompt)
+def ask_llamacpp_chat(url, prompt):
+    """llama.cpp OpenAI-compatible /v1/chat/completions — unlike /completion this APPLIES
+    the model's chat template, which a templated instruct model needs to produce anything
+    at all (Nanbeige returns nothing but newlines through the raw endpoint).
+
+    ``enable_thinking: False`` is passed through to the template: this fork otherwise
+    spends its entire budget on ``reasoning_content`` and returns an empty message —
+    measured empty after 114 s at max_tokens=512, versus correct output in 4.3 s with
+    thinking off. An empty reply is surfaced as <EMPTY ...> rather than "", because ""
+    would score as "model correctly left the line alone" — a silent false pass."""
+    body = {"messages": [{"role": "user", "content": prompt}], "temperature": 0,
+            "max_tokens": 80, "chat_template_kwargs": {"enable_thinking": False}}
+    t0 = time.monotonic()
+    try:
+        msg = _post_json(url, body)["choices"][0]["message"]
+        out = _first_line((msg.get("content") or "").strip())
+        if not out:
+            why = "thinking not disabled?" if msg.get("reasoning_content") else "no content"
+            out = f"<EMPTY {why}>"
+    except Exception as e:
+        out = f"<ERROR {e}>"
+    return out, time.monotonic() - t0
+
+
+def ask(ollama, model, prompt, llamacpp=None, llamacpp_chat=None):
+    raw = (llamacpp or {}).get(model)
+    if raw:
+        return ask_llamacpp(raw, prompt)
+    chat = (llamacpp_chat or {}).get(model)
+    if chat:
+        return ask_llamacpp_chat(chat, prompt)
+    return ask_ollama(ollama, model, prompt)
 
 
 def main():
@@ -131,10 +160,15 @@ def main():
     ap.add_argument("--limit", type=int, default=15)
     ap.add_argument("--llamacpp", nargs="*", default=[], metavar="NAME=URL",
                     help="serve these model names from a llama.cpp /completion endpoint "
-                         "instead of Ollama (for GGUFs Ollama cannot load)")
+                         "instead of Ollama (raw prompt — mirrors repair.py exactly)")
+    ap.add_argument("--llamacpp-chat", nargs="*", default=[], metavar="NAME=URL",
+                    help="same, but via /v1/chat/completions so the model's chat template "
+                         "is applied and thinking is disabled (needed by templated instruct "
+                         "models; repair.py's raw /completion path cannot drive them)")
     a = ap.parse_args()
 
     llamacpp = parse_llamacpp_specs(a.llamacpp)
+    llamacpp_chat = parse_llamacpp_specs(a.llamacpp_chat)
     gloss = glossary.load(a.glossary)
     cards = load_cards(a.raw, a.conf)
     for c in cards:                                  # deterministic layer first (as in prod)
@@ -148,7 +182,7 @@ def main():
     totals = dict.fromkeys(a.models, 0.0)
     for m in a.models:
         for p in prompts:
-            out, dt = ask(a.ollama, m, p, llamacpp)
+            out, dt = ask(a.ollama, m, p, llamacpp, llamacpp_chat)
             outs[m].append(out)
             totals[m] += dt
 
