@@ -385,18 +385,29 @@ def test_non_runtimeerror_mentioning_cuda_does_not_poison(monkeypatch, tmp_path)
 # return "already-ass" forever while mux re-embedded that OLD subtitle and stamped it
 # CURRENT -- the episode would read as regenerated while still containing v1 content.
 
-def _stale_stamped(tmp_path, monkeypatch, sidecars):
+def _stale_stamped(tmp_path, monkeypatch, leftovers=(), fresh=()):
+    """A file stamped by a superseded pipeline version, with `leftovers` (sidecars from
+    that same old run, so OLDER than the stamp) and/or `fresh` sidecars (this
+    regeneration's own work, written after the stamp)."""
     v = tmp_path / "ep.mkv"
     v.write_bytes(b"x" * 1000)
-    common.write_stamp(str(tmp_path / ("ep" + generate.STAMP_SUFFIX)), str(v))
-    for name in sidecars:
-        (tmp_path / name).write_text("stale output from the previous pipeline version")
+    stamp = tmp_path / ("ep" + generate.STAMP_SUFFIX)
+    common.write_stamp(str(stamp), str(v))
+    stamp_mtime = stamp.stat().st_mtime
+    for name in leftovers:
+        p = tmp_path / name
+        p.write_text("output from the previous pipeline version")
+        os.utime(p, (stamp_mtime - 60, stamp_mtime - 60))   # written before the stamp
+    for name in fresh:
+        p = tmp_path / name
+        p.write_text("freshly transcribed, awaiting mux")
+        os.utime(p, (stamp_mtime + 60, stamp_mtime + 60))   # written after the stamp
     monkeypatch.setattr(common, "PIPELINE_VERSION", common.PIPELINE_VERSION + 1)
     return v
 
 
 def test_stale_version_file_discards_its_leftover_ass_sidecar(monkeypatch, tmp_path):
-    v = _stale_stamped(tmp_path, monkeypatch, ["ep.eng.dubtitles.ass"])
+    v = _stale_stamped(tmp_path, monkeypatch, leftovers=["ep.eng.dubtitles.ass"])
     monkeypatch.setattr(generate, "eng_audio_index", lambda video: None)
     assert generate.process(str(v)) == "no-eng-dub"      # NOT "already-ass"
     assert not (tmp_path / "ep.eng.dubtitles.ass").exists()
@@ -404,7 +415,7 @@ def test_stale_version_file_discards_its_leftover_ass_sidecar(monkeypatch, tmp_p
 
 def test_stale_version_file_discards_its_leftover_srt_and_conf(monkeypatch, tmp_path):
     v = _stale_stamped(tmp_path, monkeypatch,
-                       ["ep.eng.dubtitles.srt", "ep.dubtitles.conf.json"])
+                       leftovers=["ep.eng.dubtitles.srt", "ep.dubtitles.conf.json"])
     monkeypatch.setattr(generate, "eng_audio_index", lambda video: None)
     assert generate.process(str(v)) == "no-eng-dub"      # NOT "already-srt"
     assert not (tmp_path / "ep.eng.dubtitles.srt").exists()
@@ -425,5 +436,50 @@ def test_needs_work_true_for_a_stale_version_file_with_a_sidecar(monkeypatch, tm
     """The stat-only pre-filter has to agree, or process() is never reached and the
     clear-out above never runs."""
     needs_work = _real_needs_work()
-    v = _stale_stamped(tmp_path, monkeypatch, ["ep.eng.dubtitles.ass"])
+    v = _stale_stamped(tmp_path, monkeypatch, leftovers=["ep.eng.dubtitles.ass"])
     assert needs_work(str(v)) is True
+
+
+def test_stale_version_file_keeps_a_sidecar_newer_than_its_stamp(monkeypatch, tmp_path):
+    """The stamp only advances when mux succeeds, so between "generate re-transcribed" and
+    "mux stamped" a FRESH sidecar sits beside a STALE stamp -- for at least MERGE_INTERVAL,
+    and indefinitely if the mux keeps failing (skip-no-room, verify-*). Discarding it there
+    would re-run Whisper on every resume pass; worse, gen_loop.sh's stall detector counts
+    .srt files, so the deletions read as "no progress" and it abandons the show
+    mid-regeneration. A sidecar newer than the stamp is this run's own work: keep it."""
+    v = _stale_stamped(tmp_path, monkeypatch, fresh=["ep.eng.dubtitles.srt",
+                                                     "ep.dubtitles.conf.json"])
+    assert generate.process(str(v)) == "already-srt"
+    assert (tmp_path / "ep.eng.dubtitles.srt").exists()
+    assert (tmp_path / "ep.dubtitles.conf.json").exists()
+
+
+def test_stale_version_file_discards_only_the_leftovers_not_the_fresh_work(monkeypatch, tmp_path):
+    """Mid-regeneration state: the old .ass is still lying around from the interrupted
+    previous mux, while the .srt is what this run just transcribed. The old assembly must
+    go (or mux would embed it) and the new transcription must stay -- so the episode ends
+    up correctly waiting on assemble, not re-transcribing."""
+    v = _stale_stamped(tmp_path, monkeypatch,
+                       leftovers=["ep.eng.dubtitles.ass"], fresh=["ep.eng.dubtitles.srt"])
+    assert generate.process(str(v)) == "already-srt"
+    assert not (tmp_path / "ep.eng.dubtitles.ass").exists()   # last version's assembly
+    assert (tmp_path / "ep.eng.dubtitles.srt").exists()       # this run's transcription
+
+
+def test_poison_marked_stale_file_keeps_its_sidecars(monkeypatch, tmp_path):
+    """A .dubtitles.fail file is never transcribed, so discarding its sidecars would be
+    pure destruction -- it would leave mux with nothing to embed until an operator
+    manually removes the marker."""
+    v = _stale_stamped(tmp_path, monkeypatch, leftovers=["ep.eng.dubtitles.ass"])
+    (tmp_path / "ep.dubtitles.fail").write_text("")
+    assert generate.process(str(v)) == "already-ass"     # skipped, and nothing destroyed
+    assert (tmp_path / "ep.eng.dubtitles.ass").exists()
+
+
+def test_needs_work_false_for_a_poison_marked_stale_file(monkeypatch, tmp_path):
+    """needs_work must agree with process(): a poisoned file is not work, so it must not
+    drag the ~40s model load into a sweep that has nothing else to do."""
+    needs_work = _real_needs_work()
+    v = _stale_stamped(tmp_path, monkeypatch, leftovers=["ep.eng.dubtitles.ass"])
+    (tmp_path / "ep.dubtitles.fail").write_text("")
+    assert needs_work(str(v)) is False

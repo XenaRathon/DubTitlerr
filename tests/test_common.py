@@ -199,7 +199,7 @@ def test_dialogue_intervals_default_none_uses_eng_sub_streams(monkeypatch):
     assert seen_langs == [common.SUB_LANGS]
 
 
-# --- strip-at-mux: TRACK_NAME marker + _track_title() -------------------------
+# --- strip-at-mux: TRACK_NAME marker + stream_title()/is_our_track() ---------
 
 def test_track_name_and_version_constants():
     """The canonical marker for our own generated track (mux.py sets it as the mkv

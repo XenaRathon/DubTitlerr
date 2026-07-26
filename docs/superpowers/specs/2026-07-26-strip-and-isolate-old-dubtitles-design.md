@@ -652,12 +652,25 @@ on exactly the files it was meant to fix, leaving v1 content labelled v2. Fixed 
 `common.stale_version_stamp()`: when the stamp matches the file exactly but records an older
 version, the file *is* our superseded output, so its sidecars are that same run's leftovers.
 `generate.process()` discards them (`discard_stale_sidecars`) and `needs_work()` returns True
-for that state so `process()` is actually reached. This is safe against the concurrent mux
-sweep because the only writer of a *fresh* sidecar is `generate`, and `generate` is itself
-blocked by the stale one — so nothing new can exist beside it. Residual (accepted): if `mux`
-is already inside `mkvmerge` on that exact episode at the moment `generate` deletes the
-sidecar, mkvmerge finishes from its open fd and stamps the old content current. Sub-second
-window, one episode, and a further bump clears it.
+for that state so `process()` is actually reached.
+
+**Leftover vs fresh is decided by mtime, not by the stale stamp alone.** An earlier draft of
+this fix argued the discard was safe because "generate is itself blocked by the stale
+sidecar, so nothing fresh can exist beside it" — that reasoning is circular and wrong:
+unblocking generate is the whole point of the fix, and the stamp does not advance until
+`mux` succeeds, so a freshly transcribed sidecar sits beside a still-stale stamp for at
+least one `MERGE_INTERVAL` (and indefinitely if the mux keeps failing on `skip-no-room` /
+`verify-*`). Discarding *that* would re-run Whisper on every `gen_loop.sh` resume pass and,
+because the loop's stall detector counts `.srt` files, the deletions would read as "no
+progress" and abandon the show mid-regeneration. The implemented predicate is therefore:
+**a sidecar is a leftover only if it predates the stamp** (the run that stamped wrote its
+sidecars first and deleted them just after), and anything newer is this run's own work and
+is kept. A poison-marked (`.dubtitles.fail`) episode is exempt from the discard entirely —
+it is never transcribed, so removing its sidecars would be pure destruction. Residual
+(accepted): if `mux`/`merge_pass` is mid-assemble on a genuine leftover at the moment
+generate deletes it, the open fd survives and that old content can still be embedded and
+stamped current — one episode, only in the already-rare crashed-mux state, and a further
+bump clears it.
 
 **Track ordering may shift.** `mkvmerge` places the new track at the end of the track list.
 If the old `Dubtitles` track was not the last subtitle track, removing the old one and
@@ -704,7 +717,11 @@ Found during implementation + code review; each is now covered by a test.
    exclude-from-context test and the drop-at-mux test cannot drift. A drift is silent:
    exclude-but-keep yields a duplicate, keep-but-drop loses the fansub. This also replaced
    the cross-module import of a private `_track_title`.
-3. **Version-aware sidecar staleness** — see the corrected orphaned-sidecar paragraph above.
+3. **Version-aware sidecar staleness** — see the corrected orphaned-sidecar paragraph
+   above, including the mtime leftover-vs-fresh predicate and the `.dubtitles.fail` exemption
+   (a second review pass caught that the first cut of this fix deleted freshly transcribed
+   sidecars, which would have broken crash-resume during exactly the version-bump rollout
+   the feature exists to enable).
 4. **A failed stamp write is now its own status** (`stamp-write-failed`, sidecars kept).
    With the ffprobe backstop retired the stamp is the only "done" record, so a silent
    failure meant re-running the whole multi-GB remux every sweep, forever.

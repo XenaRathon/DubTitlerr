@@ -181,14 +181,33 @@ def _card_word_probs(card, words):
 
 
 def discard_stale_sidecars(stem):
-    """Delete the sidecars belonging to a superseded pipeline version (see
-    common.stale_version_stamp). They are last version's output, not pending work: left
-    in place they'd make the skips below return "already-ass"/"already-srt" forever while
-    mux re-embedded that same old subtitle and stamped it as current."""
+    """Delete the sidecars LEFT BEHIND by a superseded pipeline version (see
+    common.stale_version_stamp). They are last version's output, not pending work: left in
+    place they'd make the skips in process() return "already-ass"/"already-srt" forever
+    while mux re-embedded that same old subtitle and stamped it as current.
+
+    A sidecar counts as a leftover only if it PREDATES the stamp. The run that wrote the
+    stamp wrote its sidecars first and deleted them just after stamping, so anything older
+    than the stamp belongs to that finished run. Anything NEWER is this regeneration's own
+    fresh work: the stamp only advances when mux succeeds, so a re-transcribed sidecar sits
+    beside a still-stale stamp for at least one MERGE_INTERVAL — and indefinitely if the
+    mux keeps failing (skip-no-room, verify-*). Deleting that would re-run Whisper on every
+    resume pass, and since gen_loop.sh's stall detector counts .srt files, the deletions
+    would read as "no progress" and abandon the show mid-regeneration.
+
+    (Raw paths, not out_for(): mux reads these same raw paths, so both already assume
+    OUTPUT_ROOT resolves into the same mergerfs pool view.)"""
+    try:
+        stamp_mtime = os.path.getmtime(stem + STAMP_SUFFIX)
+    except OSError:
+        return                                    # no stamp -> nothing is attributable to it
     for suff in (".eng.dubtitles.ass", ".eng.dubtitles.srt", ".dubtitles.conf.json"):
+        p = stem + suff
         try:
-            os.remove(stem + suff)
-            log("  discarded stale-version sidecar", os.path.basename(stem + suff))
+            if os.path.getmtime(p) > stamp_mtime:
+                continue                          # newer than the stamp -> this run's work
+            os.remove(p)
+            log("  discarded stale-version sidecar", os.path.basename(p))
         except OSError:
             pass
 
@@ -202,13 +221,17 @@ def process(video):
     stamp = read_stamp(stem + STAMP_SUFFIX)
     if stamp_valid(stamp, video):                       # muxed, current version -> skip
         return "already-muxed"
-    if stale_version_stamp(stamp, video):               # our own superseded output ->
-        discard_stale_sidecars(stem)                    # its leftover sidecars are stale too
+    fail = stem + ".dubtitles.fail"
+    # Our own superseded output -> its leftover sidecars are stale too. Skipped for a
+    # poison-marked file: that one is never transcribed, so discarding its sidecars would
+    # be pure destruction (mux would then have nothing to embed until the marker is
+    # cleared by hand).
+    if stale_version_stamp(stamp, video) and not os.path.exists(fail):
+        discard_stale_sidecars(stem)
     if os.path.exists(stem + ".eng.dubtitles.ass"):     # assembled already -> skip (idempotent)
         return "already-ass"
     if os.environ.get("SKIP_IF_SRT", "1") == "1" and os.path.exists(stem + ".eng.dubtitles.srt"):
         return "already-srt"                            # generated, awaiting (a retry of) assemble
-    fail = stem + ".dubtitles.fail"
     if os.path.exists(fail):                      # a previous attempt hard-crashed on this
         return "skip-prior-crash"                 # file -> skip it (rm the .fail to retry)
     idx = eng_audio_index(video)
@@ -324,12 +347,12 @@ def main():
         stem = os.path.splitext(v)[0]
         stamp = read_stamp(stem + STAMP_SUFFIX)
         if stamp_valid(stamp, v): return False        # muxed at the current version -> done
-        # Superseded output: its sidecars are stale leftovers, so the checks below must not
+        if os.path.exists(stem + ".dubtitles.fail"): return False   # poison marker wins
+        # Superseded output: its leftover sidecars are stale, so the checks below must not
         # read them as "done" -- process() discards them and re-transcribes.
         if stale_version_stamp(stamp, v): return True
         if os.path.exists(stem + ".eng.dubtitles.ass"): return False
         if os.environ.get("SKIP_IF_SRT", "1") == "1" and os.path.exists(stem + ".eng.dubtitles.srt"): return False
-        if os.path.exists(stem + ".dubtitles.fail"): return False
         return True
     todo = [v for v in files if needs_work(v)]
     log(f"model={MODEL} compute={COMPUTE} require_eng={os.environ.get('REQUIRE_ENG','1')} files={len(files)} todo={len(todo)}")
