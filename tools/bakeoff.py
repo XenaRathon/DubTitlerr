@@ -65,20 +65,60 @@ def cards_from_raw(raw):
     return reflow.reflow(words, segments)
 
 
-def ask(ollama, model, prompt):
+def parse_llamacpp_specs(specs):
+    """``NAME=URL`` pairs -> {name: completion_url}. Lets a model that Ollama cannot serve
+    take part in the bake-off: Nanbeige's GGUF, for one, needs a patched llama.cpp and
+    `ollama create` refuses it ("failed to validate GGUF ... without compatibility
+    patches"). repair.py can already run such a model (REPAIR_BACKEND=llamacpp), so the
+    bake-off has to be able to judge it too."""
+    out = {}
+    for spec in specs or []:
+        name, _, url = spec.partition("=")
+        if not name or not url:
+            sys.exit(f"--llamacpp expects NAME=URL, got {spec!r}")
+        out[name] = url
+    return out
+
+
+def _post_json(url, body, timeout=180):
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def _first_line(out):
+    return out.splitlines()[0].strip().strip('"').strip() if out else ""
+
+
+def ask_ollama(ollama, model, prompt):
     # think=False keeps qwen3/qwen3.5 from emitting <think> blocks (ignored by qwen2.5)
     body = {"model": model, "prompt": prompt, "stream": False, "think": False,
             "options": {"temperature": 0}}
     t0 = time.monotonic()
     try:
-        req = urllib.request.Request(ollama, data=json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=180) as r:
-            out = json.loads(r.read()).get("response", "").strip()
-        out = out.splitlines()[0].strip().strip('"').strip() if out else ""
+        out = _first_line(_post_json(ollama, body).get("response", "").strip())
     except Exception as e:
         out = f"<ERROR {e}>"
     return out, time.monotonic() - t0
+
+
+def ask_llamacpp(url, prompt):
+    """Mirrors repair.llm_llamacpp exactly — no model selector (the server has one model
+    loaded), n_predict/stop bounded, reply read from "content". Sending anything else
+    would measure a configuration that isn't the one that would ship."""
+    body = {"prompt": prompt, "temperature": 0, "n_predict": 50, "stop": ["\n"]}
+    t0 = time.monotonic()
+    try:
+        out = _first_line(_post_json(url, body).get("content", "").strip())
+    except Exception as e:
+        out = f"<ERROR {e}>"
+    return out, time.monotonic() - t0
+
+
+def ask(ollama, model, prompt, llamacpp=None):
+    url = (llamacpp or {}).get(model)
+    return ask_llamacpp(url, prompt) if url else ask_ollama(ollama, model, prompt)
 
 
 def main():
@@ -89,8 +129,12 @@ def main():
     ap.add_argument("--ollama", default="http://192.168.1.196:11434/api/generate")
     ap.add_argument("--models", nargs="+", default=["qwen3:8b", "qwen3.5:4b", "qwen2.5:7b"])
     ap.add_argument("--limit", type=int, default=15)
+    ap.add_argument("--llamacpp", nargs="*", default=[], metavar="NAME=URL",
+                    help="serve these model names from a llama.cpp /completion endpoint "
+                         "instead of Ollama (for GGUFs Ollama cannot load)")
     a = ap.parse_args()
 
+    llamacpp = parse_llamacpp_specs(a.llamacpp)
     gloss = glossary.load(a.glossary)
     cards = load_cards(a.raw, a.conf)
     for c in cards:                                  # deterministic layer first (as in prod)
@@ -104,7 +148,7 @@ def main():
     totals = dict.fromkeys(a.models, 0.0)
     for m in a.models:
         for p in prompts:
-            out, dt = ask(a.ollama, m, p)
+            out, dt = ask(a.ollama, m, p, llamacpp)
             outs[m].append(out)
             totals[m] += dt
 

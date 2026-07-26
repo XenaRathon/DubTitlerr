@@ -91,3 +91,54 @@ def test_conf_cards_feed_the_real_is_target_predicate(tmp_path):
     cards = bo.load_cards(None, _write(tmp_path, rows))
     targets = [c for c in cards if repair.is_target(c, gloss)]
     assert [c["text"] for c in targets] == ["grbled nnsense here"]
+
+
+# --- llama.cpp candidates -----------------------------------------------------
+#
+# Some models can't be served by Ollama at all -- Nanbeige's GGUF needs a patched
+# llama.cpp (`ollama create` fails with "failed to validate GGUF ... without
+# compatibility patches"), which is why it runs in its own container. repair.py already
+# supports a llama.cpp backend (REPAIR_BACKEND=llamacpp); the bake-off has to speak the
+# same protocol or those models simply can't be evaluated.
+
+def test_parse_llamacpp_specs_builds_a_name_to_url_map():
+    m = bo.parse_llamacpp_specs(["nanbeige=http://host:8090/completion"])
+    assert m == {"nanbeige": "http://host:8090/completion"}
+
+
+def test_parse_llamacpp_specs_rejects_a_spec_without_a_url():
+    with pytest.raises(SystemExit):
+        bo.parse_llamacpp_specs(["nanbeige"])
+
+
+def test_llamacpp_body_matches_production_repair(monkeypatch):
+    """The bake-off must send what repair.llm_llamacpp sends, or it measures a different
+    configuration than the one that would ship: no model selector (the server has one
+    model loaded), n_predict/stop set, and the reply read from "content" not "response"."""
+    seen = {}
+
+    def fake_post(url, body, timeout=180):
+        seen["url"], seen["body"] = url, body
+        return {"content": ' "Zoro drew his blade." \n trailing junk'}
+
+    monkeypatch.setattr(bo, "_post_json", fake_post)
+    out, dt = bo.ask_llamacpp("http://host:8090/completion", "PROMPT")
+    assert seen["url"] == "http://host:8090/completion"
+    assert seen["body"]["prompt"] == "PROMPT"
+    assert seen["body"]["temperature"] == 0
+    assert "model" not in seen["body"]              # llama.cpp has no model selector
+    assert seen["body"]["stop"] == ["\n"]
+    assert out == "Zoro drew his blade."            # first line, unquoted, stripped
+    assert dt >= 0
+
+
+def test_ask_routes_llamacpp_models_away_from_ollama(monkeypatch):
+    """A model named in --llamacpp must not be posted to the Ollama endpoint (it isn't
+    there; it would come back as an <ERROR> row and read like a model failure)."""
+    calls = []
+    monkeypatch.setattr(bo, "ask_ollama", lambda url, m, p: (calls.append(("ollama", m)), ("o", 0.1))[1])
+    monkeypatch.setattr(bo, "ask_llamacpp", lambda url, p: (calls.append(("llamacpp", url)), ("l", 0.2))[1])
+    lc = {"nanbeige": "http://host:8090/completion"}
+    assert bo.ask("http://ollama/api/generate", "qwen3.5:9b", "p", lc)[0] == "o"
+    assert bo.ask("http://ollama/api/generate", "nanbeige", "p", lc)[0] == "l"
+    assert calls == [("ollama", "qwen3.5:9b"), ("llamacpp", "http://host:8090/completion")]
