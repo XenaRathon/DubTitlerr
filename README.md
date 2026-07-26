@@ -56,7 +56,9 @@ separate strip step.
 
 Regeneration is opt-in and library-wide: bump `PIPELINE_VERSION` in `common.py`. Every episode
 whose stamp records an older version is then re-transcribed and re-muxed **in place** on the next
-sweep; a failed run leaves the old track alone (no sidecar is written, so the mux never fires).
+sweep (any leftover sidecar from that older version is discarded first, so the bump can't be
+satisfied with stale work); a failed run leaves the old track alone (no sidecar is written, so
+the mux never fires).
 
 ## Quick start
 

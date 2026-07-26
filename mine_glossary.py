@@ -19,7 +19,7 @@ import tempfile
 
 import pysubs2
 
-from common import TRACK_NAME, _track_title, load_extras
+from common import is_our_track, load_extras, stream_title
 
 EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_extras)
 
@@ -58,7 +58,7 @@ COMMON = _load_common()
 def eng_sub_text(video):
     """Return plaintext of the video's English (or und) ASS/SSA/SRT subtitle, or ''.
 
-    Our own previously-muxed dubtitle (title == TRACK_NAME) is excluded: this selector
+    Our own previously-muxed dubtitle (common.is_our_track) is excluded: this selector
     bypasses common.eng_sub_streams(), so it needs the same guard, otherwise a
     regeneration would re-mine last version's spellings out of its own output and
     reinforce its errors into the glossary. No fallback — a file whose only English sub
@@ -71,9 +71,9 @@ def eng_sub_text(video):
     except Exception:
         return ""
     cand = [s for s in streams
-            if (s.get("tags") or {}).get("language","").lower() in ("eng","en","und","")
+            if ((s.get("tags") or {}).get("language") or "").lower() in ("eng","en","und","")
             and s.get("codec_name") in ("ass","ssa","subrip")
-            and _track_title(s) != TRACK_NAME]
+            and not is_our_track(stream_title(s))]
     if not cand:
         return ""
     idx = cand[0]["index"]

@@ -35,7 +35,7 @@ import re
 import shutil
 import subprocess
 
-from common import MEDIA_GID, MEDIA_UID, STAMP_SUFFIX, TRACK_NAME, log, read_stamp, stamp_valid, write_stamp
+from common import MEDIA_GID, MEDIA_UID, STAMP_SUFFIX, TRACK_NAME, is_our_track, log, read_stamp, stamp_valid, write_stamp
 
 ROOTS = os.environ.get("MUX_ROOTS", "/data/Media/Anime Library").split(":")
 # Base audio/subtitle languages to KEEP. The title's ORIGINAL language is detected
@@ -72,7 +72,7 @@ def keep_sub(track: dict, keep_langs: set) -> bool:
     makes a re-mux a REPLACE (build_cmd re-adds the new one in the same pass) instead of
     a duplicate — and what retired the separate pre-strip pass."""
     props = track.get("properties") or {}
-    if props.get("track_name") == TRACK_NAME:
+    if is_our_track(props.get("track_name")):
         return False
     lang = (props.get("language") or "").lower()
     if lang in keep_langs or lang == "mul":
@@ -98,7 +98,7 @@ def has_dubtitles_track(info):
     by verify(), to confirm the NEW track landed before the atomic replace (it is no
     longer a skip guard — see process())."""
     for t in info.get("tracks", []):
-        if t.get("type") == "subtitles" and (t.get("properties", {}).get("track_name", "") == TRACK_NAME):
+        if t.get("type") == "subtitles" and is_our_track((t.get("properties") or {}).get("track_name")):
             return True
     return False
 
@@ -149,9 +149,9 @@ def original_langs(info):
     """Original-language audio = the default audio track's language (fallback: first
     audio track). Anime -> jpn, but adapts to whatever the content actually is."""
     auds = [t for t in info.get("tracks", []) if t["type"] == "audio"]
-    defs = [t for t in auds if t.get("properties", {}).get("default_track")]
+    defs = [t for t in auds if (t.get("properties") or {}).get("default_track")]
     src = defs or auds[:1]
-    return {(t.get("properties", {}).get("language", "") or "").lower() for t in src} - {""}
+    return {((t.get("properties") or {}).get("language") or "").lower() for t in src} - {""}
 
 
 def build_cmd(info, orig, ass, out):
@@ -161,21 +161,26 @@ def build_cmd(info, orig, ass, out):
     keep = KEEP_LANGS | original_langs(info)
     audio_keep, sub_keep, dropped = [], [], []
     for t in info.get("tracks", []):
-        tid = t["id"]; lang = (t.get("properties", {}).get("language", "") or "").lower()
+        tid = t["id"]; lang = ((t.get("properties") or {}).get("language") or "").lower()
         if t["type"] == "audio":
             (audio_keep if lang in keep else dropped).append(str(tid) if lang in keep else f"audio:{lang or 'und'}")
         elif t["type"] == "subtitles":
             if keep_sub(t, keep):
                 sub_keep.append(str(tid))
-            elif (t.get("properties") or {}).get("track_name") == TRACK_NAME:
+            elif is_our_track((t.get("properties") or {}).get("track_name")):
                 dropped.append(f"sub:{TRACK_NAME}(old)")   # labelled so the mux log shows the strip
             else:
                 dropped.append(f"sub:{lang or 'und'}")
     cmd = ["mkvmerge", "-o", out]
     if audio_keep: cmd += ["-a", ",".join(audio_keep)]      # else: keep all audio (safety)
-    if sub_keep: cmd += ["-s", ",".join(sub_keep)]
+    # -s is a WHITELIST and mkvmerge's default is copy-every-subtitle-track, so an empty
+    # keep list must become an explicit -S ("no source subs") — omitting the flag would
+    # copy back the very tracks `dropped` claims were removed. That is the mp4-origin /
+    # only-sub-is-our-old-dubtitle case: without -S the file ends up with TWO Dubtitles
+    # tracks, and verify() (presence-only) would pass it and stamp it.
+    cmd += ["-s", ",".join(sub_keep)] if sub_keep else ["-S"]
     for t in info.get("tracks", []):
-        tid = t["id"]; lang = (t.get("properties", {}).get("language", "") or "").lower()
+        tid = t["id"]; lang = ((t.get("properties") or {}).get("language") or "").lower()
         if t["type"] == "audio" and str(tid) in audio_keep:
             cmd += ["--default-track-flag", f"{tid}:{'yes' if lang in ('eng', 'en') else 'no'}"]
         elif t["type"] == "subtitles" and str(tid) in sub_keep:
@@ -268,7 +273,17 @@ def process(orig, apply):
         _finalize(out, final)                       # write the muxed mkv
         if os.path.abspath(orig) != os.path.abspath(final) and os.path.exists(orig):
             os.remove(orig)                         # mp4->mkv: drop the OLD library link (partner survives)
-        write_stamp(stamp, final)                   # stamp BEFORE removing sidecars (crash-safe skip)
+        try:
+            write_stamp(stamp, final)               # stamp BEFORE removing sidecars (crash-safe skip)
+        except OSError as e:
+            # The remux already landed, but the stamp is now the ONLY record that this
+            # file is done (the ffprobe backstop is gone). Without a stamp the next sweep
+            # redoes the whole multi-GB mkvmerge — every sweep, forever. Keep the sidecars
+            # so a retry can still succeed, and surface it as its own status rather than
+            # letting it read as a normal "muxed" line.
+            log(f"  ERROR: muxed OK but stamp write FAILED ({e}) — {os.path.basename(final)} "
+                f"will be re-muxed every sweep until the stamp can be written")
+            return "stamp-write-failed"
         for suff in (ASS_SUFFIX, SRT_SUFFIX):
             try: os.remove(stem + suff)
             except OSError: pass

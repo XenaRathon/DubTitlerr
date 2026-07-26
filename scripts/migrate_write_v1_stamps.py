@@ -39,11 +39,11 @@ from common import (  # noqa: E402
     EXTRA_DIRS,
     GRANDFATHER_VERSION,
     STAMP_SUFFIX,
-    TRACK_NAME,
     VIDEO_EXTS,
-    _track_title,
+    is_our_track,
     log,
     read_stamp,
+    stream_title,
 )
 
 
@@ -55,7 +55,7 @@ def has_dubtitles_track(video: str) -> bool:
         r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "s",
                             "-show_entries", "stream_tags=title", "-of", "json", video],
                            capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-        return any(_track_title(st) == TRACK_NAME
+        return any(is_our_track(stream_title(st))
                    for st in json.loads(r.stdout).get("streams", []))
     except Exception:
         return False

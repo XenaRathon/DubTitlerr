@@ -8,9 +8,10 @@ tests/test_dub_signs_merge.py does for dsm.build().
 
 Also covers the strip-at-mux/context-isolation additions (see
 docs/superpowers/specs/2026-07-26-strip-and-isolate-old-dubtitles-design.md): the
-TRACK_NAME marker + _track_title() helper, eng_sub_streams()'s exclusion of our own
+TRACK_NAME marker + stream_title()/is_our_track() helpers, eng_sub_streams()'s exclusion of our own
 "Dubtitles" track, and the pipeline-version field on the .dubtitles.done stamp."""
 import json
+import os
 import types
 
 import pysubs2
@@ -208,15 +209,26 @@ def test_track_name_and_version_constants():
     assert common.GRANDFATHER_VERSION == 1
 
 
-def test_track_title_reads_and_strips_tag():
-    assert common._track_title({"tags": {"title": "Dubtitles"}}) == "Dubtitles"
-    assert common._track_title({"tags": {"title": "  Dubtitles  "}}) == "Dubtitles"
+def test_stream_title_reads_and_strips_tag():
+    assert common.stream_title({"tags": {"title": "Dubtitles"}}) == "Dubtitles"
+    assert common.stream_title({"tags": {"title": "  Dubtitles  "}}) == "Dubtitles"
 
 
-def test_track_title_missing_or_null_tags_is_empty_string():
-    assert common._track_title({}) == ""
-    assert common._track_title({"tags": None}) == ""
-    assert common._track_title({"tags": {"title": None}}) == ""
+def test_stream_title_missing_or_null_tags_is_empty_string():
+    assert common.stream_title({}) == ""
+    assert common.stream_title({"tags": None}) == ""
+    assert common.stream_title({"tags": {"title": None}}) == ""
+
+
+def test_is_our_track_matches_the_marker_and_tolerates_padding_and_none():
+    """One predicate for both shapes: ffprobe's tags.title and mkvmerge's
+    properties.track_name. If these two ever disagreed, a track could be excluded from
+    context but KEPT at mux -- a silent duplicate."""
+    assert common.is_our_track("Dubtitles")
+    assert common.is_our_track("  Dubtitles  ")
+    assert not common.is_our_track(None)
+    assert not common.is_our_track("")
+    assert not common.is_our_track("English (Fansub)")
 
 
 # --- eng_sub_streams(): never return our own Dubtitles track ------------------
@@ -320,3 +332,55 @@ def test_stamp_valid_rejects_a_versionless_stamp_after_a_version_bump(tmp_path, 
     old = {"size": st.st_size, "mtime": st.st_mtime, "muxed": True}
     monkeypatch.setattr(common, "PIPELINE_VERSION", common.GRANDFATHER_VERSION + 1)
     assert not common.stamp_valid(old, str(v))
+
+
+def test_stamp_valid_tolerates_a_string_version(tmp_path):
+    """A hand-edited/JSON-round-tripped stamp can carry "1" instead of 1. Comparing str
+    to int raises TypeError, and this check runs OUTSIDE mux.process()'s try -- one bad
+    sidecar would abort the whole sweep."""
+    v = tmp_path / "ep.mkv"; v.write_bytes(b"x" * 100)
+    st = v.stat()
+    assert common.stamp_valid({"size": st.st_size, "mtime": st.st_mtime, "muxed": True,
+                               "version": str(common.PIPELINE_VERSION)}, str(v))
+
+
+def test_stamp_valid_rejects_an_uninterpretable_version(tmp_path):
+    v = tmp_path / "ep.mkv"; v.write_bytes(b"x" * 100)
+    st = v.stat()
+    for bad in ("abc", None, [1]):
+        assert not common.stamp_valid(
+            {"size": st.st_size, "mtime": st.st_mtime, "muxed": True, "version": bad}, str(v))
+
+
+# --- stale_version_stamp(): "this file, and its sidecars, are last version's output" ---
+
+def _stamp_for(video, version):
+    st = os.stat(video)
+    return {"size": st.st_size, "mtime": st.st_mtime, "muxed": True, "version": version}
+
+
+def test_stale_version_stamp_true_for_our_own_older_output(tmp_path, monkeypatch):
+    v = str(tmp_path / "ep.mkv"); open(v, "wb").write(b"x" * 100)
+    stamp = _stamp_for(v, common.PIPELINE_VERSION)
+    monkeypatch.setattr(common, "PIPELINE_VERSION", common.PIPELINE_VERSION + 1)
+    assert common.stale_version_stamp(stamp, v)
+
+
+def test_stale_version_stamp_false_for_current_version(tmp_path):
+    v = str(tmp_path / "ep.mkv"); open(v, "wb").write(b"x" * 100)
+    assert not common.stale_version_stamp(_stamp_for(v, common.PIPELINE_VERSION), v)
+
+
+def test_stale_version_stamp_false_when_the_file_no_longer_matches(tmp_path, monkeypatch):
+    """A replaced download is NOT "our old output" -- the stamp describes a different file,
+    so nothing beside it can be attributed to a superseded pipeline run."""
+    v = str(tmp_path / "ep.mkv"); open(v, "wb").write(b"x" * 100)
+    stamp = _stamp_for(v, common.PIPELINE_VERSION)
+    open(v, "wb").write(b"y" * 250)
+    monkeypatch.setattr(common, "PIPELINE_VERSION", common.PIPELINE_VERSION + 1)
+    assert not common.stale_version_stamp(stamp, v)
+
+
+def test_stale_version_stamp_false_for_no_stamp(tmp_path):
+    v = str(tmp_path / "ep.mkv"); open(v, "wb").write(b"x" * 100)
+    assert not common.stale_version_stamp(None, v)

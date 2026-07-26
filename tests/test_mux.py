@@ -225,14 +225,38 @@ def test_build_cmd_drops_the_old_dubtitles_track_and_adds_one_fresh():
     assert cmd.count(f"0:{mux.TRACK_NAME}") == 1         # exactly one Dubtitles track
 
 
+def test_build_cmd_suppresses_all_source_subs_when_none_are_kept():
+    """mkvmerge's -s is a WHITELIST and its default is copy-every-subtitle-track: with an
+    empty keep list, omitting -s would copy the very track we just "dropped" and the file
+    would end up with two Dubtitles tracks (verify() only checks presence, so it would
+    pass and get stamped). -S is the explicit "no source subs" that makes the drop real.
+
+    This is the mp4-origin shape: a dialogue-only episode whose ONLY subtitle track is our
+    own previous dubtitle."""
+    info = {"tracks": [aud(0, "eng"), subt(1, "eng", mux.TRACK_NAME)]}
+    cmd, dropped = mux.build_cmd(info, "ep.mkv", "ep.ass", "out.mkv")
+    assert "-S" in cmd and "-s" not in cmd
+    assert dropped == [f"sub:{mux.TRACK_NAME}(old)"]
+    assert cmd.count(f"0:{mux.TRACK_NAME}") == 1         # exactly one Dubtitles track
+
+
 def test_build_cmd_drops_every_duplicate_dubtitles_track():
     """A buggy past run could have left two; keep_sub drops any track with the name, so
     the result self-heals to exactly one (the new one)."""
     info = {"tracks": [aud(0, "eng"), subt(1, "eng", mux.TRACK_NAME),
                        subt(2, "eng", mux.TRACK_NAME)]}
     cmd, dropped = mux.build_cmd(info, "ep.mkv", "ep.ass", "out.mkv")
-    assert "-s" not in cmd                               # nothing left to keep
+    assert "-S" in cmd
     assert len([d for d in dropped if mux.TRACK_NAME in d]) == 2
+
+
+def test_build_cmd_suppresses_source_subs_when_only_foreign_ones_exist():
+    """Same hole, pre-existing shape: a file whose only subs are other-language dialogue
+    reported them as dropped while mkvmerge silently copied them all."""
+    info = {"tracks": [aud(0, "eng"), subt(1, "fre"), subt(2, "spa")]}
+    cmd, dropped = mux.build_cmd(info, "ep.mkv", "ep.ass", "out.mkv")
+    assert "-S" in cmd
+    assert dropped == ["sub:fre", "sub:spa"]
 
 
 # --- process() skip guard is stamp-only (no ffprobe "already-muxed" backstop) --
@@ -276,3 +300,29 @@ def test_process_still_no_ops_without_a_sidecar(tmp_path, monkeypatch):
     v = tmp_path / "ep.mkv"; v.write_bytes(b"x" * 100)
     monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
     assert mux.process(str(v), apply=False) == "no-sub"
+
+
+# --- a failed stamp write must be loud ----------------------------------------
+
+def test_process_reports_a_failed_stamp_write_and_keeps_the_sidecar(tmp_path, monkeypatch, capsys):
+    """With the ffprobe backstop retired, the stamp is the only record that a file is
+    done. If writing it fails (read-only/full branch, EIO) the remux has ALREADY happened,
+    so the next sweep would silently redo the whole multi-GB mkvmerge -- forever, in a
+    container that sweeps continuously. Keep the sidecar so the retry can still succeed,
+    but surface it as its own status instead of a bare "muxed" line."""
+    v = tmp_path / "ep.mkv"; v.write_bytes(b"x" * 100)
+    sidecar = tmp_path / ("ep" + mux.ASS_SUFFIX)
+    sidecar.write_text("[Script Info]\n")
+    monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
+    monkeypatch.setattr(mux, "verify", lambda orig, out: "ok")
+    monkeypatch.setattr(mux.subprocess, "run",
+                        lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(b"muxed"))
+
+    def boom(path, video):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(mux, "write_stamp", boom)
+
+    assert mux.process(str(v), apply=True) == "stamp-write-failed"
+    assert sidecar.exists()                       # kept, so the next sweep can retry
+    assert "stamp" in capsys.readouterr().out.lower()

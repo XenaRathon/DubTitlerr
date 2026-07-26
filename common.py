@@ -116,19 +116,55 @@ def read_stamp(path: str) -> dict | None:
         return None
 
 
+def stamp_version(stamp: dict) -> int | None:
+    """The stamp's pipeline version. A missing key predates versioning -> GRANDFATHER_VERSION.
+    ``None`` for a value that can't be read as an integer (hand-edited/corrupt stamp) —
+    callers treat that as "not valid", never as an exception: this runs outside mux's
+    try/except, so a single bad sidecar must not abort a whole sweep."""
+    try:
+        return int(stamp.get("version", GRANDFATHER_VERSION))
+    except (TypeError, ValueError):
+        return None
+
+
+def _stamp_matches_file(stamp: dict, video: str) -> bool:
+    """True if the stamp describes THIS exact file (size + mtime), ignoring version."""
+    try:
+        st = os.stat(video)
+    except OSError:
+        return False
+    return stamp.get("size") == st.st_size and abs(stamp.get("mtime", 0) - st.st_mtime) < 1.0
+
+
 def stamp_valid(stamp: dict | None, video: str) -> bool:
     """True if the stamp matches the current file (size+mtime) AND was written by the
     current PIPELINE_VERSION — i.e. still muxed, not replaced, and not stale output.
     A stamp with no "version" key predates versioning and counts as GRANDFATHER_VERSION."""
     if not stamp or not stamp.get("muxed"):
         return False
-    if stamp.get("version", GRANDFATHER_VERSION) < PIPELINE_VERSION:
+    version = stamp_version(stamp)
+    if version is None or version < PIPELINE_VERSION:
         return False                              # older pipeline -> regenerate in place
-    try:
-        st = os.stat(video)
-    except OSError:
+    return _stamp_matches_file(stamp, video)
+
+
+def stale_version_stamp(stamp: dict | None, video: str) -> bool:
+    """True if the stamp is OUR stamp for exactly this file (muxed, size+mtime match) but
+    records an older PIPELINE_VERSION.
+
+    That state means the video IS our own output from a superseded pipeline — and
+    therefore that any ``.eng.dubtitles.*`` sidecar sitting next to it is that same old
+    run's leftover (mux removes sidecars on success, so one surviving here means the mux
+    was interrupted after stamping). Those sidecars must NOT be treated as new work: the
+    sidecar-existence skips in generate.py would otherwise block the re-transcribe while
+    mux happily re-embedded the OLD subtitle and stamped it current — a version bump that
+    silently no-ops on exactly the files it was meant to fix."""
+    if not stamp or not stamp.get("muxed"):
         return False
-    return stamp.get("size") == st.st_size and abs(stamp.get("mtime", 0) - st.st_mtime) < 1.0
+    version = stamp_version(stamp)
+    if version is None or version >= PIPELINE_VERSION:
+        return False
+    return _stamp_matches_file(stamp, video)
 
 
 def find_video(stem):
@@ -138,9 +174,18 @@ def find_video(stem):
     return None
 
 
-def _track_title(st: dict) -> str:
+def stream_title(st: dict) -> str:
     """An ffprobe stream's title tag, normalized (missing/null tags -> "")."""
     return ((st.get("tags") or {}).get("title", "") or "").strip()
+
+
+def is_our_track(name: str | None) -> bool:
+    """True if a track name marks it as OUR generated dubtitle. One predicate for both
+    shapes the pipeline sees — ffprobe's ``tags.title`` (via stream_title) and mkvmerge's
+    ``properties.track_name`` — so the "is this ours?" test can't drift between the stage
+    that EXCLUDES the track from context and the stage that DROPS it at mux. A drift there
+    is silent: exclude-but-keep yields a duplicate track, keep-but-drop loses the fansub."""
+    return (name or "").strip() == TRACK_NAME
 
 
 def eng_sub_streams(video, sub_langs):
@@ -170,7 +215,7 @@ def eng_sub_streams(video, sub_langs):
     for st in streams:
         if st.get("codec_name") not in ("ass", "ssa"):
             continue
-        if _track_title(st) == TRACK_NAME:        # our own old output — never context
+        if is_our_track(stream_title(st)):        # our own old output — never context
             continue
         if ((st.get("tags") or {}).get("language", "") or "").lower() in sub_langs:
             out.append(st["index"])
