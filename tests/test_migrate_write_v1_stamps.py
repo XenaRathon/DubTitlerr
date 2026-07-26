@@ -49,12 +49,47 @@ def test_has_dubtitles_track_false_without_our_track(monkeypatch, tmp_path):
     assert not mig.has_dubtitles_track(_video(tmp_path))
 
 
-def test_has_dubtitles_track_false_when_ffprobe_fails(monkeypatch, tmp_path):
+# A probe failure must NOT read as "no Dubtitles track". Collapsing the two would file
+# every unreadable/corrupt file under `no-dubtitles` -- "the normal pipeline owns it" --
+# so a run over a partly-broken library would report zero errors and look clean while
+# silently skipping the files that most need looking at.
+
+def test_has_dubtitles_track_none_when_ffprobe_cannot_run(monkeypatch, tmp_path):
     def boom(cmd, **kw):
         raise OSError("ffprobe not found")
 
     monkeypatch.setattr(mig.subprocess, "run", boom)
-    assert not mig.has_dubtitles_track(_video(tmp_path))
+    assert mig.has_dubtitles_track(_video(tmp_path)) is None
+
+
+def test_has_dubtitles_track_none_when_ffprobe_times_out(monkeypatch, tmp_path):
+    def slow(cmd, **kw):
+        raise mig.subprocess.TimeoutExpired(cmd, 60)
+
+    monkeypatch.setattr(mig.subprocess, "run", slow)
+    assert mig.has_dubtitles_track(_video(tmp_path)) is None
+
+
+def test_has_dubtitles_track_none_on_nonzero_exit(monkeypatch, tmp_path):
+    """ffprobe exits nonzero on an unreadable/truncated file and prints nothing to stdout;
+    parsing that as an empty stream list is what made a broken file look sub-less."""
+    monkeypatch.setattr(mig.subprocess, "run",
+                        lambda cmd, **kw: types.SimpleNamespace(stdout="", returncode=1))
+    assert mig.has_dubtitles_track(_video(tmp_path)) is None
+
+
+def test_has_dubtitles_track_none_on_unparseable_output(monkeypatch, tmp_path):
+    monkeypatch.setattr(mig.subprocess, "run",
+                        lambda cmd, **kw: types.SimpleNamespace(stdout="not json", returncode=0))
+    assert mig.has_dubtitles_track(_video(tmp_path)) is None
+
+
+def test_process_reports_probe_failure_separately_and_writes_nothing(monkeypatch, tmp_path):
+    v = _video(tmp_path)
+    monkeypatch.setattr(mig.subprocess, "run",
+                        lambda cmd, **kw: types.SimpleNamespace(stdout="", returncode=1))
+    assert mig.process(v, apply=True) == "probe-failed"
+    assert common.read_stamp(_stamp_path(v)) is None    # never stamp what we couldn't read
 
 
 # --- dry-run is the default ---------------------------------------------------
