@@ -47,18 +47,29 @@ from common import (  # noqa: E402
 )
 
 
-def has_dubtitles_track(video: str) -> bool:
-    """True if the file carries a subtitle track titled TRACK_NAME. This is detection for
-    migration, not a skip guard — the pipeline deliberately no longer decides "done" from
+def has_dubtitles_track(video: str) -> bool | None:
+    """True/False if ffprobe answered; **None if the file could not be probed at all**
+    (ffprobe missing, timed out, exited nonzero, or emitted unparseable output).
+
+    The tri-state matters. Collapsing a probe failure into False would file every
+    unreadable or corrupt file under `no-dubtitles` — "not muxed yet, the normal pipeline
+    owns it" — so a run over a partly-broken library would report zero errors and read as
+    clean while silently skipping exactly the files worth looking at. This is detection for
+    migration, not a skip guard: the pipeline deliberately no longer decides "done" from
     the presence of the track (see the module docstring)."""
     try:
         r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "s",
                             "-show_entries", "stream_tags=title", "-of", "json", video],
                            capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-        return any(is_our_track(stream_title(st))
-                   for st in json.loads(r.stdout).get("streams", []))
-    except Exception:
-        return False
+    except (OSError, subprocess.SubprocessError):
+        return None                               # couldn't run it / timed out
+    if r.returncode != 0:
+        return None                               # unreadable/truncated file
+    try:
+        streams = json.loads(r.stdout).get("streams", [])
+    except ValueError:
+        return None                               # ffprobe said OK but emitted junk
+    return any(is_our_track(stream_title(st)) for st in streams)
 
 
 def write_v1_stamp(path: str, video: str) -> None:
@@ -71,11 +82,15 @@ def write_v1_stamp(path: str, video: str) -> None:
 
 
 def process(video: str, apply: bool) -> str:
-    """-> "has-stamp" | "no-dubtitles" | "plan" | "stamped" | "error"."""
+    """-> "has-stamp" | "no-dubtitles" | "probe-failed" | "plan" | "stamped" | "error"."""
     stamp = os.path.splitext(video)[0] + STAMP_SUFFIX
     if read_stamp(stamp) is not None:
         return "has-stamp"                      # never overwrite (incl. a deliberate stale one)
-    if not has_dubtitles_track(video):
+    has_track = has_dubtitles_track(video)
+    if has_track is None:
+        log("  probe failed (unreadable?):", os.path.basename(video))
+        return "probe-failed"                   # counted apart from no-dubtitles, never stamped
+    if not has_track:
         return "no-dubtitles"                   # not muxed yet — the normal pipeline owns it
     if not apply:
         log("  PLAN stamp", os.path.basename(video))
@@ -114,6 +129,9 @@ def main():
     log("SUMMARY", counts)
     if not a.apply and counts.get("plan"):
         log(f"{counts['plan']} file(s) would be stamped — re-run with --apply")
+    if counts.get("probe-failed"):
+        log(f"WARNING: {counts['probe-failed']} file(s) could not be probed — they are NOT "
+            f"counted as 'no-dubtitles' and were NOT stamped; check them by hand")
 
 
 if __name__ == "__main__":
