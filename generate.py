@@ -134,21 +134,6 @@ def _glossary_version() -> str:
         return "none"
 
 
-def has_dubtitles_track(video):
-    """True if the mkv already carries a subtitle track titled 'Dubtitles' (muxed) —
-    the idempotency gate for the muxed workflow; skip such files."""
-    try:
-        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "s",
-                            "-show_entries", "stream_tags=title", "-of", "json", video],
-                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-        for st in json.loads(r.stdout).get("streams", []):
-            if ((st.get("tags") or {}).get("title", "") or "") == "Dubtitles":
-                return True
-    except Exception:
-        pass
-    return False
-
-
 def eng_audio_index(video):
     try:
         r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
@@ -197,14 +182,16 @@ def _card_word_probs(card, words):
 
 def process(video):
     stem = os.path.splitext(video)[0]
-    if stamp_valid(read_stamp(stem + STAMP_SUFFIX), video):  # muxed (stat-only) -> skip
+    # The version-aware stamp (common.stamp_valid) is the ONLY "already muxed" guard.
+    # The old SKIP_IF_MUXED ffprobe backstop is retired: an embedded Dubtitles track no
+    # longer means "done", because mux.py now drops-and-replaces that track, so a
+    # PIPELINE_VERSION bump must be able to regenerate an already-dubbed episode.
+    if stamp_valid(read_stamp(stem + STAMP_SUFFIX), video):  # muxed, current version -> skip
         return "already-muxed"
     if os.path.exists(stem + ".eng.dubtitles.ass"):     # assembled already -> skip (idempotent)
         return "already-ass"
     if os.environ.get("SKIP_IF_SRT", "1") == "1" and os.path.exists(stem + ".eng.dubtitles.srt"):
         return "already-srt"                            # generated, awaiting (a retry of) assemble
-    if os.environ.get("SKIP_IF_MUXED", "1") == "1" and has_dubtitles_track(video):
-        return "already-muxed"
     fail = stem + ".dubtitles.fail"
     if os.path.exists(fail):                      # a previous attempt hard-crashed on this
         return "skip-prior-crash"                 # file -> skip it (rm the .fail to retry)

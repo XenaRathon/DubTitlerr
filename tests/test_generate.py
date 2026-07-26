@@ -1,15 +1,18 @@
-"""Unit tests for generate.py's needs_work() pre-filter (T18) and the ffprobe-detected
-muxed backstop in process(). No CUDA/model needed -- the faster_whisper import is
-stubbed so generate.py can be imported without the CUDA stack that only exists in the
-subgen runtime image it's meant to run in (see generate.py's module docstring).
+"""Unit tests for generate.py's needs_work() pre-filter (T18) and process()'s skip
+guards. No CUDA/model needed -- the faster_whisper import is stubbed so generate.py can
+be imported without the CUDA stack that only exists in the subgen runtime image it's
+meant to run in (see generate.py's module docstring).
 
 DIVERGENCE from specs/v1-polish/tasks.md T18 / spec.md Phase 4, case 7 ("ffprobe says
-a Dubtitles track present but no stamp -> False (backstop)"): needs_work() is a
-*stat-only* pre-filter -- its own comment in generate.py says so explicitly ("Cheap
-pre-filter (stat only, no ffprobe/model)") -- and never calls ffprobe. The ffprobe-based
-"already muxed" backstop actually lives one level down, in process(), guarded by
-SKIP_IF_MUXED. Cases 1-6 below are tested against the real needs_work(); case 7 is
-retargeted to process() instead of being force-fit into needs_work().
+a Dubtitles track present but no stamp -> False (backstop)"): that backstop no longer
+exists. needs_work() is a *stat-only* pre-filter -- its own comment in generate.py says
+so explicitly ("Cheap pre-filter (stat only, no ffprobe/model)") -- and never called
+ffprobe; the ffprobe "already muxed" check that lived one level down in process() was
+REMOVED by the strip-at-mux change (see
+docs/superpowers/specs/2026-07-26-strip-and-isolate-old-dubtitles-design.md), because
+mux.py now REPLACES the old Dubtitles track instead of refusing to touch the file.
+Cases 1-6 below are tested against the real needs_work(); case 7 is inverted into
+test_process_no_longer_skips_on_an_embedded_dubtitles_track.
 """
 import json
 import os
@@ -95,16 +98,58 @@ def test_needs_work_matrix(tmp_path, monkeypatch):
     assert needs_work(str(v)) is True
 
 
-def test_ffprobe_muxed_backstop_in_process(monkeypatch, tmp_path):
-    """Case 7 from T18/spec.md, retargeted to its real home: process()'s SKIP_IF_MUXED
-    check. No .dubtitles.done stamp exists; ffprobe alone (stubbed here -- no real
-    ffprobe/video/network) reports the Dubtitles track, and process() must still bail
-    out as "already-muxed" before touching wav extraction or the model."""
+def _ffprobe_reports_a_dubtitles_track(monkeypatch):
+    """Make any ffprobe subprocess call answer "this file has a Dubtitles subtitle track"
+    -- i.e. exactly the condition the retired SKIP_IF_MUXED backstop keyed on."""
+    import types as _types
+
+    def run(cmd, **kw):
+        return _types.SimpleNamespace(
+            stdout=json.dumps({"streams": [{"index": 2, "tags": {"title": "Dubtitles"}}]}),
+            returncode=0)
+
+    monkeypatch.setattr(generate.subprocess, "run", run)
+
+
+def test_process_no_longer_skips_on_an_embedded_dubtitles_track(monkeypatch, tmp_path):
+    """Case 7 from T18/spec.md, RETIRED. The SKIP_IF_MUXED ffprobe backstop is gone: an
+    embedded Dubtitles track no longer means "done", because mux now replaces that track
+    rather than duplicating it. Without this, a PIPELINE_VERSION regeneration would
+    silently no-op on every already-dubbed episode. process() must run past the muxed
+    check (it stops at the next gate -- no English audio -- proving it got there)."""
     v = tmp_path / "ep.mkv"
     v.write_bytes(b"x" * 1000)
-    monkeypatch.setenv("SKIP_IF_MUXED", "1")
-    monkeypatch.setattr(generate, "has_dubtitles_track", lambda video: True)
+    _ffprobe_reports_a_dubtitles_track(monkeypatch)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: None)
+    assert generate.process(str(v)) == "no-eng-dub"
+
+
+def test_process_ffprobe_muxed_helper_is_gone():
+    """generate.has_dubtitles_track() had exactly one caller (the retired guard); leaving
+    it behind would invite a future re-introduction of the same false-positive skip.
+    mux.has_dubtitles_track(info) is the surviving one -- it verifies, it does not skip."""
+    assert not hasattr(generate, "has_dubtitles_track")
+
+
+def test_process_skips_on_a_current_version_stamp(monkeypatch, tmp_path):
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    common.write_stamp(str(tmp_path / ("ep" + generate.STAMP_SUFFIX)), str(v))
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: None)
     assert generate.process(str(v)) == "already-muxed"
+
+
+def test_process_retranscribes_a_file_whose_stamp_is_from_an_older_pipeline_version(
+        monkeypatch, tmp_path):
+    """The version-aware stamp is now the sole skip guard, so it is also the sole
+    regeneration trigger: bump PIPELINE_VERSION and the v1-stamped file transcribes again."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    common.write_stamp(str(tmp_path / ("ep" + generate.STAMP_SUFFIX)), str(v))
+    monkeypatch.setattr(common, "PIPELINE_VERSION", common.PIPELINE_VERSION + 1)
+    _ffprobe_reports_a_dubtitles_track(monkeypatch)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: None)
+    assert generate.process(str(v)) == "no-eng-dub"
 
 
 # --- V2 A6: word_probs field on dubtitles.conf.json --------------------------
@@ -154,7 +199,6 @@ def test_word_probs_written_to_conf_json(monkeypatch, tmp_path):
     count in this no-correction, no-collapse case."""
     v = tmp_path / "ep.mkv"
     v.write_bytes(b"x" * 1000)
-    monkeypatch.setattr(generate, "has_dubtitles_track", lambda video: False)
     monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
     monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
     monkeypatch.setenv("SKIP_IF_SRT", "0")
@@ -191,7 +235,6 @@ def test_process_logs_chown_failure_instead_of_swallowing(monkeypatch, tmp_path,
     swallowed, and must not abort the episode."""
     v = tmp_path / "ep.mkv"
     v.write_bytes(b"x" * 1000)
-    monkeypatch.setattr(generate, "has_dubtitles_track", lambda video: False)
     monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
     monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
     monkeypatch.setenv("SKIP_IF_SRT", "0")
@@ -231,7 +274,6 @@ def test_lastrun_json_written_after_show(monkeypatch, tmp_path):
     attribute, same as AUDIO_FILTER above)."""
     v = tmp_path / "ep.mkv"
     v.write_bytes(b"x" * 1000)
-    monkeypatch.setattr(generate, "has_dubtitles_track", lambda video: False)
     monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
     monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
     monkeypatch.setenv("SKIP_IF_SRT", "0")
@@ -262,7 +304,6 @@ def test_lastrun_json_show_falls_back_when_unset(monkeypatch, tmp_path):
     instead of writing a leading-dot ".lastrun.json" hidden file."""
     v = tmp_path / "ep.mkv"
     v.write_bytes(b"x" * 1000)
-    monkeypatch.setattr(generate, "has_dubtitles_track", lambda video: False)
     monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
     monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
     monkeypatch.setenv("SKIP_IF_SRT", "0")

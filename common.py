@@ -61,6 +61,22 @@ EXTRA_DIRS = load_extras()
 
 STAMP_SUFFIX = ".dubtitles.done"
 
+# TRACK_NAME: the mkv subtitle-track name mux.py stamps on our own generated dubtitle.
+# It is self-authored and used nowhere else, so it doubles as the marker that keeps the
+# pipeline from reading its OWN previous output as if it were the human fansub -- every
+# context reader (eng_sub_streams below, mine_glossary.py's selector) excludes it, and
+# mux.keep_sub() drops it so a re-mux replaces rather than duplicates it.
+TRACK_NAME = "Dubtitles"
+
+# PIPELINE_VERSION: the output version recorded in each .dubtitles.done stamp. A file
+# whose stamp is older than this reads as STALE and is regenerated in place. Bumping it
+# is a deliberate operator action -- the only thing that triggers a global regeneration.
+PIPELINE_VERSION = 1
+# GRANDFATHER_VERSION: fixed constant, never changes. The version assumed for a stamp
+# written before versioning existed (no "version" key). At introduction it equals
+# PIPELINE_VERSION, so the rollout regenerates nothing.
+GRANDFATHER_VERSION = 1
+
 
 def log(*a): print(*a, flush=True)
 
@@ -83,10 +99,13 @@ def ts_srt(t):
 
 
 def write_stamp(path: str, video: str) -> None:
-    """Write the .dubtitles.done idempotency stamp recording the muxed file's size+mtime."""
+    """Write the .dubtitles.done idempotency stamp recording the muxed file's size+mtime
+    and the PIPELINE_VERSION that produced it (stamp_valid rejects an older version, so a
+    version bump marks every prior-version file stale)."""
     st = os.stat(video)
     with open(path, "w") as f:
-        json.dump({"size": st.st_size, "mtime": st.st_mtime, "muxed": True}, f)
+        json.dump({"size": st.st_size, "mtime": st.st_mtime, "muxed": True,
+                   "version": PIPELINE_VERSION}, f)
 
 
 def read_stamp(path: str) -> dict | None:
@@ -98,9 +117,13 @@ def read_stamp(path: str) -> dict | None:
 
 
 def stamp_valid(stamp: dict | None, video: str) -> bool:
-    """True if the stamp matches the current file (size+mtime) — i.e. still muxed, not replaced."""
+    """True if the stamp matches the current file (size+mtime) AND was written by the
+    current PIPELINE_VERSION — i.e. still muxed, not replaced, and not stale output.
+    A stamp with no "version" key predates versioning and counts as GRANDFATHER_VERSION."""
     if not stamp or not stamp.get("muxed"):
         return False
+    if stamp.get("version", GRANDFATHER_VERSION) < PIPELINE_VERSION:
+        return False                              # older pipeline -> regenerate in place
     try:
         st = os.stat(video)
     except OSError:
@@ -115,14 +138,28 @@ def find_video(stem):
     return None
 
 
+def _track_title(st: dict) -> str:
+    """An ffprobe stream's title tag, normalized (missing/null tags -> "")."""
+    return ((st.get("tags") or {}).get("title", "") or "").strip()
+
+
 def eng_sub_streams(video, sub_langs):
-    """Indices of ASS/SSA subtitle streams in an accepted language. ``sub_langs`` is a
-    set of lowercased language codes (each consumer keeps its own SUB_LANGS env-derived
-    set — not unified here, since the two current callers already read the same env var
-    to the same default and there's no behavior change from passing it explicitly)."""
+    """Indices of ASS/SSA subtitle streams in an accepted language, EXCLUDING our own
+    previously-muxed dubtitle (title == TRACK_NAME). ``sub_langs`` is a set of lowercased
+    language codes (each consumer keeps its own SUB_LANGS env-derived set — not unified
+    here, since the two current callers already read the same env var to the same default
+    and there's no behavior change from passing it explicitly).
+
+    The exclusion lives here because this is the single chokepoint for every stage that
+    reads an embedded sub as CONTEXT (repair.py's semantic reference, timing_compare's
+    timing reference, dub_signs_merge's signs/songs source) — our old dubtitle is
+    codec=ass/language=eng and would otherwise be picked up as if it were the fansub,
+    so a regeneration would repair/align/mine against last version's own mistakes.
+    There is deliberately NO fallback: an episode whose only English sub is our old
+    dubtitle yields [] and the pipeline runs reference-free."""
     try:
         r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "s",
-                            "-show_entries", "stream=index,codec_name:stream_tags=language",
+                            "-show_entries", "stream=index,codec_name:stream_tags=language,title",
                             "-of", "json", video], capture_output=True, text=True,
                            stdin=subprocess.DEVNULL, timeout=90)
         streams = json.loads(r.stdout).get("streams", [])
@@ -132,6 +169,8 @@ def eng_sub_streams(video, sub_langs):
     out = []
     for st in streams:
         if st.get("codec_name") not in ("ass", "ssa"):
+            continue
+        if _track_title(st) == TRACK_NAME:        # our own old output — never context
             continue
         if ((st.get("tags") or {}).get("language", "") or "").lower() in sub_langs:
             out.append(st["index"])
