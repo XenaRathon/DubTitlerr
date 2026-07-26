@@ -375,3 +375,55 @@ def test_non_runtimeerror_mentioning_cuda_does_not_poison(monkeypatch, tmp_path)
     assert crash["exc_type"] == "ValueError"
     assert crash["path"] == str(v)
     assert "cuda" in crash["msg"].lower()
+
+
+# --- a version bump must not be defeated by a leftover sidecar ----------------
+#
+# mux removes sidecars only AFTER stamping, so a crash/kill in that window (or a
+# skip-no-room mux) leaves a stale stamp beside a stale .ass/.srt. The sidecar-existence
+# skips below are not version-aware on their own: without the clear-out, generate would
+# return "already-ass" forever while mux re-embedded that OLD subtitle and stamped it
+# CURRENT -- the episode would read as regenerated while still containing v1 content.
+
+def _stale_stamped(tmp_path, monkeypatch, sidecars):
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    common.write_stamp(str(tmp_path / ("ep" + generate.STAMP_SUFFIX)), str(v))
+    for name in sidecars:
+        (tmp_path / name).write_text("stale output from the previous pipeline version")
+    monkeypatch.setattr(common, "PIPELINE_VERSION", common.PIPELINE_VERSION + 1)
+    return v
+
+
+def test_stale_version_file_discards_its_leftover_ass_sidecar(monkeypatch, tmp_path):
+    v = _stale_stamped(tmp_path, monkeypatch, ["ep.eng.dubtitles.ass"])
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: None)
+    assert generate.process(str(v)) == "no-eng-dub"      # NOT "already-ass"
+    assert not (tmp_path / "ep.eng.dubtitles.ass").exists()
+
+
+def test_stale_version_file_discards_its_leftover_srt_and_conf(monkeypatch, tmp_path):
+    v = _stale_stamped(tmp_path, monkeypatch,
+                       ["ep.eng.dubtitles.srt", "ep.dubtitles.conf.json"])
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: None)
+    assert generate.process(str(v)) == "no-eng-dub"      # NOT "already-srt"
+    assert not (tmp_path / "ep.eng.dubtitles.srt").exists()
+    assert not (tmp_path / "ep.dubtitles.conf.json").exists()
+
+
+def test_current_version_file_keeps_its_sidecars(monkeypatch, tmp_path):
+    """Only a STALE-version stamp condemns the sidecars. A file awaiting its first mux
+    (current version, sidecar present) must still skip and keep its work."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    (tmp_path / "ep.eng.dubtitles.ass").write_text("fresh, awaiting mux")
+    assert generate.process(str(v)) == "already-ass"
+    assert (tmp_path / "ep.eng.dubtitles.ass").exists()
+
+
+def test_needs_work_true_for_a_stale_version_file_with_a_sidecar(monkeypatch, tmp_path):
+    """The stat-only pre-filter has to agree, or process() is never reached and the
+    clear-out above never runs."""
+    needs_work = _real_needs_work()
+    v = _stale_stamped(tmp_path, monkeypatch, ["ep.eng.dubtitles.ass"])
+    assert needs_work(str(v)) is True

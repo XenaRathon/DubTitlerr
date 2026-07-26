@@ -49,7 +49,7 @@ import glossary
 import hallucination
 import ordering
 import reflow
-from common import STAMP_SUFFIX, VIDEO_EXTS, load_extras, out_for, read_stamp, stamp_valid, ts_srt
+from common import STAMP_SUFFIX, VIDEO_EXTS, load_extras, out_for, read_stamp, stale_version_stamp, stamp_valid, ts_srt
 
 EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_extras)
 # V2 C1: where per-show run summaries (<show>.lastrun.json) live -- same GLOSSARY_DIR
@@ -180,14 +180,30 @@ def _card_word_probs(card, words):
     return [round(w["prob"], 3) for w in words if w["end"] > card["start"] and w["start"] < card["end"]]
 
 
+def discard_stale_sidecars(stem):
+    """Delete the sidecars belonging to a superseded pipeline version (see
+    common.stale_version_stamp). They are last version's output, not pending work: left
+    in place they'd make the skips below return "already-ass"/"already-srt" forever while
+    mux re-embedded that same old subtitle and stamped it as current."""
+    for suff in (".eng.dubtitles.ass", ".eng.dubtitles.srt", ".dubtitles.conf.json"):
+        try:
+            os.remove(stem + suff)
+            log("  discarded stale-version sidecar", os.path.basename(stem + suff))
+        except OSError:
+            pass
+
+
 def process(video):
     stem = os.path.splitext(video)[0]
     # The version-aware stamp (common.stamp_valid) is the ONLY "already muxed" guard.
     # The old SKIP_IF_MUXED ffprobe backstop is retired: an embedded Dubtitles track no
     # longer means "done", because mux.py now drops-and-replaces that track, so a
     # PIPELINE_VERSION bump must be able to regenerate an already-dubbed episode.
-    if stamp_valid(read_stamp(stem + STAMP_SUFFIX), video):  # muxed, current version -> skip
+    stamp = read_stamp(stem + STAMP_SUFFIX)
+    if stamp_valid(stamp, video):                       # muxed, current version -> skip
         return "already-muxed"
+    if stale_version_stamp(stamp, video):               # our own superseded output ->
+        discard_stale_sidecars(stem)                    # its leftover sidecars are stale too
     if os.path.exists(stem + ".eng.dubtitles.ass"):     # assembled already -> skip (idempotent)
         return "already-ass"
     if os.environ.get("SKIP_IF_SRT", "1") == "1" and os.path.exists(stem + ".eng.dubtitles.srt"):
@@ -306,7 +322,11 @@ def main():
     # re-scan doesn't pay the ~40s model load when there's nothing new to transcribe.
     def needs_work(v):
         stem = os.path.splitext(v)[0]
-        if stamp_valid(read_stamp(stem + STAMP_SUFFIX), v): return False  # muxed -> done
+        stamp = read_stamp(stem + STAMP_SUFFIX)
+        if stamp_valid(stamp, v): return False        # muxed at the current version -> done
+        # Superseded output: its sidecars are stale leftovers, so the checks below must not
+        # read them as "done" -- process() discards them and re-transcribes.
+        if stale_version_stamp(stamp, v): return True
         if os.path.exists(stem + ".eng.dubtitles.ass"): return False
         if os.environ.get("SKIP_IF_SRT", "1") == "1" and os.path.exists(stem + ".eng.dubtitles.srt"): return False
         if os.path.exists(stem + ".dubtitles.fail"): return False

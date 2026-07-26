@@ -14,6 +14,7 @@ import types
 
 import pysubs2
 
+import common
 import mine_glossary
 
 
@@ -117,7 +118,7 @@ def test_eng_sub_text_ffprobe_query_requests_the_title_tag(monkeypatch):
 
 def test_eng_sub_text_skips_our_own_dubtitles_track(monkeypatch):
     """Two English tracks: the human fansub and our old output. The fansub must win."""
-    calls = _fake_subprocess([_stream(2, title=mine_glossary.TRACK_NAME),
+    calls = _fake_subprocess([_stream(2, title=common.TRACK_NAME),
                              _stream(3, title="English (Fansub)")], monkeypatch)
     assert "Luffy" in mine_glossary.eng_sub_text("fake.mkv")
     ffmpeg = [c for c in calls if c[0] == "ffmpeg"][0]
@@ -127,7 +128,7 @@ def test_eng_sub_text_skips_our_own_dubtitles_track(monkeypatch):
 def test_eng_sub_text_mines_nothing_when_only_track_is_our_dubtitle(monkeypatch):
     """No fallback -- an episode whose only English sub is our old dubtitle contributes
     no glossary terms at all rather than re-mining itself."""
-    calls = _fake_subprocess([_stream(2, title=mine_glossary.TRACK_NAME)], monkeypatch)
+    calls = _fake_subprocess([_stream(2, title=common.TRACK_NAME)], monkeypatch)
     assert mine_glossary.eng_sub_text("fake.mkv") == ""
     assert not [c for c in calls if c[0] == "ffmpeg"]      # never even extracted it
 

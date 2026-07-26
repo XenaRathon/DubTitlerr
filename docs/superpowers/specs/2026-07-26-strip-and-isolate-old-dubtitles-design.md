@@ -641,8 +641,23 @@ in the track itself is a possible future hardening (see non-goals).
 **Crash between stamp write and sidecar cleanup can orphan sidecars.** `mux` writes the
 stamp **before** removing the sidecar. If `mux` crashes after the stamp write but before the
 sidecar delete, `generate` sees the sidecar and skips, and `mux` sees the valid stamp and
-skips, so the `.srt`/`.ass` sidecar is never cleaned up. This is a low-impact disk leak;
-periodic cleanup or the next version-bump re-process will remove it.
+skips, so the `.srt`/`.ass` sidecar is never cleaned up.
+
+**CORRECTED (implementation review):** the original claim that "the next version-bump
+re-process will remove it" was wrong, and the error was not cosmetic. On a version bump such
+a file has a *stale* stamp **and** a leftover sidecar; the sidecar-existence skips in
+`generate.process()` are not version-aware, so `generate` returns `already-ass` forever while
+`mux` re-embeds that **old** subtitle and stamps it **current** — a bump that silently no-ops
+on exactly the files it was meant to fix, leaving v1 content labelled v2. Fixed by
+`common.stale_version_stamp()`: when the stamp matches the file exactly but records an older
+version, the file *is* our superseded output, so its sidecars are that same run's leftovers.
+`generate.process()` discards them (`discard_stale_sidecars`) and `needs_work()` returns True
+for that state so `process()` is actually reached. This is safe against the concurrent mux
+sweep because the only writer of a *fresh* sidecar is `generate`, and `generate` is itself
+blocked by the stale one — so nothing new can exist beside it. Residual (accepted): if `mux`
+is already inside `mkvmerge` on that exact episode at the moment `generate` deletes the
+sidecar, mkvmerge finishes from its open fd and stamps the old content current. Sub-second
+window, one episode, and a further bump clears it.
 
 **Track ordering may shift.** `mkvmerge` places the new track at the end of the track list.
 If the old `Dubtitles` track was not the last subtitle track, removing the old one and
@@ -654,9 +669,10 @@ may be surprised. Document this behavior in operator notes.
 
 - No re-encode; no change to what the dub content is, only which tracks are read/kept.
 - No automatic version bumping — the operator bumps `PIPELINE_VERSION` deliberately.
-- The existing bulk `strip_op.py` remains usable for one-off manual strips but is no longer
-  part of the regeneration workflow. Consider deprecating and removing it after this change
-  proves stable.
+- ~~The existing bulk `strip_op.py` remains usable for one-off manual strips~~ —
+  **CORRECTED:** `strip_op.py` does not exist in this repo and never has
+  (`git log --all -- strip_op.py` is empty). The pre-strip pass was run ad hoc, not as a
+  committed script, so there is nothing to deprecate; strip-at-mux replaces it outright.
 - Embedding the pipeline version *inside* the MKV (e.g. in the track name) instead of the
   sidecar stamp — possible future hardening against a lost stamp; out of scope here.
 
@@ -668,3 +684,32 @@ The following documents support this spec:
 
 - **Plan:** `DubTitlerr/docs/superpowers/specs/2026-07-26-strip-and-isolate-old-dubtitles-design-plan.md`
 - **Tasks:** `DubTitlerr/docs/superpowers/specs/2026-07-26-strip-and-isolate-old-dubtitles-tasks.md`
+
+
+---
+
+## Implementation Amendments
+
+Found during implementation + code review; each is now covered by a test.
+
+1. **`-s` is a whitelist; mkvmerge's default is copy-every-subtitle-track.** The original
+   `build_cmd` omitted `-s` when the keep list was empty, which would have copied back the
+   very track `dropped` reported as removed — so a file whose only subtitle is our old
+   dubtitle (every mp4-origin episode, and the "only English sub is ours" case §5 promised
+   would end with exactly one track) would have ended up with **two** `Dubtitles` tracks.
+   `verify()` is presence-only, so it would have passed and been stamped. An empty keep list
+   now emits an explicit `-S`.
+2. **One shared "is this ours?" predicate.** `common.is_our_track(name)` covers both shapes
+   (ffprobe `tags.title` via `stream_title()`, mkvmerge `properties.track_name`), so the
+   exclude-from-context test and the drop-at-mux test cannot drift. A drift is silent:
+   exclude-but-keep yields a duplicate, keep-but-drop loses the fansub. This also replaced
+   the cross-module import of a private `_track_title`.
+3. **Version-aware sidecar staleness** — see the corrected orphaned-sidecar paragraph above.
+4. **A failed stamp write is now its own status** (`stamp-write-failed`, sidecars kept).
+   With the ffprobe backstop retired the stamp is the only "done" record, so a silent
+   failure meant re-running the whole multi-GB remux every sweep, forever.
+5. **`stamp_valid()` tolerates a non-int `version`** (`"1"` coerces; garbage reads as
+   invalid rather than raising). The check runs outside `mux.process()`'s `try`, so one
+   corrupt sidecar would otherwise abort a whole sweep.
+6. **`properties: None` hardening** across `mux.py`'s mkvmerge-track accessors, and a
+   present-but-null `language` tag no longer raises in `mine_glossary.eng_sub_text()`.
