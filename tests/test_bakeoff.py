@@ -142,3 +142,45 @@ def test_ask_routes_llamacpp_models_away_from_ollama(monkeypatch):
     assert bo.ask("http://ollama/api/generate", "qwen3.5:9b", "p", lc)[0] == "o"
     assert bo.ask("http://ollama/api/generate", "nanbeige", "p", lc)[0] == "l"
     assert calls == [("ollama", "qwen3.5:9b"), ("llamacpp", "http://host:8090/completion")]
+
+
+# --- llama.cpp CHAT mode ------------------------------------------------------
+#
+# repair.llm_llamacpp posts a RAW prompt to /completion, which applies no chat template.
+# For a templated instruct model that yields garbage -- Nanbeige returns nothing but
+# newlines. /v1/chat/completions applies the template, and this fork additionally needs
+# enable_thinking=false or it spends its whole budget on reasoning_content and returns an
+# empty message (verified: empty after 114s at max_tokens=512; correct output in 4.3s with
+# thinking off). Chat mode exists so such a model can be judged on its real behaviour.
+
+def test_llamacpp_chat_applies_template_and_disables_thinking(monkeypatch):
+    seen = {}
+
+    def fake_post(url, body, timeout=180):
+        seen["url"], seen["body"] = url, body
+        return {"choices": [{"message": {"content": '  "Zoro drew his blade."\nextra'}}]}
+
+    monkeypatch.setattr(bo, "_post_json", fake_post)
+    out, _ = bo.ask_llamacpp_chat("http://host:8090/v1/chat/completions", "PROMPT")
+    assert seen["body"]["messages"] == [{"role": "user", "content": "PROMPT"}]
+    assert seen["body"]["temperature"] == 0
+    assert seen["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert out == "Zoro drew his blade."
+
+
+def test_llamacpp_chat_reports_an_empty_reply_rather_than_silently_scoring_it(monkeypatch):
+    """An empty content with reasoning_content populated means thinking was not actually
+    disabled. Returning "" would look like the model declined to change the line -- i.e.
+    a perfect no-op score -- so it has to be visibly flagged instead."""
+    monkeypatch.setattr(bo, "_post_json", lambda u, b, timeout=180: {
+        "choices": [{"message": {"content": "", "reasoning_content": "thinking..."}}]})
+    out, _ = bo.ask_llamacpp_chat("http://host/v1/chat/completions", "P")
+    assert out.startswith("<EMPTY")
+
+
+def test_ask_prefers_chat_endpoint_when_given(monkeypatch):
+    monkeypatch.setattr(bo, "ask_ollama", lambda u, m, p: ("o", 0.1))
+    monkeypatch.setattr(bo, "ask_llamacpp", lambda u, p: ("raw", 0.1))
+    monkeypatch.setattr(bo, "ask_llamacpp_chat", lambda u, p: ("chat", 0.1))
+    assert bo.ask("http://o", "nb", "p", {"nb": "u"}, {})[0] == "raw"
+    assert bo.ask("http://o", "nb", "p", {}, {"nb": "u"})[0] == "chat"
