@@ -184,3 +184,29 @@ def test_ask_prefers_chat_endpoint_when_given(monkeypatch):
     monkeypatch.setattr(bo, "ask_llamacpp_chat", lambda u, p: ("chat", 0.1))
     assert bo.ask("http://o", "nb", "p", {"nb": "u"}, {})[0] == "raw"
     assert bo.ask("http://o", "nb", "p", {}, {"nb": "u"})[0] == "chat"
+
+
+# --- results must survive a timeout -------------------------------------------
+#
+# bakeoff buffered every result and printed only at the very end, so a run that hit a
+# wall-clock limit lost ALL of it -- twice, at 111 and 25 minutes, against models slow
+# enough to blow any sane budget. Emitting each model's block as soon as that model
+# finishes means a kill during model 3 still yields models 1 and 2.
+
+def test_format_model_block_pairs_each_target_with_its_output():
+    targets = [{"text": "zolo drew"}, {"text": "nami said"}]
+    outs = ["Zoro drew", "Nami said"]
+    block = bo.format_model_block("qwen3.5:9b", targets, outs, 4.0)
+    assert "qwen3.5:9b" in block
+    assert "zolo drew" in block and "Zoro drew" in block
+    assert "nami said" in block and "Nami said" in block
+    assert "2.0" in block          # avg latency per line
+
+
+def test_format_model_block_survives_fewer_outputs_than_targets():
+    """A model killed mid-way still gets a block for what it did produce, rather than
+    raising IndexError and destroying the completed models' results too."""
+    targets = [{"text": "a"}, {"text": "b"}, {"text": "c"}]
+    block = bo.format_model_block("m", targets, ["A"], 1.0)
+    assert "A" in block
+    assert "<no result>" in block

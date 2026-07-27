@@ -517,3 +517,64 @@ def test_process_counts_skipped_no_ref_and_never_calls_llm(tmp_path, monkeypatch
     assert summary["skipped_no_ref"] == 1
     assert summary["repaired_lines"] == []
     assert summary["mean_latency_ms"] == 0 and summary["p95_latency_ms"] == 0
+
+
+# --- v1b prompt: measured anti-fabrication structure --------------------------
+#
+# A 40-target bake-off on real conf.json data showed the old prompt let qwen3.5:9b rewrite
+# 42% of lines, pasting glossary names over correct text (Border Control -> "Cipher Pol",
+# Sonny -> "Shanks", Neptune -> "Nefertari Vivi", and on another show Uchihime -> "Uchiha",
+# a name from a different franchise entirely). The old prompt already SAID "NEVER replace a
+# name"; restating it was not enough. Dropping the glossary from the prompt did NOT help
+# (still 38%), so the name list is not the trigger. What cut it to 18% with zero glossary-
+# name fabrications was structure: verification-only framing, worked examples, and nothing
+# after the ASR line.
+
+def test_build_prompt_frames_names_as_verification_not_insertion():
+    """The list must not read as a menu of names to apply."""
+    g = gl(names=["Zoro"])
+    p = repair.build_prompt("zolo drew", "", g)
+    assert "VERIFICATION ONLY" in p
+    assert "not a list of names to insert" in p.lower()
+
+
+def test_build_prompt_shows_a_worked_leave_alone_example():
+    """The decisive addition: a demonstration that an UNLISTED name stays put. Stating the
+    rule in prose was already there and was ignored."""
+    g = gl(names=["Zoro"])
+    p = repair.build_prompt("asr line", "", g)
+    low = p.lower()
+    assert "example" in low
+    assert "zolo" in low            # the correct-a-misspelling demonstration
+    assert "sonny" in low           # the leave-an-unlisted-name-alone demonstration
+
+
+def test_build_prompt_puts_nothing_after_the_asr_line():
+    """A first cut placed a "Remember:" reminder after the ASR line and the model echoed
+    that rule text straight into the subtitle output:
+      "...friends in jail We're victims here, Remember: do not introduce or swap names..."
+    The corrected line must be the last thing the model is asked for, with the ASR line
+    and its context immediately before it."""
+    g = gl(names=["Zoro"])
+    p = repair.build_prompt("the asr line", "the official sub", g,
+                            prev_text="earlier", next_text="later")
+    tail = p[p.index("the asr line"):]
+    assert "Remember" not in tail
+    assert "Rules:" not in tail
+    assert tail.rstrip().endswith("Corrected line:")
+
+
+def test_build_prompt_context_and_reference_precede_the_asr_line():
+    """Context/reference are inputs, so they belong before the line being corrected --
+    trailing blocks are what invited the echo above."""
+    g = gl()
+    p = repair.build_prompt("THE_ASR", "THE_REF", g, prev_text="PREV", next_text="NEXT")
+    assert p.index("PREV") < p.index("THE_ASR")
+    assert p.index("NEXT") < p.index("THE_ASR")
+    assert p.index("THE_REF") < p.index("THE_ASR")
+
+
+def test_build_prompt_still_instructs_unsure_means_unchanged():
+    g = gl()
+    p = repair.build_prompt("asr", "", g).lower()
+    assert "unchanged" in p
