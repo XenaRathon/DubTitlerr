@@ -104,6 +104,9 @@ def has_dubtitles_track(info):
 
 
 def duration(path):
+    """Container duration. NOTE: in Matroska this is the LONGEST track, so it is NOT a
+    safe truncation signal for a remux that drops tracks -- use video_duration() for that.
+    Kept because it is still the right number for "how long is this file"."""
     try:
         r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
                             "-of", "csv=p=0", path], capture_output=True, text=True,
@@ -111,6 +114,55 @@ def duration(path):
         return float(r.stdout.strip() or 0)
     except Exception:
         return 0.0
+
+
+def _parse_duration(v):
+    """Matroska's DURATION tag ("00:23:54.849708333") -> seconds; None if unparseable."""
+    if not v or not isinstance(v, str):
+        return None
+    parts = v.strip().split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        h, m, sec = parts
+        return int(h) * 3600 + int(m) * 60 + float(sec)
+    except ValueError:
+        return None
+
+
+def _ffprobe_video(path):
+    """First video stream's duration field + tags (split out so tests can stub the I/O)."""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                            "-show_entries", "stream=duration:stream_tags=DURATION",
+                            "-of", "json", path], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=60)
+        streams = json.loads(r.stdout).get("streams", [])
+        return streams[0] if streams else {}
+    except Exception:
+        return {}
+
+
+def video_duration(path):
+    """Duration of the VIDEO track -- the only thing a truncated remux would shorten.
+
+    Container duration is unusable here: Matroska reports the longest track, and releases
+    commonly ship a foreign subtitle running past the end of the video (JUJUTSU KAISEN
+    S02E04 has a Polish fansub ending 19s after the picture does). Dropping such a track,
+    which is exactly what this stage is for, shortens the container by ~19s and made the
+    old container-vs-container check reject a perfectly good remux forever.
+
+    Matroska usually leaves stream=duration as N/A and carries a DURATION tag instead, so
+    try the field, then the tag, then fall back to the container figure."""
+    st = _ffprobe_video(path)
+    try:
+        d = float(st.get("duration"))
+        if d > 0:
+            return d
+    except (TypeError, ValueError):
+        pass
+    tagged = _parse_duration((st.get("tags") or {}).get("DURATION"))
+    return tagged if tagged is not None else duration(path)
 
 
 _partners_cache: dict[tuple[int, int], list[str]] = {}
@@ -201,7 +253,7 @@ def verify(orig, out):
         return "missing-av"
     if not has_dubtitles_track(info):
         return "no-dubtitles-track"
-    if abs(duration(out) - duration(orig)) > DUR_TOL:
+    if abs(video_duration(out) - video_duration(orig)) > DUR_TOL:
         return "duration-mismatch"
     # D2: font-attachment audit -- mkvmerge -J reports attachments as a top-level
     # "attachments" array (sibling of "tracks"), NOT as track entries; .get(..., [])
