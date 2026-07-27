@@ -33,8 +33,13 @@ WORKDIR /app
 # dub_signs_merge.py) would ImportError at container start. Added here alongside the new
 # data/ (EXTRA_DIRS data file) and shell/ (extras_grep_pattern lib) directories that
 # merge_pass.sh now sources from $APP/shell/lib.sh + $APP/data/extras.txt.
+# recreate_srt.py added: it rebuilds <stem>.eng.dubtitles.srt from the conf.json when the
+# srt has already been consumed (mux removes sidecars on success). That is the ONLY way to
+# re-run repair on an already-muxed episode without re-transcribing it -- repair.py returns
+# "skip" when the srt is absent -- so a model/prompt change cannot be rolled out to the
+# existing library without this in the image.
 COPY generate.py reflow.py glossary.py glossary_verify.py hallucination.py ordering.py common.py common_words.txt \
-     repair.py dub_signs_merge.py mux.py plex_refresh.py mine_glossary.py merge_pass.sh \
+     repair.py dub_signs_merge.py mux.py plex_refresh.py mine_glossary.py recreate_srt.py merge_pass.sh \
      gen_loop.sh container_run.sh /app/
 COPY data/ /app/data/
 COPY shell/ /app/shell/
