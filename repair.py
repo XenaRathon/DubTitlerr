@@ -120,36 +120,57 @@ def _glossary_terms(gloss):
 
 
 def build_prompt(asr, sub, gloss, prev_text="", next_text=""):
-    """Build a STRICT repair prompt: glossary names always; the fansub reference only when
-    present (graceful glossary-only fallback for mp4). The strictness is deliberate — the
-    bake-off showed a loose prompt makes models hallucinate glossary names into lines.
+    """Build a STRICT repair prompt. Structure here is load-bearing, not stylistic: a
+    40-target bake-off on real conf.json data measured qwen3.5:9b rewriting 42% of lines
+    under the previous wording, pasting glossary names over text that was already correct
+    ("Border Control" -> "Cipher Pol", "Sonny" -> "Shanks", "Neptune" -> "Nefertari Vivi";
+    on another show "Uchihime" -> "Uchiha", a name from a different franchise). That
+    previous prompt already contained "NEVER replace a name in the line with a different
+    name" -- so simply asserting the rule does not work.
 
-    prev_text/next_text (C1 Phase 3): the neighboring lines' text, when available, given as
-    extra context only — never part of what gets corrected. Omitted from the prompt entirely
-    when empty, so a call with no prev/next produces the exact same prompt as before."""
+    Two things were tested and rejected: restating the rule more forcefully, and dropping
+    the glossary from the prompt entirely (still 38% -- the name list is not the trigger,
+    and removing it made the conservative model WORSE, 8% -> 18%). What cut the rate to 18%
+    with zero glossary-name fabrications was:
+      * framing the list as VERIFICATION ONLY rather than as material to apply,
+      * two worked examples -- one correcting a misspelling, one LEAVING an unlisted name
+        alone, which is the behaviour prose failed to secure,
+      * putting nothing after the ASR line. An intermediate version placed a trailing
+        "Remember:" reminder there and the model echoed the rule text straight into the
+        subtitle output, so context/reference now precede the line being corrected.
+
+    prev_text/next_text are extra context only -- never part of what gets corrected."""
     names = _glossary_terms(gloss)
-    ref_intro = ("For reference, the official subtitle for this moment (a DIFFERENT translation — "
-                 "do NOT copy its wording) is given below; use it only to resolve garbled words and "
-                 "confirm names. ") if sub else ""
-    head = "You fix speech-recognition errors in one English-dub subtitle line. " + ref_intro
-    name_line = f"Canonical spellings of known proper nouns: {names}.\n" if names else ""
+    head = "You fix speech-recognition errors in one English-dub subtitle line.\n"
+    name_line = (f"Reference spellings (VERIFICATION ONLY - this is NOT a list of names to "
+                 f"insert): {names}.\n") if names else ""
+    ref_intro = ("A DIFFERENT translation of this moment is quoted below; use it only to "
+                 "resolve garbled words and confirm names, never to copy its wording.\n") if sub else ""
     rules = (
         "Rules:\n"
-        "- Change a word ONLY if it is clearly garbled, or a clear MISSPELLING of one of the "
-        "canonical names above (close in sound/spelling) — then use the canonical spelling.\n"
-        "- NEVER introduce a name that is not already in the line. NEVER replace a name in the line "
-        "with a different name. If a name in the line is NOT in the list, leave it EXACTLY as written "
-        "— it may be a character that isn't listed.\n"
+        "- Fix a word ONLY if it is clearly garbled text, or an obvious phonetic "
+        "misspelling of a reference spelling above.\n"
+        "- A name already in the line STAYS. Never swap it for a different name. Unlisted "
+        "names are real characters you don't know about - leave them EXACTLY as written.\n"
+        "- Never insert a name that is not already in the line.\n"
         "- Do NOT turn ordinary words into names. Keep the wording and length almost identical.\n"
-        "- If the line already reads fine, or you are unsure, return it UNCHANGED.\n"
-        "Return ONLY the line — no quotes, no notes.\n\n")
+        "- If the line already reads fine, or you are unsure, return it UNCHANGED.\n\n"
+        'Example 1 -> ASR line: Hey, Sonny,\n'
+        'Corrected line: Hey, Sonny,\n'
+        '("Sonny" is not garbled. It stays, even though it is not in the reference list.)\n\n'
+        'Example 2 -> ASR line: zolo drew his blade\n'
+        'Corrected line: Zoro drew his blade\n'
+        '("zolo" is a phonetic misspelling of a reference spelling, so it is corrected.)\n\n'
+        "Return ONLY the corrected line - no quotes, no notes, no rule text.\n\n")
+    # C9: the fansub reference is untrusted third-party text -- keep it wrapped in an XML
+    # tag so it reads as quoted DATA, not instructions (prompt-injection guard). Context
+    # and reference come BEFORE the ASR line: anything trailing it gets echoed into output.
     prev_line = f'Previous line (for context): "{prev_text}"\n' if prev_text else ""
     next_line = f'Next line (for context): "{next_text}"\n' if next_text else ""
-    # C9: wrap the fansub reference in an XML tag so it reads as quoted DATA, not
-    # instructions -- the reference text comes from an untrusted third-party fansub file,
-    # and this is a prompt-injection guard against text embedded inside it.
     ref_line = f"<official_subtitle_reference>{sub}</official_subtitle_reference>\n" if sub else ""
-    return f"{head}{name_line}{rules}ASR line: {asr}\n{prev_line}{next_line}{ref_line}Corrected line:"
+    return (f"{head}{name_line}{ref_intro}{rules}"
+            f"{prev_line}{next_line}{ref_line}"
+            f"ASR line: {asr}\nCorrected line:")
 
 
 def overlap_ref(ivals, a, b):

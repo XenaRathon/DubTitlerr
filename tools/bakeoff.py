@@ -150,6 +150,17 @@ def ask(ollama, model, prompt, llamacpp=None, llamacpp_chat=None):
     return ask_ollama(ollama, model, prompt)
 
 
+def format_model_block(model, targets, outs, total_s):
+    """One model's finished results, printed the moment that model completes so a later
+    timeout cannot destroy them. Tolerates outs shorter than targets (killed mid-run)."""
+    lines = [f"\n----- {model}  (avg {total_s / max(1, len(outs)):.1f}s/line over {len(outs)} line(s)) -----"]
+    for i, c in enumerate(targets):
+        got = outs[i] if i < len(outs) else "<no result>"
+        lines.append(f"  ORIG: {c['text']}")
+        lines.append(f"   ->   {got}")
+    return "\n".join(lines)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--raw", help="captured faster-whisper dump (needs a GPU re-transcribe)")
@@ -177,19 +188,26 @@ def main():
     prompts = [repair.build_prompt(c["text"], "", gloss) for c in targets]   # glossary-only (mp4)
     print(f"cards={len(cards)} targets={len(targets)} (showing {len(targets)})  models={a.models}\n")
 
-    # model-OUTER so each model loads once (avoids reload thrash on the 8GB GPU)
+    # model-OUTER so each model loads once (avoids reload thrash on the 8GB GPU).
+    # Each model's block is printed AS SOON AS that model finishes: these runs can take
+    # hours when a candidate spills to CPU, and buffering everything to the end meant a
+    # wall-clock kill threw away the models that had already completed.
     outs = {m: [] for m in a.models}
     totals = dict.fromkeys(a.models, 0.0)
     for m in a.models:
-        for p in prompts:
+        for n, p in enumerate(prompts, 1):
             out, dt = ask(a.ollama, m, p, llamacpp, llamacpp_chat)
             outs[m].append(out)
             totals[m] += dt
+            print(f"    [{m} {n}/{len(prompts)}] {dt:5.1f}s  {out[:70]}", flush=True)
+        print(format_model_block(m, targets, outs[m], totals[m]), flush=True)
 
+    print("\n=== SIDE BY SIDE ===")
     for i, c in enumerate(targets):
         print("ORIG:", c["text"])
         for m in a.models:
-            print(f"  {m:14}: {outs[m][i]}")
+            got = outs[m][i] if i < len(outs[m]) else "<no result>"
+            print(f"  {m:16}: {got}")
         print()
     print("avg latency/line:", {m: round(totals[m] / max(1, len(targets)), 2) for m in a.models})
 
