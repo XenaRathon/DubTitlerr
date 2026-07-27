@@ -226,16 +226,21 @@ def test_llm_ollama_swallows_transport_failure(monkeypatch):
 
 
 def test_llm_llamacpp_request_shape_and_response_parsing(monkeypatch):
+    """UPDATED: this used to pin the raw /completion body. That shape applies no chat
+    template and returns nothing but newlines from a templated instruct model (verified
+    against a live Nanbeige server), so it pinned a broken configuration. The backend now
+    uses /v1/chat/completions; see
+    test_llm_llamacpp_uses_chat_endpoint_with_thinking_disabled for the full contract."""
     captured = {}
 
-    def fake_post(url, body):
+    def fake_post(url, body, timeout=180):
         captured["url"] = url; captured["body"] = body
-        return {"content": '"quoted fix"\nsecond line'}
+        return {"choices": [{"message": {"content": '"quoted fix"\nsecond line'}}]}
     monkeypatch.setattr(repair, "_post_json", fake_post)
     out = repair.llm_llamacpp("the prompt", "some-model")
     assert captured["url"] == repair.LLAMACPP_URL
-    assert captured["body"] == {"prompt": "the prompt", "temperature": 0, "n_predict": 50, "stop": ["\n"]}
-    assert "model" not in captured["body"]     # llama.cpp /completion has no model selector
+    assert captured["body"]["messages"] == [{"role": "user", "content": "the prompt"}]
+    assert "model" not in captured["body"]     # llama.cpp serves one loaded model
     assert out == "quoted fix"
 
 
@@ -538,15 +543,27 @@ def test_build_prompt_frames_names_as_verification_not_insertion():
     assert "not a list of names to insert" in p.lower()
 
 
-def test_build_prompt_shows_a_worked_leave_alone_example():
-    """The decisive addition: a demonstration that an UNLISTED name stays put. Stating the
-    rule in prose was already there and was ignored."""
+def test_build_prompt_states_a_positive_duty_to_fix_damage():
+    """Rules phrased purely as prohibitions produced an inert model: nanbeige4.2-3b made
+    0 safe fixes across 120 targets, returning the input verbatim. Adding an explicit MUST
+    FIX for run-together sentences and missing punctuation took it to 16, and qwen3.5:9b
+    from 6 to 23 -- with FEWER name edits for both. The duty has to be stated, not implied
+    by the absence of a prohibition."""
     g = gl(names=["Zoro"])
     p = repair.build_prompt("asr line", "", g)
-    low = p.lower()
-    assert "example" in low
-    assert "zolo" in low            # the correct-a-misspelling demonstration
-    assert "sonny" in low           # the leave-an-unlisted-name-alone demonstration
+    assert "MUST fix" in p
+    assert "run-together" in p.lower() or "run together" in p.lower()
+
+
+def test_build_prompt_omits_the_leave_alone_example():
+    """Counter-intuitive but measured: a worked example showing an unlisted name being left
+    alone over-anchored inaction. Removing it (keeping the prohibition in prose) was the
+    single biggest gain in the sweep -- nanbeige 12 -> 16 safe fixes, qwen 6 -> 23 -- while
+    name edits went DOWN. The only worked example kept is one that demonstrates fixing."""
+    g = gl(names=["Zoro"])
+    p = repair.build_prompt("asr line", "", g)
+    assert "Sonny" not in p
+    assert "Example" in p                    # the fix-this demonstration is retained
 
 
 def test_build_prompt_puts_nothing_after_the_asr_line():
@@ -574,7 +591,60 @@ def test_build_prompt_context_and_reference_precede_the_asr_line():
     assert p.index("THE_REF") < p.index("THE_ASR")
 
 
-def test_build_prompt_still_instructs_unsure_means_unchanged():
+def test_build_prompt_carries_restraint_on_names_not_a_blanket_unsure_escape():
+    """The old "if you are unsure, return it UNCHANGED" clause was removed deliberately: it
+    is the escape hatch a cautious model takes on every line. Restraint now attaches
+    specifically to proper nouns, which is where the damage was, leaving ordinary-word and
+    punctuation repair unblocked. Measured: dropping the blanket escape RAISED safe fixes
+    for both models and LOWERED name edits for both."""
     g = gl()
-    p = repair.build_prompt("asr", "", g).lower()
-    assert "unchanged" in p
+    p = repair.build_prompt("asr", "", g)
+    assert "MUST NOT change any proper noun" in p
+    assert "Never insert a name that is not already in the line." in p
+    assert "unsure" not in p.lower()
+
+
+# --- llama.cpp backend: chat endpoint, template applied ------------------------
+#
+# llm_llamacpp posted a RAW prompt to /completion, which applies no chat template. Verified
+# against a live Nanbeige 4.2-3B server: that path returns nothing but newlines (200 tokens
+# of "\n"), because the instruct model never sees its template. It can only ever have
+# worked for a base/completion model. /v1/chat/completions applies the template; this fork
+# additionally needs enable_thinking=false or it fills reasoning_content and returns an
+# empty message (measured: empty after 114s at max_tokens=512; correct output in 4.3s with
+# thinking off).
+
+def test_llm_llamacpp_uses_chat_endpoint_with_thinking_disabled(monkeypatch):
+    seen = {}
+
+    def fake_post(url, body, timeout=180):
+        seen["url"], seen["body"] = url, body
+        return {"choices": [{"message": {"content": ' "Zoro drew his blade."\nnoise'}}]}
+
+    monkeypatch.setattr(repair, "_post_json", fake_post)
+    monkeypatch.setattr(repair, "LLAMACPP_URL", "http://host:8090/v1/chat/completions")
+    out = repair.llm_llamacpp("PROMPT", None)
+    assert seen["body"]["messages"] == [{"role": "user", "content": "PROMPT"}]
+    assert seen["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert seen["body"]["temperature"] == 0
+    assert "model" not in seen["body"]          # llama.cpp serves one loaded model
+    assert out == "Zoro drew his blade."
+
+
+def test_llm_llamacpp_returns_empty_string_on_failure(monkeypatch):
+    """Matches llm_ollama: a backend failure must degrade to "no repair", never raise into
+    the per-episode loop."""
+    def boom(url, body, timeout=180):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(repair, "_post_json", boom)
+    assert repair.llm_llamacpp("PROMPT", None) == ""
+
+
+def test_llm_llamacpp_treats_an_empty_reply_as_no_repair(monkeypatch):
+    """Empty content with reasoning_content populated means thinking was not disabled.
+    Returning "" (no repair) is correct; returning the reasoning text would write the
+    model's monologue into the subtitle."""
+    monkeypatch.setattr(repair, "_post_json", lambda u, b, timeout=180: {
+        "choices": [{"message": {"content": "", "reasoning_content": "hmm..."}}]})
+    assert repair.llm_llamacpp("PROMPT", None) == ""

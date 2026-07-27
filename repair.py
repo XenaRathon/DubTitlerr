@@ -27,7 +27,9 @@ Env:
   OLLAMA_URL           default http://ollama.local:11434/api/generate
   REPAIR_MODEL         default qwen3:8b   (locked by the C1 bake-off)
   REPAIR_BACKEND         ollama | llamacpp  (default ollama — V2 A1)
-  REPAIR_LLAMACPP_URL    default http://192.168.1.232:8080/completion  (V2 A1)
+  REPAIR_LLAMACPP_URL    default http://192.168.1.232:8080/v1/chat/completions
+                         (chat endpoint: the raw /completion path applies no chat
+                         template and yields empty output from instruct models)
   REPAIR_MODEL_SECONDARY default REPAIR_MODEL — two-pass re-check model (V2 A3; no-op if equal)
   REPAIR_TIMEOUT_CONNECT default 10   (seconds; V2 A2)
   REPAIR_TIMEOUT_READ    default 120  (seconds; V2 A2)
@@ -54,7 +56,8 @@ from common import MEDIA_GID, MEDIA_UID, dialogue_intervals, find_video, out_for
 OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
 MODEL = os.environ.get("REPAIR_MODEL", "qwen3:8b")
 REPAIR_BACKEND = os.environ.get("REPAIR_BACKEND", "ollama")
-LLAMACPP_URL = os.environ.get("REPAIR_LLAMACPP_URL", "http://192.168.1.232:8080/completion")
+LLAMACPP_URL = os.environ.get("REPAIR_LLAMACPP_URL",
+                              "http://192.168.1.232:8080/v1/chat/completions")
 MODEL_SECONDARY = os.environ.get("REPAIR_MODEL_SECONDARY", MODEL)
 TIMEOUT_CONNECT = float(os.environ.get("REPAIR_TIMEOUT_CONNECT", "10"))
 TIMEOUT_READ = float(os.environ.get("REPAIR_TIMEOUT_READ", "120"))
@@ -120,24 +123,28 @@ def _glossary_terms(gloss):
 
 
 def build_prompt(asr, sub, gloss, prev_text="", next_text=""):
-    """Build a STRICT repair prompt. Structure here is load-bearing, not stylistic: a
-    40-target bake-off on real conf.json data measured qwen3.5:9b rewriting 42% of lines
-    under the previous wording, pasting glossary names over text that was already correct
-    ("Border Control" -> "Cipher Pol", "Sonny" -> "Shanks", "Neptune" -> "Nefertari Vivi";
-    on another show "Uchihime" -> "Uchiha", a name from a different franchise). That
-    previous prompt already contained "NEVER replace a name in the line with a different
-    name" -- so simply asserting the rule does not work.
+    """Build the repair prompt. Every element here is the result of a measured sweep over
+    real conf.json targets (3 shows x 40 targets, temperature 0), not authorship taste.
 
-    Two things were tested and rejected: restating the rule more forcefully, and dropping
-    the glossary from the prompt entirely (still 38% -- the name list is not the trigger,
-    and removing it made the conservative model WORSE, 8% -> 18%). What cut the rate to 18%
-    with zero glossary-name fabrications was:
-      * framing the list as VERIFICATION ONLY rather than as material to apply,
-      * two worked examples -- one correcting a misspelling, one LEAVING an unlisted name
-        alone, which is the behaviour prose failed to secure,
-      * putting nothing after the ASR line. An intermediate version placed a trailing
-        "Remember:" reminder there and the model echoed the rule text straight into the
-        subtitle output, so context/reference now precede the line being corrected.
+    Two failure modes had to be balanced against each other:
+      * qwen3.5:9b, told only what NOT to do, rewrote 42% of lines and pasted glossary
+        names over correct text ("Border Control" -> "Cipher Pol", "Neptune" ->
+        "Nefertari Vivi", "Uchihime" -> "Uchiha" -- a name from another franchise).
+      * nanbeige4.2-3b, given the same prohibitions, went inert: 0 safe fixes across 120
+        targets, returning the input verbatim, losing the real repairs it used to make.
+
+    What resolved both at once:
+      * the name list framed as VERIFICATION ONLY, never as material to apply;
+      * an explicit POSITIVE DUTY -- rules phrased only as prohibitions produce a model
+        that does nothing, which is not a repair stage;
+      * NO worked example of leaving a name alone. Counter-intuitive, but it over-anchored
+        inaction: removing it was the single biggest gain in the sweep (nanbeige 12 -> 16
+        safe fixes, qwen 6 -> 23) *and* name edits went down for both;
+      * nothing after the ASR line. An earlier version put a trailing "Remember:" reminder
+        there and the model echoed that rule text into the subtitle output.
+
+    Measured on 120 targets: qwen 6 -> 23 safe fixes (17 -> 14 name edits), nanbeige
+    0 -> 16 safe fixes (1 -> 2 name edits), zero prompt leaks or length blowups for either.
 
     prev_text/next_text are extra context only -- never part of what gets corrected."""
     names = _glossary_terms(gloss)
@@ -148,19 +155,15 @@ def build_prompt(asr, sub, gloss, prev_text="", next_text=""):
                  "resolve garbled words and confirm names, never to copy its wording.\n") if sub else ""
     rules = (
         "Rules:\n"
-        "- Fix a word ONLY if it is clearly garbled text, or an obvious phonetic "
+        "- You MUST fix: run-together sentences with missing punctuation, missing "
+        "capitalisation at a sentence start, and obviously garbled ordinary words.\n"
+        "- You MUST NOT change any proper noun unless it is an obvious phonetic "
         "misspelling of a reference spelling above.\n"
-        "- A name already in the line STAYS. Never swap it for a different name. Unlisted "
-        "names are real characters you don't know about - leave them EXACTLY as written.\n"
         "- Never insert a name that is not already in the line.\n"
-        "- Do NOT turn ordinary words into names. Keep the wording and length almost identical.\n"
-        "- If the line already reads fine, or you are unsure, return it UNCHANGED.\n\n"
-        'Example 1 -> ASR line: Hey, Sonny,\n'
-        'Corrected line: Hey, Sonny,\n'
-        '("Sonny" is not garbled. It stays, even though it is not in the reference list.)\n\n'
-        'Example 2 -> ASR line: zolo drew his blade\n'
-        'Corrected line: Zoro drew his blade\n'
-        '("zolo" is a phonetic misspelling of a reference spelling, so it is corrected.)\n\n'
+        "- Do NOT turn ordinary words into names. Keep the wording and length almost identical.\n\n"
+        'Example -> ASR line: it worked Now we run\n'
+        'Corrected line: It worked. Now we run.\n'
+        '(Two sentences were run together with no punctuation. That IS damage - fix it.)\n\n'
         "Return ONLY the corrected line - no quotes, no notes, no rule text.\n\n")
     # C9: the fansub reference is untrusted third-party text -- keep it wrapped in an XML
     # tag so it reads as quoted DATA, not instructions (prompt-injection guard). Context
@@ -218,13 +221,28 @@ def llm_ollama(prompt, model=None):
 
 
 def llm_llamacpp(prompt, model):
-    """llama.cpp /completion backend (V2 A1). Different schema from Ollama: no streaming
-    flag, no "model" selector in the request (the server has exactly one model loaded —
-    `model` is accepted here for signature parity with llm_ollama/the two-pass dispatch
-    but is not sent), and the response key is "content" instead of "response"."""
-    body = {"prompt": prompt, "temperature": 0, "n_predict": 50, "stop": ["\n"]}
+    """llama.cpp backend, via the OpenAI-compatible /v1/chat/completions endpoint.
+
+    This previously posted a RAW prompt to /completion, which applies NO chat template.
+    Verified against a live Nanbeige 4.2-3B server, that path returns nothing but newlines
+    -- 200 tokens of "\n" -- because a templated instruct model never sees its template.
+    It could only ever have worked for a base/completion model, so REPAIR_BACKEND=llamacpp
+    was effectively broken for the models anyone would actually use.
+
+    ``chat_template_kwargs.enable_thinking=false`` is required by this fork: with the
+    template applied but thinking still on, the model spends its whole budget on
+    reasoning_content and returns an empty message (measured empty after 114s at
+    max_tokens=512; correct output in 4.3s with thinking off). An empty reply is treated as
+    "no repair" -- never as text to embed, which would put the model's monologue in a
+    subtitle.
+
+    No "model" selector is sent (the server has exactly one model loaded); ``model`` is
+    accepted for signature parity with llm_ollama and the two-pass dispatch."""
+    body = {"messages": [{"role": "user", "content": prompt}], "temperature": 0,
+            "max_tokens": 80, "chat_template_kwargs": {"enable_thinking": False}}
     try:
-        out = _post_json(LLAMACPP_URL, body).get("content", "").strip()
+        msg = _post_json(LLAMACPP_URL, body)["choices"][0]["message"]
+        out = (msg.get("content") or "").strip()
         return out.splitlines()[0].strip().strip('"').strip() if out else ""
     except Exception as e:
         log("  llm fail:", e); return ""
