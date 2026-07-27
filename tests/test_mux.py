@@ -326,3 +326,52 @@ def test_process_reports_a_failed_stamp_write_and_keeps_the_sidecar(tmp_path, mo
     assert mux.process(str(v), apply=True) == "stamp-write-failed"
     assert sidecar.exists()                       # kept, so the next sweep can retry
     assert "stamp" in capsys.readouterr().out.lower()
+
+
+# --- verify(): compare the VIDEO track, not the container ---------------------
+#
+# Matroska's container duration is the LONGEST track. Releases routinely ship a foreign
+# subtitle that runs past the end of the video -- e.g. JUJUTSU KAISEN S02E04 carries a
+# Polish fansub track ending at 24:12.74 while the video ends at 23:54.85. mux correctly
+# drops that track (not a keep language), so the remux's container duration falls by ~19s
+# and the old container-vs-container check failed with DUR_TOL=2 even though video and
+# audio were untouched. That bricked every such release: assembled sidecars, mux rejected
+# on every sweep, 25 days of retries on one episode alone.
+
+def test_parse_duration_tag_handles_matroska_hhmmss():
+    assert abs(mux._parse_duration("00:23:54.849708333") - 1434.849) < 0.01
+    assert abs(mux._parse_duration("01:02:03.5") - 3723.5) < 0.01
+
+
+def test_parse_duration_tag_rejects_junk():
+    for bad in ("", None, "N/A", "abc"):
+        assert mux._parse_duration(bad) is None
+
+
+def test_video_duration_prefers_the_stream_over_the_container(monkeypatch):
+    """The container figure is exactly the one that lies when an over-long sub is dropped."""
+    monkeypatch.setattr(mux, "_ffprobe_video", lambda p: {"duration": "1434.849"})
+    assert abs(mux.video_duration("x.mkv") - 1434.849) < 0.01
+
+
+def test_video_duration_falls_back_to_the_duration_tag(monkeypatch):
+    """Matroska usually leaves stream=duration as N/A and carries a DURATION tag instead."""
+    monkeypatch.setattr(mux, "_ffprobe_video",
+                        lambda p: {"duration": "N/A", "tags": {"DURATION": "00:23:54.849708333"}})
+    assert abs(mux.video_duration("x.mkv") - 1434.849) < 0.01
+
+
+def test_verify_passes_when_only_a_dropped_subtitle_shortened_the_container(monkeypatch):
+    """The real JUJUTSU KAISEN case: container 1453.88 -> 1434.95 (delta 18.9s, way over
+    DUR_TOL) but the video track is unchanged. This must pass."""
+    monkeypatch.setattr(mux, "identify", lambda p: _ok_info())
+    monkeypatch.setattr(mux, "video_duration",
+                        lambda p: 1434.849 if p == "orig.mkv" else 1434.850)
+    assert mux.verify("orig.mkv", "out.mkv") == "ok"
+
+
+def test_verify_still_catches_a_genuinely_truncated_remux(monkeypatch):
+    """The check exists as a truncation canary -- it has to keep working."""
+    monkeypatch.setattr(mux, "identify", lambda p: _ok_info())
+    monkeypatch.setattr(mux, "video_duration", lambda p: 1434.8 if p == "orig.mkv" else 900.0)
+    assert mux.verify("orig.mkv", "out.mkv") == "duration-mismatch"
