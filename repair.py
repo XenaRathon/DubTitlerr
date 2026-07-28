@@ -33,6 +33,10 @@ Env:
   REPAIR_MODEL_SECONDARY default REPAIR_MODEL — two-pass re-check model (V2 A3; no-op if equal)
   REPAIR_TIMEOUT_CONNECT default 10   (seconds; V2 A2)
   REPAIR_TIMEOUT_READ    default 120  (seconds; V2 A2)
+  MAX_REF_BORROW default 3     (reject a repair importing this many NEW words that are
+                                present in the fansub reference — see accept_repair)
+  LEN_RATIO_MIN default 0.6    (…and reject one whose length ratio leaves this band)
+  LEN_RATIO_MAX default 1.5
   LOGPROB_MIN   default -0.4   (mid-confidence-and-lower; below this is a repair target)
   NSP_MAX       default 0.5    (…and below this no_speech_prob — i.e. it IS speech)
   GLOSSARY_DIR  default /config/glossaries   (per-show glossary, resolved from the path)
@@ -207,6 +211,53 @@ def _post_json(url, body):
         conn.close()
 
 
+MAX_REF_BORROW = int(os.environ.get("MAX_REF_BORROW", "3"))
+LEN_RATIO_MIN = float(os.environ.get("LEN_RATIO_MIN", "0.6"))
+LEN_RATIO_MAX = float(os.environ.get("LEN_RATIO_MAX", "1.5"))
+
+_WORD = re.compile(r"[a-z']+")
+
+
+def _words(s):
+    return _WORD.findall((s or "").lower())
+
+
+def borrowed_from_ref(orig, new, ref):
+    """Words the repair ADDED that are present in the fansub reference.
+
+    These are the signature of the model treating the reference as the answer rather than
+    as a disambiguation aid. Words already in the ASR line don't count (keeping them isn't
+    borrowing), and invented words absent from the reference don't either — that is
+    hallucination, a different failure with its own guards."""
+    had, have, in_ref = set(_words(orig)), _words(new), set(_words(ref))
+    return [w for w in have if w not in had and w in in_ref]
+
+
+def accept_repair(orig, new, ref):
+    """Whether to write ``new`` over ``orig``.
+
+    A dubtitle must match the DUB AUDIO. The reference is a different translation of the
+    same scene, so lifting its phrasing produces a subtitle that reads well and is wrong
+    against the sound — the worst kind of error here, because it looks correct.
+
+    Measured over every repair the library had accumulated before this guard: qwen3:8b
+    imported reference words in 84.1% of its repairs (29.2% imported three or more),
+    nanbeige in 52.5% (17.1%). Lines like "That's enough of that, idiots!" became "Hold
+    it, you brats!" — the reference, verbatim. The old gate was a 0.4–2.5 length band,
+    which a same-length rewrite sails straight through.
+
+    Kept deliberately permissive for the case the reference exists to serve: a single
+    misheard proper noun corrected from it."""
+    if not new:
+        return False
+    if new.lower() == (orig or "").lower():
+        return False                                   # nothing changed
+    ratio = len(new) / max(1, len(orig))
+    if not (LEN_RATIO_MIN <= ratio <= LEN_RATIO_MAX):
+        return False                                   # added or dropped a clause
+    return len(borrowed_from_ref(orig, new, ref)) < MAX_REF_BORROW
+
+
 def llm_ollama(prompt, model=None):
     """Ollama /api/generate backend (the original/default path — byte-for-byte the same
     request shape and response parsing as before A1's dispatch refactor)."""
@@ -298,7 +349,7 @@ def process(conf_path):
     if not targets:
         return "clean"          # nothing to repair (e.g. S15E01)
     ivals = dialogue_intervals(video)
-    audit, fixed, skipped_no_ref = [], 0, 0
+    audit, fixed, skipped_no_ref, rejected = [], 0, 0, 0
     repaired_lines = []                              # A10: per-line detail for the summary
     for i, c in targets:
         ref = overlap_ref(ivals, c["start"], c["end"])
@@ -315,7 +366,10 @@ def process(conf_path):
         latency_ms = round((time.monotonic() - t0) * 1000)
         if new:
             new = glossary.correct(new, gloss)[0]         # enforce canonical spelling on output
-        if new and new.lower() != c["text"].lower() and 0.4 <= len(new) / max(1, len(c["text"])) <= 2.5:
+        if not accept_repair(c["text"], new, ref):
+            if new and new.lower() != c["text"].lower():
+                rejected += 1          # surfaced in the summary so the guard stays visible
+        else:
             # A3: re-verify divergent-looking repairs (esp. name changes) with the secondary
             # model. No-op by default (REPAIR_MODEL_SECONDARY == REPAIR_MODEL).
             if MODEL_SECONDARY != MODEL and _needs_secondary_check(c["text"], new, gloss):
@@ -342,6 +396,7 @@ def process(conf_path):
         "targets": len(targets),
         "repaired": fixed,
         "skipped_no_ref": skipped_no_ref,
+        "rejected_guard": rejected,      # model proposed an edit, accept_repair() refused it
         "mean_latency_ms": round(sum(lat_values) / len(lat_values)) if lat_values else 0,
         "p95_latency_ms": round(_p95(lat_values)) if lat_values else 0,
         "model": MODEL,

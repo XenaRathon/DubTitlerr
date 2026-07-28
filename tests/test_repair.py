@@ -663,3 +663,100 @@ def test_process_skips_cleanly_when_the_conf_json_is_missing(tmp_path, monkeypat
     open(stem + repair.SRT_SUFFIX, "w").close()
     monkeypatch.setattr(repair, "find_video", lambda s: stem + ".mkv")
     assert repair.process(stem + repair.CONF_SUFFIX) == "skip"
+
+
+# --- reference-leak guard -----------------------------------------------------
+#
+# The fansub reference exists to DISAMBIGUATE a garbled ASR line, not to supply its text.
+# A dubtitle has to match the spoken dub, so a "repair" that swaps the dub's wording for
+# the fansub's makes the subtitle wrong against the audio it accompanies.
+#
+# Measured across every repair summary in the library before this guard existed:
+#   qwen3:8b   2520 repairs -- 84.1% imported words from the reference, 29.2% imported 3+
+#   nanbeige   8456 repairs -- 52.5% imported words from the reference, 17.1% imported 3+
+# i.e. both models did it, qwen far worse. Real examples that shipped:
+#   "That's enough of that, idiots!" -> "Hold it, you brats!"   (the reference, verbatim)
+#   "Let's go, Chopper."            -> "Well then, shall we go, Chopper?"
+#
+# The only gate was a 0.4-2.5 length band, far too loose to catch a same-length rewrite.
+
+def test_borrowed_from_ref_lists_words_taken_from_the_reference():
+    got = repair.borrowed_from_ref("That's enough of that, idiots!", "Hold it, you brats!",
+                                   "Hold it, you brats!")
+    assert set(got) == {"hold", "it", "you", "brats"}
+
+
+def test_borrowed_from_ref_ignores_words_already_in_the_asr_line():
+    """Keeping a word the ASR already had is not borrowing -- only NEW words count."""
+    assert repair.borrowed_from_ref("the cat sat", "the cat sat down", "the cat sat down") == ["down"]
+
+
+def test_borrowed_from_ref_ignores_new_words_absent_from_the_reference():
+    """A word the model invented is a different failure (hallucination), not leak."""
+    assert repair.borrowed_from_ref("the cat sat", "the cat waited", "the dog ran") == []
+
+
+def test_accept_rejects_a_wholesale_substitution_from_the_reference():
+    assert not repair.accept_repair("That's enough of that, idiots!", "Hold it, you brats!",
+                                    "Hold it, you brats!")
+
+
+def test_accept_rejects_an_appended_clause_lifted_from_the_reference():
+    assert not repair.accept_repair(
+        "It's a bunch of baby snowbirds.",
+        "It's a bunch of baby snowbirds. So, if we close the door, they'll fall.",
+        "They're snowbird hatchlings.\nSo, if we close the door, they'll fall.")
+
+
+def test_accept_keeps_a_single_word_name_fix():
+    """The whole point of having a reference: one wrong proper noun, corrected from it."""
+    assert repair.accept_repair("Spondum drew his blade.", "Spandam drew his blade.",
+                                "Spandam drew his blade, sneering.")
+
+
+def test_accept_keeps_a_punctuation_only_repair():
+    assert repair.accept_repair(
+        "He's just a reindeer with a blue nose, that's all.",
+        "He's just a reindeer with a blue nose. That's all.",
+        "He's just a reindeer with a blue nose. That's all.")
+
+
+def test_accept_keeps_a_garbled_line_rebuilt_from_its_own_words():
+    """The strongest kind of repair: same words, ASR mangled the punctuation/dupes."""
+    assert repair.accept_repair(
+        "human human fruit a Devil Fruit right that's That's right.",
+        "Human human fruit, a Devil Fruit, right? That's right.",
+        "The Human-Human Fruit, a Devil Fruit.")
+
+
+def test_accept_rejects_a_line_that_more_than_doubles():
+    """"Huh?" -> "Huh? Help!" passed the old 2.5 band exactly. Adding dialogue the dub
+    never spoke is the failure mode, regardless of where the word came from."""
+    assert not repair.accept_repair("Huh?", "Huh? Help!", "Huh? Help!")
+
+
+def test_accept_rejects_a_line_that_collapses():
+    assert not repair.accept_repair("I'll be taking fifty percent of this restaurant.",
+                                    "Fifty percent.", "Fifty percent.")
+
+
+def test_accept_rejects_an_unchanged_line():
+    """Nothing to write, and it must not be counted as a repair."""
+    assert not repair.accept_repair("Same line.", "Same line.", "some reference")
+    assert not repair.accept_repair("Same line.", "same LINE.", "some reference")
+
+
+def test_accept_rejects_empty_output():
+    assert not repair.accept_repair("A line.", "", "ref")
+
+
+def test_borrow_limit_is_configurable(monkeypatch):
+    """Thresholds are env-tunable so they can be tightened without rebuilding the image.
+
+    Same-length swap, so this exercises the borrow limit alone and not the length band."""
+    orig, new, ref = "the small cat sat down", "the small cat sat here", "it sat here"
+    assert len(new) == len(orig)                  # the length gate cannot be what fires
+    monkeypatch.setattr(repair, "MAX_REF_BORROW", 1)
+    assert not repair.accept_repair(orig, new, ref)
+    monkeypatch.setattr(repair, "MAX_REF_BORROW", 99)
+    assert repair.accept_repair(orig, new, ref)
