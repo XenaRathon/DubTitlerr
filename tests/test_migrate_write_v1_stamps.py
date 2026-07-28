@@ -114,9 +114,15 @@ def test_apply_writes_a_grandfather_version_stamp(monkeypatch, tmp_path):
 
 def test_written_stamp_makes_the_file_read_as_done(monkeypatch, tmp_path):
     """The whole point: after migration, generate/mux skip the file instead of
-    regenerating it."""
+    regenerating it.
+
+    Pinned to the migration-era pipeline version. The migration ran while
+    PIPELINE_VERSION == GRANDFATHER_VERSION, which is what made its stamps current; a
+    later deliberate bump is *supposed* to make them read as stale again, and the next
+    test covers exactly that."""
     v = _video(tmp_path)
     _stub_ffprobe(monkeypatch, [common.TRACK_NAME])
+    monkeypatch.setattr(common, "PIPELINE_VERSION", common.GRANDFATHER_VERSION)
     mig.process(v, apply=True)
     assert common.stamp_valid(common.read_stamp(_stamp_path(v)), v)
 
