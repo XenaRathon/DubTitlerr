@@ -202,6 +202,13 @@ def eng_sub_streams(video, sub_langs):
     so a regeneration would repair/align/mine against last version's own mistakes.
     There is deliberately NO fallback: an episode whose only English sub is our old
     dubtitle yields [] and the pipeline runs reference-free."""
+    return [idx for idx, _title in eng_sub_tracks(video, sub_langs)]
+
+
+def eng_sub_tracks(video, sub_langs):
+    """``(index, title)`` for each usable English ASS/SSA stream — the shared probe behind
+    eng_sub_streams() and signs_sub_streams(). Only the latter needs the title, but both
+    must apply the same is_our_track() exclusion, so the filtering lives in one place."""
     try:
         r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "s",
                             "-show_entries", "stream=index,codec_name:stream_tags=language,title",
@@ -218,8 +225,35 @@ def eng_sub_streams(video, sub_langs):
         if is_our_track(stream_title(st)):        # our own old output — never context
             continue
         if ((st.get("tags") or {}).get("language", "") or "").lower() in sub_langs:
-            out.append(st["index"])
+            out.append((st["index"], stream_title(st)))
     return out
+
+
+# A track whose title says it carries the signs/songs. Covers the spellings actually
+# present in the library: "Signs & Songs", "S&S", "Signs/Songs", "English[Signs]",
+# "Songs + Signs", "Signs and Songs(Hydes)". "Forced" counts too — a forced track is
+# signs plus foreign-dialogue captions, and releases that ship ['Forced', ''] mean it
+# as the signs track. Deliberately NOT "karaoke": "Karaoke / English / ASS / FLE" is a
+# single mixed dialogue+karaoke track, not a signs-only one.
+SIGNS_TITLE = re.compile(r"\bs\s*&\s*s\b|sign|\bforced\b|songs?\b", re.I)
+
+
+def signs_sub_streams(video, sub_langs):
+    """Stream indices to lift signs/songs from.
+
+    Releases routinely ship the SAME signs typeset into several English tracks — a full
+    dialogue track, a signs/songs track, sometimes a CC track (39 of this library's 79
+    releases have more than one). Merging all of them renders every sign two or three
+    times, a few pixels apart. So when any track names itself as the signs track, that
+    one is the release's own curated signs list and the only one we read; if several do
+    (rival groups' typesetting of the same signs), the first wins.
+
+    Releases that name nothing usefully fall back to the historic behaviour — every
+    track, classified per event by keep_event() — which is how a single mixed
+    dialogue+signs track has always been handled."""
+    tracks = eng_sub_tracks(video, sub_langs)
+    signs = [idx for idx, title in tracks if SIGNS_TITLE.search(title or "")]
+    return [signs[0]] if signs else [idx for idx, _ in tracks]
 
 
 def extract_sub(video, idx, out):

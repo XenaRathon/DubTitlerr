@@ -384,3 +384,71 @@ def test_stale_version_stamp_false_when_the_file_no_longer_matches(tmp_path, mon
 def test_stale_version_stamp_false_for_no_stamp(tmp_path):
     v = str(tmp_path / "ep.mkv"); open(v, "wb").write(b"x" * 100)
     assert not common.stale_version_stamp(None, v)
+
+# --- signs_sub_streams(): prefer a dedicated signs/songs track ----------------
+#
+# 39 of the library's 79 releases ship more than one English ASS track, and the
+# same signs are typeset in each of them. Merging all of them rendered every
+# sign two or three times, offset by a few pixels. Nearly every such release
+# names its signs track: "Signs & Songs", "S&S", "Signs/Songs", "English[Signs]",
+# "Songs + Signs", or just "Forced" (a forced track is signs plus foreign-dialogue
+# captions). When one exists, it is the release's own curated signs list and the
+# only track we should lift from. Releases that name nothing usefully
+# ("inid4c + SFX" / "Some-Stuff+SFX") keep the old per-event scan of every track.
+
+def test_signs_streams_prefers_the_dedicated_signs_track(monkeypatch):
+    monkeypatch.setattr(common, "subprocess", _fake_ffprobe([
+        _sub(2, title="Dialogue English English"),
+        _sub(3, title="Signs & Songs English Forced English Forced"),
+    ]))
+    assert common.signs_sub_streams("fake.mkv", {"eng"}) == [3]
+
+
+def test_signs_streams_recognises_the_abbreviated_and_slashed_spellings(monkeypatch):
+    for title in ("S&S English English", "Signs/Songs [smol] English Forced",
+                  "English[Signs]", "Songs + Signs", "Signs and Songs(Hydes)"):
+        monkeypatch.setattr(common, "subprocess", _fake_ffprobe([
+            _sub(2, title="Full Subtitles"), _sub(3, title=title)]))
+        assert common.signs_sub_streams("fake.mkv", {"eng"}) == [3], title
+
+
+def test_signs_streams_treats_a_forced_track_as_signs(monkeypatch):
+    """Releases that ship ['Forced', ''] use the forced track for signs."""
+    monkeypatch.setattr(common, "subprocess", _fake_ffprobe([
+        _sub(2, title="Forced"), _sub(3, title="")]))
+    assert common.signs_sub_streams("fake.mkv", {"eng"}) == [2]
+
+
+def test_signs_streams_picks_only_one_when_a_release_ships_rival_signs_tracks(monkeypatch):
+    """DAN DA DAN carries two groups' signs tracks. They are alternate typesettings
+    of the SAME signs -- taking both is the double-render this fix exists to stop."""
+    monkeypatch.setattr(common, "subprocess", _fake_ffprobe([
+        _sub(2, title="English [MALD] (CR Modified) English English"),
+        _sub(5, title="English Signs/Songs [MALD] English Forced"),
+        _sub(6, title="English Signs/Songs [CR] English Forced"),
+    ]))
+    assert common.signs_sub_streams("fake.mkv", {"eng"}) == [5]
+
+
+def test_signs_streams_falls_back_to_every_track_when_none_is_named(monkeypatch):
+    """No signs-ish title -> keep the historic behaviour: scan them all and classify
+    per event, which is how releases with one mixed dialogue+signs track work."""
+    monkeypatch.setattr(common, "subprocess", _fake_ffprobe([
+        _sub(2, title="inid4c + SFX"), _sub(3, title="Some-Stuff+SFX")]))
+    assert common.signs_sub_streams("fake.mkv", {"eng"}) == [2, 3]
+
+
+def test_signs_streams_never_returns_our_own_dubtitles_track(monkeypatch):
+    """Our own output is titled "Dubtitles" and would match nothing signs-ish, but it
+    must not become the fallback either -- that re-lifts last version's signs."""
+    monkeypatch.setattr(common, "subprocess", _fake_ffprobe([_sub(3, title=common.TRACK_NAME)]))
+    assert common.signs_sub_streams("fake.mkv", {"eng"}) == []
+
+
+def test_signs_streams_does_not_mistake_a_third_party_dubtitles_track_for_ours(monkeypatch):
+    """Cowboy Bebop ships 'Dubtitles(Kaveman/Hydes)' -- a fansub, not our exact marker."""
+    monkeypatch.setattr(common, "subprocess", _fake_ffprobe([
+        _sub(2, title="Dubtitles(Kaveman/Hydes)"),
+        _sub(3, title="Signs and Songs(Hydes)"),
+    ]))
+    assert common.signs_sub_streams("fake.mkv", {"eng"}) == [3]

@@ -33,7 +33,7 @@ import tempfile
 
 import pysubs2
 
-from common import MEDIA_GID, MEDIA_UID, eng_sub_streams, find_video, log, out_for
+from common import MEDIA_GID, MEDIA_UID, find_video, log, out_for, signs_sub_streams
 from common import extract_sub as extract
 
 ROOTS = os.environ.get("MERGE_ROOTS", "/data/Media/Anime Library").split(":")
@@ -78,7 +78,7 @@ def build(video, dub_srt, out_ass):
     seen = set()
     base_ws = None       # D3: base track's WrapStyle, for cross-track comparison
     resolutions = []     # D5: (PlayResX, PlayResY) per source track, for mismatch warning
-    for _n, idx in enumerate(eng_sub_streams(video, SUB_LANGS)):
+    for _n, idx in enumerate(signs_sub_streams(video, SUB_LANGS)):
         with tempfile.TemporaryDirectory() as td:
             ex = os.path.join(td, "s.ass")
             if not extract(video, idx, ex):
