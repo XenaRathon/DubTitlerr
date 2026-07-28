@@ -96,3 +96,46 @@ def test_never_overwrites_an_existing_sidecar(tmp_path):
     p = _muxed_track(tmp_path, [_dub(0, 1000, "New.")])
     assert rec.recover(p, str(out)) == "exists"
     assert out.read_text(encoding="utf-8") == "existing"
+
+
+# --- SRT-origin dubtitle tracks ----------------------------------------------
+#
+# An episode whose release ships no embedded signs never gets an .ass: the merge returns
+# "no-signs" and mux embeds the .srt directly, so its Dubtitles track is codec subrip.
+# pysubs2 loads that with every event styled "Default", so filtering on the "Dubtitles"
+# style threw the whole episode away and reported no-dialogue. Those tracks hold nothing
+# BUT our dialogue -- there are no signs in them to confuse with it -- so every event
+# counts.
+
+def _srt_track(tmp_path, lines):
+    p = tmp_path / "ep.srt"
+    body = ""
+    for i, (start, end, text) in enumerate(lines, 1):
+        body += f"{i}\n{start} --> {end}\n{text}\n\n"
+    p.write_text(body, encoding="utf-8")
+    return str(p)
+
+
+def test_srt_origin_track_yields_all_its_events(tmp_path):
+    p = _srt_track(tmp_path, [("00:00:01,000", "00:00:02,000", "First line."),
+                              ("00:00:03,000", "00:00:04,000", "Second line.")])
+    lines = rec.dub_events(p, srt_origin=True)
+    assert [e.plaintext for e in lines] == ["First line.", "Second line."]
+
+
+def test_ass_track_still_ignores_everything_but_the_dubtitles_style(tmp_path):
+    """The srt_origin escape hatch must not leak into the .ass path, where the non-
+    Dubtitles events are the signs the rebuild is replacing."""
+    p = _muxed_track(tmp_path, [_dub(0, 1000, "Dialogue."), _sign(0, 1000)])
+    assert [e.plaintext for e in rec.dub_events(p, srt_origin=False)] == ["Dialogue."]
+
+
+def test_recover_reads_the_codec_and_uses_it(tmp_path, monkeypatch):
+    """recover() has to learn srt-ness from ffprobe: by the time pysubs2 has parsed the
+    file, an SRT and a style-less ASS are indistinguishable."""
+    src = _srt_track(tmp_path, [("00:00:01,000", "00:00:02,000", "Only line.")])
+    monkeypatch.setattr(rec, "our_track_index", lambda v: (7, "subrip"))
+    monkeypatch.setattr(rec, "extract_sub", lambda v, i, out: __import__("shutil").copy(src, out) or True)
+    out = str(tmp_path / "ep.eng.dubtitles.srt")
+    assert rec.recover(str(tmp_path / "ep.mkv"), out) == "recovered"
+    assert "Only line." in open(out, encoding="utf-8").read()

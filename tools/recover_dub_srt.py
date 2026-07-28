@@ -33,11 +33,18 @@ from common import TRACK_NAME, extract_sub, log, stream_title, ts_srt  # noqa: E
 from common import subprocess as _sp  # noqa: E402
 
 
-def dub_events(ass_path):
+def dub_events(ass_path, srt_origin=False):
     """The dialogue events from a muxed Dubtitles track, in order.
 
-    Only the "Dubtitles"-styled events: the sign/song events beside them are last
-    version's output and are re-derived from the release during the rebuild."""
+    From an .ass track, only the "Dubtitles"-styled events: the sign/song events beside
+    them are last version's output, re-derived from the release during the rebuild.
+
+    ``srt_origin`` is for the tracks that were muxed straight from the .srt, because the
+    release shipped no embedded signs for the merge to find (mux embeds the srt when
+    dub_signs_merge returns "no-signs"). pysubs2 gives every event of an SRT the style
+    "Default", so the style filter discarded those episodes wholesale. Such a track holds
+    nothing but our dialogue -- there are no signs in it to confuse with it -- so every
+    event counts."""
     try:
         subs = pysubs2.load(ass_path)
     except Exception as e:
@@ -45,7 +52,9 @@ def dub_events(ass_path):
         return []
     out = []
     for ev in subs.events:
-        if ev.is_comment or ev.style != TRACK_NAME:
+        if ev.is_comment:
+            continue
+        if not srt_origin and ev.style != TRACK_NAME:
             continue
         if not ev.plaintext.strip():
             continue
@@ -69,8 +78,10 @@ def write_srt(events, out_path):
 
 
 def our_track_index(video):
-    """Index of our own muxed Dubtitles track, or None. Deliberately the inverse of
-    common.eng_sub_streams()'s exclusion — here it is the track we WANT."""
+    """``(index, codec_name)`` of our own muxed Dubtitles track, or ``(None, None)``.
+    Deliberately the inverse of common.eng_sub_streams()'s exclusion — here it is the
+    track we WANT. The codec comes back too because an extracted SRT and a style-less ASS
+    are indistinguishable once pysubs2 has parsed them (see dub_events)."""
     import json
     try:
         r = _sp.run(["ffprobe", "-v", "error", "-select_streams", "s", "-show_entries",
@@ -79,11 +90,11 @@ def our_track_index(video):
         streams = json.loads(r.stdout).get("streams", [])
     except Exception as e:
         log("ffprobe failed:", video, e)
-        return None
+        return (None, None)
     for st in streams:
         if stream_title(st).strip() == TRACK_NAME:
-            return st["index"]
-    return None
+            return (st["index"], st.get("codec_name"))
+    return (None, None)
 
 
 def recover(source, out_path):
@@ -92,16 +103,17 @@ def recover(source, out_path):
     if os.path.exists(out_path):
         return "exists"                     # fresher work already there — never clobber it
     if source.lower().endswith((".ass", ".ssa", ".srt")):
-        evs = dub_events(source)
+        evs = dub_events(source, srt_origin=source.lower().endswith(".srt"))
     else:
-        idx = our_track_index(source)
+        idx, codec = our_track_index(source)
         if idx is None:
             return "no-dubtitles-track"
+        srt_origin = codec in ("subrip", "srt", "text")
         with tempfile.TemporaryDirectory() as td:
-            ex = os.path.join(td, "d.ass")
+            ex = os.path.join(td, "d.srt" if srt_origin else "d.ass")
             if not extract_sub(source, idx, ex):
                 return "extract-failed"
-            evs = dub_events(ex)
+            evs = dub_events(ex, srt_origin=srt_origin)
     if not evs:
         return "no-dialogue"
     write_srt(evs, out_path)
@@ -117,7 +129,7 @@ def main():
         out = stem + ".eng.dubtitles.srt"
         if not apply:
             res = "exists" if os.path.exists(out) else ("would-recover"
-                  if our_track_index(video) is not None else "no-dubtitles-track")
+                  if our_track_index(video)[0] is not None else "no-dubtitles-track")
         else:
             res = recover(video, out)
         counts[res] = counts.get(res, 0) + 1
