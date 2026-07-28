@@ -286,7 +286,11 @@ def process(conf_path):
     stem = conf_path[:-len(CONF_SUFFIX)]
     srt = stem + SRT_SUFFIX
     video = find_video(stem)
-    if not video or not os.path.exists(srt):
+    # No conf.json is a normal state, not an error: tools/recover_dub_srt.py rebuilds the
+    # sidecar straight out of the already-muxed track for episodes whose conf was long
+    # since cleaned up, and merge_pass.sh calls repair.py unconditionally. That dialogue
+    # was already repaired when it was first built, so there is nothing to redo.
+    if not video or not os.path.exists(srt) or not os.path.exists(conf_path):
         return "skip"
     conf = json.load(open(conf_path))
     gloss = glossary_for(video)

@@ -648,3 +648,18 @@ def test_llm_llamacpp_treats_an_empty_reply_as_no_repair(monkeypatch):
     monkeypatch.setattr(repair, "_post_json", lambda u, b, timeout=180: {
         "choices": [{"message": {"content": "", "reasoning_content": "hmm..."}}]})
     assert repair.llm_llamacpp("PROMPT", None) == ""
+
+
+# --- a recovered episode has no conf.json -------------------------------------
+#
+# tools/recover_dub_srt.py rebuilds the dub sidecar out of the already-muxed track for
+# episodes whose conf.json is long gone. merge_pass.sh calls repair.py unconditionally
+# before assembling, so process() has to treat a missing conf.json as "nothing to
+# repair" rather than raising FileNotFoundError -- the guard above it checks the video
+# and the srt but never the conf itself.
+
+def test_process_skips_cleanly_when_the_conf_json_is_missing(tmp_path, monkeypatch):
+    stem = str(tmp_path / "ep")
+    open(stem + repair.SRT_SUFFIX, "w").close()
+    monkeypatch.setattr(repair, "find_video", lambda s: stem + ".mkv")
+    assert repair.process(stem + repair.CONF_SUFFIX) == "skip"

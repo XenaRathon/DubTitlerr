@@ -71,7 +71,13 @@ TRACK_NAME = "Dubtitles"
 # PIPELINE_VERSION: the output version recorded in each .dubtitles.done stamp. A file
 # whose stamp is older than this reads as STALE and is regenerated in place. Bumping it
 # is a deliberate operator action -- the only thing that triggers a global regeneration.
-PIPELINE_VERSION = 1
+# v2 (2026-07-27): every v1 dubtitle has broken signs. The merge deduplicated events on
+# their PLAINTEXT, which collapsed each stacked typeset composition to its black backing
+# layer and threw away the white top layer, so credits/captions/titles rendered solid
+# black; and it lifted signs from every English track at once, rendering them two or
+# three times over. Both are fixed, and only a regeneration puts the corrected signs into
+# the files.
+PIPELINE_VERSION = 2
 # GRANDFATHER_VERSION: fixed constant, never changes. The version assumed for a stamp
 # written before versioning existed (no "version" key). At introduction it equals
 # PIPELINE_VERSION, so the rollout regenerates nothing.
