@@ -64,14 +64,14 @@ def test_layer_ordering_dub_below_signs(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    def fake_eng_sub_streams(video, langs):
+    def fake_signs_sub_streams(video, langs):
         return [0]
 
     def fake_extract(video, idx, out_path):
         base.save(out_path)
         return True
 
-    monkeypatch.setattr(dsm, "eng_sub_streams", fake_eng_sub_streams)
+    monkeypatch.setattr(dsm, "signs_sub_streams", fake_signs_sub_streams)
     monkeypatch.setattr(dsm, "extract", fake_extract)
 
     out_ass = str(tmp_path / "out.ass")
@@ -121,7 +121,7 @@ def _two_track_build(tmp_path, monkeypatch, track0, track1):
         encoding="utf-8",
     )
 
-    def fake_eng_sub_streams(video, langs):
+    def fake_signs_sub_streams(video, langs):
         return [0, 1]
 
     tracks = {0: track0, 1: track1}
@@ -130,7 +130,7 @@ def _two_track_build(tmp_path, monkeypatch, track0, track1):
         tracks[idx].save(out_path)
         return True
 
-    monkeypatch.setattr(dsm, "eng_sub_streams", fake_eng_sub_streams)
+    monkeypatch.setattr(dsm, "signs_sub_streams", fake_signs_sub_streams)
     monkeypatch.setattr(dsm, "extract", fake_extract)
 
     out_ass = str(tmp_path / "out.ass")
@@ -245,10 +245,10 @@ def test_resolution_no_mismatch_no_warning(tmp_path, monkeypatch, capsys):
 
 # --- context isolation: the signs/songs source is never our own old dubtitle ---
 #
-# dub_signs_merge imports common.eng_sub_streams directly, so it inherits the TRACK_NAME
+# dub_signs_merge imports common.signs_sub_streams directly, so it inherits the TRACK_NAME
 # exclusion with no code of its own. These two cases pin that inheritance end-to-end
-# (real common.eng_sub_streams, ffprobe stubbed) rather than through a monkeypatched
-# eng_sub_streams, which would only ever test the stub.
+# (real common.signs_sub_streams, ffprobe stubbed) rather than through a monkeypatched
+# signs_sub_streams, which would only ever test the stub.
 
 def _ffprobe_streams(monkeypatch, streams):
     import json as _json
