@@ -7,11 +7,13 @@ specs/v1-polish/spec.md, Phase 1 — Foundation). Stdlib + pysubs2: no imports f
 project modules, so any pipeline stage can import this without dragging in the rest
 of the pipeline (and without risking a circular import).
 """
+import http.client
 import json
 import os
 import re
 import subprocess
 import tempfile
+import urllib.parse
 
 import pysubs2
 
@@ -342,3 +344,74 @@ def dialogue_density_score(events: list) -> tuple:
         return (0, 0.0)
     dialogue_count = sum(1 for ev in non_comment if is_dialogue_event(ev))
     return (dialogue_count, dialogue_count / len(non_comment))
+
+
+# --- shared LLM client --------------------------------------------------------
+#
+# The ollama/llamacpp dispatch used to live only in repair.py, so glossary_verify.py had
+# no way to reach anything but Ollama and the pipeline could not be consolidated onto a
+# single model. Both stages now call llm_chat().
+
+LLM_TIMEOUT_CONNECT = float(os.environ.get("LLM_TIMEOUT_CONNECT", "10"))
+LLM_TIMEOUT_READ = float(os.environ.get("LLM_TIMEOUT_READ", "120"))
+
+
+def _post_json(url, body, timeout=None):
+    """POST ``body`` as JSON with SEPARATE connect and read timeouts.
+
+    urlopen() exposes one timeout covering connect plus every read, so a server that
+    accepts the connection and then streams nothing is indistinguishable from an
+    unreachable host. Going one layer lower via http.client lets the connect timeout stay
+    short while a slow model still gets its full read budget."""
+    parsed = urllib.parse.urlsplit(url)
+    cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    conn = cls(parsed.hostname, parsed.port, timeout=LLM_TIMEOUT_CONNECT)
+    try:
+        conn.connect()
+        conn.sock.settimeout(timeout or LLM_TIMEOUT_READ)
+        path = (parsed.path or "/") + (("?" + parsed.query) if parsed.query else "")
+        conn.request("POST", path, body=json.dumps(body).encode(),
+                     headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        data = resp.read()
+        if resp.status >= 400:
+            raise RuntimeError(f"HTTP {resp.status}: {data[:200]!r}")
+        return json.loads(data)
+    finally:
+        conn.close()
+
+
+def llm_chat(prompt, *, backend="ollama", ollama_url=None, llamacpp_url=None, model=None,
+             max_tokens=80, first_line=True):
+    """One prompt in, the model's text out. ``""`` means "no answer" — never raises, since
+    a transport error must not abort a whole show mid-sweep.
+
+    llamacpp posts to ``/v1/chat/completions``, NOT ``/completion``: the latter applies no
+    chat template, and a templated instruct model answers it with nothing but newlines.
+    ``chat_template_kwargs.enable_thinking=false`` is required by this fork — with the
+    template applied but thinking still on, the model spends its entire budget on
+    ``reasoning_content`` and returns an empty message. No model selector is sent; a
+    llama.cpp server has exactly one model loaded.
+
+    ``first_line`` suits a subtitle (one line, often quoted by the model). Adjudication
+    returns a multi-line JSON object and must pass ``first_line=False`` or it is truncated
+    to its opening brace — and ``max_tokens`` high enough that the JSON isn't cut short."""
+    if backend == "llamacpp":
+        url = llamacpp_url
+        body = {"messages": [{"role": "user", "content": prompt}], "temperature": 0,
+                "max_tokens": max_tokens, "chat_template_kwargs": {"enable_thinking": False}}
+    else:
+        url = ollama_url
+        body = {"model": model, "prompt": prompt, "stream": False, "think": False,
+                "options": {"temperature": 0}}
+    try:
+        data = _post_json(url, body)
+        out = (data["choices"][0]["message"].get("content") if backend == "llamacpp"
+               else data.get("response", "")) or ""
+        out = out.strip()
+    except Exception as e:
+        log("  llm fail:", e)
+        return ""
+    if not out:
+        return ""
+    return out.splitlines()[0].strip().strip('"').strip() if first_line else out

@@ -452,3 +452,79 @@ def test_signs_streams_does_not_mistake_a_third_party_dubtitles_track_for_ours(m
         _sub(3, title="Signs and Songs(Hydes)"),
     ]))
     assert common.signs_sub_streams("fake.mkv", {"eng"}) == [3]
+
+# --- shared LLM client: one backend switch for every stage --------------------
+#
+# repair.py owned the only ollama/llamacpp dispatch, so glossary_verify.py could not be
+# pointed at anything but Ollama -- which meant the pipeline could not run entirely on
+# one model. Both stages now go through common.llm_chat().
+#
+# The llama.cpp path posts to /v1/chat/completions (NOT /completion, which applies no
+# chat template -- a templated instruct model returns nothing but newlines through it)
+# and must pass chat_template_kwargs.enable_thinking=false: with the template applied but
+# thinking on, this fork spends its whole budget on reasoning_content and returns an
+# empty message.
+
+def _capture_post(monkeypatch, reply):
+    seen = {}
+
+    def fake(url, body, timeout=120):
+        seen["url"], seen["body"] = url, body
+        return reply
+
+    monkeypatch.setattr(common, "_post_json", fake)
+    return seen
+
+
+def test_llm_chat_llamacpp_applies_the_template_and_disables_thinking(monkeypatch):
+    seen = _capture_post(monkeypatch, {"choices": [{"message": {"content": " Answer "}}]})
+    out = common.llm_chat("PROMPT", backend="llamacpp",
+                          llamacpp_url="http://host:8090/v1/chat/completions")
+    assert seen["url"] == "http://host:8090/v1/chat/completions"
+    assert seen["body"]["messages"] == [{"role": "user", "content": "PROMPT"}]
+    assert seen["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert seen["body"]["temperature"] == 0
+    assert "model" not in seen["body"]          # llama.cpp serves exactly one model
+    assert out == "Answer"
+
+
+def test_llm_chat_llamacpp_honours_max_tokens(monkeypatch):
+    """Repair needs ~80 tokens for one line; adjudication returns a JSON object and needs
+    far more. A shared 80-token cap would truncate every adjudication into invalid JSON."""
+    seen = _capture_post(monkeypatch, {"choices": [{"message": {"content": "x"}}]})
+    common.llm_chat("P", backend="llamacpp", llamacpp_url="http://h/v1/chat/completions",
+                    max_tokens=512)
+    assert seen["body"]["max_tokens"] == 512
+
+
+def test_llm_chat_ollama_keeps_its_original_request_shape(monkeypatch):
+    seen = _capture_post(monkeypatch, {"response": " Answer "})
+    out = common.llm_chat("PROMPT", backend="ollama", ollama_url="http://o/api/generate",
+                          model="qwen3:8b")
+    assert seen["body"] == {"model": "qwen3:8b", "prompt": "PROMPT", "stream": False,
+                            "think": False, "options": {"temperature": 0}}
+    assert out == "Answer"
+
+
+def test_llm_chat_returns_empty_string_on_transport_failure(monkeypatch):
+    """Callers treat "" as "no answer". Raising here would abort a whole show mid-sweep."""
+    def boom(url, body, timeout=120):
+        raise OSError("connection refused")
+    monkeypatch.setattr(common, "_post_json", boom)
+    assert common.llm_chat("P", backend="ollama", ollama_url="http://o", model="m") == ""
+
+
+def test_llm_chat_returns_empty_when_the_model_only_thought(monkeypatch):
+    """Empty content with reasoning_content populated means thinking was not disabled.
+    It must read as "no answer", never as text to use."""
+    _capture_post(monkeypatch, {"choices": [{"message": {"content": "",
+                                                         "reasoning_content": "hmm"}}]})
+    assert common.llm_chat("P", backend="llamacpp", llamacpp_url="http://h") == ""
+
+
+def test_llm_chat_can_return_the_full_multi_line_reply(monkeypatch):
+    """Repair wants only the first line (a subtitle is one line); adjudication returns a
+    multi-line JSON object and must not be truncated to its opening brace."""
+    _capture_post(monkeypatch, {"choices": [{"message": {"content": '{\n "a": 1\n}'}}]})
+    out = common.llm_chat("P", backend="llamacpp", llamacpp_url="http://h", first_line=False)
+    assert out == '{\n "a": 1\n}'
