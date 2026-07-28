@@ -43,6 +43,10 @@ COPY generate.py reflow.py glossary.py glossary_verify.py hallucination.py order
      gen_loop.sh container_run.sh /app/
 COPY data/ /app/data/
 COPY shell/ /app/shell/
+# tools/ ships for the same reason recreate_srt.py does: recover_dub_srt.py rebuilds the
+# srt from the already-muxed Dubtitles track, which is the only way to regenerate an
+# episode whose conf.json is gone without sending it back through Whisper.
+COPY tools/ /app/tools/
 RUN chmod +x /app/*.sh
 
 # Bypass subgen's init (we only want its runtime); run our two-loop supervisor as root so
