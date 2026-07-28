@@ -20,7 +20,13 @@ cd "$ROOT" || { echo "merge_pass: missing $ROOT"; exit 1; }
 # EXTRA_DIRS single source of truth (B7/B9): data/extras.txt via shell/lib.sh, with an
 # inline fallback (the pre-consolidation regex) if the lib or data file isn't present
 # (e.g. run under the deprecated $APP=/scripts flow, which doesn't ship these files).
-. "$APP/shell/lib.sh" 2>/dev/null || true
+#
+# The file test is load-bearing, NOT belt-and-braces: `.` is a POSIX special builtin, so
+# sourcing a missing file is a fatal error that terminates a non-interactive shell BEFORE
+# the `|| true` is ever considered. Written as `. file || true`, this whole script exited
+# silently -- no output, status 2, nothing assembled -- whenever APP_DIR was not /app,
+# which is exactly the fallback case the comment above claims to support.
+[ -f "$APP/shell/lib.sh" ] && . "$APP/shell/lib.sh"
 PATTERN=$(extras_grep_pattern "$APP/data/extras.txt" 2>/dev/null || echo '(Behind The Scenes|Deleted Scenes|Featurettes|Interviews|Scenes|Shorts|Trailers|Other|Extras)')
 
 before=$(find . -type f -name "*.dubtitles.done" | wc -l)
