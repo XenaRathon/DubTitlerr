@@ -139,3 +139,33 @@ def test_recover_reads_the_codec_and_uses_it(tmp_path, monkeypatch):
     out = str(tmp_path / "ep.eng.dubtitles.srt")
     assert rec.recover(str(tmp_path / "ep.mkv"), out) == "recovered"
     assert "Only line." in open(out, encoding="utf-8").read()
+
+
+# --- a style-less ASS track is dialogue too ------------------------------------
+#
+# Found by an integrity sweep: one episode's Dubtitles track is codec ASS yet every event
+# is styled "Default" -- an SRT that reached the container as ASS. Keying srt-ness off the
+# codec alone sent it down the ASS path, where the style filter matched nothing and the
+# episode reported no-dialogue, leaving it stuck at v1 with no sidecar and no conf.json:
+# invisible to merge_pass forever.
+#
+# Our track only ever holds our own output, and mux refuses to write one with no dialogue
+# in it. So a track with ZERO "Dubtitles"-styled events cannot be signs-only -- it is
+# dialogue that simply isn't carrying our style name.
+
+def test_ass_track_with_no_dubtitles_style_falls_back_to_every_event(tmp_path):
+    subs = pysubs2.SSAFile()
+    subs.styles["Default"] = pysubs2.SSAStyle()
+    subs.events = [pysubs2.SSAEvent(start=0, end=1000, style="Default", text="The name's Boxxo!"),
+                   pysubs2.SSAEvent(start=2000, end=3000, style="Default", text="Hello, there!")]
+    p = tmp_path / "ep.ass"
+    subs.save(str(p))
+    got = [e.plaintext for e in rec.dub_events(str(p))]
+    assert got == ["The name's Boxxo!", "Hello, there!"]
+
+
+def test_fallback_does_not_fire_when_dubtitles_events_exist(tmp_path):
+    """With even one Dubtitles-styled event present the track is a real merge, and the
+    others are the signs being replaced -- importing them would be the original bug."""
+    p = _muxed_track(tmp_path, [_dub(0, 1000, "Real dialogue."), _sign(0, 1000)])
+    assert [e.plaintext for e in rec.dub_events(p)] == ["Real dialogue."]

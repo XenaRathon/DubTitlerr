@@ -50,16 +50,22 @@ def dub_events(ass_path, srt_origin=False):
     except Exception as e:
         log("  load fail", ass_path, e)
         return []
-    out = []
-    for ev in subs.events:
-        if ev.is_comment:
-            continue
-        if not srt_origin and ev.style != TRACK_NAME:
-            continue
-        if not ev.plaintext.strip():
-            continue
-        out.append(ev)
-    return out
+    events = [ev for ev in subs.events if not ev.is_comment and ev.plaintext.strip()]
+    if srt_origin:
+        return events
+    styled = [ev for ev in events if ev.style == TRACK_NAME]
+    if styled:
+        return styled
+    # Nothing carries our style name. If EVERY event is styled "Default" this is an SRT
+    # that reached the container as ASS -- codec says ass, so the check above could not
+    # see it -- and pysubs2 gives an SRT's events exactly that style. Take the lot rather
+    # than declare the episode unrecoverable.
+    #
+    # Narrow on purpose: a track whose events carry real style names is styled content,
+    # and returning that as dialogue would put signs into the sidecar as spoken lines.
+    if events and all(ev.style == "Default" for ev in events):
+        return events
+    return []
 
 
 def write_srt(events, out_path):
