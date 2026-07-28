@@ -26,6 +26,8 @@ import time
 import urllib.parse
 import urllib.request
 
+from common import llm_chat
+
 
 def log(*a):
     print(*a, flush=True)
@@ -34,6 +36,17 @@ TOPK = 6                  # candidate titles per term handed to the LLM
 CAND_CUTOFF = 0.62        # min similarity for a candidate (0.5 let junk like blarghxyzqq->Largo in)
 VERIFY_MODEL = os.environ.get("VERIFY_MODEL", "qwen3:8b")
 OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
+# VERIFY_BACKEND (ollama|llamacpp) lets adjudication run on the same server as repair, so
+# the whole pipeline can sit on one model instead of keeping a second one resident on a
+# shared 8 GB GPU. Defaults follow REPAIR_* so setting the repair backend moves this too,
+# unless it is overridden explicitly.
+VERIFY_BACKEND = os.environ.get("VERIFY_BACKEND", os.environ.get("REPAIR_BACKEND", "ollama"))
+VERIFY_LLAMACPP_URL = os.environ.get(
+    "VERIFY_LLAMACPP_URL",
+    os.environ.get("REPAIR_LLAMACPP_URL", "http://127.0.0.1:8080/v1/chat/completions"))
+# Adjudication returns a JSON object, not a subtitle line: it needs a real token budget and
+# must not be truncated to its first line.
+VERIFY_MAX_TOKENS = int(os.environ.get("VERIFY_MAX_TOKENS", "512"))
 CACHE_DIR = os.environ.get("WIKI_CACHE_DIR", "/config/wiki_cache")
 HTTP_TIMEOUT = int(os.environ.get("WIKI_HTTP_TIMEOUT", "20"))
 WIKI_TTL = int(os.environ.get("WIKI_CACHE_TTL", str(30 * 24 * 3600)))   # refresh index monthly
@@ -99,16 +112,13 @@ def adjudicate(term: str, cands: list[str], show: str) -> dict:
     """LLM pick -> {'canonical': str, 'confidence': 'high'|'low'|'none', 'dub_note': str}."""
     if not cands:
         return {"canonical": "", "confidence": "none", "dub_note": ""}
-    body = {"model": VERIFY_MODEL, "prompt": build_adjudication_prompt(term, cands, show),
-            "stream": False, "think": False, "options": {"temperature": 0}}
-    try:
-        req = urllib.request.Request(OLLAMA, data=json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=120) as r:
-            return parse_adjudication(json.loads(r.read()).get("response", ""))
-    except Exception as e:
-        log("  adjudicate fail:", term, e)
+    out = llm_chat(build_adjudication_prompt(term, cands, show),
+                   backend=VERIFY_BACKEND, ollama_url=OLLAMA,
+                   llamacpp_url=VERIFY_LLAMACPP_URL, model=VERIFY_MODEL,
+                   max_tokens=VERIFY_MAX_TOKENS, first_line=False)
+    if not out:
         return {"canonical": "", "confidence": "none", "dub_note": ""}
+    return parse_adjudication(out)
 
 
 def apply_results(gloss: dict, results: dict) -> dict:
