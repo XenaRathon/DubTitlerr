@@ -286,3 +286,51 @@ def test_build_finds_no_signs_when_the_only_sub_is_our_dubtitle(monkeypatch, tmp
                                      str(tmp_path / "out.ass"))
     assert status == "no-signs"
     assert extracted == []
+
+
+# --- multi-layer typeset compositions must survive dedup ----------------------
+#
+# Fansub typesetters build a sign out of SEVERAL events stacked on the same
+# \pos: a black backing copy on the low layer supplying the stroke/drop-shadow,
+# and the visible copy on the layer above (often \bord0 plus a \t() that
+# animates the fill to white). They share start, end, style and — because the
+# colour lives entirely in override tags — identical PLAINTEXT.
+#
+# The dedup key used to be (start, end, style, plaintext), which collapsed such
+# a pair to its FIRST member: the black backing layer. Every One Pace credit and
+# caption rendered as solid black text instead of white-with-black-stroke, and
+# the counts halved (Credits-207+ 32 source events -> 16 merged).
+
+def _layered_track(style_name="Credits"):
+    """One track holding a real two-layer composition (black backing + white top)."""
+    t = pysubs2.SSAFile()
+    t.styles[style_name] = pysubs2.SSAStyle()
+    t.events = [
+        pysubs2.SSAEvent(start=10, end=3490, style=style_name, layer=0,
+                         text=r"{\pos(100,922)\bord3\c&H000000&\1a&H00&}Video Editing"),
+        pysubs2.SSAEvent(start=10, end=3490, style=style_name, layer=1,
+                         text=r"{\pos(100,922)\bord0\c&H000000&\t(0,1001,1,\c&HFFFFFF&)}Video Editing"),
+    ]
+    return t
+
+
+def test_build_keeps_both_layers_of_a_stacked_sign(tmp_path, monkeypatch):
+    """The white top layer must not be discarded as a duplicate of the black backing."""
+    track = _layered_track()
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch,
+                                                   track, pysubs2.SSAFile())
+    assert status == "ok"
+    result = pysubs2.load(out_ass)
+    kept = [e for e in result.events if e.style == "Credits"]
+    assert len(kept) == 2, "the stacked composition was collapsed to one layer"
+    assert any(r"\c&HFFFFFF&" in e.text for e in kept), "the white top layer was dropped"
+
+
+def test_build_still_dedups_the_same_sign_carried_by_two_tracks(tmp_path, monkeypatch):
+    """Releases ship the same sign in both the full track and the signs/songs track.
+    Byte-identical events must still collapse to one, or every sign renders twice."""
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch,
+                                                   _layered_track(), _layered_track())
+    assert status == "ok"
+    result = pysubs2.load(out_ass)
+    assert len([e for e in result.events if e.style == "Credits"]) == 2

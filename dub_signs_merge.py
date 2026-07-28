@@ -108,7 +108,14 @@ def build(video, dub_srt, out_ass):
         for ev in src_events:
             if not keep_event(ev):
                 continue
-            key = (int(ev.start), int(ev.end), ev.style, ev.plaintext.strip())
+            # Dedup on the FULL override text and the layer, not the plaintext: a
+            # typeset sign is often several stacked events sharing \pos, style, timing
+            # and plaintext, differing only in tags (a black backing copy supplying the
+            # stroke, plus the visible copy that \t()s its fill to white). Keying on
+            # plaintext collapsed those to the first — the black one — so credits and
+            # captions rendered solid black. Byte-identical events (the same sign
+            # carried by both the full track and the signs/songs track) still collapse.
+            key = (int(ev.start), int(ev.end), ev.style, ev.layer, ev.text)
             if key in seen:
                 continue
             seen.add(key); base.events.append(ev)
