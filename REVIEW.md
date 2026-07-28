@@ -973,3 +973,146 @@ didn't already nail:
 5. **#33 (test_generate) — Write `needs_work()` tests** — echoed from the first
    review because it's THAT important: the pre-filter gate determines whether the
    entire library sweep is fast or wasteful.
+
+---
+
+## Addendum — Buffy Review (2026-07-27)
+
+A fresh pass over the current `feat/strip-and-isolate-old-dubtitles` branch, focused on
+what has changed since the earlier reviews and what is still outstanding.
+
+### Environment status (first thing that broke)
+
+- `pytest` cannot collect tests in this workspace: `ModuleNotFoundError: pysubs2`.
+- `ruff` is not installed.
+- `pyproject.toml` now declares dependencies and optional dev deps, but the current
+  environment has not installed them.
+
+This means local validation is currently unavailable; getting the test suite green is a
+prerequisite to almost any other change.
+
+### What has improved since the earlier review
+
+- `common.py` has been extracted and is the single source of truth for stamps, subtitle
+  stream extraction, dialogue detection, and path redirection. Much of the DRY drift
+  noted in the original review is now resolved.
+- `mux.py` no longer relies on the half-size heuristic; verification is duration/track
+  based.
+- `glossary._glossary_terms()` now truncates on whole-term boundaries rather than
+  mid-name.
+- `generate.py` has a per-show `lastrun.json` summary writer and improved CUDA error
+  handling (now gating on `RuntimeError` rather than the old substring match on
+  `"cuda"`).
+
+### Outstanding high-impact issues
+
+1. **Phonetic-name guard is documented but not implemented.**
+   `ISSUE-phonetic-name-guard.md` describes a deterministic post-LLM guard that
+   rejects repairs changing a capitalised token to something neither in the glossary
+   nor within a small edit distance of the original. `repair.py` still accepts raw
+   LLM output after only a length-ratio check and a pass through `glossary.correct()`.
+
+2. **`REPAIR_BACKEND_SECONDARY` is not implemented.**
+   `IMPROVEMENTS.md` recommends a separate backend for the secondary verification pass
+   (e.g., GPU primary / CPU secondary). `repair.py` dispatches both primary and
+   secondary through the same `REPAIR_BACKEND`, so a true two-backend setup is
+   impossible without code changes.
+
+3. **`generate.py` still imports `mux` just for stamp helpers.**
+   The stamp helpers now live in `common.py`, but `generate.py` still does `import mux`,
+   dragging in `argparse`, `subprocess`, and module-level env reads that `generate.py`
+   does not need. Removing this import is a pure cleanup.
+
+4. **`dub_signs_merge.keep_event()` is load-bearing and untested.**
+   The order of `DROP_STYLE` vs `KARAOKE` checks can drop a karaoke event if its
+   style also matches `DROP_STYLE` (e.g. `Translation`). There is no test matrix for
+   the style × positioning decision table.
+
+5. **Default-track flag logic in `mux.build_cmd()` may override user intent.**
+   The loop adds `--default-track-flag tid:no` for every kept subtitle track, not just
+   the old Dubtitles track. If the source had a signs/songs track the user wanted
+   default, this silently demotes it.
+
+6. **`generate.py` duplicates `needs_work()` logic already in `process()` and has no
+   tests.**
+   The pre-filter is the gate the whole sweep performance rests on, yet it is
+   uncovered.
+
+### Medium-impact polish
+
+7. **Legacy shell scripts still exist and can mislead new users.**
+   `anime_library.sh`, `all_seasons.sh`, and `merge_watcher.sh` reference old images
+   or per-show model loads. The README still points to `Dockerfile` rather than
+   `Dockerfile.builder` for the full pipeline.
+
+8. **Runtime artefacts are not in `.gitignore`.**
+   `.eng.dubtitles.srt`, `.dubtitles.done`, `.fail`, `.repair.csv`, etc. can pollute
+   `git status` during development.
+
+9. **`verify()` still performs extra `identify(orig)` work.**
+   `process()` already has the original's `identify()` result, but `verify()` calls
+   `identify(orig)` again for the font-count comparison. The cache helps within a
+   process but not across invocations.
+
+10. **`repair.is_target()` fencepost still present.**
+    The comparison remains `>= NSP_MAX`; a value exactly equal to `0.5` is classified
+    as non-speech. The earlier review recommended `>`.
+
+### Bottom line from this pass
+
+The codebase is in good shape after the `common.py` consolidation, but it currently
+ships two documented features (phonetic-name guard and `REPAIR_BACKEND_SECONDARY`)
+that are not actually implemented. Combined with the broken local test environment,
+that is the highest-value place to invest effort: install the dev dependencies, make
+`pytest` green, then land the missing guards and their tests before adding new
+features.
+
+---
+
+## Status pass (2026-07-27, post-signs-rebuild)
+
+Verified each outstanding item in the addendum above against the current branch. Most
+were already fixed in-tree; the addendum was written against an environment where the
+test suite could not run, so several "outstanding" items are stale.
+
+**Already done (verified in code, not assumed):**
+
+| Item | State |
+|---|---|
+| #10 `is_target()` NSP fencepost | already `> NSP_MAX` (repair.py:101) |
+| #3 `generate.py` imports `mux` | gone — stamp helpers come from `common` |
+| #8 runtime artefacts in `.gitignore` | present, with a comment pointing at the spec |
+| #35 CI | `.github/workflows/ci.yml` + `test.yml` exist |
+| #36 `plex_refresh.py` env vars | uses `os.environ.get` with explicit exits |
+| #7 legacy shell scripts | `anime_library.sh`, `all_seasons.sh`, `merge_watcher.sh` all carry deprecation headers |
+| #22 misleading `Dockerfile` | README's quick start points at `Dockerfile.builder` |
+| #2 `REPAIR_BACKEND_SECONDARY` | the two-pass re-check exists as `REPAIR_MODEL_SECONDARY` (a second *model*, not a second backend — a separate GPU/CPU backend split is still unimplemented) |
+| #4 `keep_event()` untested | `tests/test_dub_signs_merge.py` has the style x positioning matrix |
+
+**Deliberate, not a defect:**
+
+- #5 `--default-track-flag tid:no` on every kept subtitle. Our own track takes `0:yes`;
+  leaving another track flagged default would produce two defaults. Demoting them is the
+  point.
+
+**Genuinely still open:**
+
+- #1 the phonetic-name guard. `ISSUE-phonetic-name-guard.md` describes rejecting a repair
+  that changes a capitalised token to something outside the glossary — but glossary
+  membership turned out to be *anti-correlated* with correctness on real data (`Shanks` is
+  in the One Pace glossary, `Shirahoshi` is not), so the guard as specified would reject
+  good repairs and pass bad ones. The issue needs redesigning before implementing.
+
+**Found and fixed during this pass (not in any earlier review):**
+
+- `dub_signs_merge` deduplicated events on their *plaintext*, collapsing each stacked
+  typeset composition (black backing layer + white top layer) to the black one. Credits,
+  captions and titles rendered solid black. 31 of 83 shows affected.
+- The merge lifted signs from *every* English track. 39 of 79 releases ship the same signs
+  in two or three tracks, so each rendered two or three times over.
+- Both are `PIPELINE_VERSION` 2; the library is being regenerated.
+- `#49`'s `HAS_DRAWING` and `#51`'s layer normalisation are implemented and tested. `#50`'s
+  `ANIMATED` matches `\fad(`, which ordinary dialogue uses constantly — it is only safe
+  because `DROP_STYLE` is checked first. A library-wide probe found no actual dialogue
+  leak (every flagged style was song lyrics, which the merge is meant to keep), but the
+  ordering is load-bearing and worth a comment if that regex is ever touched.
