@@ -218,3 +218,47 @@ def propose(counts: dict, midsentence: set, titles: list) -> list:
         out.append({"variant": tok, "canonical": canon, "variant_count": counts[tok],
                     "canonical_count": canon_count, "score": round(score, 3), **d})
     return out
+
+
+def apply_proposals(gloss: dict, proposals: list, run_id: str) -> dict:
+    """Write applied proposals into hard_fixes + acquired; record the rest in flagged.
+
+    Pure: deep-copies its input the way glossary_verify.apply_results does, so curated
+    hard_fixes, names and initial_prompt survive untouched.
+
+    Acquired canonicals deliberately do NOT join `names`, and therefore never reach the
+    regenerated initial_prompt. That is the cut that keeps a wrong entry from biasing the
+    next transcription into producing more of the same spelling -- which would raise its
+    count and reinforce the dominance test that let it in."""
+    g = json.loads(json.dumps(gloss))
+    fixes = g.setdefault("hard_fixes", {})
+    acquired = g.setdefault("acquired", {})
+    flagged = g.setdefault("flagged", {})
+    for p in proposals:
+        if p["verdict"] != "apply":
+            flagged[p["variant"]] = p["reason"]
+            continue
+        fixes[p["variant"]] = p["canonical"]
+        acquired[p["variant"]] = {"canonical": p["canonical"], "count": p["variant_count"],
+                                  "canonical_count": p["canonical_count"],
+                                  "score": p["score"], "bound": round(p.get("bound", 0.0), 3),
+                                  "reason": p["reason"], "run": run_id}
+    if not flagged:
+        g.pop("flagged", None)
+    return g
+
+
+def revert(gloss: dict, run_id: str | None = None) -> dict:
+    """Remove hard_fixes this module wrote, restoring the pre-acquisition glossary.
+
+    A fix whose current value no longer matches what we recorded has been edited by hand
+    since; leave it alone and drop only our provenance for it."""
+    g = json.loads(json.dumps(gloss))
+    fixes, acquired = g.get("hard_fixes", {}), g.get("acquired", {})
+    for variant, meta in list(acquired.items()):
+        if run_id is not None and meta.get("run") != run_id:
+            continue
+        if fixes.get(variant) == meta.get("canonical"):
+            fixes.pop(variant, None)
+        acquired.pop(variant, None)
+    return g
