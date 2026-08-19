@@ -166,6 +166,34 @@ Write `hard_fixes` mapping **every** variant in the cluster to the canonical for
 `glossary.correct()` fixes them deterministically. Anything failing the safety rules goes
 to `flagged` with a reason, never applied.
 
+## Similarity is recall, not safety **[v3]**
+
+Measured Jaro-Winkler on every pair the feature must get right and every near-miss it must
+refuse:
+
+| pair | Jaro | Jaro-Winkler | required |
+|---|---|---|---|
+| Syrahose / Shirahoshi | 0.728 | 0.755 | **match** |
+| Deccan / Decken | 0.778 | 0.844 | **match** |
+| Hirohoshi / Shirahoshi | 0.855 | 0.855 | **match** |
+| Vander / Vanderdecken | 0.833 | 0.900 | reject |
+| Smokey / Smoker | 0.889 | 0.933 | reject |
+| Warlords / Warlord | 0.958 | 0.975 | reject |
+
+**The two classes overlap completely: every pair that must match scores lower than every
+pair that must be refused.** No threshold on Jaro, Jaro-Winkler, Levenshtein ratio or
+difflib separates them, so swapping the metric — including for the phoneme-weighted
+Levenshtein a reviewer proposed — cannot fix it.
+
+Two consequences, and they are the spine of this design:
+
+1. `ACQUIRE_MIN_SIM` is a **recall** floor set at 0.72, not a safety gate. An earlier draft
+   of this spec set it to 0.88, which would have silently rejected both motivating cases.
+2. **All safety rests on R2 and R3.** Each false pair above dies at a specific gate:
+   `Vander`/`Vanderdecken` and `Warlords`/`Seven Warlords of the Sea` at R2 (expansion);
+   `Smokey`/`Smoker` at R3 (21-vs-16 dominance). If either rule is weakened, nothing else
+   is holding the line.
+
 ## Safety rules
 
 A `hard_fix` is emitted only when all four hold. These are derived from real failures in
@@ -198,6 +226,18 @@ the Punk Hazard data, not from caution in the abstract.
 Everything else is `flagged`. Never silently apply an uncertain correction — the same rule
 `glossary-wiki-verify` already commits to.
 
+**[v3] Tier B is not an appeal court.** The LLM fallback exists only for a cluster that
+matched *no* title. A cluster that matched a title and then failed R2 or R3 is flagged,
+full stop — it must never be escalated to the LLM, because that would make a model the
+override for the only two rules carrying the design's safety.
+
+**[v3] R1 checks membership, not identity.** A canonical is guaranteed to be a real wiki
+title; it is *not* guaranteed to be the right entity. The residual risk is therefore a
+wrong-entity match (a cluster resolving to a real but unrelated article), not an invented
+spelling. R2's distance bound and R4's mid-sentence requirement are what keep that
+improbable; it is not eliminated, and it is the failure mode to look for first if a bad
+fix ever ships.
+
 ## Data contract
 
 No schema break; old glossaries load unchanged.
@@ -205,7 +245,9 @@ No schema break; old glossaries load unchanged.
 - `hard_fixes` — existing key. Gains `{variant: canonical}` entries.
 - `flagged` — existing key. Gains entries with a reason
   (`no-wiki-match`, `share-too-close`, `would-expand`, `below-similarity`).
-- `acquired` — **new**, a list mirroring `verified`, so re-runs skip settled clusters.
+- `acquired` — **new**. Not a bare list like `verified` but a provenance map,
+  `{variant: {canonical, count, canonical_count, score, wiki_title, run}}`, so re-runs skip
+  settled clusters *and* `--revert` can undo a run. See *The self-read loop, resolved*.
 
 **Dependency on existing substitution semantics.** `glossary.correct()` applies
 `hard_fixes` per whitespace-split token (`_fix_token`), and phrase fixes under `\b`
@@ -215,7 +257,8 @@ so a future refactor of `correct()` cannot silently turn these fixes into substr
 - Wiki cache — reuses `/config/wiki_cache/<show>.json` unchanged.
 
 Env: `ACQUIRE_MIN_COUNT` (default 3), `ACQUIRE_MIN_SHARE` (default 0.80),
-`ACQUIRE_MIN_SIM` (Jaro-Winkler floor, default 0.88), `GLOSSARY_DIR` (existing).
+`ACQUIRE_MIN_SIM` (Jaro-Winkler floor, default **0.72** — see *Similarity is recall, not
+safety*), `GLOSSARY_DIR` (existing).
 
 ## Failure modes
 
@@ -244,6 +287,9 @@ GPU — the pattern `glossary_verify`'s tests already use.
 - A consistent mis-hearing with no correct form present (`Brooke`, canonical `Brook`) is
   applied.
 - Wiki failure and LLM failure are each a no-op, not a crash.
+- **[v3]** A cluster failing R2 or R3 is flagged and never reaches the tier-B LLM.
+- **[v3]** `initial_prompt` regeneration excludes `acquired` names.
+- **[v3]** `--revert` restores the glossary byte-for-byte to its pre-acquisition state.
 
 ## Verification plan
 
@@ -279,6 +325,35 @@ episodes have neither a `conf.json` nor a sidecar — their only surviving copy 
 7, JJK 6, Speed Racer 5). Any bulk operation that removes embedded tracks must run
 `tools/recover_dub_srt.py --apply` first, or those episodes require full re-transcription.
 
+## The self-read loop, resolved **[v3]**
+
+Two panels were asked where reading our own output still bites despite the wiki gate.
+Neither found it. It is real, and it does not run through the canonical string at all:
+
+1. A wrong-entity `hard_fix` is written (improbable, but R1 permits it — see above).
+2. The glossary is **additive and never pruned**, so that entry is now permanent.
+3. The glossary also seeds Whisper's **`initial_prompt`** on every later run.
+4. A biased `initial_prompt` makes Whisper *emit* the wrong spelling more often.
+5. Its count rises, which **strengthens the R3 dominance test that admitted it**.
+6. Go to 2.
+
+The wiki gate governs step 1 only. From step 3 onward the loop is closed entirely inside
+our own output, and each pass makes the error look better evidenced than the last. This is
+precisely the reinforcement `mine_glossary.eng_sub_text()`'s exclusion of our own track was
+written to prevent, re-entering through a door the exclusion does not cover.
+
+**Mitigations, all required:**
+
+- **Provenance.** Every entry written by this stage is recorded in `acquired` with its
+  source, counts and score. An acquired fix is distinguishable from a curated one forever,
+  which is what makes the rest possible.
+- **Acquired names stay out of `initial_prompt`.** `initial_prompt` is regenerated from
+  curated + mined names only. This breaks the loop at step 3 — the cheapest and most
+  load-bearing of the three.
+- **`--revert`.** Acquired entries can be removed wholesale, restoring the glossary to its
+  pre-acquisition state. Without provenance there is no way back out of a bad run, which
+  a reviewer correctly identified as missing.
+
 ## Panel review (2026-08-19)
 
 Consulted via `salyut`. Only Cloudflare (llama-3.3-70b) and a truncated Gemini response
@@ -308,10 +383,12 @@ two-voice review rather than the usual panel — weight it accordingly.
 - *"Add a feedback loop so the pipeline learns from its own errors."* This is precisely the
   self-reinforcement the design is built to avoid.
 
-**Unresolved:** the self-read question (panel Q1) got no substantive answer from either
-model. The claim that the wiki gate makes self-reading safe is argued in *Approach* but
-has not been adversarially stress-tested. Worth revisiting if a future run produces a
-wrong `hard_fix`.
+**[v3] Second panel (after fixing the Groq provider).** `openai/gpt-oss-120b` answered
+substantively where the first round did not. Its specific claims did not survive checking
+— it asserted `JW("Syrahose","Shirahoshi") = 0.92` (measured: 0.755) and built a scenario
+in which R1 admits a string that is not a wiki title, which the rule forbids. But two of
+its structural points were right and are now folded in: R1 checks membership rather than
+identity, and the glossary's additive, never-pruned nature has a second-order cost.
 
 ---
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
