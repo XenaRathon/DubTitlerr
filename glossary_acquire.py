@@ -57,6 +57,26 @@ def wilson_lower(k: int, n: int, z: float = 1.96) -> float:
     return (centre - margin) / denom
 
 
+EXPANSION_RATIO = 1.35
+
+
+def is_expansion(variant: str, canonical: str) -> bool:
+    """True if 'correcting' variant->canonical would GROW a word into a longer name.
+
+    A canonical that merely CONTAINS the variant is not a match: the transcript says
+    'Warlords', the wiki title is 'Seven Warlords of the Sea', and substituting one for the
+    other rewrites the line into nonsense. Length ratio catches the rest ('Ace' ->
+    'Portgas D. Ace'), while a true respelling stays about the same length."""
+    v, c = reduce_form(variant), reduce_form(canonical)
+    if not v or not c:
+        return True
+    if v == c:
+        return False
+    if v in c and len(c) > len(v):
+        return True
+    return len(c) > len(v) * EXPANSION_RATIO
+
+
 CONF_SUFFIX = ".dubtitles.conf.json"
 SRT_SUFFIX = ".eng.dubtitles.srt"
 

@@ -63,3 +63,24 @@ def test_harvest_prefers_conf_over_srt_for_the_same_episode(tmp_path):
     counts, _mid, n = ga.harvest(str(tmp_path))
     assert n == 1
     assert counts.get("Caesar") == 1 and "Monet" not in counts
+
+
+@pytest.mark.parametrize("variant,canonical", [
+    ("Warlords", "Seven Warlords of the Sea"),
+    ("Vander", "Van der Decken"),
+    ("Hoshi", "Shirahoshi"),
+    ("Ace", "Portgas D. Ace"),
+])
+def test_is_expansion_rejects_growing_a_token_into_a_phrase(variant, canonical):
+    assert ga.is_expansion(variant, canonical) is True
+
+
+@pytest.mark.parametrize("variant,canonical", [
+    ("Syrahose", "Shirahoshi"),
+    ("Deccan", "Decken"),
+    ("Brooke", "Brook"),
+    ("Kinemon", "Kin'emon"),
+    ("Vanderdecken", "Van der Decken"),
+])
+def test_is_expansion_allows_genuine_respellings(variant, canonical):
+    assert ga.is_expansion(variant, canonical) is False
