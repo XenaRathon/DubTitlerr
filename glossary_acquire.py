@@ -13,6 +13,7 @@ Built with help of Claude (Anthropic).
 """
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import os
@@ -21,7 +22,9 @@ import re
 import jellyfish
 
 import glossary
+import glossary_verify
 import mine_glossary
+from common import log
 
 _DISAMBIG_RE = re.compile(r"\s*\([^)]*\)\s*$")
 _REDUCE_RE = re.compile("[\\s" + chr(0x27) + chr(0x2019) + "-]")
@@ -262,3 +265,64 @@ def revert(gloss: dict, run_id: str | None = None) -> dict:
             fixes.pop(variant, None)
         acquired.pop(variant, None)
     return g
+
+
+def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str | None = None) -> dict:
+    """Harvest -> score -> gate -> (optionally) write. Returns a report; never raises.
+
+    Resilient by the same contract as glossary_verify.verify(): any wiki, LLM or IO failure
+    leaves the glossary untouched and is reported, not raised."""
+    try:
+        gloss = json.load(open(gloss_path, encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return {"note": f"load-failed: {e}"}
+    show = gloss.get("show") or os.path.basename(gloss_path)[:-5]
+    counts, mid, files = harvest(show_dir)
+    api = glossary_verify.resolve_wiki(show, override or gloss.get("wiki"))
+    if not api:
+        return {"show": show, "note": "wiki unresolved", "files": files}
+    if not counts:
+        return {"show": show, "wiki": api, "note": "nothing harvested", "files": files}
+    titles = glossary_verify.fetch_titles(api, show)
+    if not titles:
+        return {"show": show, "wiki": api, "note": "no titles fetched", "files": files}
+    proposals = propose(counts, mid, titles)
+    applied = [p for p in proposals if p["verdict"] == "apply"]
+    run_id = f"{show}:{len(titles)}:{files}"
+    if apply and proposals:
+        try:
+            json.dump(apply_proposals(gloss, proposals, run_id), open(gloss_path, "w"),
+                      indent=2, ensure_ascii=False)
+        except OSError as e:
+            return {"show": show, "wiki": api, "note": f"write-failed: {e}"}
+    return {"show": show, "wiki": api, "files": files, "titles": len(titles),
+            "proposed": len(proposals), "applied": len(applied),
+            "flagged": len(proposals) - len(applied), "dry_run": not apply,
+            "proposals": proposals}
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Acquire proper nouns from a show's own output + its wiki.")
+    ap.add_argument("glossary", help="path to <show>.json")
+    ap.add_argument("show_dir", help="the show's media directory")
+    ap.add_argument("--apply", action="store_true", help="write changes (default: dry run)")
+    ap.add_argument("--wiki", default=None, help="override the wiki API base")
+    ap.add_argument("--revert", action="store_true", help="undo previously acquired fixes and exit")
+    a = ap.parse_args()
+    if a.revert:
+        g = json.load(open(a.glossary, encoding="utf-8"))
+        out = revert(g)
+        if a.apply:
+            json.dump(out, open(a.glossary, "w"), indent=2, ensure_ascii=False)
+        log(json.dumps({"reverted": len(g.get("acquired", {})), "written": a.apply}))
+        return
+    rep = acquire(a.glossary, a.show_dir, apply=a.apply, override=a.wiki)
+    for p in rep.get("proposals", []):
+        log(f"{p['verdict']:5} {p['variant']:18} -> {p['canonical']:22} "
+            f"seen {p['variant_count']:4}/{p['canonical_count']:<4} sim {p['score']:.3f} "
+            f"bound {p.get('bound', 0.0):.3f}  {p['reason']}")
+    log(json.dumps({k: v for k, v in rep.items() if k != "proposals"}, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

@@ -239,3 +239,44 @@ def test_revert_leaves_a_hard_fix_a_human_has_since_changed():
              "acquired": {"Syrahose": {"canonical": "Shirahoshi", "run": "run1"}}}
     g = ga.revert(gloss)
     assert g["hard_fixes"]["Syrahose"] == "SomethingElse"
+
+
+def test_acquire_is_a_noop_when_the_wiki_cannot_be_resolved(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    gp.write_text(json.dumps({"show": "One Pace"}))
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: None)
+    rep = ga.acquire(str(gp), str(tmp_path), apply=True)
+    assert rep["note"] == "wiki unresolved"
+    assert json.loads(gp.read_text()) == {"show": "One Pace"}
+
+
+def test_acquire_dry_run_does_not_write(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    gp.write_text(json.dumps({"show": "One Pace"}))
+    # NOTE: brief's literal fixture (Syrahose x60 vs Shirahoshi x20) makes the VARIANT
+    # dominate the CANONICAL, which R3 (dominance) correctly flags rather than applies --
+    # verified against decide()/wilson_lower directly. Swapped to mirror the 56-vs-2 case
+    # from test_wilson_lower_matches_spec_values / test_propose_emits_one_proposal_..., which
+    # is the shape the design doc's dominance rule actually applies on. See task-10-report.md.
+    _write_conf(tmp_path, "Ep01", ["I saw Shirahoshi today."] * 56 + ["I fear Syrahose."] * 2)
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Shirahoshi"])
+    rep = ga.acquire(str(gp), str(tmp_path), apply=False)
+    assert rep["applied"] == 1
+    assert json.loads(gp.read_text()) == {"show": "One Pace"}   # untouched
+
+
+def test_acquire_never_escalates_a_gate_failure_to_the_llm(tmp_path, monkeypatch):
+    calls = []
+    gp = tmp_path / "One Pace.json"
+    gp.write_text(json.dumps({"show": "One Pace"}))
+    _write_conf(tmp_path, "Ep01", ["Hey Smokey.", "Smokey again.", "Smokey thrice.",
+                                   "Smoker is here.", "Smoker again.", "Smoker thrice.",
+                                   "Smoker once more."] * 6)
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Smoker"])
+    monkeypatch.setattr(ga.glossary_verify, "adjudicate",
+                        lambda *a, **k: calls.append(a) or {"canonical": "", "confidence": "none", "dub_note": ""})
+    rep = ga.acquire(str(gp), str(tmp_path), apply=True)
+    assert rep["applied"] == 0
+    assert calls == []      # matched a title then failed R3 -> flagged, never adjudicated
