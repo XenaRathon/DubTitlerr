@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 import glossary_acquire as ga
@@ -30,3 +32,34 @@ def test_wilson_lower_matches_spec_values(k, n, expected):
 
 def test_wilson_lower_of_empty_cluster_is_zero():
     assert ga.wilson_lower(0, 0) == 0.0
+
+
+def _write_conf(tmp_path, name, texts):
+    p = tmp_path / f"{name}.dubtitles.conf.json"
+    p.write_text(json.dumps([{"start": i, "end": i + 1, "text": t} for i, t in enumerate(texts)]))
+    return p
+
+
+def test_harvest_counts_capitalised_tokens_and_tracks_midsentence(tmp_path):
+    _write_conf(tmp_path, "Ep01", ["I saw Shirahoshi today.", "Shirahoshi ran away."])
+    counts, mid, n = ga.harvest(str(tmp_path))
+    assert n == 1
+    assert counts["Shirahoshi"] == 2
+    assert "Shirahoshi" in mid          # mid-sentence in the first line
+
+
+def test_harvest_falls_back_to_srt_when_conf_is_gone(tmp_path):
+    (tmp_path / "Ep02.eng.dubtitles.srt").write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nWe fought Vergo here.\n\n")
+    counts, mid, n = ga.harvest(str(tmp_path))
+    assert n == 1
+    assert counts["Vergo"] == 1
+
+
+def test_harvest_prefers_conf_over_srt_for_the_same_episode(tmp_path):
+    _write_conf(tmp_path, "Ep03", ["Caesar laughed."])
+    (tmp_path / "Ep03.eng.dubtitles.srt").write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nMonet laughed.\n\n")
+    counts, _mid, n = ga.harvest(str(tmp_path))
+    assert n == 1
+    assert counts.get("Caesar") == 1 and "Monet" not in counts
