@@ -13,8 +13,12 @@ Built with help of Claude (Anthropic).
 """
 from __future__ import annotations
 
+import json
 import math
+import os
 import re
+
+import mine_glossary
 
 _DISAMBIG_RE = re.compile(r"\s*\([^)]*\)\s*$")
 _REDUCE_RE = re.compile("[\\s" + chr(0x27) + chr(0x2019) + "-]")
@@ -51,3 +55,56 @@ def wilson_lower(k: int, n: int, z: float = 1.96) -> float:
     centre = p + z * z / (2 * n)
     margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
     return (centre - margin) / denom
+
+
+CONF_SUFFIX = ".dubtitles.conf.json"
+SRT_SUFFIX = ".eng.dubtitles.srt"
+
+
+def _conf_text(path: str) -> str:
+    """All dialogue text from one conf.json, newline-joined, or '' if unreadable."""
+    try:
+        rows = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(rows, list):
+        return ""
+    return "\n".join(str(r.get("text", "")) for r in rows if isinstance(r, dict))
+
+
+def _srt_text(path: str) -> str:
+    """Dialogue lines from an SRT: drop indices and timecodes, keep the rest."""
+    try:
+        raw = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return ""
+    out = []
+    for ln in raw.splitlines():
+        s = ln.strip()
+        if not s or s.isdigit() or "-->" in s:
+            continue
+        out.append(s)
+    return "\n".join(out)
+
+
+def harvest(show_dir: str) -> tuple[dict, set, int]:
+    """(counts, midsentence, n_files) of capitalised tokens across the show's own output.
+
+    conf.json is preferred; the SRT is the fallback for episodes whose conf is gone (104 of
+    696 stamped episodes at time of writing). One source per episode stem, never both."""
+    counter: dict = {}
+    mid: set = set()
+    stems_done, files = set(), 0
+    for dp, _dns, fs in os.walk(show_dir):
+        for fn in sorted(fs):
+            if fn.endswith(CONF_SUFFIX):
+                stem, text = os.path.join(dp, fn[:-len(CONF_SUFFIX)]), _conf_text(os.path.join(dp, fn))
+            elif fn.endswith(SRT_SUFFIX):
+                stem, text = os.path.join(dp, fn[:-len(SRT_SUFFIX)]), _srt_text(os.path.join(dp, fn))
+            else:
+                continue
+            if stem in stems_done or not text:
+                continue
+            stems_done.add(stem); files += 1
+            mine_glossary.mine_text(text, counter, mid)
+    return counter, mid, files
