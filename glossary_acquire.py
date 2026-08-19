@@ -163,3 +163,30 @@ def harvest(show_dir: str) -> tuple[dict, set, int]:
             stems_done.add(stem); files += 1
             mine_glossary.mine_text(text, counter, mid)
     return counter, mid, files
+
+
+MIN_COUNT = int(os.environ.get("ACQUIRE_MIN_COUNT", "3"))
+MIN_SHARE = float(os.environ.get("ACQUIRE_MIN_SHARE", "0.80"))
+
+
+def decide(variant: str, variant_count: int, canonical: str, canonical_count: int,
+           score: float, midsentence: bool) -> dict:
+    """Run the four gates over one variant->canonical proposal.
+
+    Order matters: the cheap structural rejections come first so the report's reason is the
+    most specific true one. R2 (expansion) and R3 (dominance) are the only gates carrying
+    real safety -- `score` is a recall floor that has already been applied upstream."""
+    if variant_count + canonical_count < MIN_COUNT:
+        return {"verdict": "flag", "reason": "below-floor", "bound": 0.0}
+    if not midsentence:
+        return {"verdict": "flag", "reason": "sentence-initial-only", "bound": 0.0}
+    if is_expansion(variant, canonical):
+        return {"verdict": "flag", "reason": "would-expand", "bound": 0.0}
+    if variant == canonical:
+        return {"verdict": "flag", "reason": "already-canonical", "bound": 0.0}
+    if canonical_count == 0:
+        return {"verdict": "apply", "reason": "canonical-unseen", "bound": 0.0}
+    bound = wilson_lower(canonical_count, canonical_count + variant_count)
+    if bound > MIN_SHARE:
+        return {"verdict": "apply", "reason": "dominant", "bound": bound}
+    return {"verdict": "flag", "reason": "share-too-close", "bound": bound}
