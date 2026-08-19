@@ -14,6 +14,7 @@ Built with help of Claude (Anthropic).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -283,18 +284,27 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
         return {"show": show, "note": "wiki unresolved", "files": files}
     if not counts:
         return {"show": show, "wiki": api, "note": "nothing harvested", "files": files}
-    titles = glossary_verify.fetch_titles(api, show)
+    try:
+        titles = glossary_verify.fetch_titles(api, show)
+    except Exception as e:
+        return {"show": show, "wiki": api, "note": f"titles-failed: {e}", "files": files}
     if not titles:
         return {"show": show, "wiki": api, "note": "no titles fetched", "files": files}
     proposals = propose(counts, mid, titles)
     applied = [p for p in proposals if p["verdict"] == "apply"]
-    run_id = f"{show}:{len(titles)}:{files}"
+    digest = hashlib.sha1("|".join(f"{p['variant']}>{p['canonical']}" for p in sorted(
+        proposals, key=lambda p: p["variant"])).encode()).hexdigest()[:8]
+    run_id = f"{show}:{len(titles)}:{files}:{digest}"
     if apply and proposals:
+        tmp = gloss_path + ".tmp"
         try:
-            json.dump(apply_proposals(gloss, proposals, run_id), open(gloss_path, "w"),
-                      indent=2, ensure_ascii=False)
-        except OSError as e:
-            return {"show": show, "wiki": api, "note": f"write-failed: {e}"}
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(apply_proposals(gloss, proposals, run_id), f, indent=2, ensure_ascii=False)
+            os.replace(tmp, gloss_path)
+        except Exception as e:
+            try: os.remove(tmp)
+            except OSError: pass
+            return {"show": show, "wiki": api, "note": f"write-failed: {e}", "files": files}
     return {"show": show, "wiki": api, "files": files, "titles": len(titles),
             "proposed": len(proposals), "applied": len(applied),
             "flagged": len(proposals) - len(applied), "dry_run": not apply,

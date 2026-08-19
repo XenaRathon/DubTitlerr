@@ -280,3 +280,57 @@ def test_acquire_never_escalates_a_gate_failure_to_the_llm(tmp_path, monkeypatch
     rep = ga.acquire(str(gp), str(tmp_path), apply=True)
     assert rep["applied"] == 0
     assert calls == []      # matched a title then failed R3 -> flagged, never adjudicated
+
+
+def test_acquire_reports_titles_failure_without_raising(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    orig = json.dumps({"show": "One Pace"})
+    gp.write_text(orig)
+    _write_conf(tmp_path, "Ep01", ["I saw Shirahoshi today."] * 56 + ["I fear Syrahose."] * 2)
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
+
+    def boom(*a, **k):
+        raise RuntimeError("wiki down")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", boom)
+    rep = ga.acquire(str(gp), str(tmp_path), apply=True)
+    assert rep["note"].startswith("titles-failed")
+    assert gp.read_text() == orig
+
+
+def test_acquire_write_failure_leaves_original_glossary_intact(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    orig = json.dumps({"show": "One Pace"})
+    gp.write_text(orig)
+    _write_conf(tmp_path, "Ep01", ["I saw Shirahoshi today."] * 56 + ["I fear Syrahose."] * 2)
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Shirahoshi"])
+
+    def boom(*a, **k):
+        raise TypeError("not serializable")
+    monkeypatch.setattr(ga.json, "dump", boom)
+    rep = ga.acquire(str(gp), str(tmp_path), apply=True)
+    assert rep["note"].startswith("write-failed")
+    assert json.loads(gp.read_text()) == {"show": "One Pace"}
+    assert not (tmp_path / "One Pace.json.tmp").exists()
+
+
+def test_acquire_run_id_differs_when_title_content_differs(tmp_path, monkeypatch):
+    # "Syrahose" alone (never harvested as "Shirahoshi"/"Shirahoshy") hits the
+    # canonical-unseen escape clause, so both runs apply -- only the matched canonical
+    # spelling differs between them, same title COUNT (1) either way.
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
+    texts = ["I fear Syrahose."] * 5
+    dir_a, dir_b = tmp_path / "a", tmp_path / "b"
+    dir_a.mkdir(); dir_b.mkdir()
+    _write_conf(dir_a, "Ep01", texts)
+    _write_conf(dir_b, "Ep01", texts)
+    gp_a, gp_b = dir_a / "One Pace.json", dir_b / "One Pace.json"
+    gp_a.write_text(json.dumps({"show": "One Pace"}))
+    gp_b.write_text(json.dumps({"show": "One Pace"}))
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Shirahoshi"])
+    ga.acquire(str(gp_a), str(dir_a), apply=True)
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Shirahoshy"])
+    ga.acquire(str(gp_b), str(dir_b), apply=True)
+    run_a = json.loads(gp_a.read_text())["acquired"]["Syrahose"]["run"]
+    run_b = json.loads(gp_b.read_text())["acquired"]["Syrahose"]["run"]
+    assert run_a != run_b
