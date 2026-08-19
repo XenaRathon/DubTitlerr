@@ -1124,7 +1124,462 @@ git commit -m "test(glossary): pin token-boundary substitution acquire relies on
 
 ---
 
-### Task 13: Ship it — lint, image, and the pipeline hook
+### Task 13: Tier 0 — an expansion match is a KNOWN short form, not a failure
+
+**Files:**
+- Modify: `glossary_acquire.py`
+- Test: `tests/test_glossary_acquire.py`
+
+**Interfaces:**
+- Consumes: `decide` (Task 6), `apply_proposals` (Task 8).
+- Produces: `decide` gains verdict `"known"`; `apply_proposals` writes a `known` list.
+
+Forty terms sit unread in the live `flagged` queues and nearly all are correct: `Yuji`,
+`Megumi`, `Gojo`, `Izuku`, `Deku`, `Loid`, `Anya`, `Shinra`. They are `no-match` only
+because the wiki titles characters by full name. `Yuji` ⊂ `Yuji Itadori` is structurally
+the same relationship as `Warlords` ⊂ `Seven Warlords of the Sea`, and in both cases the
+correct action is identical — leave the text alone. So every expansion match is recorded as
+**known**: not fixed, and never flagged again.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_decide_marks_a_short_form_of_a_title_as_known():
+    d = ga.decide("Yuji", 40, "Yuji Itadori", 0, 0.80, True)
+    assert d["verdict"] == "known" and d["reason"] == "short-form"
+
+
+def test_decide_marks_a_phrase_component_as_known_too():
+    # Same relationship as Yuji/Yuji Itadori -- leave the dialogue alone either way.
+    d = ga.decide("Warlords", 10, "Seven Warlords of the Sea", 0, 0.80, True)
+    assert d["verdict"] == "known" and d["reason"] == "short-form"
+
+
+def test_apply_proposals_records_known_and_never_flags_it():
+    props = [{"variant": "Yuji", "canonical": "Yuji Itadori", "variant_count": 40,
+              "canonical_count": 0, "score": 0.8, "verdict": "known",
+              "reason": "short-form", "bound": 0.0}]
+    g = ga.apply_proposals({"show": "JJK"}, props, run_id="run1")
+    assert g["known"] == ["Yuji"]
+    assert "Yuji" not in g.get("flagged", {})
+    assert "Yuji" not in g.get("hard_fixes", {})
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/test_glossary_acquire.py -k "known or short_form" -v`
+Expected: FAIL — `decide` returns `{"verdict": "flag", "reason": "would-expand"}`
+
+- [ ] **Step 3: Change the expansion branch in `decide()`**
+
+Replace the `is_expansion` branch:
+
+```python
+    if is_expansion(variant, canonical):
+        return {"verdict": "known", "reason": "short-form", "bound": 0.0}
+```
+
+and in `apply_proposals()`, before the `if p["verdict"] != "apply"` check:
+
+```python
+        if p["verdict"] == "known":
+            known.add(p["variant"]); continue
+```
+
+declaring `known = set(g.get("known", []))` beside the other setdefaults, and writing
+`g["known"] = sorted(known)` before the return (dropping the key when empty).
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m pytest tests/test_glossary_acquire.py -v`
+Expected: PASS (whole file — the old `would-expand` assertion in Task 6 must be updated to
+expect `known`/`short-form`; that is the intended change, not a regression)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add glossary_acquire.py tests/test_glossary_acquire.py
+git commit -m "feat(acquire): tier 0 - expansion matches are known short forms"
+```
+
+---
+
+### Task 14: Sample real context lines
+
+**Files:**
+- Modify: `glossary_acquire.py`
+- Test: `tests/test_glossary_acquire.py`
+
+**Interfaces:**
+- Consumes: `harvest`'s file walk (Task 3).
+- Produces: `context_lines(show_dir: str, tokens: list, limit: int = CONTEXT_LINES) -> dict[str, list[str]]`.
+
+Both the LLM tier and the human tier need the same thing: the actual lines a spelling
+appears in. `"Hey Smokey."` next to `"Smoker is here."` decides the case that frequency
+cannot.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_context_lines_returns_real_lines_per_token(tmp_path):
+    _write_conf(tmp_path, "Ep01", ["Hey Smokey.", "Smoker is here.", "Nothing relevant."])
+    ctx = ga.context_lines(str(tmp_path), ["Smokey", "Smoker"])
+    assert ctx["Smokey"] == ["Hey Smokey."]
+    assert ctx["Smoker"] == ["Smoker is here."]
+
+
+def test_context_lines_caps_at_the_limit(tmp_path):
+    _write_conf(tmp_path, "Ep01", ["Smokey one.", "Smokey two.", "Smokey three."])
+    ctx = ga.context_lines(str(tmp_path), ["Smokey"], limit=2)
+    assert len(ctx["Smokey"]) == 2
+
+
+def test_context_lines_matches_whole_words_only(tmp_path):
+    _write_conf(tmp_path, "Ep01", ["Shirahoshi waited."])
+    ctx = ga.context_lines(str(tmp_path), ["Hoshi"])
+    assert ctx["Hoshi"] == []
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/test_glossary_acquire.py -k context -v`
+Expected: FAIL — no attribute `context_lines`
+
+- [ ] **Step 3: Write the minimal implementation**
+
+```python
+CONTEXT_LINES = int(os.environ.get("ACQUIRE_CONTEXT_LINES", "4"))
+
+
+def context_lines(show_dir: str, tokens: list, limit: int = CONTEXT_LINES) -> dict:
+    """Up to `limit` real transcript lines containing each token, whole-word matched.
+
+    Whole-word is required: 'Hoshi' must not match inside 'Shirahoshi', or the evidence
+    shown to the model (and to the human) would be about a different name."""
+    pats = {t: re.compile(r"\b" + re.escape(t) + r"\b") for t in tokens}
+    out: dict = {t: [] for t in tokens}
+    stems_done = set()
+    for dp, _dns, fs in os.walk(show_dir):
+        for fn in sorted(fs):
+            if fn.endswith(CONF_SUFFIX):
+                stem, text = os.path.join(dp, fn[:-len(CONF_SUFFIX)]), _conf_text(os.path.join(dp, fn))
+            elif fn.endswith(SRT_SUFFIX):
+                stem, text = os.path.join(dp, fn[:-len(SRT_SUFFIX)]), _srt_text(os.path.join(dp, fn))
+            else:
+                continue
+            if stem in stems_done or not text:
+                continue
+            stems_done.add(stem)
+            for ln in text.splitlines():
+                for t, pat in pats.items():
+                    if len(out[t]) < limit and pat.search(ln):
+                        out[t].append(ln.strip())
+            if all(len(v) >= limit for v in out.values()):
+                return out
+    return out
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m pytest tests/test_glossary_acquire.py -k context -v`
+Expected: PASS (3 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add glossary_acquire.py tests/test_glossary_acquire.py
+git commit -m "feat(acquire): sample real context lines per token"
+```
+
+---
+
+### Task 15: Tier C — contextual adjudication
+
+**Files:**
+- Modify: `glossary_acquire.py`
+- Test: `tests/test_glossary_acquire.py`
+
+**Interfaces:**
+- Consumes: `context_lines` (Task 14), `common.llm_chat` (same kwargs `glossary_verify.adjudicate` uses).
+- Produces: `build_merge_prompt(variant, canonical, ctx_v, ctx_c, show) -> str`, `adjudicate_merge(...) -> dict` returning `{"same_entity": bool, "confidence": "high"|"low"|"none"}`.
+
+R3 cannot separate a consistent mishearing (`Deccan`/`Decken`, bound 0.147) from a name the
+dub says two ways (`Smokey`/`Smoker`, 0.409). The surrounding lines can.
+
+**Escalation rule — enforce it in code, not by convention:** only a `share-too-close`
+verdict reaches this tier. `would-expand` never does, because expansion is structurally
+wrong and no evidence redeems it.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_build_merge_prompt_quotes_both_sets_of_lines():
+    pr = ga.build_merge_prompt("Deccan", "Decken", ["after Deccan."], ["Van Der Decken is coming."], "One Pace")
+    assert "after Deccan." in pr and "Van Der Decken is coming." in pr
+    assert "One Pace" in pr
+
+
+def test_adjudicate_merge_parses_a_merge_verdict(monkeypatch):
+    monkeypatch.setattr(ga, "llm_chat", lambda *a, **k: '{"same_entity": true, "confidence": "high"}')
+    out = ga.adjudicate_merge("Deccan", "Decken", ["x"], ["y"], "One Pace")
+    assert out == {"same_entity": True, "confidence": "high"}
+
+
+def test_adjudicate_merge_is_a_noop_when_the_llm_is_down(monkeypatch):
+    monkeypatch.setattr(ga, "llm_chat", lambda *a, **k: "")
+    assert ga.adjudicate_merge("a", "b", ["x"], ["y"], "S") == {"same_entity": False, "confidence": "none"}
+
+
+def test_tier_c_runs_only_for_share_too_close(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(ga, "adjudicate_merge",
+                        lambda v, c, cv, cc, s: seen.append(v) or {"same_entity": True, "confidence": "high"})
+    props = [{"variant": "Deccan", "canonical": "Decken", "variant_count": 21, "canonical_count": 8,
+              "score": 0.844, "verdict": "flag", "reason": "share-too-close", "bound": 0.147},
+             {"variant": "Warlords", "canonical": "Seven Warlords of the Sea", "variant_count": 10,
+              "canonical_count": 0, "score": 0.8, "verdict": "known", "reason": "short-form", "bound": 0.0}]
+    out = ga.escalate(props, {"Deccan": ["after Deccan."], "Decken": ["Van Der Decken."]}, "One Pace")
+    assert seen == ["Deccan"]                       # the short-form case never escalates
+    assert out[0]["verdict"] == "apply" and out[0]["reason"] == "context-merged"
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/test_glossary_acquire.py -k "merge or tier_c" -v`
+Expected: FAIL — no attribute `build_merge_prompt`
+
+- [ ] **Step 3: Write the minimal implementation**
+
+Change the import to `from common import llm_chat, log` (so the test can monkeypatch
+`ga.llm_chat`), then:
+
+```python
+def build_merge_prompt(variant: str, canonical: str, ctx_v: list, ctx_c: list, show: str) -> str:
+    """Ask whether two spellings are one entity mis-transcribed or two legitimate forms.
+
+    The model never supplies a spelling -- it answers yes/no about merging. The canonical
+    string is already fixed by the wiki, which is what keeps R1 intact at this tier."""
+    lines_v = "\n".join(f"  - {ln}" for ln in ctx_v) or "  (none)"
+    lines_c = "\n".join(f"  - {ln}" for ln in ctx_c) or "  (none)"
+    return (
+        f"Two spellings appear in the English dub of {show}. Decide whether they are the SAME "
+        f"name mis-transcribed, or two DIFFERENT legitimate forms (a nickname, a title, or a "
+        f"separate character).\n\n"
+        f'Spelling A: "{variant}"\n{lines_v}\n\n'
+        f'Spelling B: "{canonical}"\n{lines_c}\n\n'
+        f"A nickname the characters actually use is NOT a mis-transcription.\n"
+        f'Answer with JSON only: {{"same_entity": true|false, "confidence": "high"|"low"}}\n')
+
+
+def adjudicate_merge(variant: str, canonical: str, ctx_v: list, ctx_c: list, show: str) -> dict:
+    """LLM merge decision -> {'same_entity': bool, 'confidence': 'high'|'low'|'none'}."""
+    none = {"same_entity": False, "confidence": "none"}
+    try:
+        out = llm_chat(build_merge_prompt(variant, canonical, ctx_v, ctx_c, show),
+                       backend=glossary_verify.VERIFY_BACKEND, ollama_url=glossary_verify.OLLAMA,
+                       llamacpp_url=glossary_verify.VERIFY_LLAMACPP_URL,
+                       model=glossary_verify.VERIFY_MODEL,
+                       max_tokens=glossary_verify.VERIFY_MAX_TOKENS, first_line=False)
+    except Exception as e:
+        log("acquire: merge adjudication failed:", variant, e); return none
+    if not out:
+        return none
+    m = re.search(r"\{.*\}", out, re.S)
+    if not m:
+        return none
+    try:
+        d = json.loads(m.group(0))
+    except ValueError:
+        return none
+    conf = str(d.get("confidence", "none")).lower()
+    return {"same_entity": bool(d.get("same_entity")),
+            "confidence": conf if conf in ("high", "low", "none") else "low"}
+
+
+def escalate(proposals: list, ctx: dict, show: str) -> list:
+    """Re-decide share-too-close proposals with context. Other verdicts pass through.
+
+    ONLY share-too-close escalates. would-expand/short-form never does: expansion is
+    structurally wrong and no amount of evidence makes it right."""
+    out = []
+    for p in proposals:
+        if p.get("reason") != "share-too-close":
+            out.append(p); continue
+        adj = adjudicate_merge(p["variant"], p["canonical"],
+                               ctx.get(p["variant"], []), ctx.get(p["canonical"], []), show)
+        if adj["same_entity"] and adj["confidence"] == "high":
+            out.append({**p, "verdict": "apply", "reason": "context-merged"})
+        elif not adj["same_entity"] and adj["confidence"] == "high":
+            out.append({**p, "verdict": "known", "reason": "context-distinct"})
+        else:
+            out.append(p)
+    return out
+```
+
+Then wire it into `acquire()`: after `proposals = propose(...)`, insert
+
+```python
+    close = [p for p in proposals if p.get("reason") == "share-too-close"]
+    if close:
+        toks = sorted({p["variant"] for p in close} | {p["canonical"] for p in close})
+        proposals = escalate(proposals, context_lines(show_dir, toks), show)
+```
+
+and recompute `applied` from the escalated list.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m pytest tests/test_glossary_acquire.py -v`
+Expected: PASS (whole file)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add glossary_acquire.py tests/test_glossary_acquire.py
+git commit -m "feat(acquire): tier C - contextual merge adjudication"
+```
+
+---
+
+### Task 16: `--review` — the human tier
+
+**Files:**
+- Modify: `glossary_acquire.py`
+- Test: `tests/test_glossary_acquire.py`
+
+**Interfaces:**
+- Consumes: `context_lines` (Task 14), the `flagged` object form.
+- Produces: `review_items(gloss: dict) -> list[dict]`, `record_decision(gloss, term, accept: bool) -> dict`, and a `--review` branch in `main()`.
+
+`flagged` entries become objects carrying everything a decision needs, so the roadmap's Web
+UI editor can render the same queue without re-deriving anything. Bare-string entries
+written by `glossary_verify` still load.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_review_items_normalises_legacy_string_entries():
+    gloss = {"flagged": {"Yuji": "no-match",
+                         "Deccan": {"reason": "share-too-close", "canonical": "Decken",
+                                    "context": ["after Deccan."]}}}
+    items = {i["term"]: i for i in ga.review_items(gloss)}
+    assert items["Yuji"]["reason"] == "no-match" and items["Yuji"]["context"] == []
+    assert items["Deccan"]["canonical"] == "Decken"
+
+
+def test_record_decision_accept_writes_the_fix_and_clears_the_flag():
+    gloss = {"flagged": {"Deccan": {"reason": "share-too-close", "canonical": "Decken"}}}
+    g = ga.record_decision(gloss, "Deccan", accept=True)
+    assert g["hard_fixes"]["Deccan"] == "Decken"
+    assert "Deccan" not in g.get("flagged", {})
+    assert g["acquired"]["Deccan"]["reason"] == "human-approved"
+
+
+def test_record_decision_reject_marks_it_known_so_it_is_never_asked_again():
+    gloss = {"flagged": {"Smokey": {"reason": "share-too-close", "canonical": "Smoker"}}}
+    g = ga.record_decision(gloss, "Smokey", accept=False)
+    assert g["known"] == ["Smokey"]
+    assert "Smokey" not in g.get("flagged", {})
+    assert "Smokey" not in g.get("hard_fixes", {})
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/test_glossary_acquire.py -k "review_items or record_decision" -v`
+Expected: FAIL — no attribute `review_items`
+
+- [ ] **Step 3: Write the minimal implementation**
+
+```python
+def review_items(gloss: dict) -> list:
+    """The pending review queue, normalised.
+
+    glossary_verify writes bare strings; this module writes objects. Both load, so the
+    queue that has been accumulating unread since the verifier shipped is reviewable too."""
+    out = []
+    for term, meta in sorted((gloss.get("flagged") or {}).items()):
+        if isinstance(meta, str):
+            meta = {"reason": meta}
+        out.append({"term": term, "reason": meta.get("reason", ""),
+                    "canonical": meta.get("canonical", ""),
+                    "variant_count": meta.get("variant_count", 0),
+                    "canonical_count": meta.get("canonical_count", 0),
+                    "bound": meta.get("bound", 0.0), "context": meta.get("context", [])})
+    return out
+
+
+def record_decision(gloss: dict, term: str, accept: bool) -> dict:
+    """Apply one human decision and drop the term from the queue for good."""
+    g = json.loads(json.dumps(gloss))
+    meta = (g.get("flagged") or {}).get(term)
+    if isinstance(meta, str):
+        meta = {"reason": meta}
+    meta = meta or {}
+    canon = meta.get("canonical", "")
+    if accept and canon:
+        g.setdefault("hard_fixes", {})[term] = canon
+        g.setdefault("acquired", {})[term] = {"canonical": canon, "count": meta.get("variant_count", 0),
+                                              "canonical_count": meta.get("canonical_count", 0),
+                                              "score": meta.get("score", 0.0), "bound": meta.get("bound", 0.0),
+                                              "reason": "human-approved", "run": "review"}
+    else:
+        g["known"] = sorted(set(g.get("known", [])) | {term})
+    g.get("flagged", {}).pop(term, None)
+    if not g.get("flagged"):
+        g.pop("flagged", None)
+    return g
+```
+
+Add a `--review` branch to `main()`, before the `--revert` branch:
+
+```python
+    if a.review:
+        g = json.load(open(a.glossary, encoding="utf-8"))
+        for item in review_items(g):
+            log(f"\n{item['term']}  ->  {item['canonical'] or '(no canonical)'}   [{item['reason']}]")
+            log(f"  seen {item['variant_count']}x vs canonical {item['canonical_count']}x, bound {item['bound']:.3f}")
+            for ln in item["context"]:
+                log(f"    | {ln}")
+            ans = input("  accept this fix? [y/N/q] ").strip().lower()
+            if ans == "q":
+                break
+            g = record_decision(g, item["term"], accept=(ans == "y"))
+        if a.apply:
+            json.dump(g, open(a.glossary, "w"), indent=2, ensure_ascii=False)
+        log(json.dumps({"reviewed": True, "written": a.apply, "pending": len(g.get("flagged", {}))}))
+        return
+```
+
+and register the flag: `ap.add_argument("--review", action="store_true", help="walk the pending queue interactively")`.
+
+Finally, in `apply_proposals()`, write the object form so the queue carries its evidence:
+
+```python
+        flagged[p["variant"]] = {"reason": p["reason"], "canonical": p["canonical"],
+                                 "variant_count": p["variant_count"],
+                                 "canonical_count": p["canonical_count"],
+                                 "score": p["score"], "bound": round(p.get("bound", 0.0), 3),
+                                 "context": p.get("context", [])}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m pytest tests/test_glossary_acquire.py -v`
+Expected: PASS (whole file). Update the Task 8 assertion
+`g["flagged"]["Smokey"] == "share-too-close"` to
+`g["flagged"]["Smokey"]["reason"] == "share-too-close"` — that is the intended contract
+change, not a regression.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add glossary_acquire.py tests/test_glossary_acquire.py
+git commit -m "feat(acquire): --review, and flagged entries that carry their evidence"
+```
+
+---
+
+### Task 17: Ship it — lint, image, and the pipeline hook
 
 **Files:**
 - Modify: `Dockerfile.builder` (the `COPY` list)
@@ -1192,9 +1647,9 @@ Acceptance — from the spec's verification plan:
 |---|---|---|
 | `Kinemon` | 12, canonical unseen | `apply`, reason `canonical-unseen` |
 | `Brooke` | 9, canonical unseen | `apply`, reason `canonical-unseen` |
-| `Smokey` / `Smoker` | 16 / 21 | `flag`, reason `share-too-close` |
-| `Deccan` / `Decken` | 21 / 8 | `flag`, reason `share-too-close` |
-| `Warlords` | 10 | `flag`, reason `would-expand` |
+| `Smokey` / `Smoker` | 16 / 21 | escalates to tier C; expected `known`/`context-distinct` (it is a nickname) |
+| `Deccan` / `Decken` | 21 / 8 | escalates to tier C; `apply`/`context-merged` if the model merges them, else stays flagged |
+| `Warlords` | 10 | `known`, reason `short-form` (tier 0) |
 | `Surrender`, `Maybe`, `Hurry`, `Listen` | 10–22 | absent from proposals entirely |
 
 If `Kinemon` or `Brooke` come back `flag`, the escape clause in `decide()` is wrong — that is
