@@ -215,3 +215,27 @@ def test_apply_proposals_never_adds_acquired_names_to_the_initial_prompt():
     g = ga.apply_proposals(gloss, props, run_id="run1")
     assert "Shirahoshi" not in g["initial_prompt"]
     assert "Shirahoshi" not in g["names"]
+
+
+def test_revert_removes_only_acquired_entries():
+    gloss = {"hard_fixes": {"zolo": "Zoro", "Syrahose": "Shirahoshi"},
+             "acquired": {"Syrahose": {"canonical": "Shirahoshi", "run": "run1"}}}
+    g = ga.revert(gloss)
+    assert g["hard_fixes"] == {"zolo": "Zoro"}
+    assert g.get("acquired", {}) == {}
+
+
+def test_revert_can_target_a_single_run():
+    gloss = {"hard_fixes": {"a": "A", "b": "B"},
+             "acquired": {"a": {"canonical": "A", "run": "run1"},
+                          "b": {"canonical": "B", "run": "run2"}}}
+    g = ga.revert(gloss, run_id="run1")
+    assert g["hard_fixes"] == {"b": "B"}
+    assert list(g["acquired"]) == ["b"]
+
+
+def test_revert_leaves_a_hard_fix_a_human_has_since_changed():
+    gloss = {"hard_fixes": {"Syrahose": "SomethingElse"},
+             "acquired": {"Syrahose": {"canonical": "Shirahoshi", "run": "run1"}}}
+    g = ga.revert(gloss)
+    assert g["hard_fixes"]["Syrahose"] == "SomethingElse"
