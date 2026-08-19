@@ -17,6 +17,7 @@ import math
 import re
 
 _DISAMBIG_RE = re.compile(r"\s*\([^)]*\)\s*$")
+_REDUCE_RE = re.compile("[\\s" + chr(0x27) + chr(0x2019) + "-]")
 
 
 def normalize_title(title: str) -> str:
@@ -31,8 +32,11 @@ def normalize_title(title: str) -> str:
 def reduce_form(s: str) -> str:
     """The form both sides are compared on: lowercase, no spaces/apostrophes/hyphens.
 
-    This is what lets the ASR token 'Vanderdecken' match the title 'Van der Decken'."""
-    return re.sub(r"[\s''-]", "", str(s).lower())
+    This is what lets the ASR token 'Vanderdecken' match the title 'Van der Decken'.
+    The class is built with chr() rather than written literally: the curly apostrophe
+    U+2019 gets silently normalised to U+0027 by editors in this toolchain, which
+    silently disables curly-apostrophe stripping and passes a literal-looking review."""
+    return _REDUCE_RE.sub("", str(s).lower())
 
 
 def wilson_lower(k: int, n: int, z: float = 1.96) -> float:
