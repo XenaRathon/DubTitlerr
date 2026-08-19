@@ -13,6 +13,7 @@ def test_normalize_title_strips_disambiguator_and_subpage():
 def test_reduce_form_drops_spacing_and_punctuation():
     assert ga.reduce_form("Van der Decken") == "vanderdecken"
     assert ga.reduce_form("Kin'emon") == "kinemon"
+    assert ga.reduce_form("Kin'emon") == "kinemon"
     assert ga.reduce_form("Portgas D. Ace") == "portgasd.ace"
 
 
