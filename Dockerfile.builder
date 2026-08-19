@@ -21,11 +21,27 @@ RUN apt-get update \
     && (python3 -m pip install --no-cache-dir webrtcvad || echo "webrtcvad install failed -- analytics-only, use --vad ffmpeg-silencedetect; NOT fatal for generation") \
     && rm -rf /var/lib/apt/lists/*
 
-# Bake the Whisper large-v3-turbo model into the image (~1.5GB) so the container is fully
-# self-contained — no dependency on an external models bind-mount. Fetched once at build
-# time (CPU, just to download the files). MODEL_DIR points generate.py at it.
+# Bake one Whisper model into the image so the container is fully self-contained — no
+# dependency on an external models bind-mount. Fetched once at build time (CPU, just to
+# download the files). MODEL_DIR points generate.py at it.
+#
+# WHISPER_MODEL is an ARG *and* an ENV on purpose: the build bakes the model this names,
+# and the same value becomes the container's runtime default, so the baked model and the
+# model generate.py asks for cannot drift apart. A mismatch is not an error — faster-whisper
+# would silently re-download the missing model into /models on every container start.
+#
+#   large-v3       (default, ~3GB)   -- the 1060 6GB box; fits at the default beam_size=7.
+#   large-v3-turbo (~1.5GB)          -- the 3500g node's 1050ti 4GB, where large-v3 OOMs at
+#                                       beam 7 and only fits forced down to greedy, which is
+#                                       measurably worse than turbo at the full beam.
+#                                       Build it with:
+#                                         docker build -f Dockerfile.builder \
+#                                           --build-arg WHISPER_MODEL=large-v3-turbo \
+#                                           -t dubtitle-builder:latest .
+ARG WHISPER_MODEL=large-v3
+ENV WHISPER_MODEL=${WHISPER_MODEL}
 ENV MODEL_DIR=/models
-RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('large-v3-turbo', device='cpu', compute_type='int8', download_root='/models')"
+RUN python3 -c "import os; from faster_whisper import WhisperModel; WhisperModel(os.environ['WHISPER_MODEL'], device='cpu', compute_type='int8', download_root='/models')"
 
 WORKDIR /app
 # NOTE (V2-U3 B7/B9): common.py was missing from this COPY list since V1 introduced it --
