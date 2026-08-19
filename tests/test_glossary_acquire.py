@@ -112,3 +112,45 @@ def test_best_title_strips_the_disambiguator_from_what_it_returns():
 def test_best_title_returns_empty_when_nothing_is_close():
     name, score = ga.best_title("Surrender", ["Shirahoshi", "Hody Jones"])
     assert name == "" and score == 0.0
+
+
+def test_decide_applies_a_lopsided_mishearing():
+    d = ga.decide("Syrahose", 2, "Shirahoshi", 56, 0.755, True)
+    assert d["verdict"] == "apply" and d["bound"] == pytest.approx(0.883, abs=0.001)
+
+
+def test_decide_applies_when_the_canonical_never_appears():
+    # Whisper said 'Kinemon' 12x and 'Kin'emon' never. Wilson is 0.0; the escape clause carries it.
+    d = ga.decide("Kinemon", 12, "Kin'emon", 0, 0.90, True)
+    assert d["verdict"] == "apply" and d["reason"] == "canonical-unseen"
+
+
+def test_decide_flags_a_legitimate_nickname():
+    d = ga.decide("Smokey", 16, "Smoker", 21, 0.933, True)
+    assert d["verdict"] == "flag" and d["reason"] == "share-too-close"
+
+
+def test_decide_flags_when_the_correct_form_is_the_minority():
+    # Deccan 21 vs Decken 8 -- motivates the spec but is NOT auto-fixable; same shape as Smokey.
+    d = ga.decide("Deccan", 21, "Decken", 8, 0.844, True)
+    assert d["verdict"] == "flag" and d["reason"] == "share-too-close"
+
+
+def test_decide_flags_an_expansion():
+    d = ga.decide("Warlords", 10, "Seven Warlords of the Sea", 0, 0.80, True)
+    assert d["verdict"] == "flag" and d["reason"] == "would-expand"
+
+
+def test_decide_flags_below_the_frequency_floor():
+    d = ga.decide("Vergo", 2, "Vergo", 0, 1.0, True)
+    assert d["verdict"] == "flag" and d["reason"] == "below-floor"
+
+
+def test_decide_flags_a_token_never_seen_mid_sentence():
+    d = ga.decide("Surrender", 22, "Surrender", 0, 1.0, False)
+    assert d["verdict"] == "flag" and d["reason"] == "sentence-initial-only"
+
+
+def test_decide_is_a_noop_when_variant_already_equals_canonical():
+    d = ga.decide("Shirahoshi", 56, "Shirahoshi", 56, 1.0, True)
+    assert d["verdict"] == "flag" and d["reason"] == "already-canonical"
