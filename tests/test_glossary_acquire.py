@@ -154,3 +154,32 @@ def test_decide_flags_a_token_never_seen_mid_sentence():
 def test_decide_is_a_noop_when_variant_already_equals_canonical():
     d = ga.decide("Shirahoshi", 56, "Shirahoshi", 56, 1.0, True)
     assert d["verdict"] == "flag" and d["reason"] == "already-canonical"
+
+
+def test_propose_emits_one_proposal_per_variant_with_the_canonical_count(monkeypatch):
+    titles = ["Shirahoshi", "Hody Jones"]
+    counts = {"Shirahoshi": 56, "Syrahose": 2, "Hirohoshi": 1, "Hody": 9}
+    mid = {"Shirahoshi", "Syrahose", "Hirohoshi", "Hody"}
+    props = ga.propose(counts, mid, titles)
+    by_variant = {p["variant"]: p for p in props}
+    assert by_variant["Syrahose"]["canonical"] == "Shirahoshi"
+    assert by_variant["Syrahose"]["canonical_count"] == 56
+    assert by_variant["Syrahose"]["verdict"] == "apply"
+    # Hirohoshi (1) + Shirahoshi (56) clears the floor as a cluster, and Wilson(56, 57)
+    # clears dominance -- amended from the brief, whose test predates the cluster-total floor.
+    assert by_variant["Hirohoshi"]["verdict"] == "apply"
+    assert by_variant["Hirohoshi"]["reason"] == "dominant"
+
+
+def test_propose_ignores_tokens_that_match_no_title():
+    props = ga.propose({"Surrender": 22, "Maybe": 20}, {"Surrender", "Maybe"}, ["Shirahoshi"])
+    assert props == []
+
+
+def test_propose_flags_an_ordinary_english_word(monkeypatch):
+    monkeypatch.setattr(ga.glossary, "is_english", lambda w: w == "name")
+    props = ga.propose({"Name": 9, "Nami": 50}, {"Name", "Nami"}, ["Nami"])
+    by = {p["variant"]: p for p in props}
+    assert by["Name"]["verdict"] == "flag"
+    assert by["Name"]["reason"] == "english-word"
+    assert by["Name"]["bound"] == 0.0

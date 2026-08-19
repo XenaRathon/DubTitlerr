@@ -20,6 +20,7 @@ import re
 
 import jellyfish
 
+import glossary
 import mine_glossary
 
 _DISAMBIG_RE = re.compile(r"\s*\([^)]*\)\s*$")
@@ -190,3 +191,30 @@ def decide(variant: str, variant_count: int, canonical: str, canonical_count: in
     if bound > MIN_SHARE:
         return {"verdict": "apply", "reason": "dominant", "bound": bound}
     return {"verdict": "flag", "reason": "share-too-close", "bound": bound}
+
+
+def propose(counts: dict, midsentence: set, titles: list) -> list:
+    """One proposal per harvested token that resolves to a wiki title.
+
+    A token matching no title yields nothing here -- it is the tier-B queue's business
+    (see acquire()), not a silent drop. An ordinary English variant is flagged rather than
+    applied or dropped: dialogue words like 'name' can score deceptively close to a real
+    name (JW('name','nami') = 0.90), but real characters ARE English words too (Brook, Law),
+    so a human reviewer -- not a silent drop -- gets the final call. The canonical itself is
+    exempt: it comes from the wiki and is authoritative."""
+    resolved = {}
+    for tok in counts:
+        name, score = best_title(tok, titles)
+        if name:
+            resolved[tok] = (name, score)
+    out = []
+    for tok, (canon, score) in sorted(resolved.items()):
+        canon_count = counts.get(canon, 0)
+        d = decide(tok, counts[tok], canon, canon_count, score, tok in midsentence)
+        if d["reason"] == "already-canonical":
+            continue
+        if glossary.is_english(tok.lower()):
+            d = {"verdict": "flag", "reason": "english-word", "bound": 0.0}
+        out.append({"variant": tok, "canonical": canon, "variant_count": counts[tok],
+                    "canonical_count": canon_count, "score": round(score, 3), **d})
+    return out
