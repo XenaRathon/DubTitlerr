@@ -10,7 +10,7 @@ faster_whisper already present).
 
 Per video:
   1. pick the English audio stream (by language tag) and extract 16k mono wav,
-  2. faster-whisper large-v3, task=transcribe (English dub -> English text),
+  2. faster-whisper large-v3-turbo, task=transcribe (English dub -> English text),
      word_timestamps + vad_filter + initial_prompt glossary,
   3. conservative name-correction sweep against the franchise glossary,
   4. write <stem>.eng.dubtitles.srt + <stem>.dubtitles.conf.json (segment
@@ -21,9 +21,9 @@ Usage:
   python3 generate.py --root "/media/Anime Library/One Pace/Season 15"  # walk dir
 
 Env:
-  WHISPER_MODEL   default large-v3  (V2 A9: large-v3-turbo not bench-tested in this
-                  dev environment -- no GPU here -- PENDING manual test on the real
-                  GTX 1060 6GB server; default stays large-v3 until that confirms it)
+  WHISPER_MODEL   default large-v3-turbo  (V2 A9 resolved: bench-tested on real GPU,
+                  see the MODEL comment below. It is also what Dockerfile.builder bakes
+                  into the image -- a different value means a runtime download.)
   COMPUTE_TYPE    default int8  (Pascal-friendly, fits 6GB; try float16 for max quality)
   MODEL_DIR       default /subgen/models  (reuse subgen's downloaded model)
   WHISPER_AUDIO_FILTER  default highpass=f=80,compand=... (V2 A8; "" disables it, the
@@ -56,13 +56,15 @@ EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_ext
 # convention as mine_glossary.py/repair.py, not the per-run GLOSSARY_FILE.
 GLOSS_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
 
-# V2 A9: large-v3-turbo not bench-tested in this dev environment (no GPU here -- see
-# extract_wav()'s WHISPER_AUDIO_FILTER note for the analogous CPU-only caveat elsewhere
-# in this module) -- PENDING a manual test on the real GTX 1060 6GB server. Default
-# stays large-v3 until that test confirms turbo doesn't OOM/regress accuracy on Pascal
-# + int8. WHISPER_MODEL is already env-configurable (below), so switching to try turbo
-# needs no code change -- just `WHISPER_MODEL=large-v3-turbo` on that box.
-MODEL = os.environ.get("WHISPER_MODEL", "large-v3")
+# V2 A9 resolved: turbo IS the default now. Benched on the 3500g node (GTX 1050 Ti 4GB,
+# int8) against a real episode -- large-v3 OOM'd at the default beam_size=7 and only fit
+# forced down to greedy, where it was WORSE (flagged=76, over_cps=111) than turbo at the
+# full beam (flagged=35, over_cps=98, peak 1405 MiB). Turbo's known quality regression is
+# on translation, and REQUIRE_ENG=1 means this pipeline only ever transcribes English
+# audio to English text -- it never translates -- so that regression doesn't apply here.
+# Keep this in sync with the model Dockerfile.builder bakes into /models: pointing
+# WHISPER_MODEL at anything else makes the container download it at runtime.
+MODEL = os.environ.get("WHISPER_MODEL", "large-v3-turbo")
 COMPUTE = os.environ.get("COMPUTE_TYPE", "int8")
 MODEL_DIR = os.environ.get("MODEL_DIR", "/subgen/models")
 # V2 A8: optional pre-transcription audio cleanup (default highpass + dynamic-range
