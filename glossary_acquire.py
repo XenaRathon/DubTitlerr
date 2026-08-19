@@ -13,6 +13,7 @@ Built with help of Claude (Anthropic).
 """
 from __future__ import annotations
 
+import math
 import re
 
 _DISAMBIG_RE = re.compile(r"\s*\([^)]*\)\s*$")
@@ -32,3 +33,17 @@ def reduce_form(s: str) -> str:
 
     This is what lets the ASR token 'Vanderdecken' match the title 'Van der Decken'."""
     return re.sub(r"[\s''-]", "", str(s).lower())
+
+
+def wilson_lower(k: int, n: int, z: float = 1.96) -> float:
+    """Wilson score lower bound on k/n at ~95% confidence.
+
+    Used instead of a bare ratio because a ratio cannot tell 5-vs-1 from 56-vs-2 -- both
+    look lopsided, but only one is evidence. Wilson discounts the small sample for us."""
+    if n <= 0:
+        return 0.0
+    p = k / n
+    denom = 1 + z * z / n
+    centre = p + z * z / (2 * n)
+    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return (centre - margin) / denom
