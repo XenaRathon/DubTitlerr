@@ -28,7 +28,7 @@ They're complementary — one is bottom-of-screen dialogue, the other is positio
 DubTitlerr runs as one restart-safe container that watches your anime library and, for every
 show with an **English dub**, runs a full pipeline per episode:
 
-1. **Transcribe** — pick the English-dub audio and run Whisper (large-v3), then **reflow** the
+1. **Transcribe** — pick the English-dub audio and run Whisper (large-v3-turbo), then **reflow** the
    words into clean, well-timed cards (sentence-split, ≤2 lines/≤42 chars, ~17 cps, never shown
    before they're spoken).
 2. **Name correction** — fix proper nouns against a **per-show glossary** (curated `hard_fixes` +
