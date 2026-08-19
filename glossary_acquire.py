@@ -18,6 +18,8 @@ import math
 import os
 import re
 
+import jellyfish
+
 import mine_glossary
 
 _DISAMBIG_RE = re.compile(r"\s*\([^)]*\)\s*$")
@@ -75,6 +77,39 @@ def is_expansion(variant: str, canonical: str) -> bool:
     if v in c and len(c) > len(v):
         return True
     return len(c) > len(v) * EXPANSION_RATIO
+
+
+MIN_SIM = float(os.environ.get("ACQUIRE_MIN_SIM", "0.72"))
+
+
+def similarity(a: str, b: str) -> float:
+    """Jaro-Winkler on the reduced forms, nudged when a phonetic key agrees.
+
+    RECALL, not safety. Measured on real data the true and false pairs overlap completely
+    (Syrahose/Shirahoshi 0.755 sits BELOW Warlords/Warlord 0.975), so no threshold here can
+    separate them and none is asked to -- R2 and R3 do the rejecting. The phonetic key is a
+    bonus signal only: exact metaphone bucketing was tried and split Shirahoshi/Syrahose
+    into XRHX/SRHS, dropping the case this module exists for."""
+    ra, rb = reduce_form(a), reduce_form(b)
+    if not ra or not rb:
+        return 0.0
+    score = jellyfish.jaro_winkler_similarity(ra, rb)
+    if jellyfish.metaphone(ra) == jellyfish.metaphone(rb) or jellyfish.soundex(ra) == jellyfish.soundex(rb):
+        score = min(1.0, score + 0.02)
+    return score
+
+
+def best_title(token: str, titles: list) -> tuple[str, float]:
+    """(normalised title, score) of the closest title above MIN_SIM, else ('', 0.0)."""
+    best, best_score = "", 0.0
+    for t in titles:
+        norm = normalize_title(t)
+        if not norm:
+            continue
+        s = similarity(token, norm)
+        if s > best_score:
+            best, best_score = norm, s
+    return (best, best_score) if best_score >= MIN_SIM else ("", 0.0)
 
 
 CONF_SUFFIX = ".dubtitles.conf.json"
