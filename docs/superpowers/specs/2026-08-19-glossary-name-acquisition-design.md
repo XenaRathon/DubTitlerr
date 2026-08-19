@@ -253,6 +253,67 @@ spelling. R2's distance bound and R4's mid-sentence requirement are what keep th
 improbable; it is not eliminated, and it is the failure mode to look for first if a bad
 fix ever ships.
 
+## Review: the queue nothing reads **[v4]**
+
+`flagged` is currently **write-only**. `glossary_verify` has written it since it shipped and
+no code path has ever read it back. Forty terms are sitting in it across nine live
+glossaries — and inspecting them shows the queue is almost entirely false alarms:
+
+| show | flagged |
+|---|---|
+| JUJUTSU KAISEN | Yuji, Megumi, Nobara, Gojo, Geto, Kento, Toge, Yuta |
+| My Hero Academia | Izuku, Deku, Iida, Asui, Toga, Momo, Mirio, Hawks |
+| SPY x FAMILY | Loid, Anya, Bond, Thorn, Damian, Becky, Franky |
+
+Every one is spelled correctly. They are `no-match` because the wiki titles them by *full*
+name — `Yuji Itadori`, `Izuku Midoriya`, `Loid Forger` — and the verifier's similarity
+cutoff cannot bridge a given name to a full name. A human reviewing all forty would say
+"fine" forty times, which is why a review mechanism alone would not have helped.
+
+So triage runs in three tiers, and a human sees only what survives all three.
+
+### Tier 0 — short forms are known, not unknown (deterministic)
+
+A token matching a title **only by expansion** is a legitimate short form, not a failed
+match. `Yuji` inside `Yuji Itadori` is the same relationship as `Warlords` inside `Seven
+Warlords of the Sea`: R2 already refuses the substitution, correctly. What was missing is
+that "found it, and correctly left it alone" was being recorded identically to "never found
+it". Such tokens go to a new `known` list and are never flagged again.
+
+This is deterministic, needs no LLM, and empties most of the existing queue.
+
+### Tier C — contextual adjudication (LLM)
+
+R3 fails on two situations it cannot tell apart: a name the ASR consistently mishears
+(`Deccan`/`Decken`, bound 0.147) and a name the dub legitimately says two ways
+(`Smokey`/`Smoker`, bound 0.409). Statistically they are the same shape. In context they
+are obviously different:
+
+```
+"Hey Smokey."                    /  "Smoker is here."           -> two forms, one a nickname
+"Van Der Decken is coming."      /  "Just let me go after Deccan." -> one entity, garbled
+```
+
+For each R3 failure, sample up to `ACQUIRE_CONTEXT_LINES` (default 4) real transcript lines
+per spelling and ask the model whether the two spellings are one entity mis-transcribed or
+two legitimate forms. The canonical still comes from the wiki; the model only decides
+whether to merge.
+
+**[v4] This refines, rather than drops, the tier-B escalation rule.** R2 failures still
+never escalate — expansion is structurally wrong and no evidence can make it right. R3
+failures *may*, because R3 is a statistical proxy for a question the model can answer
+directly with better evidence. R1 holds throughout: no model output ever becomes a
+canonical spelling.
+
+### Tier H — the human, via `--review`
+
+`glossary_acquire.py --review` prints each surviving item with the transcript lines it
+appears in, takes a decision, and writes the outcome back so it is never asked twice.
+
+The README roadmap already calls for a per-show glossary editor in the planned Web UI.
+`flagged`, `acquired` and `known` are therefore shaped as that editor's data contract, not
+as CLI-shaped scratch: each carries enough to render a decision without re-deriving it.
+
 ## Data contract
 
 No schema break; old glossaries load unchanged.
@@ -260,6 +321,12 @@ No schema break; old glossaries load unchanged.
 - `hard_fixes` — existing key. Gains `{variant: canonical}` entries.
 - `flagged` — existing key. Gains entries with a reason
   (`no-wiki-match`, `share-too-close`, `would-expand`, `below-similarity`).
+- `known` — **[v4] new**, a list of tokens confirmed correct as short forms of a wiki title.
+  Never re-flagged, never rewritten.
+- `flagged` — **[v4]** entries become objects, not bare strings:
+  `{term: {reason, canonical, variant_count, canonical_count, bound, context: [lines]}}`,
+  so a reviewer (CLI now, Web UI later) can decide without re-reading the transcripts.
+  Bare-string entries written by `glossary_verify` still load.
 - `acquired` — **new**. Not a bare list like `verified` but a provenance map,
   `{variant: {canonical, count, canonical_count, score, wiki_title, run}}`, so re-runs skip
   settled clusters *and* `--revert` can undo a run. See *The self-read loop, resolved*.
@@ -271,7 +338,8 @@ fix for `Hoshi` must never fire inside `Shirahoshi`. A regression test pins the 
 so a future refactor of `correct()` cannot silently turn these fixes into substring edits.
 - Wiki cache — reuses `/config/wiki_cache/<show>.json` unchanged.
 
-Env: `ACQUIRE_MIN_COUNT` (default 3), `ACQUIRE_MIN_SHARE` (default 0.80),
+Env: `ACQUIRE_CONTEXT_LINES` (default 4), `ACQUIRE_MIN_COUNT` (default 3),
+`ACQUIRE_MIN_SHARE` (default 0.80),
 `ACQUIRE_MIN_SIM` (Jaro-Winkler floor, default **0.72** — see *Similarity is recall, not
 safety*), `GLOSSARY_DIR` (existing).
 
