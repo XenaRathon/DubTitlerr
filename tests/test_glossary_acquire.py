@@ -84,3 +84,31 @@ def test_is_expansion_rejects_growing_a_token_into_a_phrase(variant, canonical):
 ])
 def test_is_expansion_allows_genuine_respellings(variant, canonical):
     assert ga.is_expansion(variant, canonical) is False
+
+
+def test_similarity_floor_admits_every_true_pair():
+    for a, b in [("Syrahose", "Shirahoshi"), ("Deccan", "Decken"),
+                 ("Hirohoshi", "Shirahoshi"), ("Brooke", "Brook"),
+                 ("Kinemon", "Kin'emon"), ("Momonoske", "Momonosuke")]:
+        assert ga.similarity(a, b) >= ga.MIN_SIM, f"{a}/{b} would be dropped"
+
+
+def test_similarity_rejects_unrelated_names():
+    assert ga.similarity("Robin", "Brook") < ga.MIN_SIM
+    assert ga.similarity("Monet", "Momonosuke") < ga.MIN_SIM
+
+
+def test_best_title_picks_the_closest_normalised_title():
+    titles = ["Shirahoshi", "Hody Jones", "Neptune (character)", "Van der Decken"]
+    name, score = ga.best_title("Syrahose", titles)
+    assert name == "Shirahoshi" and score >= ga.MIN_SIM
+
+
+def test_best_title_strips_the_disambiguator_from_what_it_returns():
+    name, _score = ga.best_title("Neptune", ["Neptune (character)"])
+    assert name == "Neptune"
+
+
+def test_best_title_returns_empty_when_nothing_is_close():
+    name, score = ga.best_title("Surrender", ["Shirahoshi", "Hody Jones"])
+    assert name == "" and score == 0.0
