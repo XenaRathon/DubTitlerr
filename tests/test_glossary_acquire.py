@@ -183,3 +183,35 @@ def test_propose_flags_an_ordinary_english_word(monkeypatch):
     assert by["Name"]["verdict"] == "flag"
     assert by["Name"]["reason"] == "english-word"
     assert by["Name"]["bound"] == 0.0
+
+
+def test_apply_proposals_writes_hard_fixes_and_provenance():
+    gloss = {"show": "One Pace", "names": ["Luffy"], "hard_fixes": {"zolo": "Zoro"}}
+    props = [{"variant": "Syrahose", "canonical": "Shirahoshi", "variant_count": 2,
+              "canonical_count": 56, "score": 0.755, "verdict": "apply",
+              "reason": "dominant", "bound": 0.883}]
+    g = ga.apply_proposals(gloss, props, run_id="run1")
+    assert g["hard_fixes"]["Syrahose"] == "Shirahoshi"
+    assert g["hard_fixes"]["zolo"] == "Zoro"          # curated entries preserved
+    assert g["acquired"]["Syrahose"]["canonical"] == "Shirahoshi"
+    assert g["acquired"]["Syrahose"]["run"] == "run1"
+    assert gloss.get("acquired") is None               # input not mutated
+
+
+def test_apply_proposals_records_flagged_with_its_reason():
+    props = [{"variant": "Smokey", "canonical": "Smoker", "variant_count": 16,
+              "canonical_count": 21, "score": 0.933, "verdict": "flag",
+              "reason": "share-too-close", "bound": 0.409}]
+    g = ga.apply_proposals({"show": "One Pace"}, props, run_id="run1")
+    assert "Smokey" not in g.get("hard_fixes", {})
+    assert g["flagged"]["Smokey"] == "share-too-close"
+
+
+def test_apply_proposals_never_adds_acquired_names_to_the_initial_prompt():
+    gloss = {"show": "One Pace", "names": ["Luffy"], "initial_prompt": "Spell names correctly: Luffy."}
+    props = [{"variant": "Syrahose", "canonical": "Shirahoshi", "variant_count": 2,
+              "canonical_count": 56, "score": 0.755, "verdict": "apply",
+              "reason": "dominant", "bound": 0.883}]
+    g = ga.apply_proposals(gloss, props, run_id="run1")
+    assert "Shirahoshi" not in g["initial_prompt"]
+    assert "Shirahoshi" not in g["names"]
