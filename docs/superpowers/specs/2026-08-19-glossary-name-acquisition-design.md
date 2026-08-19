@@ -216,9 +216,24 @@ the Punk Hazard data, not from caution in the abstract.
    read as "infinity", and 5-vs-1 clears a 5:1 bar on almost no evidence. Use the **Wilson
    score lower bound** on the canonical's share of the cluster at 95% confidence, and
    require it to exceed `ACQUIRE_MIN_SHARE` (default 0.80). Wilson penalises small samples
-   automatically: 5-vs-1 gives a lower bound near 0.42 and is held back, while 56-vs-2
-   gives ~0.90 and applies. A canonical that never appears at all is still auto-applied,
-   since there is no competing spelling to be wrong about.
+   automatically: 5-vs-1 gives a lower bound of 0.436 and is held back, while 56-vs-2 gives
+   0.883 and applies.
+
+   **[v3] The escape clause carries most of the real cases, and that is not a detail.**
+   A canonical that never appears in the transcripts at all auto-applies, because there is
+   no competing spelling to be wrong about. Both must-apply cases in the verification plan
+   go through this branch, not the Wilson test: Whisper produced `Kinemon` 12 times and
+   `Kin'emon` zero, `Brooke` 9 times and `Brook` zero, so each scores a Wilson bound of
+   **0.000** on the dominance rule. An implementation that only checks `wilson > 0.80`
+   fails the entire acceptance test.
+
+   **[v3] What this rule deliberately gives up.** When the correct form is present but in
+   the minority, it is flagged rather than fixed. `Decken` (8) against `Deccan` (21) scores
+   0.147 and goes to review, even though it motivates this whole spec. That is the right
+   call: `Smoker` (21) against `Smokey` (16) scores 0.409 and has the same shape, yet
+   `Smokey` is legitimate dub dialogue. No frequency signal separates "the ASR consistently
+   mishears a name" from "the dub uses two forms", so both go to a human. Fixing `Deccan`
+   automatically would require accepting `Smokey` -> `Smoker` too.
 
 4. **Frequency floor.** A cluster must reach `ACQUIRE_MIN_COUNT` (default 3, matching
    `MINE_MIN_COUNT`) and appear mid-sentence at least once.
