@@ -10,7 +10,9 @@ Data shapes
 word    : {"text": str, "start": float|None, "end": float|None,
            "prob": float, "seg": int}   # seg = index into ``segments``
 segment : {"start": float, "end": float, "no_speech_prob": float}
-Card    : {"start": float, "end": float, "text": str,   # text may hold one '\\n'
+Card    : {"start": float, "end": float,               # DISPLAY timing (after timing)
+           "source_start": float, "source_end": float, # SOURCE timing (spoken span)
+           "text": str,                                # text may hold one '\\n'
            "avg_logprob": float, "no_speech_prob": float}
 
 The cards satisfy the A1 spec: Netflix readability profile, start pinned to the
@@ -409,11 +411,14 @@ def merge_runts(groups: list[list[dict]]) -> tuple[list[list[dict]], list[dict]]
     return out, merges
 
 
-def reflow(words: list[dict], segments: list[dict], merge_log: list[dict] | None = None) -> list[dict]:
+def reflow(words: list[dict], segments: list[dict], merge_log: list[dict] | None = None,
+           audio_duration: float | None = None) -> list[dict]:
     """Turn whisper word/segment data into finished Cards (see module docstring).
     ``merge_log``, if given, is extended with merge_runts()'s per-merge records (so a
     caller like generate.py can count them for the QC sidecar without reflow() itself
-    growing a wider return type)."""
+    growing a wider return type). ``audio_duration`` (None == unbounded) is handed to
+    :func:`time_cards`, which raises :class:`CascadeInfeasible` when a forward steal
+    would run past the end of the media."""
     groups: list[list[dict]] = []
     for span in split_spans(_dejitter(_clamp_to_segments(_normalize(words), segments))):
         for g in segment_span(span):
@@ -427,10 +432,18 @@ def reflow(words: list[dict], segments: list[dict], merge_log: list[dict] | None
     cards = []
     nxts = groups[1:] + [None]
     prevs = [None] + groups[:-1]
-    times, _cascades = time_cards(groups)
+    times, _cascades = time_cards(groups, audio_duration)
     for (start, end), g, nxt, prv in zip(times, groups, nxts, prevs):
         avg, nsp = card_confidence(g, segments)
         cards.append({
+            # SOURCE timing is the group's natural spoken span, taken before time_cards()
+            # touches anything: DISPLAY start/end may be stolen forward or extended for
+            # readability, but the audio a card describes never moves. Downstream evidence
+            # lookups (repair's overlap_ref) must anchor on the source window, or a
+            # displaced card selects its NEIGHBOUR's subtitle as the justification for a
+            # repair. A merged card carries the union: merge_runts() concatenates word
+            # lists, so g[0]/g[-1] are the first and last groups' outer words.
+            "source_start": g[0]["start"], "source_end": g[-1]["end"],
             "start": start, "end": end, "text": wrap_balance(_text(g)),
             "avg_logprob": avg, "no_speech_prob": nsp,
             "orphan": is_orphan_group(g, nxt, prv),

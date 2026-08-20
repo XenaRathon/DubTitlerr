@@ -820,3 +820,67 @@ def test_borrow_limit_is_configurable(monkeypatch):
     assert not repair.accept_repair(orig, new, ref)
     monkeypatch.setattr(repair, "MAX_REF_BORROW", 99)
     assert repair.accept_repair(orig, new, ref)
+
+
+# --- C6: reference selection anchors on SOURCE timing, not display timing -----
+
+def test_overlap_ref_uses_the_source_window_not_the_displaced_one():
+    """A card whose display start was stolen forward (Task 7) can land on its
+    NEIGHBOUR's cue. Selecting on the source window keeps the evidence honest."""
+    card = {"start": 12.0, "end": 12.9, "source_start": 10.0, "source_end": 10.9}
+    ivals = [(10.0, 10.9, "the right line"), (11.9, 13.0, "the neighbour's line")]
+    assert repair.overlap_ref(ivals, card["source_start"], card["source_end"]) == "the right line"
+    assert repair.overlap_ref(ivals, card["start"], card["end"]) == "the neighbour's line"
+
+
+def test_missing_source_window_falls_back_to_display():
+    """Every conf.json already in the library predates C6 and must keep working."""
+    card = {"start": 12.0, "end": 12.9}
+    ivals = [(10.0, 10.9, "the right line"), (11.9, 13.0, "the neighbour's line")]
+    ref = repair.overlap_ref(ivals, card.get("source_start", card["start"]),
+                             card.get("source_end", card["end"]))
+    assert ref == "the neighbour's line"
+
+
+def test_process_selects_the_reference_by_the_source_window(tmp_path, monkeypatch):
+    """End-to-end: the audited ref is the cue the card's AUDIO overlaps, not the one
+    its displaced display window overlaps."""
+    stem = str(tmp_path / "ep_src")
+    conf_path = stem + repair.CONF_SUFFIX
+    _write_conf(conf_path, stem + repair.SRT_SUFFIX,
+                [{"start": 12.0, "end": 12.9, "source_start": 10.0, "source_end": 10.9,
+                  "text": "garbled line", "avg_logprob": -0.6, "no_speech_prob": 0.1}])
+
+    g = gl()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_src.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals",
+                        lambda video: [(10.0, 10.9, "the right line"),
+                                       (11.9, 13.0, "the neighbour's line")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "a fixed line")
+
+    assert repair.process(conf_path) == "repaired"
+    with open(stem + ".dubtitles.repair.csv") as f:
+        rows = list(csv.reader(f))
+    assert rows[1][2] == "the right line"
+
+
+def test_process_still_uses_display_timing_for_a_pre_c6_sidecar(tmp_path, monkeypatch):
+    stem = str(tmp_path / "ep_old")
+    conf_path = stem + repair.CONF_SUFFIX
+    _write_conf(conf_path, stem + repair.SRT_SUFFIX,
+                [{"start": 12.0, "end": 12.9, "text": "garbled line",
+                  "avg_logprob": -0.6, "no_speech_prob": 0.1}])
+
+    g = gl()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_old.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals",
+                        lambda video: [(10.0, 10.9, "the right line"),
+                                       (11.9, 13.0, "the neighbour's line")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "a fixed line")
+
+    assert repair.process(conf_path) == "repaired"
+    with open(stem + ".dubtitles.repair.csv") as f:
+        rows = list(csv.reader(f))
+    assert rows[1][2] == "the neighbour's line"

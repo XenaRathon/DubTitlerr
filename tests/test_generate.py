@@ -574,3 +574,95 @@ def test_qc_counts_a_genuine_backward_merge(monkeypatch, tmp_path):
     c = doc["counters"]
     assert c["merged_backward"] == 1
     assert c["cards_after"] == 1
+
+
+# --- C6 + Task 7 loose end: source timing in conf.json, audio duration to reflow ---
+
+class _FakeRun:
+    def __init__(self, stdout):
+        self.stdout = stdout
+
+
+def test_media_duration_parses_ffprobe_format_duration(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return _FakeRun(json.dumps({"format": {"duration": "1421.376000"}}))
+    monkeypatch.setattr(generate.subprocess, "run", fake_run)
+    assert generate.media_duration("ep.wav") == pytest.approx(1421.376)
+    assert "format=duration" in calls[0]
+
+
+def test_media_duration_is_none_when_ffprobe_fails(monkeypatch):
+    def boom(cmd, **kw):
+        raise OSError("no ffprobe")
+    monkeypatch.setattr(generate.subprocess, "run", boom)
+    assert generate.media_duration("ep.wav") is None
+
+
+def test_media_duration_is_none_on_unparseable_output(monkeypatch):
+    monkeypatch.setattr(generate.subprocess, "run", lambda cmd, **kw: _FakeRun("N/A"))
+    assert generate.media_duration("ep.wav") is None
+
+
+def _displaced_pair_model():
+    """A runt followed by a surplus card: the second card's DISPLAY start is stolen
+    forward, its spoken onset is not."""
+    words = [_FakeWord(" Oh.", 0.0, 0.10, 0.9),
+             _FakeWord(" A much longer line here.", 0.15, 3.0, 0.9)]
+    return _FakeModel([_FakeSegment(0.0, 3.0, 0.05, words)])
+
+
+def test_conf_json_carries_source_and_display_timing(monkeypatch, tmp_path):
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setattr(generate, "media_duration", lambda path: None)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+    monkeypatch.setattr(generate, "WMODEL", _displaced_pair_model())
+
+    assert generate.process(str(v)) == "ok"
+    conf = json.loads((tmp_path / "ep.dubtitles.conf.json").read_text())
+    assert len(conf) == 2
+    assert (conf[0]["source_start"], conf[0]["source_end"]) == (0.0, 0.1)
+    assert (conf[1]["source_start"], conf[1]["source_end"]) == (0.15, 3.0)
+    assert conf[1]["start"] > conf[1]["source_start"]      # display displaced by the steal
+    assert all(round(c[k], 3) == c[k] for c in conf for k in ("source_start", "source_end"))
+
+
+def test_process_passes_the_media_duration_into_reflow(monkeypatch, tmp_path):
+    """reflow.time_cards()'s end-of-audio guard is only live if generate.py measures
+    the audio and hands the value over."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setattr(generate, "media_duration", lambda path: 3.0)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+    monkeypatch.setattr(generate, "WMODEL", _displaced_pair_model())
+
+    seen = {}
+    real = generate.reflow.reflow
+
+    def spy(words, segments, **kw):
+        seen.update(kw)
+        return real(words, segments, **kw)
+    monkeypatch.setattr(generate.reflow, "reflow", spy)
+
+    assert generate.process(str(v)) == "ok"
+    assert seen["audio_duration"] == 3.0
+
+
+def test_media_duration_failure_never_fails_the_episode(monkeypatch, tmp_path):
+    """An ffprobe failure means "unbounded", not a dead episode."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setattr(generate.subprocess, "run", lambda cmd, **kw: (_ for _ in ()).throw(OSError("boom")))
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+    monkeypatch.setattr(generate, "WMODEL", _displaced_pair_model())
+
+    assert generate.process(str(v)) == "ok"

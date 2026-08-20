@@ -353,7 +353,10 @@ def process(conf_path):
     audit, fixed, skipped_no_ref, rejected = [], 0, 0, 0
     repaired_lines = []                              # A10: per-line detail for the summary
     for i, c in targets:
-        ref = overlap_ref(ivals, c["start"], c["end"])
+        # C6: select the reference on the SOURCE window -- where the audio actually was --
+        # not the display window, which the timing layer may have stolen forward onto the
+        # NEIGHBOUR's cue. The .get fallback keeps every pre-C6 sidecar working unchanged.
+        ref = overlap_ref(ivals, c.get("source_start", c["start"]), c.get("source_end", c["end"]))
         if not ref:
             skipped_no_ref += 1
             continue        # no fansub anchor -> skip the LLM. The bake-off showed glossary-only

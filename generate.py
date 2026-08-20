@@ -163,6 +163,22 @@ def eng_audio_index(video):
     return streams[0]["index"] if streams else None
 
 
+def media_duration(path):
+    """Duration of ``path`` in seconds via ffprobe, or None when it cannot be measured.
+    None means "unbounded" to reflow.time_cards(): a probe failure must never fail an
+    episode, and unbounded is exactly the pre-existing behavior. Called on the EXTRACTED
+    WAV, not the container -- whisper's timestamps live on the wav's timeline, and that
+    is the timeline time_cards()'s end-of-audio guard has to compare against."""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                            "-of", "json", path], capture_output=True, text=True, timeout=60,
+                           stdin=subprocess.DEVNULL)
+        dur = float(json.loads(r.stdout)["format"]["duration"])
+    except Exception as e:
+        log("ffprobe duration failed", path, e); return None
+    return dur if dur > 0 else None
+
+
 def extract_wav(video, idx, wav):
     cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}",
            "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"]
@@ -268,6 +284,8 @@ def process(video):
     with tempfile.TemporaryDirectory() as td:
         wav = os.path.join(td, "a.wav")
         if not extract_wav(video, idx, wav): return "extract-failed"
+        audio_duration = media_duration(wav)     # measured while the wav still exists
+
         try: open(fail, "w").close()             # mark in-flight (a segfault here leaves the
         except OSError: pass                     # marker, so a resume skips this poison file)
         beam_size = int(os.environ.get("WHISPER_BEAM_SIZE", "7"))
@@ -303,7 +321,7 @@ def process(video):
     # A1: reflow whisper's words into clean, well-timed cards. C1: name-correct each card.
     # B1: drop near-certain hallucinations, flag the suspect, collapse runaway repeat runs.
     merge_log = []
-    cards = reflow.reflow(words, segments, merge_log=merge_log)
+    cards = reflow.reflow(words, segments, merge_log=merge_log, audio_duration=audio_duration)
     kept, fixes, dropped = [], 0, 0
     for c in cards:
         if hallucination.drop_reason(c):          # blocklist / repetition / music -> drop
@@ -321,6 +339,11 @@ def process(video):
     conf = []
     for c in collapsed:
         row = {"start": round(c["start"], 3), "end": round(c["end"], 3),
+               # C6: the audio evidence window, kept separate from the display timing a
+               # forward steal may have moved. repair.py selects its fansub reference on
+               # THIS pair; sidecars written before C6 simply lack it and fall back.
+               "source_start": round(c["source_start"], 3),
+               "source_end": round(c["source_end"], 3),
                "avg_logprob": round(c["avg_logprob"], 3),
                "no_speech_prob": round(c["no_speech_prob"], 3),
                "text": c["text"].replace("\n", " ")}
