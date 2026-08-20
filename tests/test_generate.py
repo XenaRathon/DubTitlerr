@@ -1215,7 +1215,10 @@ def test_both_writes_still_chown_and_land_on_the_happy_path(monkeypatch, tmp_pat
     monkeypatch.setattr(generate.os, "chown", lambda p, u, g: chowned.append(p))
     assert generate.process(str(v)) == "ok"
     srt, confp = str(tmp_path / "ep.eng.dubtitles.srt"), str(tmp_path / "ep.dubtitles.conf.json")
-    assert chowned == [srt, confp]
+    qcp = str(tmp_path / "ep.dubtitles.qc.json")
+    # the qc sidecar is chowned too, in _write_qc after it exists -- it is read
+    # library-wide by an aggregator that is not root
+    assert chowned == [srt, confp, qcp]
     assert os.path.exists(srt) and os.path.exists(confp)
     assert json.loads(open(confp).read())
     assert open(srt).read().startswith("1\n")

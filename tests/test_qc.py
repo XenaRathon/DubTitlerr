@@ -56,3 +56,12 @@ def test_priority_flag_is_not_stored_as_an_event_field():
     r.event(priority=True, card_id="c0", reason="layout_exception")
     assert r.build(show="S", episode="E", stem="x")["events"][0] == {
         "card_id": "c0", "reason": "layout_exception"}
+
+
+def test_sidecar_is_written_world_readable(tmp_path):
+    """mkstemp gives 0600. This sidecar exists to be read library-wide by an aggregator
+    that is not root, so 0600 would make it unreadable over the share."""
+    import stat
+    p = tmp_path / "e.dubtitles.qc.json"
+    assert qc.write(str(p), {"a": 1}) is True
+    assert stat.S_IMODE(p.stat().st_mode) == 0o644
