@@ -252,6 +252,23 @@ def _dejitter(words: list[dict]) -> list[dict]:
     return words
 
 
+ORPHAN_MAX_WORDS = 2      # observed morphology is 1-2 words; widening needs measurement first
+
+
+def is_orphan_group(group: list[dict], nxt: list[dict] | None) -> bool:
+    """A short group stranded at the END of its segment while the utterance it belongs
+    to starts in the NEXT segment. _dejitter() cannot reach these because it only
+    closes gaps within a segment. Conservative by design: a false positive merely
+    declines a merge, a false negative cements a word into the wrong sentence."""
+    if not nxt or len(group) > ORPHAN_MAX_WORDS:
+        return False
+    if group[-1].get("seg") == nxt[0].get("seg"):
+        return False                                  # same utterance, not stranded
+    lead = nxt[0]["start"] - group[-1]["end"]
+    trail = group[0]["start"] - 0.0
+    return lead > GAP_MAX and trail > 0 and not _text(group).rstrip().endswith(tuple(SENT_END))
+
+
 def reflow(words: list[dict], segments: list[dict]) -> list[dict]:
     """Turn whisper word/segment data into finished Cards (see module docstring)."""
     groups: list[list[dict]] = []
@@ -262,10 +279,12 @@ def reflow(words: list[dict], segments: list[dict]) -> list[dict]:
     if not groups:
         return []
     cards = []
-    for (start, end), g in zip(time_cards(groups), groups):
+    nxts = groups[1:] + [None]
+    for (start, end), g, nxt in zip(time_cards(groups), groups, nxts):
         avg, nsp = card_confidence(g, segments)
         cards.append({
             "start": start, "end": end, "text": wrap_balance(_text(g)),
             "avg_logprob": avg, "no_speech_prob": nsp,
+            "orphan": is_orphan_group(g, nxt),
         })
     return cards
