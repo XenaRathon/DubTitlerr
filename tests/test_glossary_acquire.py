@@ -502,3 +502,48 @@ def test_acquire_apply_persists_tier_b_into_flagged_as_no_wiki_match(tmp_path, m
     assert g["flagged"]["Zunesha"]["reason"] == "no-wiki-match"
     assert g["flagged"]["Zunesha"]["canonical"] == "Zunisha"
     assert "I saw Zunesha walk." in g["flagged"]["Zunesha"]["context"]
+
+
+def test_record_decision_accept_clears_a_stale_known_entry():
+    gloss = {"known": ["Deccan"], "flagged": {"Deccan": {"canonical": "Decken"}}}
+    g = ga.record_decision(gloss, "Deccan", accept=True)
+    assert g["hard_fixes"]["Deccan"] == "Decken"
+    assert "Deccan" not in g.get("known", [])
+    assert "Deccan" not in g.get("flagged", {})
+
+
+def test_record_decision_reject_clears_a_stale_hard_fix():
+    gloss = {"hard_fixes": {"Deccan": "Decken"}, "flagged": {"Deccan": {"canonical": "Decken2"}}}
+    g = ga.record_decision(gloss, "Deccan", accept=False)
+    assert g["known"] == ["Deccan"]
+    assert "Deccan" not in g.get("hard_fixes", {})
+    assert "Deccan" not in g.get("acquired", {})
+    assert "Deccan" not in g.get("flagged", {})
+
+
+def test_main_review_asks_a_real_question_for_a_legacy_no_canonical_entry(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    gp.write_text(json.dumps({"flagged": {"Yuji": "no-match"}}))
+    monkeypatch.setattr("sys.argv", ["glossary_acquire.py", str(gp), str(tmp_path), "--review", "--apply"])
+    prompts = []
+
+    def fake_input(prompt):
+        prompts.append(prompt)
+        return "y"
+    monkeypatch.setattr("builtins.input", fake_input)
+    ga.main()
+    assert any("no fix proposed" in p for p in prompts)
+    g = json.loads(gp.read_text())
+    assert g["known"] == ["Yuji"]
+    assert "Yuji" not in g.get("flagged", {})
+
+
+def test_main_review_leaving_a_legacy_entry_pending_is_a_no_op(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    orig = json.dumps({"flagged": {"Yuji": "no-match"}})
+    gp.write_text(orig)
+    monkeypatch.setattr("sys.argv", ["glossary_acquire.py", str(gp), str(tmp_path), "--review", "--apply"])
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    ga.main()
+    g = json.loads(gp.read_text())
+    assert g["flagged"]["Yuji"] == "no-match"       # untouched: still pending, never dropped

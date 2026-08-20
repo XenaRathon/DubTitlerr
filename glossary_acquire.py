@@ -400,7 +400,11 @@ def review_items(gloss: dict) -> list:
 
 
 def record_decision(gloss: dict, term: str, accept: bool) -> dict:
-    """Apply one human decision and drop the term from the queue for good."""
+    """Apply one human decision and drop the term from the queue for good, in exactly one state.
+
+    accept and reject are mutually exclusive: each clears whatever the other branch -- or a
+    stale prior decision from an earlier run -- may have left behind, so a term is never both
+    known and hard-fixed at once."""
     g = json.loads(json.dumps(gloss))
     meta = (g.get("flagged") or {}).get(term)
     if isinstance(meta, str):
@@ -413,11 +417,15 @@ def record_decision(gloss: dict, term: str, accept: bool) -> dict:
                                               "canonical_count": meta.get("canonical_count", 0),
                                               "score": meta.get("score", 0.0), "bound": meta.get("bound", 0.0),
                                               "reason": "human-approved", "run": "review"}
+        g["known"] = sorted(set(g.get("known", [])) - {term})
     else:
         g["known"] = sorted(set(g.get("known", [])) | {term})
+        g.get("hard_fixes", {}).pop(term, None)
+        g.get("acquired", {}).pop(term, None)
     g.get("flagged", {}).pop(term, None)
-    if not g.get("flagged"):
-        g.pop("flagged", None)
+    for k in ("flagged", "known", "hard_fixes", "acquired"):
+        if not g.get(k):
+            g.pop(k, None)
     return g
 
 
@@ -502,10 +510,18 @@ def main():
             log(f"  seen {item['variant_count']}x vs canonical {item['canonical_count']}x, bound {item['bound']:.3f}")
             for ln in item["context"]:
                 log(f"    | {ln}")
-            ans = input("  accept this fix? [y/N/q] ").strip().lower()
-            if ans == "q":
-                break
-            g = record_decision(g, item["term"], accept=(ans == "y"))
+            if item["canonical"]:
+                ans = input("  accept this fix? [y/N/q] ").strip().lower()
+                if ans == "q":
+                    break
+                g = record_decision(g, item["term"], accept=(ans == "y"))
+            else:
+                ans = input("  no fix proposed - mark this spelling correct as-is? [y/N/q] ").strip().lower()
+                if ans == "q":
+                    break
+                if ans == "y":
+                    g = record_decision(g, item["term"], accept=False)
+                # 'n' (or anything else): leave it pending in flagged, untouched
         if a.apply:
             json.dump(g, open(a.glossary, "w"), indent=2, ensure_ascii=False)
         log(json.dumps({"reviewed": True, "written": a.apply, "pending": len(g.get("flagged", {}))}))
