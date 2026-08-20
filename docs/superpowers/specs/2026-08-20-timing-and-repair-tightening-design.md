@@ -503,8 +503,31 @@ current property of being fully deterministic and unit-testable without a model.
 
 ### D. Transcript-sourced name acquisition
 
-**D1. New candidate source.** `glossary_acquire.py` gains our own `conf.json` output
-as a candidate source, alongside fansub tracks. The self-reinforcement objection that
+**D1 -- v5 CORRECTION. There is no "new" source; there never was another one.**
+`glossary_acquire._iter_episode_texts()` has ALWAYS read `.dubtitles.conf.json` and
+`.eng.dubtitles.srt` -- both our own output. It has never had a fansub input.
+
+v4 conflated two modules. The fansub lane is real but lives in `mine_glossary.py`,
+whose `eng_sub_text()` reads embedded fansub tracks and explicitly excludes our own
+dubtitle track. So the source asymmetry below is not two lanes inside one module; it is
+the boundary BETWEEN the two:
+
+| module | source | writes |
+|---|---|---|
+| `mine_glossary.py` | embedded fansub track (human-authored) | auto-appends to `names` |
+| `glossary_acquire.py` | our own transcript (Whisper guessing) | wiki-adjudicated |
+
+What D1 actually contributes is the provenance model and the apply rule, not a new
+input. The self-reinforcement objection still does not apply, for the reason v4 gave: a
+candidate is never trusted, it is adjudicated against the wiki, and the wiki breaks the
+loop.
+
+**Consequence v4 did not state.** Because EVERY `glossary_acquire` candidate is
+transcript-sourced, D3's rule means no NEW term can ever auto-apply there -- only
+near-misses of already-settled terms can. On a show whose glossary is empty, the module
+now acquires nothing without a human. That is the Q20(b) decision applied honestly
+rather than a regression, but it must be stated: acquisition on a fresh show is
+human-gated by design. The self-reinforcement objection that
 justifies `mine_glossary.py`'s exclusion does not apply, because a candidate from this
 source is never trusted -- it is adjudicated against the wiki. The wiki breaks the loop.
 
