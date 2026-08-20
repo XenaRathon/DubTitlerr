@@ -224,6 +224,16 @@ def propose(counts: dict, midsentence: set, titles: list) -> list:
     return out
 
 
+def unmatched(counts: dict, midsentence: set, titles: list) -> list:
+    """Frequent, mid-sentence tokens that resolved to no wiki title at all.
+
+    This is the dub-only-name queue: a character the dub renamed outright ('Ash' where the
+    wiki is titled in romaji) matches nothing phonetically, which is a MISS, never a
+    corruption. Tier B asks the wiki's full-text search about these."""
+    return sorted(t for t, c in counts.items()
+                  if c >= MIN_COUNT and t in midsentence and not best_title(t, titles)[0])
+
+
 def apply_proposals(gloss: dict, proposals: list, run_id: str) -> dict:
     """Write applied proposals into hard_fixes + acquired; record the rest in flagged.
 
@@ -291,6 +301,14 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     if not titles:
         return {"show": show, "wiki": api, "note": "no titles fetched", "files": files}
     proposals = propose(counts, mid, titles)
+    tier_b = {}
+    for term in unmatched(counts, mid, titles):
+        try:
+            adj = glossary_verify.adjudicate(term, glossary_verify.candidates(term, titles), show)
+        except Exception as e:
+            log("acquire: adjudicate failed:", term, e); continue
+        if adj.get("confidence") == "high" and adj.get("canonical"):
+            tier_b[term] = adj["canonical"]
     applied = [p for p in proposals if p["verdict"] == "apply"]
     digest = hashlib.sha1("|".join(f"{p['variant']}>{p['canonical']}" for p in sorted(
         proposals, key=lambda p: p["variant"])).encode()).hexdigest()[:8]
@@ -308,7 +326,7 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     return {"show": show, "wiki": api, "files": files, "titles": len(titles),
             "proposed": len(proposals), "applied": len(applied),
             "flagged": len(proposals) - len(applied), "dry_run": not apply,
-            "proposals": proposals}
+            "proposals": proposals, "tier_b": tier_b}
 
 
 def main():
