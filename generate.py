@@ -275,6 +275,10 @@ def _record_qc(rec, rows):
         if "under_min_dur" in faults: rec.count("ordinary_under_min_dur_after")
         if "over_cps" in faults: rec.count("over_cps")
         if "over_line_len" in faults: rec.count("over_line_len")
+        # over_chars: two LEGAL 42-char lines can still exceed MAX_CHARS, so this fault
+        # passes every per-line check and had no counter behind its event at all.
+        if "over_chars" in faults: rec.count("over_chars")
+
         if faults: rec.count("violations")
 
 

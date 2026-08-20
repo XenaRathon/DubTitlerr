@@ -600,6 +600,21 @@ def test_log_line_violation_count_agrees_with_the_sidecar(monkeypatch, tmp_path,
     assert f"over_cps={doc['counters']['over_cps']}" in line
 
 
+def test_over_chars_is_counted_not_only_evented():
+    """F4: over_chars is a layout_faults dimension no counter tracked. Two LEGAL 42-char
+    lines totalling 85 visible chars pass every per-line check, so the card emitted a
+    layout_exception event whose reason no counter could answer for -- and, being
+    pre-existing rather than correction-introduced, it goes in the evictable ordinary
+    event list. It was the one fault class that could be lost entirely."""
+    rows = [(0.0, 6.0, "a" * 42 + "\n" + "b" * 42)]
+    rec = qc.Recorder()
+    generate._record_qc(rec, rows)
+    c = rec.build(show="S", episode="E", stem="x")["counters"]
+    assert c["over_chars"] == 1
+    assert c["violations"] == 1
+    assert (c["over_line_len"], c["over_cps"]) == (0, 0)     # legal on every OTHER dimension
+
+
 def test_qc_sidecar_is_written_next_to_conf(monkeypatch, tmp_path):
     """Drives generate's real write path (process()), mirroring
     test_word_probs_written_to_conf_json's fake-model setup, and asserts the QC
