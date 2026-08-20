@@ -255,18 +255,35 @@ def _dejitter(words: list[dict]) -> list[dict]:
 ORPHAN_MAX_WORDS = 2      # observed morphology is 1-2 words; widening needs measurement first
 
 
-def is_orphan_group(group: list[dict], nxt: list[dict] | None) -> bool:
-    """A short group stranded at the END of its segment while the utterance it belongs
-    to starts in the NEXT segment. _dejitter() cannot reach these because it only
-    closes gaps within a segment. Conservative by design: a false positive merely
-    declines a merge, a false negative cements a word into the wrong sentence."""
+def is_orphan_group(group: list[dict], nxt: list[dict] | None, prev: list[dict] | None = None) -> bool:
+    """A short group stranded ALONE IN ITS OWN SPAN while the utterance it belongs to
+    starts in the next segment. _dejitter() cannot reach these because it only closes
+    gaps within a segment (`words[j]["seg"] == words[i]["seg"]`).
+
+    The discriminator is whether this group could be a CONTINUATION of its predecessor.
+    Timing alone cannot tell: "Wait" may sit 0.1s after "Hello there." and still belong
+    to "for me." two seconds later. But "Hello there." is a finished sentence, so
+    nothing can continue it -- whereas a fragment trailing an unfinished clause
+    plausibly completes that clause and must stay mergeable.
+
+    So: a fragment (few words, no terminal punctuation) separated from the next
+    utterance by a real pause AND a segment change, which cannot belong to what
+    precedes it. ``prev=None`` means no predecessor to belong to.
+
+    Conservative by design: a false positive merely declines a merge, a false negative
+    cements a word into the sentence it does not belong to."""
     if not nxt or len(group) > ORPHAN_MAX_WORDS:
         return False
     if group[-1].get("seg") == nxt[0].get("seg"):
         return False                                  # same utterance, not stranded
-    lead = nxt[0]["start"] - group[-1]["end"]
-    trail = group[0]["start"] - 0.0
-    return lead > GAP_MAX and trail > 0 and not _text(group).rstrip().endswith(tuple(SENT_END))
+    if _text(group).rstrip().endswith(tuple(SENT_END)):
+        return False                                  # a complete utterance ("Yes.")
+    if nxt[0]["start"] - group[-1]["end"] <= GAP_MAX:
+        return False                                  # no real pause before the next line
+    if prev is None:
+        return True
+    return (_text(prev).rstrip().endswith(tuple(SENT_END))          # prev is finished...
+            or group[0]["start"] - prev[-1]["end"] > GAP_MAX)       # ...or a pause splits them
 
 
 def reflow(words: list[dict], segments: list[dict]) -> list[dict]:
@@ -280,11 +297,12 @@ def reflow(words: list[dict], segments: list[dict]) -> list[dict]:
         return []
     cards = []
     nxts = groups[1:] + [None]
-    for (start, end), g, nxt in zip(time_cards(groups), groups, nxts):
+    prevs = [None] + groups[:-1]
+    for (start, end), g, nxt, prv in zip(time_cards(groups), groups, nxts, prevs):
         avg, nsp = card_confidence(g, segments)
         cards.append({
             "start": start, "end": end, "text": wrap_balance(_text(g)),
             "avg_logprob": avg, "no_speech_prob": nsp,
-            "orphan": is_orphan_group(g, nxt),
+            "orphan": is_orphan_group(g, nxt, prv),
         })
     return cards
