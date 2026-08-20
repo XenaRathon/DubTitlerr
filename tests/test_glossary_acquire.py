@@ -136,9 +136,15 @@ def test_decide_flags_when_the_correct_form_is_the_minority():
     assert d["verdict"] == "flag" and d["reason"] == "share-too-close"
 
 
-def test_decide_flags_an_expansion():
+def test_decide_marks_a_short_form_of_a_title_as_known():
+    d = ga.decide("Yuji", 40, "Yuji Itadori", 0, 0.80, True)
+    assert d["verdict"] == "known" and d["reason"] == "short-form"
+
+
+def test_decide_marks_a_phrase_component_as_known_too():
+    # Same relationship as Yuji/Yuji Itadori -- leave the dialogue alone either way.
     d = ga.decide("Warlords", 10, "Seven Warlords of the Sea", 0, 0.80, True)
-    assert d["verdict"] == "flag" and d["reason"] == "would-expand"
+    assert d["verdict"] == "known" and d["reason"] == "short-form"
 
 
 def test_decide_flags_below_the_frequency_floor():
@@ -205,6 +211,16 @@ def test_apply_proposals_records_flagged_with_its_reason():
     g = ga.apply_proposals({"show": "One Pace"}, props, run_id="run1")
     assert "Smokey" not in g.get("hard_fixes", {})
     assert g["flagged"]["Smokey"] == "share-too-close"
+
+
+def test_apply_proposals_records_known_and_never_flags_it():
+    props = [{"variant": "Yuji", "canonical": "Yuji Itadori", "variant_count": 40,
+              "canonical_count": 0, "score": 0.8, "verdict": "known",
+              "reason": "short-form", "bound": 0.0}]
+    g = ga.apply_proposals({"show": "JJK"}, props, run_id="run1")
+    assert g["known"] == ["Yuji"]
+    assert "Yuji" not in g.get("flagged", {})
+    assert "Yuji" not in g.get("hard_fixes", {})
 
 
 def test_apply_proposals_never_adds_acquired_names_to_the_initial_prompt():
