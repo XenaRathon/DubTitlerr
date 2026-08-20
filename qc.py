@@ -73,7 +73,8 @@ def write(path, doc):
     """Atomic write. Returns True on success, False on failure -- never raises.
     QC is observability: it must not fail an episode that generated correctly.
     A MISSING sidecar is not a clean episode; the aggregate reporter counts absences."""
-    try:
+    tmp = None                        # bound before the try: if mkstemp itself raises,
+    try:                              # the cleanup below must not depend on a NameError
         d = os.path.dirname(path) or "."
         fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
         with os.fdopen(fd, "w") as f:
@@ -81,6 +82,7 @@ def write(path, doc):
         os.replace(tmp, path)
         return True
     except Exception:
-        try: os.unlink(tmp)
-        except Exception: pass
+        if tmp is not None:
+            try: os.unlink(tmp)
+            except OSError: pass
         return False
