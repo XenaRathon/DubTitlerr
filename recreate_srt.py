@@ -6,6 +6,7 @@ import json
 import os
 import sys
 
+import reflow
 from common import ts_srt
 
 for conf in sys.argv[1:]:
@@ -14,7 +15,10 @@ for conf in sys.argv[1:]:
     if os.path.exists(srt):
         continue
     d = json.load(open(conf))
+    # conf.json stores text FLATTENED (generate.py replaces '\n' with ' '), so re-wrap
+    # here -- same defect, same fix as repair.py's srt rewrite.
     with open(srt, "w") as f:
         for i, c in enumerate(d, 1):
-            f.write(f"{i}\n{ts_srt(c['start'])} --> {ts_srt(c['end'])}\n{c['text']}\n\n")
+            f.write(f"{i}\n{ts_srt(c['start'])} --> {ts_srt(c['end'])}\n"
+                    f"{reflow.wrap_balance(c['text'])}\n\n")
     print("recreated", os.path.basename(srt))

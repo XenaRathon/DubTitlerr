@@ -9,6 +9,7 @@ import json
 
 import common
 import glossary
+import reflow
 import repair
 
 # --- T1 hoist: dialogue_intervals now lives in common.py --------------------
@@ -522,6 +523,65 @@ def test_process_counts_skipped_no_ref_and_never_calls_llm(tmp_path, monkeypatch
     assert summary["skipped_no_ref"] == 1
     assert summary["repaired_lines"] == []
     assert summary["mean_latency_ms"] == 0 and summary["p95_latency_ms"] == 0
+
+
+# --- srt rewrap on write: conf.json stores flattened text (generate.py strips the
+# newline), so repair must re-wrap when it rewrites the srt -- even on a total no-op.
+# This is the live defect: verified against shipped, muxed tracks, zero multi-line
+# cues exist anywhere in the library. -------------------------------------------
+
+def _parse_srt(path):
+    """Minimal SRT reader for these tests: returns [{"lines": [str, ...]}, ...]."""
+    blocks = open(path, encoding="utf-8").read().strip().split("\n\n")
+    return [{"lines": b.split("\n")[2:]} for b in blocks]
+
+
+def test_repair_rewraps_even_when_it_changes_nothing(tmp_path, monkeypatch):
+    """A no-op repair must still write a wrapped srt. This is the live defect:
+    conf.json holds flattened text and repair passed it straight through."""
+    stem = str(tmp_path / "ep_rewrap_noop")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    long_line = "Now everybody lift your hands up Sing about what you are dreaming"
+    _write_conf(conf_path, srt_path,
+                [{"start": 0.0, "end": 5.0, "text": long_line,
+                  "avg_logprob": -0.9, "no_speech_prob": 0.1}])
+
+    g = gl()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_rewrap_noop.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])   # no fansub anchor -> no-op
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: (_ for _ in ()).throw(
+        AssertionError("llm must not be called when there's no fansub anchor")))
+
+    assert repair.process(conf_path) == "repaired"
+    cues = _parse_srt(srt_path)
+    assert len(cues[0]["lines"]) == 2
+    assert all(len(ln) <= reflow.MAX_LINE for ln in cues[0]["lines"])
+
+
+def test_repair_rewraps_a_repaired_line_too(tmp_path, monkeypatch):
+    """Same requirement when the LLM DID change the line -- the rewrap must not be
+    something that only happens to survive on the no-op path."""
+    stem = str(tmp_path / "ep_rewrap_fixed")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    orig_line = "The garbled short version of a dreamy lyric line right here"
+    _write_conf(conf_path, srt_path,
+                [{"start": 0.0, "end": 5.0, "text": orig_line,
+                  "avg_logprob": -0.9, "no_speech_prob": 0.1}])
+
+    g = gl()
+    long_fix = "The fixed longer version of a dreamy lyric line right there tonight"
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_rewrap_fixed.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 5.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: long_fix)
+
+    assert repair.process(conf_path) == "repaired"
+    cues = _parse_srt(srt_path)
+    assert len(cues[0]["lines"]) == 2
+    assert all(len(ln) <= reflow.MAX_LINE for ln in cues[0]["lines"])
 
 
 # --- v1b prompt: measured anti-fabrication structure --------------------------

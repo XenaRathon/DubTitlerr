@@ -55,6 +55,7 @@ import time
 import urllib.parse
 
 import glossary
+import reflow
 from common import MEDIA_GID, MEDIA_UID, dialogue_intervals, find_video, out_for, ts_srt
 
 OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
@@ -383,11 +384,15 @@ def process(conf_path):
             audit.append((c["text"], new, ref[:80], latency_ms))
             repaired_lines.append({"orig": c["text"], "repaired": new, "ref": ref[:80], "latency_ms": latency_ms})
             c["text"] = new; fixed += 1
-    # rewrite srt from (possibly repaired) conf rows
+    # rewrite srt from (possibly repaired) conf rows. conf.json stores text FLATTENED
+    # (generate.py replaces '\n' with ' '), so re-wrap here or every episode that
+    # passes through repair ships as unwrapped single lines -- which is exactly what
+    # the library did until this fix.
     srt_out = out_for(srt); rep_out = out_for(stem + ".dubtitles.repair.csv")
     with open(srt_out, "w") as f:
         for i, c in enumerate(conf, 1):
-            f.write(f"{i}\n{ts_srt(c['start'])} --> {ts_srt(c['end'])}\n{c['text']}\n\n")
+            f.write(f"{i}\n{ts_srt(c['start'])} --> {ts_srt(c['end'])}\n"
+                    f"{reflow.wrap_balance(c['text'])}\n\n")
     with open(rep_out, "w", newline="") as f:
         w = csv.writer(f); w.writerow(["orig", "repaired", "ref", "latency_ms"]); w.writerows(audit)
     # A10: per-show repair summary, written alongside the srt/csv
