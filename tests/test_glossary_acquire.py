@@ -163,6 +163,7 @@ def test_decide_is_a_noop_when_variant_already_equals_canonical():
 
 
 def test_propose_emits_one_proposal_per_variant_with_the_canonical_count(monkeypatch):
+    monkeypatch.setattr(ga.glossary, "is_english", lambda w: False)
     titles = ["Shirahoshi", "Hody Jones"]
     counts = {"Shirahoshi": 56, "Syrahose": 2, "Hirohoshi": 1, "Hody": 9}
     mid = {"Shirahoshi", "Syrahose", "Hirohoshi", "Hody"}
@@ -261,10 +262,23 @@ def test_revert_leaves_a_hard_fix_a_human_has_since_changed():
 def test_acquire_is_a_noop_when_the_wiki_cannot_be_resolved(tmp_path, monkeypatch):
     gp = tmp_path / "One Pace.json"
     gp.write_text(json.dumps({"show": "One Pace"}))
+    # harvest-first short-circuit means resolve_wiki is only reached once there is
+    # something to score -- give it a token so this test actually exercises that call.
+    _write_conf(tmp_path, "Ep01", ["I saw Shirahoshi today."] * 5)
     monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: None)
     rep = ga.acquire(str(gp), str(tmp_path), apply=True)
     assert rep["note"] == "wiki unresolved"
     assert json.loads(gp.read_text()) == {"show": "One Pace"}
+
+
+def test_acquire_skips_the_wiki_entirely_when_nothing_was_harvested(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    gp.write_text(json.dumps({"show": "One Pace"}))
+    called = []
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: called.append(1) or "https://x/api.php")
+    rep = ga.acquire(str(gp), str(tmp_path), apply=True)
+    assert rep["note"] == "nothing harvested"
+    assert called == []
 
 
 def test_acquire_dry_run_does_not_write(tmp_path, monkeypatch):
@@ -371,13 +385,40 @@ def test_acquire_reports_tier_b_adjudications(tmp_path, monkeypatch):
     # enters `midsentence` (see mine_glossary.mine_text) and unmatched() -- which gates on
     # midsentence exactly like decide() does for tier A -- would never see it. Reworded so the
     # token is genuinely mid-sentence. See task-11-report.md.
+    # C1: tier B's canonical is now re-validated against the title set, so the fixture must
+    # use a genuine dub-rename pair (like the spec's own Kasumi/Misty example) -- similarity
+    # is too low for tier A to catch it (0.456 < MIN_SIM), but it is a real, comparable-length
+    # title, so it clears the tier-B R1+R2 check. Using "Zunisha" here (near-identical to
+    # "Zunesha") would let tier A resolve it directly and the test would never reach tier B
+    # at all -- see the C1 rejection test below for the case where the canonical is invalid.
+    _write_conf(tmp_path, "Ep01", ["I saw Kasumi walk.", "I saw Kasumi again.", "I saw Kasumi thrice."] * 3)
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Shirahoshi", "Misty"])
+    monkeypatch.setattr(ga.glossary_verify, "adjudicate",
+                        lambda *a, **k: {"canonical": "Misty", "confidence": "high", "dub_note": "dub"})
+    rep = ga.acquire(str(gp), str(tmp_path), apply=False)
+    assert rep["tier_b"] == {"Kasumi": "Misty"}
+
+
+def test_c1_acquire_rejects_a_tier_b_canonical_that_is_not_a_real_wiki_title(tmp_path, monkeypatch):
+    # C1 reproduction: the reviewer's exact scenario. adjudicate() returns free-form model
+    # text carrying a parenthetical -- never a real title on this wiki -- and it must NOT
+    # become the tier_b canonical (which apply=True would otherwise write into flagged as
+    # an accept-able fix, and a human 'y' would then send straight to hard_fixes).
+    gp = tmp_path / "One Pace.json"
+    gp.write_text(json.dumps({"show": "One Pace"}))
     _write_conf(tmp_path, "Ep01", ["I saw Zunesha walk.", "I saw Zunesha again.", "I saw Zunesha thrice."] * 3)
     monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
     monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Shirahoshi"])
     monkeypatch.setattr(ga.glossary_verify, "adjudicate",
-                        lambda *a, **k: {"canonical": "Zunisha", "confidence": "high", "dub_note": "dub"})
-    rep = ga.acquire(str(gp), str(tmp_path), apply=False)
-    assert rep["tier_b"] == {"Zunesha": "Zunisha"}
+                        lambda *a, **k: {"canonical": "Zou Elephant (Zunisha)", "confidence": "high", "dub_note": ""})
+    rep = ga.acquire(str(gp), str(tmp_path), apply=True)
+    assert rep["tier_b"] == {"Zunesha": ""}
+    g = json.loads(gp.read_text())
+    assert g["flagged"]["Zunesha"]["canonical"] == ""
+    assert "Zou Elephant" not in json.dumps(g)
+    # and a human 'y' on this entry must not turn it into a hard_fix either (record_decision's
+    # own defence-in-depth, exercised directly in test_record_decision_... below).
 
 
 def test_context_lines_returns_real_lines_per_token(tmp_path):
@@ -489,19 +530,21 @@ def test_acquire_apply_persists_tier_b_into_flagged_as_no_wiki_match(tmp_path, m
     gp = tmp_path / "One Pace.json"
     orig = json.dumps({"show": "One Pace"})
     gp.write_text(orig)
-    _write_conf(tmp_path, "Ep01", ["I saw Zunesha walk.", "I saw Zunesha again.", "I saw Zunesha thrice."] * 3)
+    # See the C1 note on test_acquire_reports_tier_b_adjudications: Kasumi/Misty is a
+    # genuine dub-rename pair tier A cannot catch, so this exercises the real tier-B path.
+    _write_conf(tmp_path, "Ep01", ["I saw Kasumi walk.", "I saw Kasumi again.", "I saw Kasumi thrice."] * 3)
     monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
-    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Shirahoshi"])
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Shirahoshi", "Misty"])
     monkeypatch.setattr(ga.glossary_verify, "adjudicate",
-                        lambda *a, **k: {"canonical": "Zunisha", "confidence": "high", "dub_note": "dub"})
+                        lambda *a, **k: {"canonical": "Misty", "confidence": "high", "dub_note": "dub"})
     ga.acquire(str(gp), str(tmp_path), apply=False)
     assert gp.read_text() == orig                        # dry run never writes tier_b either
     rep = ga.acquire(str(gp), str(tmp_path), apply=True)
-    assert rep["tier_b"] == {"Zunesha": "Zunisha"}
+    assert rep["tier_b"] == {"Kasumi": "Misty"}
     g = json.loads(gp.read_text())
-    assert g["flagged"]["Zunesha"]["reason"] == "no-wiki-match"
-    assert g["flagged"]["Zunesha"]["canonical"] == "Zunisha"
-    assert "I saw Zunesha walk." in g["flagged"]["Zunesha"]["context"]
+    assert g["flagged"]["Kasumi"]["reason"] == "no-wiki-match"
+    assert g["flagged"]["Kasumi"]["canonical"] == "Misty"
+    assert "I saw Kasumi walk." in g["flagged"]["Kasumi"]["context"]
 
 
 def test_record_decision_accept_clears_a_stale_known_entry():
@@ -547,3 +590,187 @@ def test_main_review_leaving_a_legacy_entry_pending_is_a_no_op(tmp_path, monkeyp
     ga.main()
     g = json.loads(gp.read_text())
     assert g["flagged"]["Yuji"] == "no-match"       # untouched: still pending, never dropped
+
+
+# --- final-fix-brief.md: C1, C2, C3, I3, I4, I5, R4, R6e ---------------------------------
+
+def test_c1_record_decision_refuses_a_canonical_that_is_not_a_bare_wiki_title():
+    # Reproduction: a hand-edited/legacy flagged entry carries a disambiguator R1 exists to
+    # strip. Even a human 'y' must not turn this into a hard_fix -- defence in depth for
+    # the path record_decision cannot check against `titles` directly.
+    gloss = {"flagged": {"Zunesha": {"reason": "no-wiki-match", "canonical": "Zou Elephant (Zunisha)"}}}
+    g = ga.record_decision(gloss, "Zunesha", accept=True)
+    assert "Zunesha" not in g.get("hard_fixes", {})
+    assert g["flagged"]["Zunesha"]["reason"] == "unsafe-canonical-rejected"
+
+
+def test_c1_record_decision_refuses_an_expansion_even_on_accept():
+    gloss = {"flagged": {"Ace": {"reason": "no-wiki-match", "canonical": "Portgas D. Ace"}}}
+    g = ga.record_decision(gloss, "Ace", accept=True)
+    assert "Ace" not in g.get("hard_fixes", {})
+    assert g["flagged"]["Ace"]["reason"] == "unsafe-canonical-rejected"
+
+
+def test_c1_record_decision_still_accepts_a_safe_canonical():
+    gloss = {"flagged": {"Deccan": {"reason": "share-too-close", "canonical": "Decken"}}}
+    g = ga.record_decision(gloss, "Deccan", accept=True)
+    assert g["hard_fixes"]["Deccan"] == "Decken"
+    assert "Deccan" not in g.get("flagged", {})
+
+
+def test_c2_propose_skips_a_settled_variant_entirely():
+    # A human already rejected 'Smokey' via --review, so it is in `known`. Even though the
+    # counts would otherwise dominate it into an 'apply', settled must suppress it -- no
+    # proposal at all, not even a flag.
+    counts = {"Smokey": 56, "Smoker": 2}
+    mid = {"Smokey", "Smoker"}
+    props = ga.propose(counts, mid, ["Smoker"], settled={"Smokey"})
+    assert [p["variant"] for p in props] == []
+
+
+def test_c2_propose_positional_call_still_works_without_settled():
+    props = ga.propose({"Syrahose": 2, "Shirahoshi": 56}, {"Syrahose", "Shirahoshi"}, ["Shirahoshi"])
+    assert any(p["variant"] == "Syrahose" for p in props)
+
+
+def test_c2_acquire_never_reapplies_a_hard_fix_a_human_rejected(tmp_path, monkeypatch):
+    # End-to-end reproduction of the brief's "rejected-then-reapplied" bug: a human said 'n'
+    # on Smokey->Smoker (it landed in `known`); an unattended --apply sweep must not revert
+    # that by writing hard_fixes['Smokey'] on the next run.
+    gp = tmp_path / "One Pace.json"
+    orig = json.dumps({"show": "One Pace", "known": ["Smokey"]})
+    gp.write_text(orig)
+    _write_conf(tmp_path, "Ep01", ["Hey Smokey."] * 16 + ["We saw Smoker today."] * 21)
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Smoker"])
+    rep = ga.acquire(str(gp), str(tmp_path), apply=True)
+    assert rep["proposed"] == 0     # settled suppressed Smokey; Smoker==canonical is a no-op
+    assert gp.read_text() == orig   # nothing to write -> original untouched
+    g = json.loads(gp.read_text())
+    assert "Smokey" not in g.get("hard_fixes", {})
+    assert g.get("known") == ["Smokey"]
+
+
+def test_c2_apply_proposals_clears_a_stale_known_when_verdict_flips_to_apply():
+    gloss = {"known": ["Syrahose"]}
+    props = [{"variant": "Syrahose", "canonical": "Shirahoshi", "variant_count": 2, "canonical_count": 56,
+              "score": 0.9, "verdict": "apply", "reason": "dominant", "bound": 0.9}]
+    g = ga.apply_proposals(gloss, props, run_id="run2")
+    assert g["hard_fixes"]["Syrahose"] == "Shirahoshi"
+    assert "Syrahose" not in g.get("known", [])
+
+
+def test_c2_apply_proposals_clears_a_stale_hard_fix_when_verdict_flips_to_flag():
+    gloss = {"hard_fixes": {"Smokey": "Smoker"}, "acquired": {"Smokey": {"canonical": "Smoker", "run": "old"}}}
+    props = [{"variant": "Smokey", "canonical": "Smoker", "variant_count": 16, "canonical_count": 21,
+              "score": 0.933, "verdict": "flag", "reason": "share-too-close", "bound": 0.409}]
+    g = ga.apply_proposals(gloss, props, run_id="run2")
+    assert "Smokey" not in g.get("hard_fixes", {})
+    assert "Smokey" not in g.get("acquired", {})
+    assert g["flagged"]["Smokey"]["reason"] == "share-too-close"
+
+
+def test_i3_apply_proposals_clears_a_stale_flagged_entry_on_known():
+    gloss = {"flagged": {"Yuji": "no-match"}}
+    props = [{"variant": "Yuji", "canonical": "Yuji Itadori", "variant_count": 40, "canonical_count": 0,
+              "score": 0.8, "verdict": "known", "reason": "short-form", "bound": 0.0}]
+    g = ga.apply_proposals(gloss, props, run_id="run1")
+    assert g["known"] == ["Yuji"]
+    assert "Yuji" not in g.get("flagged", {})
+
+
+def test_i4_flagged_proposals_carry_real_context_lines(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    gp.write_text(json.dumps({"show": "One Pace"}))
+    _write_conf(tmp_path, "Ep01", ["Hey Smokey.", "Smokey again.", "Smokey thrice.",
+                                   "Smoker is here.", "Smoker again.", "Smoker thrice.",
+                                   "Smoker once more."] * 6)
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Smoker"])
+    rep = ga.acquire(str(gp), str(tmp_path), apply=True)
+    flagged = [p for p in rep["proposals"] if p["verdict"] == "flag"]
+    assert flagged and all(p["context"] for p in flagged)
+    g = json.loads(gp.read_text())
+    assert g["flagged"]["Smokey"]["context"]        # I4: no longer an empty list
+
+
+def test_i5_flagged_count_is_not_inflated_by_pre_existing_glossary_entries(tmp_path, monkeypatch):
+    # I5 reproduction: a glossary_verify-authored `flagged` entry already on disk must not
+    # be folded into acquire()'s reported flagged COUNT once tier_b shares the same dict.
+    gp = tmp_path / "One Pace.json"
+    gp.write_text(json.dumps({"show": "One Pace", "flagged": {"Preexisting": "low-confidence"}}))
+    _write_conf(tmp_path, "Ep01", ["I saw Kasumi walk.", "I saw Kasumi again.", "I saw Kasumi thrice."] * 3)
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Misty"])
+    monkeypatch.setattr(ga.glossary_verify, "adjudicate",
+                        lambda *a, **k: {"canonical": "Misty", "confidence": "high", "dub_note": ""})
+    rep = ga.acquire(str(gp), str(tmp_path), apply=True)
+    assert rep["flagged"] == 0     # no tier-A flag proposals here -- tier_b/pre-existing must not count
+    g = json.loads(gp.read_text())
+    assert len(g["flagged"]) == 2  # Preexisting + Kasumi both persisted on disk
+
+
+def test_r4_revert_exempts_a_human_approved_entry():
+    gloss = {"hard_fixes": {"Deccan": "Decken", "Syrahose": "Shirahoshi"},
+             "acquired": {"Deccan": {"canonical": "Decken", "run": "review"},
+                          "Syrahose": {"canonical": "Shirahoshi", "run": "sweep1"}}}
+    g = ga.revert(gloss)
+    assert g["hard_fixes"] == {"Deccan": "Decken"}
+    assert list(g["acquired"]) == ["Deccan"]
+
+
+def test_r4_revert_with_a_run_id_still_exempts_review():
+    gloss = {"hard_fixes": {"Deccan": "Decken"}, "acquired": {"Deccan": {"canonical": "Decken", "run": "review"}}}
+    g = ga.revert(gloss, run_id="review")
+    assert g["hard_fixes"] == {"Deccan": "Decken"}
+
+
+def test_r6e_english_word_gate_demotes_apply_but_not_known(monkeypatch):
+    # The interaction the contract calls out: is_english forced True must still let a
+    # short-form ('known') verdict pass through untouched -- only 'apply' gets demoted.
+    monkeypatch.setattr(ga.glossary, "is_english", lambda w: True)
+    props = ga.propose({"Yuji": 40}, {"Yuji"}, ["Yuji Itadori"])
+    assert props[0]["verdict"] == "known" and props[0]["reason"] == "short-form"
+
+
+def test_r6e_english_word_gate_still_demotes_a_real_apply(monkeypatch):
+    monkeypatch.setattr(ga.glossary, "is_english", lambda w: True)
+    props = ga.propose({"Syrahose": 2, "Shirahoshi": 56}, {"Syrahose", "Shirahoshi"}, ["Shirahoshi"])
+    by = {p["variant"]: p for p in props}
+    assert by["Syrahose"]["verdict"] == "flag" and by["Syrahose"]["reason"] == "english-word"
+
+
+def test_c3_write_json_is_atomic_utf8_and_leaves_no_tmp_behind(tmp_path):
+    p = tmp_path / "g.json"
+    p.write_text(json.dumps({"old": True}))
+    ga._write_json(str(p), {"show": chr(0x30ab) + chr(0x30bf) + chr(0x30ab) + chr(0x30ca)})
+    assert json.loads(p.read_text(encoding="utf-8"))["show"] == chr(0x30ab) + chr(0x30bf) + chr(0x30ab) + chr(0x30ca)
+    assert not (tmp_path / "g.json.tmp").exists()
+
+
+def test_c3_main_revert_reports_rather_than_tracebacks_on_a_malformed_glossary(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    gp.write_text("{not valid json")
+    monkeypatch.setattr("sys.argv", ["glossary_acquire.py", str(gp), str(tmp_path), "--revert"])
+    ga.main()      # must not raise
+    assert gp.read_text() == "{not valid json"
+
+
+def test_c3_main_review_apply_writes_through_write_json(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    gp.write_text(json.dumps({"flagged": {"Yuji": "no-match"}}))
+    monkeypatch.setattr("sys.argv", ["glossary_acquire.py", str(gp), str(tmp_path), "--review", "--apply"])
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    ga.main()
+    assert not (tmp_path / "One Pace.json.tmp").exists()
+    assert json.loads(gp.read_text())["known"] == ["Yuji"]
+
+
+def test_c3_main_revert_apply_writes_through_write_json(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    gp.write_text(json.dumps({"hard_fixes": {"Syrahose": "Shirahoshi"},
+                              "acquired": {"Syrahose": {"canonical": "Shirahoshi", "run": "run1"}}}))
+    monkeypatch.setattr("sys.argv", ["glossary_acquire.py", str(gp), str(tmp_path), "--revert", "--apply"])
+    ga.main()
+    assert not (tmp_path / "One Pace.json.tmp").exists()
+    assert json.loads(gp.read_text()).get("hard_fixes", {}) == {}
