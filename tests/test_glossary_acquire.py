@@ -396,3 +396,51 @@ def test_context_lines_matches_whole_words_only(tmp_path):
     _write_conf(tmp_path, "Ep01", ["Shirahoshi waited."])
     ctx = ga.context_lines(str(tmp_path), ["Hoshi"])
     assert ctx["Hoshi"] == []
+
+
+def test_build_merge_prompt_quotes_both_sets_of_lines():
+    pr = ga.build_merge_prompt("Deccan", "Decken", ["after Deccan."], ["Van Der Decken is coming."], "One Pace")
+    assert "after Deccan." in pr and "Van Der Decken is coming." in pr
+    assert "One Pace" in pr
+
+
+def test_adjudicate_merge_parses_a_merge_verdict(monkeypatch):
+    monkeypatch.setattr(ga, "llm_chat", lambda *a, **k: '{"same_entity": true, "confidence": "high"}')
+    out = ga.adjudicate_merge("Deccan", "Decken", ["x"], ["y"], "One Pace")
+    assert out == {"same_entity": True, "confidence": "high"}
+
+
+def test_adjudicate_merge_is_a_noop_when_the_llm_is_down(monkeypatch):
+    monkeypatch.setattr(ga, "llm_chat", lambda *a, **k: "")
+    assert ga.adjudicate_merge("a", "b", ["x"], ["y"], "S") == {"same_entity": False, "confidence": "none"}
+
+
+def test_tier_c_runs_only_for_share_too_close(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(ga, "adjudicate_merge",
+                        lambda v, c, cv, cc, s: seen.append(v) or {"same_entity": True, "confidence": "high"})
+    props = [{"variant": "Deccan", "canonical": "Decken", "variant_count": 21, "canonical_count": 8,
+              "score": 0.844, "verdict": "flag", "reason": "share-too-close", "bound": 0.147},
+             {"variant": "Warlords", "canonical": "Seven Warlords of the Sea", "variant_count": 10,
+              "canonical_count": 0, "score": 0.8, "verdict": "known", "reason": "short-form", "bound": 0.0}]
+    out = ga.escalate(props, {"Deccan": ["after Deccan."], "Decken": ["Van Der Decken."]}, "One Pace")
+    assert seen == ["Deccan"]                       # the short-form case never escalates
+    assert out[0]["verdict"] == "apply" and out[0]["reason"] == "context-merged"
+
+
+def test_acquire_report_counts_apply_known_and_flag_separately(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    gp.write_text(json.dumps({"show": "One Pace"}))
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Shirahoshi"])
+    monkeypatch.setattr(ga, "propose", lambda *a, **k: [
+        {"variant": "Syrahose", "canonical": "Shirahoshi", "variant_count": 2, "canonical_count": 56,
+         "score": 0.9, "verdict": "apply", "reason": "dominant", "bound": 0.9},
+        {"variant": "Ace", "canonical": "Portgas D. Ace", "variant_count": 5, "canonical_count": 0,
+         "score": 0.8, "verdict": "known", "reason": "short-form", "bound": 0.0},
+        {"variant": "Maybe", "canonical": "Nami", "variant_count": 4, "canonical_count": 1,
+         "score": 0.75, "verdict": "flag", "reason": "english-word", "bound": 0.0},
+    ])
+    _write_conf(tmp_path, "Ep01", ["I saw Something today."])
+    rep = ga.acquire(str(gp), str(tmp_path), apply=False)
+    assert rep["applied"] == 1 and rep["known"] == 1 and rep["flagged"] == 1
