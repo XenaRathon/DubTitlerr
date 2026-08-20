@@ -213,11 +213,29 @@ def _card_word_probs(card, words):
     return [round(w["prob"], 3) for w in words if w["end"] > a and w["start"] < b]
 
 
-def discard_stale_sidecars(stem):
-    """Delete the sidecars LEFT BEHIND by a superseded pipeline version (see
-    common.stale_version_stamp). They are last version's output, not pending work: left in
-    place they'd make the skips in process() return "already-ass"/"already-srt" forever
-    while mux re-embedded that same old subtitle and stamped it as current.
+QC_SUFFIX = ".dubtitles.qc.json"
+STALE_SUFFIX = ".stale"        # parked, not deleted -- see park_stale_sidecars
+SIDECAR_SUFFIXES = (".eng.dubtitles.ass", ".eng.dubtitles.srt", ".dubtitles.conf.json", QC_SUFFIX)
+
+
+def park_stale_sidecars(stem):
+    """Move the sidecars LEFT BEHIND by a superseded pipeline version (see
+    common.stale_version_stamp) out of the way. They are last version's output, not
+    pending work: left in place they'd make the skips in process() return
+    "already-ass"/"already-srt" forever while mux re-embedded that same old subtitle and
+    stamped it as current -- and a leftover qc.json would aggregate as this version's
+    measurement.
+
+    They are RENAMED to <name>.stale, not deleted. This ran before the already-srt guard
+    and before transcription, so on a version bump under the DEFAULT SKIP_IF_SRT=1 the
+    previous srt and conf were destroyed and only THEN could reflow raise
+    CascadeInfeasible -- leaving no srt, no conf and a permanent .fail marker that
+    retires the episode until an operator clears it by hand. Deleting output before
+    knowing a replacement exists is the destructive half of a swap done in the wrong
+    order. Parked files are invisible to every consumer (mux, the assemble pass and the
+    stall detector all match on exact suffixes), so nothing muxes last version's content
+    while they sit there, and a failed replacement is one rename from being undone.
+    drop_parked_sidecars() clears them once this run has written its own.
 
     A sidecar counts as a leftover only if it PREDATES the stamp. The run that wrote the
     stamp wrote its sidecars first and deleted them just after stamping, so anything older
@@ -234,18 +252,29 @@ def discard_stale_sidecars(stem):
         stamp_mtime = os.path.getmtime(stem + STAMP_SUFFIX)
     except OSError:
         return                                    # no stamp -> nothing is attributable to it
-    for suff in (".eng.dubtitles.ass", ".eng.dubtitles.srt", ".dubtitles.conf.json"):
+    for suff in SIDECAR_SUFFIXES:
         p = stem + suff
         try:
             if os.path.getmtime(p) > stamp_mtime:
                 continue                          # newer than the stamp -> this run's work
-            os.remove(p)
-            log("  discarded stale-version sidecar", os.path.basename(p))
+            os.replace(p, p + STALE_SUFFIX)
+            log("  parked stale-version sidecar", os.path.basename(p))
         except OSError:
             pass
 
 
-QC_SUFFIX = ".dubtitles.qc.json"
+def parked_sidecars(stem):
+    """Basenames of this episode's parked previous output, sorted. Empty when there is none."""
+    return sorted(os.path.basename(stem + s + STALE_SUFFIX) for s in SIDECAR_SUFFIXES
+                  if os.path.exists(stem + s + STALE_SUFFIX))
+
+
+def drop_parked_sidecars(stem):
+    """Called once this run has written its own srt and conf: the parked copies were
+    insurance against a failed replacement, and the replacement landed."""
+    for suff in SIDECAR_SUFFIXES:
+        try: os.remove(stem + suff + STALE_SUFFIX)
+        except OSError: pass
 
 
 def _card_faults(text, dur):
@@ -416,12 +445,19 @@ def _cascade_infeasible(stem, fail, exc):
     except OSError: pass
     rec = qc.Recorder()
     rec.count("cascade_infeasible")
+    # What survived: on a version bump this episode's previous srt/conf are parked
+    # rather than deleted, so "poisoned" is recoverable rather than terminal. Recorded
+    # here because the sidecar is the only durable account a retired episode gets.
+    parked = parked_sidecars(stem)
     rec.event(reason="cascade_infeasible", card_index=exc.index,
               requested_shift=exc.requested, applied_shift=exc.applied,
-              residual_shift=exc.residual, audio_duration=exc.audio_duration)
+              residual_shift=exc.residual, audio_duration=exc.audio_duration,
+              retained_prior_output=parked)
     _write_qc(rec, stem)
     log(f"  cascade infeasible at card {exc.index}: {exc.residual:.3f}s of a {exc.requested:.3f}s "
         f"steal will not fit before {exc.audio_duration}s -- no subtitle written, episode poisoned")
+    if parked:
+        log(f"  previous output kept as {', '.join(parked)} -- drop the .stale suffix to recover it")
     return "cascade-infeasible"
 
 
@@ -440,7 +476,7 @@ def process(video):
     # be pure destruction (mux would then have nothing to embed until the marker is
     # cleared by hand).
     if stale_version_stamp(stamp, video) and not os.path.exists(fail):
-        discard_stale_sidecars(stem)
+        park_stale_sidecars(stem)
     if os.path.exists(stem + ".eng.dubtitles.ass"):     # assembled already -> skip (idempotent)
         return "already-ass"
     if os.environ.get("SKIP_IF_SRT", "1") == "1" and os.path.exists(stem + ".eng.dubtitles.srt"):
@@ -538,6 +574,7 @@ def process(video):
     for p in (srt, confp):
         try: os.chown(p, UID, GID)
         except OSError as e: log(f"chown failed for {p}: {e}")
+    drop_parked_sidecars(stem)    # the replacement landed -- the insurance can go
     # QC sidecar: observability only -- a write failure is logged, never fatal, since the
     # episode already generated correctly (see qc.write's docstring).
     _record_qc(rec, collapsed)

@@ -528,6 +528,69 @@ def test_poison_marked_stale_file_keeps_its_sidecars(monkeypatch, tmp_path):
     assert (tmp_path / "ep.eng.dubtitles.ass").exists()
 
 
+def test_stale_version_file_parks_its_leftover_qc_sidecar(monkeypatch, tmp_path):
+    """A superseded qc.json is last version's MEASUREMENT: left at its own path it
+    aggregates as this version's, and it was not in the suffix list at all."""
+    v = _stale_stamped(tmp_path, monkeypatch, leftovers=["ep.dubtitles.qc.json"])
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: None)
+    assert generate.process(str(v)) == "no-eng-dub"
+    assert not (tmp_path / "ep.dubtitles.qc.json").exists()
+    assert (tmp_path / "ep.dubtitles.qc.json.stale").exists()
+
+
+def _infeasible_model(monkeypatch, generate_mod):
+    monkeypatch.setattr(generate_mod, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate_mod, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setattr(generate_mod, "media_duration", lambda path: 0.5)
+    monkeypatch.setattr(generate_mod, "WMODEL", _displaced_pair_model())
+
+
+def test_a_version_bump_that_ends_infeasible_leaves_the_prior_output_recoverable(monkeypatch, tmp_path):
+    """F5. The stale-version clear-out runs BEFORE the already-srt guard, so under the
+    DEFAULT SKIP_IF_SRT=1 a version bump destroyed the previous srt and conf and only
+    THEN hit CascadeInfeasible -- ending with no srt, no conf and a permanent .fail
+    marker that retires the episode until an operator deletes it by hand. The prior
+    output must survive its own replacement failing."""
+    v = _stale_stamped(tmp_path, monkeypatch,
+                       leftovers=["ep.eng.dubtitles.srt", "ep.dubtitles.conf.json"])
+    _infeasible_model(monkeypatch, generate)
+    assert generate.process(str(v)) == "cascade-infeasible"
+    assert (tmp_path / "ep.dubtitles.fail").exists()
+    assert not (tmp_path / "ep.eng.dubtitles.srt").exists()        # still not muxable...
+    assert (tmp_path / "ep.eng.dubtitles.srt.stale").exists()      # ...but not destroyed
+    assert (tmp_path / "ep.dubtitles.conf.json.stale").exists()
+
+
+def test_the_infeasible_sidecar_records_what_survived(monkeypatch, tmp_path, capsys):
+    """"Recoverable" is only true if someone can find out. The sidecar names the parked
+    files and the log line says how to get them back."""
+    v = _stale_stamped(tmp_path, monkeypatch,
+                       leftovers=["ep.eng.dubtitles.srt", "ep.dubtitles.conf.json"])
+    _infeasible_model(monkeypatch, generate)
+    generate.process(str(v))
+    doc = json.loads((tmp_path / "ep.dubtitles.qc.json").read_text())
+    ev = [e for e in doc["events"] if e.get("reason") == "cascade_infeasible"][0]
+    assert ev["retained_prior_output"] == ["ep.dubtitles.conf.json.stale",
+                                           "ep.eng.dubtitles.srt.stale"]
+    assert "recover" in capsys.readouterr().out
+
+
+def test_a_successful_regeneration_drops_the_parked_sidecars(monkeypatch, tmp_path):
+    """The parked copies are insurance against a failed replacement, not litter: once
+    this run has written its own srt and conf they go."""
+    v = _stale_stamped(tmp_path, monkeypatch,
+                       leftovers=["ep.eng.dubtitles.ass", "ep.eng.dubtitles.srt",
+                                  "ep.dubtitles.conf.json", "ep.dubtitles.qc.json"])
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setattr(generate, "media_duration", lambda path: None)
+    monkeypatch.setattr(generate, "WMODEL", _short_card_model())
+    assert generate.process(str(v)) == "ok"
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".stale")] == []
+    assert (tmp_path / "ep.eng.dubtitles.srt").exists()
+    assert (tmp_path / "ep.dubtitles.conf.json").exists()
+
+
 def test_needs_work_false_for_a_poison_marked_stale_file(monkeypatch, tmp_path):
     """needs_work must agree with process(): a poisoned file is not work, so it must not
     drag the ~40s model load into a sweep that has nothing else to do."""
