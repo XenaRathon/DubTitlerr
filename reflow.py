@@ -40,6 +40,22 @@ CLAUSE = ",;:"
 PROB_FLOOR = 1e-4        # clamp before ln() so prob==0 doesn't give -inf
 
 
+EPS = 1e-6               # float slack for every threshold comparison. conf.json stores
+                         # 3-decimal values, so a duration re-derived from them lands a
+                         # hair either side of the constant it was set to.
+
+
+def is_short(dur: float) -> bool:
+    """True when a card is genuinely below MIN_DUR (not merely a rounding artifact)."""
+    return dur < MIN_DUR - EPS
+
+
+def card_cps(text: str, dur: float) -> float:
+    """Visible characters per second. A line break displays as a break, not a char,
+    but counts as the space it replaces."""
+    return len(text.replace("\n", " ")) / max(dur, EPS)
+
+
 def split_spans(words: list[dict]) -> list[list[dict]]:
     """Split the ordered word list into spans, breaking wherever the gap between
     one word's end and the next word's start exceeds :data:`GAP_MAX`."""
