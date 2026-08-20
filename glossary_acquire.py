@@ -25,7 +25,7 @@ import jellyfish
 import glossary
 import glossary_verify
 import mine_glossary
-from common import log
+from common import llm_chat, log
 
 _DISAMBIG_RE = re.compile(r"\s*\([^)]*\)\s*$")
 _REDUCE_RE = re.compile("[\\s" + chr(0x27) + chr(0x2019) + "-]")
@@ -201,6 +201,68 @@ def context_lines(show_dir: str, tokens: list, limit: int = CONTEXT_LINES) -> di
     return out
 
 
+def build_merge_prompt(variant: str, canonical: str, ctx_v: list, ctx_c: list, show: str) -> str:
+    """Ask whether two spellings are one entity mis-transcribed or two legitimate forms.
+
+    The model never supplies a spelling -- it answers yes/no about merging. The canonical
+    string is already fixed by the wiki, which is what keeps R1 intact at this tier."""
+    lines_v = "\n".join(f"  - {ln}" for ln in ctx_v) or "  (none)"
+    lines_c = "\n".join(f"  - {ln}" for ln in ctx_c) or "  (none)"
+    return (
+        f"Two spellings appear in the English dub of {show}. Decide whether they are the SAME "
+        f"name mis-transcribed, or two DIFFERENT legitimate forms (a nickname, a title, or a "
+        f"separate character).\n\n"
+        f'Spelling A: "{variant}"\n{lines_v}\n\n'
+        f'Spelling B: "{canonical}"\n{lines_c}\n\n'
+        f"A nickname the characters actually use is NOT a mis-transcription.\n"
+        f'Answer with JSON only: {{"same_entity": true|false, "confidence": "high"|"low"}}\n')
+
+
+def adjudicate_merge(variant: str, canonical: str, ctx_v: list, ctx_c: list, show: str) -> dict:
+    """LLM merge decision -> {'same_entity': bool, 'confidence': 'high'|'low'|'none'}."""
+    none = {"same_entity": False, "confidence": "none"}
+    try:
+        out = llm_chat(build_merge_prompt(variant, canonical, ctx_v, ctx_c, show),
+                       backend=glossary_verify.VERIFY_BACKEND, ollama_url=glossary_verify.OLLAMA,
+                       llamacpp_url=glossary_verify.VERIFY_LLAMACPP_URL,
+                       model=glossary_verify.VERIFY_MODEL,
+                       max_tokens=glossary_verify.VERIFY_MAX_TOKENS, first_line=False)
+    except Exception as e:
+        log("acquire: merge adjudication failed:", variant, e); return none
+    if not out:
+        return none
+    m = re.search(r"\{.*\}", out, re.S)
+    if not m:
+        return none
+    try:
+        d = json.loads(m.group(0))
+    except ValueError:
+        return none
+    conf = str(d.get("confidence", "none")).lower()
+    return {"same_entity": bool(d.get("same_entity")),
+            "confidence": conf if conf in ("high", "low", "none") else "low"}
+
+
+def escalate(proposals: list, ctx: dict, show: str) -> list:
+    """Re-decide share-too-close proposals with context. Other verdicts pass through.
+
+    ONLY share-too-close escalates. would-expand/short-form never does: expansion is
+    structurally wrong and no amount of evidence makes it right."""
+    out = []
+    for p in proposals:
+        if p.get("reason") != "share-too-close":
+            out.append(p); continue
+        adj = adjudicate_merge(p["variant"], p["canonical"],
+                               ctx.get(p["variant"], []), ctx.get(p["canonical"], []), show)
+        if adj["same_entity"] and adj["confidence"] == "high":
+            out.append({**p, "verdict": "apply", "reason": "context-merged"})
+        elif not adj["same_entity"] and adj["confidence"] == "high":
+            out.append({**p, "verdict": "known", "reason": "context-distinct"})
+        else:
+            out.append(p)
+    return out
+
+
 MIN_COUNT = int(os.environ.get("ACQUIRE_MIN_COUNT", "3"))
 MIN_SHARE = float(os.environ.get("ACQUIRE_MIN_SHARE", "0.80"))
 
@@ -339,6 +401,10 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     if not titles:
         return {"show": show, "wiki": api, "note": "no titles fetched", "files": files}
     proposals = propose(counts, mid, titles)
+    close = [p for p in proposals if p.get("reason") == "share-too-close"]
+    if close:
+        toks = sorted({p["variant"] for p in close} | {p["canonical"] for p in close})
+        proposals = escalate(proposals, context_lines(show_dir, toks), show)
     tier_b = {}
     for term in unmatched(counts, mid, titles):
         try:
@@ -348,6 +414,8 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
         if adj.get("confidence") == "high" and adj.get("canonical"):
             tier_b[term] = adj["canonical"]
     applied = [p for p in proposals if p["verdict"] == "apply"]
+    known = [p for p in proposals if p["verdict"] == "known"]
+    flagged = [p for p in proposals if p["verdict"] == "flag"]
     digest = hashlib.sha1("|".join(f"{p['variant']}>{p['canonical']}" for p in sorted(
         proposals, key=lambda p: p["variant"])).encode()).hexdigest()[:8]
     run_id = f"{show}:{len(titles)}:{files}:{digest}"
@@ -362,8 +430,8 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
             except OSError: pass
             return {"show": show, "wiki": api, "note": f"write-failed: {e}", "files": files}
     return {"show": show, "wiki": api, "files": files, "titles": len(titles),
-            "proposed": len(proposals), "applied": len(applied),
-            "flagged": len(proposals) - len(applied), "dry_run": not apply,
+            "proposed": len(proposals), "applied": len(applied), "known": len(known),
+            "flagged": len(flagged), "dry_run": not apply,
             "proposals": proposals, "tier_b": tier_b}
 
 
