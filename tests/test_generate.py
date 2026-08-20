@@ -555,6 +555,51 @@ def test_exact_min_dur_card_is_not_a_violation():
     assert rec.build(show="S", episode="E", stem="x")["counters"]["violations"] == 0
 
 
+def test_card_faults_is_the_single_profile_definition():
+    """B2/C4a: ONE predicate behind both the sidecar's `violations` counter and the
+    console line's `violations=`. Layout comes from reflow.layout_faults (the single
+    definition); the duration floor and ceiling are timing, not layout, so they are
+    added here rather than duplicated into reflow's layout profile."""
+    assert generate._card_faults("Fine.", 2.0) == []
+    assert generate._card_faults("Cool!", 0.40) == ["under_min_dur"]
+    assert generate._card_faults("Fine.", reflow.MAX_DUR + 1.0) == ["over_max_dur"]
+    for text, dur in (("a" * 43, 5.0), ("a\nb\nc", 5.0), ("a " * 43, 9.0), ("a" * 40, 1.0)):
+        layout = reflow.layout_faults(text, dur)
+        assert layout                                     # fixture really is invalid
+        assert generate._card_faults(text, dur)[:len(layout)] == layout
+
+
+def test_card_at_exactly_max_cps_is_not_a_fault():
+    """Every threshold comparison carries EPS -- the log line's hand-rolled cps test
+    did not, so a card could be counted by the console and not by the sidecar."""
+    assert generate._card_faults("a" * 17, 1.0) == []
+
+
+def _short_card_model():
+    """One card the timing pass cannot lift to MIN_DUR: the audio ends where it does
+    (A6's end-of-episode clamp), so it ships short -- the defect this branch exists for."""
+    return _FakeModel([_FakeSegment(0.0, 0.40, 0.05, [_FakeWord(" Cool!", 0.0, 0.40, 0.95)])])
+
+
+def test_log_line_violation_count_agrees_with_the_sidecar(monkeypatch, tmp_path, capsys):
+    """B2: the console counter validated every ceiling and no floor, so the operator-facing
+    number said 0 on the exact episodes the sidecar scored as violating."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setattr(generate, "media_duration", lambda path: 0.40)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+    monkeypatch.setattr(generate, "WMODEL", _short_card_model())
+
+    assert generate.process(str(v)) == "ok"
+    doc = json.loads((tmp_path / "ep.dubtitles.qc.json").read_text())
+    assert doc["counters"]["violations"] == 1              # the sidecar sees the floor breach
+    line = [ln for ln in capsys.readouterr().out.splitlines() if " cards=" in ln][0]
+    assert f"violations={doc['counters']['violations']}" in line
+    assert f"over_cps={doc['counters']['over_cps']}" in line
+
+
 def test_qc_sidecar_is_written_next_to_conf(monkeypatch, tmp_path):
     """Drives generate's real write path (process()), mirroring
     test_word_probs_written_to_conf_json's fake-model setup, and asserts the QC

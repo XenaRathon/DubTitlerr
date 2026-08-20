@@ -248,22 +248,34 @@ def discard_stale_sidecars(stem):
 QC_SUFFIX = ".dubtitles.qc.json"
 
 
+def _card_faults(text, dur):
+    """Every profile breach of one finished card, or [] when it is clean. B2 + C4a:
+    THE single predicate behind both the sidecar's `violations` counter and the console
+    line's `violations=` -- those were two independent implementations, and the console
+    one (hardcoded 7.001/2/42, no floor, no EPS on cps) is the check that was supposed
+    to catch 730 short cards and structurally could not.
+
+    Layout comes from reflow.layout_faults, the single definition of the display
+    profile. The duration floor and ceiling are TIMING, not layout, so they are added
+    here rather than pushed into a profile that repair.py also consumes: repair may not
+    change a card's duration, so a duration fault is not something it can be judged on."""
+    faults = reflow.layout_faults(text, dur)
+    if reflow.is_short(dur): faults.append("under_min_dur")
+    if dur > reflow.MAX_DUR + reflow.EPS: faults.append("over_max_dur")
+    return faults
+
+
 def _record_qc(rec, rows):
     """Fold the finished (start, end, text) rows into the QC recorder. Validates
     every FLOOR as well as every ceiling -- the omission that hid 730 short cards."""
     for a, b, t in rows:
         dur = b - a
-        cps = reflow.card_cps(t, dur)
-        rec.observe("cps", cps)
-        lines = t.split("\n")
-        short = reflow.is_short(dur)
-        over_cps = cps > reflow.MAX_CPS + reflow.EPS
-        over_line = any(len(ln) > reflow.MAX_LINE for ln in lines)
-        if short: rec.count("ordinary_under_min_dur_after")
-        if over_cps: rec.count("over_cps")
-        if over_line: rec.count("over_line_len")
-        if short or over_cps or over_line or dur > reflow.MAX_DUR + reflow.EPS or len(lines) > reflow.MAX_LINES:
-            rec.count("violations")
+        rec.observe("cps", reflow.card_cps(t, dur))
+        faults = _card_faults(t, dur)
+        if "under_min_dur" in faults: rec.count("ordinary_under_min_dur_after")
+        if "over_cps" in faults: rec.count("over_cps")
+        if "over_line_len" in faults: rec.count("over_line_len")
+        if faults: rec.count("violations")
 
 
 def _layout_faults(text, dur):
@@ -500,10 +512,9 @@ def process(video):
     _write_qc(rec, stem)
     low = sum(1 for c in conf if c["avg_logprob"] < -0.8 or c["no_speech_prob"] > 0.6)
     max_dur = max((b - a for a, b, _ in rows), default=0.0)
-    over_cps = sum(1 for a, b, t in rows
-                   if len(t.replace("\n", " ")) / max(b - a, 1e-6) > reflow.MAX_CPS)
-    bad = sum(1 for a, b, t in rows
-              if b - a > 7.001 or len(t.split("\n")) > 2 or any(len(ln) > 42 for ln in t.split("\n")))
+    faults = [_card_faults(t, b - a) for a, b, t in rows]   # B2: the SAME predicate the
+    over_cps = sum(1 for f in faults if "over_cps" in f)     # sidecar counts, so the number
+    bad = sum(1 for f in faults if f)                        # an operator reads cannot differ
     collapsed_n = len(kept) - len(collapsed)
     flagged = sum(1 for c in conf if c.get("flag"))
     log(f"  cards={len(rows)} name-fixes={fixes} dropped-hallucination={dropped} "
