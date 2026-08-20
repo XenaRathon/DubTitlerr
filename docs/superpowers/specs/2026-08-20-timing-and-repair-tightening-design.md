@@ -522,12 +522,31 @@ input. The self-reinforcement objection still does not apply, for the reason v4 
 candidate is never trusted, it is adjudicated against the wiki, and the wiki breaks the
 loop.
 
-**Consequence v4 did not state.** Because EVERY `glossary_acquire` candidate is
-transcript-sourced, D3's rule means no NEW term can ever auto-apply there -- only
-near-misses of already-settled terms can. On a show whose glossary is empty, the module
-now acquires nothing without a human. That is the Q20(b) decision applied honestly
-rather than a regression, but it must be stated: acquisition on a fresh show is
-human-gated by design. The self-reinforcement objection that
+**What this actually means in practice -- measured, not reasoned.** Because every
+`glossary_acquire` candidate is transcript-sourced, D3's rule means only near-misses of
+already-settled terms auto-apply there. The obvious worry is a show with no anchors, and
+it does not occur in this library:
+
+```
+glossaries: 15   with anchors: 15   empty: 0
+  One Pace 144 | JUJUTSU KAISEN 41 | My Hero Academia 32 | SPY x FAMILY 22
+  ... smallest still 10 (Darker Than Black, MHA Vigilantes, Vending Machine)
+```
+
+`mine_glossary.py` mines an embedded fansub track on essentially every title, so anchors
+are everywhere and the near-miss lane has something to anchor to. The three layers
+compose as intended:
+
+| layer | fills | gate |
+|---|---|---|
+| `mine_glossary` | bulk of `names`, from fansub tracks | count floor, auto-append |
+| `glossary_verify` | canonical dub-preferred spellings, from the wiki | cached, incremental |
+| `glossary_acquire` | the residue no fansub covers | wiki-adjudicated, D3 apply rule |
+
+So the human gate bites only on a genuinely NEW term -- a name no fansub anywhere in the
+show ever wrote, e.g. One Pace S29-S30's `Shirahoshi` and `Van Der Decken`, the case that
+motivated this feature. Those went from UNACQUIRABLE to acquirable-with-a-human-glance,
+which is the ladder working, not a restriction on it. The self-reinforcement objection that
 justifies `mine_glossary.py`'s exclusion does not apply, because a candidate from this
 source is never trusted -- it is adjudicated against the wiki. The wiki breaks the loop.
 
