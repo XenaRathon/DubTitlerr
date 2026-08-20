@@ -376,3 +376,32 @@ def test_reflow_end_to_end_two_sentences_across_a_gap_marks_no_orphans():
     segs = [{"no_speech_prob": 0.1}, {"no_speech_prob": 0.2}]
     cards = reflow.reflow(words, segs)
     assert all(c.get("orphan") is False for c in cards)
+
+
+def test_fragment_after_an_unfinished_clause_is_not_an_orphan():
+    """A short fragment trailing an UNFINISHED clause may be its continuation, so it
+    must stay mergeable. Only timing distinguishes this from the orphan case above --
+    which is why the predicate consults the predecessor's punctuation, not just gaps."""
+    prev = [{"text": "I", "start": 0.0, "end": 0.2, "prob": .9, "seg": 0},
+            {"text": "went", "start": 0.3, "end": 0.6, "prob": .9, "seg": 0}]
+    group = [{"text": "home", "start": 0.7, "end": 0.9, "prob": .9, "seg": 0}]
+    nxt = [{"text": "Later", "start": 3.0, "end": 3.4, "prob": .9, "seg": 1}]
+    assert reflow.is_orphan_group(group, nxt, prev) is False
+
+
+def test_fragment_after_a_finished_sentence_is_an_orphan():
+    """Same timing, but the predecessor is complete -- nothing can continue it."""
+    prev = [{"text": "I", "start": 0.0, "end": 0.2, "prob": .9, "seg": 0},
+            {"text": "went.", "start": 0.3, "end": 0.6, "prob": .9, "seg": 0}]
+    group = [{"text": "Wait", "start": 0.7, "end": 0.9, "prob": .9, "seg": 0}]
+    nxt = [{"text": "for", "start": 3.0, "end": 3.4, "prob": .9, "seg": 1}]
+    assert reflow.is_orphan_group(group, nxt, prev) is True
+
+
+def test_fragment_split_from_its_predecessor_by_a_pause_is_an_orphan():
+    """Unfinished predecessor, but a real pause separates them -- not a continuation."""
+    prev = [{"text": "I", "start": 0.0, "end": 0.2, "prob": .9, "seg": 0},
+            {"text": "went", "start": 0.3, "end": 0.6, "prob": .9, "seg": 0}]
+    group = [{"text": "Wait", "start": 2.0, "end": 2.2, "prob": .9, "seg": 0}]
+    nxt = [{"text": "for", "start": 5.0, "end": 5.4, "prob": .9, "seg": 1}]
+    assert reflow.is_orphan_group(group, nxt, prev) is True
