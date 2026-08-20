@@ -171,8 +171,10 @@ def test_glossary_for_missing_is_noop(tmp_path):
 
 # --- A1: llm() backend dispatch ----------------------------------------------
 
-def test_llm_dispatch_default_is_ollama(monkeypatch):
-    assert repair.REPAIR_BACKEND == "ollama"           # default, backward-compat
+def test_llm_dispatch_uses_ollama_when_that_backend_is_selected(monkeypatch):
+    # REPAIR_BACKEND is read from the environment at import, and the container sets it to
+    # llamacpp -- so asserting the module global here tested the dev shell, not dispatch.
+    monkeypatch.setattr(repair, "REPAIR_BACKEND", "ollama")
     calls = []
     monkeypatch.setattr(repair, "llm_ollama", lambda prompt, model=None: calls.append(("ollama", prompt, model)) or "ok")
     monkeypatch.setattr(repair, "llm_llamacpp", lambda prompt, model: calls.append(("llamacpp", prompt, model)) or "bad")
@@ -1076,3 +1078,13 @@ def test_a_clean_card_is_still_gated_absolutely():
 
 def test_fits_card_without_orig_stays_absolute():
     assert repair.fits_card("z" * 60, 1.0) is False
+
+
+
+def test_repair_backend_defaults_to_ollama_when_unset(monkeypatch):
+    """The backward-compat default, asserted independently of whatever the ambient
+    environment sets (the production container sets REPAIR_BACKEND=llamacpp)."""
+    import importlib
+    monkeypatch.delenv("REPAIR_BACKEND", raising=False)
+    assert importlib.reload(repair).REPAIR_BACKEND == "ollama"
+    importlib.reload(repair)          # restore ambient config for the rest of the session
