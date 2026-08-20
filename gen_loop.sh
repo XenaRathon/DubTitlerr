@@ -22,6 +22,14 @@ while :; do
     # generate so the grown dictionary applies to the episodes about to be transcribed.
     echo "#### MINE $show $(date)"
     GLOSSARY_DIR="$GLOSS_DIR" python3 /app/mine_glossary.py "$ANIME/$show" </dev/null 2>&1 || echo "  mine failed (continuing)"
+    # Acquire names the miner cannot reach: releases with no embedded fansub track leave the
+    # glossary empty for that stretch of the show. Wiki-owned canonicals only; dry-run unless
+    # ACQUIRE_APPLY=1, and failure-swallowed so it can never stall a sweep.
+    if [ -n "${ACQUIRE_APPLY:-}" ] && [ -f "$GLOSS_DIR/$show.json" ]; then
+        echo "#### ACQUIRE $show $(date)"
+        timeout 600 python3 /app/glossary_acquire.py "$GLOSS_DIR/$show.json" "$ANIME/$show" \
+            --apply </dev/null 2>&1 || echo "  acquire skipped (continuing)"
+    fi
     GLOSS="$GLOSS_DIR/$show.json"; [ -f "$GLOSS" ] || GLOSS=""
     # wiki-verify the (mined/updated) glossary: canonical, dub-preferred spellings. Incremental +
     # cached, and timeout-bounded + failure-swallowed so a slow/down wiki never stalls the sweep.
