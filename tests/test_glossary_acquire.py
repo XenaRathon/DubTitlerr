@@ -377,3 +377,22 @@ def test_acquire_reports_tier_b_adjudications(tmp_path, monkeypatch):
                         lambda *a, **k: {"canonical": "Zunisha", "confidence": "high", "dub_note": "dub"})
     rep = ga.acquire(str(gp), str(tmp_path), apply=False)
     assert rep["tier_b"] == {"Zunesha": "Zunisha"}
+
+
+def test_context_lines_returns_real_lines_per_token(tmp_path):
+    _write_conf(tmp_path, "Ep01", ["Hey Smokey.", "Smoker is here.", "Nothing relevant."])
+    ctx = ga.context_lines(str(tmp_path), ["Smokey", "Smoker"])
+    assert ctx["Smokey"] == ["Hey Smokey."]
+    assert ctx["Smoker"] == ["Smoker is here."]
+
+
+def test_context_lines_caps_at_the_limit(tmp_path):
+    _write_conf(tmp_path, "Ep01", ["Smokey one.", "Smokey two.", "Smokey three."])
+    ctx = ga.context_lines(str(tmp_path), ["Smokey"], limit=2)
+    assert len(ctx["Smokey"]) == 2
+
+
+def test_context_lines_matches_whole_words_only(tmp_path):
+    _write_conf(tmp_path, "Ep01", ["Shirahoshi waited."])
+    ctx = ga.context_lines(str(tmp_path), ["Hoshi"])
+    assert ctx["Hoshi"] == []

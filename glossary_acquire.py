@@ -147,14 +147,12 @@ def _srt_text(path: str) -> str:
     return "\n".join(out)
 
 
-def harvest(show_dir: str) -> tuple[dict, set, int]:
-    """(counts, midsentence, n_files) of capitalised tokens across the show's own output.
+def _iter_episode_texts(show_dir: str):
+    """(stem, text) for each episode, conf.json preferred over the SRT fallback.
 
-    conf.json is preferred; the SRT is the fallback for episodes whose conf is gone (104 of
-    696 stamped episodes at time of writing). One source per episode stem, never both."""
-    counter: dict = {}
-    mid: set = set()
-    stems_done, files = set(), 0
+    One source per episode stem, never both: sorted(fs) puts '.dubtitles.conf.json'
+    before '.eng.dubtitles.srt' for a shared stem because 'd' < 'e'."""
+    stems_done = set()
     for dp, _dns, fs in os.walk(show_dir):
         for fn in sorted(fs):
             if fn.endswith(CONF_SUFFIX):
@@ -165,9 +163,42 @@ def harvest(show_dir: str) -> tuple[dict, set, int]:
                 continue
             if stem in stems_done or not text:
                 continue
-            stems_done.add(stem); files += 1
-            mine_glossary.mine_text(text, counter, mid)
+            stems_done.add(stem)
+            yield stem, text
+
+
+def harvest(show_dir: str) -> tuple[dict, set, int]:
+    """(counts, midsentence, n_files) of capitalised tokens across the show's own output.
+
+    conf.json is preferred; the SRT is the fallback for episodes whose conf is gone (104 of
+    696 stamped episodes at time of writing). One source per episode stem, never both."""
+    counter: dict = {}
+    mid: set = set()
+    files = 0
+    for _stem, text in _iter_episode_texts(show_dir):
+        files += 1
+        mine_glossary.mine_text(text, counter, mid)
     return counter, mid, files
+
+
+CONTEXT_LINES = int(os.environ.get("ACQUIRE_CONTEXT_LINES", "4"))
+
+
+def context_lines(show_dir: str, tokens: list, limit: int = CONTEXT_LINES) -> dict:
+    """Up to `limit` real transcript lines containing each token, whole-word matched.
+
+    Whole-word is required: 'Hoshi' must not match inside 'Shirahoshi', or the evidence
+    shown to the model (and to the human) would be about a different name."""
+    pats = {t: re.compile(r"\b" + re.escape(t) + r"\b") for t in tokens}
+    out: dict = {t: [] for t in tokens}
+    for _stem, text in _iter_episode_texts(show_dir):
+        for ln in text.splitlines():
+            for t, pat in pats.items():
+                if len(out[t]) < limit and pat.search(ln):
+                    out[t].append(ln.strip())
+        if all(len(v) >= limit for v in out.values()):
+            return out
+    return out
 
 
 MIN_COUNT = int(os.environ.get("ACQUIRE_MIN_COUNT", "3"))
