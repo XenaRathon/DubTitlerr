@@ -49,6 +49,7 @@ from faster_whisper import WhisperModel
 import glossary
 import hallucination
 import ordering
+import qc
 import reflow
 from common import STAMP_SUFFIX, VIDEO_EXTS, load_extras, out_for, read_stamp, stale_version_stamp, stamp_valid, ts_srt
 
@@ -219,6 +220,27 @@ def discard_stale_sidecars(stem):
             pass
 
 
+QC_SUFFIX = ".dubtitles.qc.json"
+
+
+def _record_qc(rec, rows):
+    """Fold the finished (start, end, text) rows into the QC recorder. Validates
+    every FLOOR as well as every ceiling -- the omission that hid 730 short cards."""
+    for a, b, t in rows:
+        dur = b - a
+        cps = reflow.card_cps(t, dur)
+        rec.observe("cps", cps)
+        lines = t.split("\n")
+        short = reflow.is_short(dur)
+        over_cps = cps > reflow.MAX_CPS + reflow.EPS
+        over_line = any(len(ln) > reflow.MAX_LINE for ln in lines)
+        if short: rec.count("ordinary_under_min_dur_after")
+        if over_cps: rec.count("over_cps")
+        if over_line: rec.count("over_line_len")
+        if short or over_cps or over_line or dur > reflow.MAX_DUR + reflow.EPS or len(lines) > reflow.MAX_LINES:
+            rec.count("violations")
+
+
 def process(video):
     stem = os.path.splitext(video)[0]
     # The version-aware stamp (common.stamp_valid) is the ONLY "already muxed" guard.
@@ -315,6 +337,17 @@ def process(video):
     for p in (srt, confp):
         try: os.chown(p, UID, GID)
         except OSError as e: log(f"chown failed for {p}: {e}")
+    # QC sidecar: observability only -- a write failure is logged, never fatal, since the
+    # episode already generated correctly (see qc.write's docstring).
+    rec = qc.Recorder()
+    _record_qc(rec, rows)
+    rec.count("cards_after", len(rows))
+    show = os.environ.get("SHOW_NAME", "") or GLOSS.get("show", "") or "unknown_show"
+    doc = rec.build(show=show, episode=os.path.basename(stem), stem=stem,
+                     glossary_sha=_glossary_version(), pipeline_version=_model_version())
+    qcp = out_for(stem + QC_SUFFIX)
+    if not qc.write(qcp, doc):
+        log(f"  qc sidecar write failed for {qcp}")
     low = sum(1 for c in conf if c["avg_logprob"] < -0.8 or c["no_speech_prob"] > 0.6)
     max_dur = max((b - a for a, b, _ in rows), default=0.0)
     over_cps = sum(1 for a, b, t in rows
