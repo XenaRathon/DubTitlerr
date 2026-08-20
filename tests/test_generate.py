@@ -22,6 +22,8 @@ import types
 import pytest
 
 import common
+import qc
+import reflow
 
 
 def _stub_faster_whisper():
@@ -483,3 +485,43 @@ def test_needs_work_false_for_a_poison_marked_stale_file(monkeypatch, tmp_path):
     v = _stale_stamped(tmp_path, monkeypatch, leftovers=["ep.eng.dubtitles.ass"])
     (tmp_path / "ep.dubtitles.fail").write_text("")
     assert needs_work(str(v)) is False
+
+
+# --- QC: MIN_DUR floor in the violation counter, and the sidecar write -------
+
+def test_violation_counter_now_has_a_min_dur_floor(tmp_path):
+    rows = [(0.0, 0.02, "Cool!")]                 # 0.02s, 294 cps
+    rec = qc.Recorder()
+    generate._record_qc(rec, rows)
+    c = rec.build(show="S", episode="E", stem="x")["counters"]
+    assert c["ordinary_under_min_dur_after"] == 1
+    assert c["violations"] == 1                   # floor breach IS a violation
+
+
+def test_exact_min_dur_card_is_not_a_violation():
+    rows = [(11.51, round(11.51 + reflow.MIN_DUR, 3), "ok")]
+    rec = qc.Recorder()
+    generate._record_qc(rec, rows)
+    assert rec.build(show="S", episode="E", stem="x")["counters"]["violations"] == 0
+
+
+def test_qc_sidecar_is_written_next_to_conf(monkeypatch, tmp_path):
+    """Drives generate's real write path (process()), mirroring
+    test_word_probs_written_to_conf_json's fake-model setup, and asserts the QC
+    sidecar lands next to conf.json with cards_after populated."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+
+    words = [_FakeWord(" Hello", 0.0, 0.3, 0.95), _FakeWord(" there.", 0.3, 0.9, 0.10)]
+    seg = _FakeSegment(0.0, 0.9, 0.05, words)
+    monkeypatch.setattr(generate, "WMODEL", _FakeModel([seg]))
+
+    assert generate.process(str(v)) == "ok"
+    qc_path = tmp_path / "ep.dubtitles.qc.json"
+    assert qc_path.exists()
+    doc = json.loads(qc_path.read_text())
+    assert doc["counters"]["cards_after"] == 1
+    assert doc["stem"] == str(tmp_path / "ep")
