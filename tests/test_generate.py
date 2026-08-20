@@ -1127,3 +1127,96 @@ def test_generate_and_repair_share_one_profile_definition():
     then judged by another."""
     for text, dur in [("ok", 3.0), ("x" * 90, 1.0), ("a\nb\nc", 2.0), ("y" * 50, 0.9)]:
         assert generate._layout_faults(text, dur) == reflow.layout_faults(text, dur)
+
+
+# --- H1: the srt and conf writes are atomic -----------------------------------
+#
+# process() clears the in-flight .dubtitles.fail marker the moment transcription
+# finishes -- BEFORE either write. A plain open(path, "w") truncates immediately, so a
+# crash in that window leaves a TRUNCATED srt with no marker on disk, and the default
+# SKIP_IF_SRT=1 already-srt guard reads that as a finished episode on the next sweep:
+# mux then embeds a cut-off subtitle. Same rule the stale-sidecar parking fix follows --
+# never drop known-good output before the replacement exists.
+
+
+def _two_card_model():
+    return _FakeModel([_FakeSegment(0.0, 5.0, 0.05,
+                                    [_FakeWord(" Hello there friend.", 0.0, 2.0, 0.9),
+                                     _FakeWord(" And here is a second line.", 3.0, 5.0, 0.9)])])
+
+
+def _generation_setup(monkeypatch, tmp_path, model):
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setattr(generate, "media_duration", lambda path: None)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+    monkeypatch.setattr(generate, "WMODEL", model)
+    return v
+
+
+def _leftover_temps(tmp_path):
+    return sorted(p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp"))
+
+
+def test_a_crash_midway_through_the_srt_write_leaves_no_truncated_srt(monkeypatch, tmp_path):
+    v = _generation_setup(monkeypatch, tmp_path, _two_card_model())
+    real, calls = generate.ts_srt, []
+
+    def boom(t):
+        calls.append(t)
+        if len(calls) > 3: raise RuntimeError("disk full")   # card 1 written, card 2 half-written
+        return real(t)
+
+    monkeypatch.setattr(generate, "ts_srt", boom)
+    with pytest.raises(RuntimeError):
+        generate.process(str(v))
+    assert len(calls) == 4, "the write did not reach the second card -- test no longer reproduces"
+    assert not (tmp_path / "ep.eng.dubtitles.srt").exists()
+    assert _leftover_temps(tmp_path) == []
+
+
+def test_a_crash_midway_through_the_conf_write_leaves_no_truncated_conf(monkeypatch, tmp_path):
+    """json.dump is patched rather than fed unserialisable data because the C encoder
+    can emit the whole document in one chunk -- which would leave no partial file and so
+    would not reproduce the defect at all."""
+    v = _generation_setup(monkeypatch, tmp_path, _two_card_model())
+
+    def half_dump(obj, f, **kw):
+        f.write(json.dumps(obj)[:20]); raise RuntimeError("disk full")
+
+    monkeypatch.setattr(generate.json, "dump", half_dump)
+    with pytest.raises(RuntimeError):
+        generate.process(str(v))
+    assert (tmp_path / "ep.eng.dubtitles.srt").exists()      # the srt got all the way through
+    assert not (tmp_path / "ep.dubtitles.conf.json").exists()
+    assert _leftover_temps(tmp_path) == []
+
+
+def test_a_failed_regeneration_does_not_destroy_the_previous_srt(monkeypatch, tmp_path):
+    """The atomicity that matters in the sweep: replacing an episode's output must not
+    leave it with less than it had. os.replace swaps or does nothing."""
+    v = _generation_setup(monkeypatch, tmp_path, _two_card_model())
+    prior = tmp_path / "ep.eng.dubtitles.srt"
+    prior.write_text("1\n00:00:00,000 --> 00:00:02,000\nprevious good output\n\n")
+    monkeypatch.setattr(generate, "ts_srt", lambda t: (_ for _ in ()).throw(RuntimeError("disk full")))
+    with pytest.raises(RuntimeError):
+        generate.process(str(v))
+    assert prior.read_text() == "1\n00:00:00,000 --> 00:00:02,000\nprevious good output\n\n"
+    assert _leftover_temps(tmp_path) == []
+
+
+def test_both_writes_still_chown_and_land_on_the_happy_path(monkeypatch, tmp_path):
+    """The replace must not cost the files their ownership fix-up, and the chown must
+    address the FINAL path, not the temp one."""
+    v = _generation_setup(monkeypatch, tmp_path, _two_card_model())
+    chowned = []
+    monkeypatch.setattr(generate.os, "chown", lambda p, u, g: chowned.append(p))
+    assert generate.process(str(v)) == "ok"
+    srt, confp = str(tmp_path / "ep.eng.dubtitles.srt"), str(tmp_path / "ep.dubtitles.conf.json")
+    assert chowned == [srt, confp]
+    assert os.path.exists(srt) and os.path.exists(confp)
+    assert json.loads(open(confp).read())
+    assert open(srt).read().startswith("1\n")
+    assert _leftover_temps(tmp_path) == []

@@ -408,6 +408,38 @@ def _revalidate_after_correction(rec, cards):
                   visible_chars=len(flat), cps=round(reflow.card_cps(text, dur), 2))
 
 
+def _atomic_write(path, render, mode=0o644):
+    """Write ``path`` through a temp file in the same directory plus os.replace -- the
+    discipline qc.write and glossary_acquire._write_json already follow.
+
+    process() clears the in-flight .dubtitles.fail marker as soon as transcription
+    finishes, BEFORE the srt and conf are written, so a plain open(path, "w") that dies
+    mid-loop leaves a TRUNCATED file with no marker behind it: the default SKIP_IF_SRT=1
+    already-srt guard reads that as a finished episode on the next sweep and mux embeds a
+    cut-off subtitle. Same rule as the stale-sidecar parking fix one function away --
+    never drop known-good output before the replacement exists. os.replace either swaps
+    or does nothing, and a failure leaves neither a partial target nor a temp file.
+
+    The exception is deliberately NOT swallowed (unlike qc.write's): the srt and conf are
+    the episode's product, not observability, and a run that lost them must not report ok.
+
+    ``mode`` restores what the old open() produced under the container's umask; mkstemp
+    creates 0600, which would strip group/other read from every file we ship."""
+    d = os.path.dirname(path) or "."
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(path) + ".", suffix=".tmp")
+        with os.fdopen(fd, "w") as f:
+            render(f)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+        tmp = None
+    finally:
+        if tmp is not None:
+            try: os.unlink(tmp)
+            except OSError: pass
+
+
 def _write_qc(rec, stem):
     """Build and write the sidecar. Observability only: a write failure is logged, never
     fatal (see qc.write's docstring), so this is safe on the failure path too."""
@@ -572,11 +604,11 @@ def process(video):
             row["word_probs"] = c["word_probs"]  # optional/backward-compat (V2 A6/A7)
         conf.append(row)
     srt = out_for(stem + SUFFIX); confp = out_for(stem + ".dubtitles.conf.json")
-    with open(srt, "w") as f:
+    def _render_srt(f):
         for i, (a, b, t) in enumerate(rows, 1):
             f.write(f"{i}\n{ts_srt(a)} --> {ts_srt(b)}\n{t}\n\n")
-    with open(confp, "w") as f:
-        json.dump(conf, f)
+    _atomic_write(srt, _render_srt)                 # both atomic: the in-flight marker is
+    _atomic_write(confp, lambda f: json.dump(conf, f))   # already gone by here (see helper)
     for p in (srt, confp):
         try: os.chown(p, UID, GID)
         except OSError as e: log(f"chown failed for {p}: {e}")
