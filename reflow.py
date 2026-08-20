@@ -171,7 +171,14 @@ class CascadeInfeasible(Exception):
     card's start at or past the end of the media. Carries the accounting -- with
     ``requested == applied + residual`` -- so the caller can log exactly how much did
     not fit. Emitting a knowingly invalid card would be worse than skipping the
-    episode, so time_cards() raises instead of truncating."""
+    episode, so time_cards() raises instead of truncating.
+
+    The accounting is CUMULATIVE over the cascade: ``applied`` is the displacement it
+    already realized across every card it hopped, ``residual`` is the push that would
+    not fit at card ``index``, and ``requested`` is their sum. It is deliberately not
+    ``original_ask - remaining``: a zero-surplus card needs a BIGGER push than it
+    received (its end has to move too), so the leftover is not a slice of the original
+    ask and that subtraction goes negative once the cascade hops."""
 
     def __init__(self, index: int, requested: float, applied: float, residual: float,
                  audio_duration: float | None = None):
@@ -188,11 +195,12 @@ def _cascade(st: list[float], en: list[float], k: int, shift: float,
     MIN_DUR first (it merely gets shorter, its END DOES NOT MOVE, and the cascade
     terminates), then the gap behind it, then the next card. Mutates ``st``/``en`` in
     place and returns (applied, hops); ``hops`` counts the cards actually displaced."""
-    requested, hops = shift, 0
+    requested, applied, hops = shift, 0.0, 0
     while shift > EPS:
         if audio_duration is not None and st[k] + shift >= audio_duration - EPS:
-            raise CascadeInfeasible(k, requested, requested - shift, shift, audio_duration)
+            raise CascadeInfeasible(k, applied + shift, applied, shift, audio_duration)
         st[k] += shift
+        applied += shift
         hops += 1
         if en[k] - st[k] >= MIN_DUR - EPS:      # its own surplus covered it; end unmoved
             return requested, hops
@@ -354,6 +362,19 @@ def is_orphan_group(group: list[dict], nxt: list[dict] | None, prev: list[dict] 
             or group[0]["start"] - prev[-1]["end"] > GAP_MAX)       # ...or a pause splits them
 
 
+def _merge_fits(p: list[dict], g: list[dict]) -> bool:
+    """True when ``g`` is a runt that ``p`` may absorb: the merged card must satisfy the
+    whole profile (gap, chars, duration, reading speed) on its MERGED form."""
+    if not is_short(_dur(g)):
+        return False
+    merged_text = _text(p) + " " + _text(g)
+    span = g[-1]["end"] - p[0]["start"]
+    return (g[0]["start"] - p[-1]["end"] <= GAP_MAX + EPS
+            and len(merged_text) <= MAX_CHARS
+            and span <= MAX_DUR + EPS
+            and card_cps(merged_text, span) <= MAX_CPS + EPS)
+
+
 def merge_runts(groups: list[list[dict]]) -> tuple[list[list[dict]], list[dict]]:
     """Absorb a too-short group into its predecessor when the merged card would satisfy
     the whole profile. Runs at GROUP level, before time_cards(), so timings are
@@ -368,19 +389,22 @@ def merge_runts(groups: list[list[dict]]) -> tuple[list[list[dict]], list[dict]]
     merges: list[dict] = []
     for i, g in enumerate(groups):
         nxt = groups[i + 1] if i + 1 < len(groups) else None
-        if out and is_short(_dur(g)) and not is_orphan_group(g, nxt, out[-1]):
-            p = out[-1]
-            merged_text = _text(p) + " " + _text(g)
-            span = g[-1]["end"] - p[0]["start"]
-            if (g[0]["start"] - p[-1]["end"] <= GAP_MAX + EPS
-                    and len(merged_text) <= MAX_CHARS
-                    and span <= MAX_DUR + EPS
-                    and card_cps(merged_text, span) <= MAX_CPS + EPS):
-                merges.append({"reason": "runt_backward_merge",
-                               "into": len(out) - 1,      # index, not id(): CPython
-                               "absorbed": _text(g)})     # reuses ids after GC
-                out[-1] = p + g
-                continue
+        if out and _merge_fits(out[-1], g) and not is_orphan_group(g, nxt, out[-1]):
+            merges.append({"reason": "runt_backward_merge",
+                           "into": len(out) - 1,          # index, not id(): CPython
+                           "absorbed": _text(g)})         # reuses ids after GC
+            out[-1] = out[-1] + g
+            # Absorbing a runt can leave the TARGET still short while making it cheap
+            # enough (cps falls as the span grows) to join ITS predecessor -- a pairing
+            # the left-to-right pass already declined and would never revisit. Settle it
+            # here, or a second merge_runts() would merge again and the fixed point the
+            # docstring promises would be a lie.
+            while len(out) > 1 and _merge_fits(out[-2], out[-1]) and not is_orphan_group(out[-1], nxt, out[-2]):
+                absorbed = out.pop()
+                merges.append({"reason": "runt_backward_merge", "into": len(out) - 1,
+                               "absorbed": _text(absorbed)})
+                out[-1] = out[-1] + absorbed
+            continue
         out.append(g)
     return out, merges
 
