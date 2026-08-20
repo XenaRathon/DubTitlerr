@@ -213,39 +213,44 @@ class CascadeInfeasible(Exception):
 
 
 def _cascade(st: list[float], en: list[float], k: int, shift: float,
-             audio_duration: float | None) -> tuple[float, list[int], list[int]]:
+             audio_duration: float | None) -> tuple[float, list[int], list[int], dict[int, float]]:
     """Push card ``k`` -- and its successors in turn, if it cannot swallow the whole
     shift -- ``shift`` seconds later. Absorption order: the card's own SURPLUS above
     MIN_DUR first (it merely gets shorter, its END DOES NOT MOVE, and the cascade
     terminates), then the gap behind it, then the next card. Mutates ``st``/``en`` in
-    place and returns (applied, displaced, shortened).
+    place and returns (applied, displaced, shortened, dur_before).
 
     ``displaced`` lists every card whose START moved; ``shortened`` the subset that also
     LOST duration. The two are separate QC counters (B1: "a card that lost duration is a
     different event from one that started later"), and neither is recoverable from the
     finished timings -- a hop whose end moved with its start is indistinguishable
-    afterwards from one that was merely displaced -- so the cascade records them here."""
+    afterwards from one that was merely displaced -- so the cascade records them here.
+
+    ``dur_before`` maps each touched card to its duration as this hop found it, which is
+    likewise unrecoverable afterwards: a displaced card whose end had to move ends up at
+    exactly MIN_DUR whatever it was before. B1's event schema names it."""
     requested, applied = shift, 0.0
     displaced: list[int] = []
     shortened: list[int] = []
+    durs: dict[int, float] = {}
     while shift > EPS:
         if audio_duration is not None and st[k] + shift >= audio_duration - EPS:
             raise CascadeInfeasible(k, applied + shift, applied, shift, audio_duration)
         dur_before = en[k] - st[k]
         st[k] += shift
         applied += shift
-        displaced.append(k)
+        displaced.append(k); durs[k] = dur_before
         if en[k] - st[k] >= MIN_DUR - EPS:      # its own surplus covered it; end unmoved
             shortened.append(k)                 # ...so the whole shift came out of its duration
-            return requested, displaced, shortened
+            return requested, displaced, shortened, durs
         en[k] = st[k] + MIN_DUR                 # no surplus: its end has to move too
         if MIN_DUR < dur_before - EPS:          # a runt is LENGTHENED here, not shortened
             shortened.append(k)
         if k + 1 == len(st):                    # last card: nothing left to push
-            return requested, displaced, shortened
+            return requested, displaced, shortened, durs
         shift = max(en[k] + MIN_GAP - st[k + 1], 0.0)   # what the gap behind it cannot absorb
         k += 1
-    return requested, displaced, shortened
+    return requested, displaced, shortened, durs
 
 
 def time_cards(groups: list[list[dict]],
@@ -282,11 +287,12 @@ def time_cards(groups: list[list[dict]],
             shift = need + MIN_GAP - st[j + 1]      # covers deficit AND extension in one measure
             if shift > EPS:
                 deficit = max(en[j] + MIN_GAP - st[j + 1], 0.0)
-                applied, displaced, shortened = _cascade(st, en, j + 1, shift, audio_duration)
+                applied, displaced, shortened, durs = _cascade(st, en, j + 1, shift, audio_duration)
                 records.append({"reason": "forward_steal", "index": j,
                                 "requested_shift": shift, "applied_shift": applied,
                                 "residual_shift": shift - applied, "hops": len(displaced),
                                 "displaced": displaced, "shortened": shortened,
+                                "dur_before": durs,
                                 "preexisting_gap_deficit": deficit, "unfixable": False})
         en[j] = need
     # the tail has no successor to steal from -- only the media itself bounds it
@@ -297,7 +303,7 @@ def time_cards(groups: list[list[dict]],
             records.append({"reason": "audio_truncated_tail", "index": n - 1,
                             "requested_shift": short_by, "applied_shift": 0.0,
                             "residual_shift": short_by, "hops": 0,
-                            "displaced": [], "shortened": [],
+                            "displaced": [], "shortened": [], "dur_before": {},
                             "preexisting_gap_deficit": 0.0, "unfixable": True})
     return list(zip(st, en)), records
 

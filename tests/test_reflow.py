@@ -636,6 +636,20 @@ def test_the_whole_stream_satisfies_the_profile_after_stealing():
         assert r["hops"] >= 1
 
 
+def test_a_cascade_record_carries_the_duration_each_hop_found():
+    """B1's event schema names dur_before, and it is unrecoverable from the finished
+    timings: a displaced card whose end had to move ends at exactly MIN_DUR whatever it
+    was before. The cascade is the only place that still knows."""
+    groups = [[mkword("Oh.", 0.0, 0.10, seg=0)],
+              [mkword("A much longer line here.", 0.15, 3.0, seg=0)]]
+    times, records = reflow.time_cards(groups)
+    assert len(records) == 1
+    r = records[0]
+    assert set(r["dur_before"]) == set(r["displaced"])
+    assert r["dur_before"][1] == pytest.approx(2.85, abs=reflow.EPS)   # 3.0 - 0.15, pre-steal
+    assert times[1][1] - times[1][0] < r["dur_before"][1]              # it really lost time
+
+
 def test_a_stream_that_needs_nothing_records_no_cascades():
     groups = [[mkword("Hello there.", 0.0, 1.2, seg=0)], [mkword("General Kenobi.", 2.0, 3.4, seg=0)]]
     times, records = reflow.time_cards(groups)

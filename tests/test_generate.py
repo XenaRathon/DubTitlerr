@@ -1220,3 +1220,71 @@ def test_both_writes_still_chown_and_land_on_the_happy_path(monkeypatch, tmp_pat
     assert json.loads(open(confp).read())
     assert open(srt).read().startswith("1\n")
     assert _leftover_temps(tmp_path) == []
+
+
+# --- H2: per-card timing events -- the sidecar must answer "which ones" -------
+#
+# B1: "counters answer how many; quantiles answer how bad; events answer which ones."
+# The counters and quantiles shipped; the events did not. _record_cascades held the
+# displaced/shortened index lists and folded them into counters and quantiles only, so a
+# sidecar recorded that 431 cards moved and how far but never WHICH.
+
+
+def _cascade_cards(n, disp):
+    """n cards, card i displaced by disp(i) seconds from its spoken onset."""
+    return [{"start": i * 10.0 + disp(i), "end": i * 10.0 + disp(i) + 2.0,
+             "source_start": i * 10.0, "source_end": i * 10.0 + 1.5} for i in range(n)]
+
+
+def test_every_displaced_card_that_matters_gets_an_event(monkeypatch, tmp_path):
+    """End-to-end: a runt steals from its successor, and the sidecar names the successor
+    rather than only counting it."""
+    v = _generation_setup(monkeypatch, tmp_path, _displaced_pair_model())
+    assert generate.process(str(v)) == "ok"
+    doc = json.loads((tmp_path / "ep.dubtitles.qc.json").read_text())
+    evs = [e for e in doc["events"] if e.get("reason") == "cascade_shift"]
+    assert len(evs) == 1
+    e = evs[0]
+    assert e["card_index"] == 1
+    assert sorted(e["effects"]) == ["displaced", "shortened"]   # ONE event, both effects
+    assert e["start"] > e["source_start"]
+    assert e["displacement"] == pytest.approx(e["start"] - e["source_start"], abs=1e-3)
+    assert e["dur_before"] > e["dur_after"]                     # the neighbour really lost time
+    assert e["dur_after"] == pytest.approx(e["end"] - e["start"], abs=1e-3)
+    assert e["hops"] >= 1
+    assert doc["counters"]["displaced"] == 1 and doc["counters"]["shortened_by_neighbour"] == 1
+
+
+def test_a_card_that_is_both_displaced_and_shortened_gets_one_event_not_two():
+    rec = qc.Recorder()
+    cards = _cascade_cards(4, lambda i: 0.5 if i else 0.0)
+    generate._record_cascades(rec, cards, [{"unfixable": False, "index": 0, "hops": 3,
+                                            "displaced": [1, 2, 3], "shortened": [2],
+                                            "dur_before": {1: 2.5, 2: 4.0, 3: 2.5}}])
+    evs = [e for e in rec.build("s", "e", "st")["events"] if e["reason"] == "cascade_shift"]
+    assert [e["card_index"] for e in evs] == [1, 2, 3]
+    both = next(e for e in evs if e["card_index"] == 2)
+    assert sorted(both["effects"]) == ["displaced", "shortened"]
+    assert sorted(evs[0]["effects"]) == ["displaced"]
+    assert both["dur_before"] == 4.0
+    assert rec.counters["displaced"] == 3 and rec.counters["shortened_by_neighbour"] == 1
+
+
+def test_cascade_events_are_capped_at_the_worst_offenders():
+    """qc.MAX_EVENTS is 500 and Recorder.event() keeps the FIRST N, so one event per
+    moved card (431 on a real episode) crowds out the rare classes that exist in no
+    counter at all. Only the worst N by displacement are emitted; the quantiles still
+    carry the whole distribution."""
+    n = 120
+    rec = qc.Recorder()
+    cards = _cascade_cards(n, lambda i: i * 0.01)
+    generate._record_cascades(rec, cards, [{"unfixable": False, "index": 0, "hops": 2,
+                                            "displaced": list(range(1, n)), "shortened": [],
+                                            "dur_before": dict.fromkeys(range(1, n), 2.5)}])
+    doc = rec.build("s", "e", "st")
+    evs = [e for e in doc["events"] if e["reason"] == "cascade_shift"]
+    assert len(evs) == generate.MAX_CASCADE_EVENTS < n - 1
+    assert [e["card_index"] for e in evs] == list(range(n - 1, n - 1 - len(evs), -1))
+    assert rec.priority_events == []            # that tier is reserved for layout exceptions
+    assert rec.counters["displaced"] == n - 1   # counters and quantiles stay complete
+    assert doc["quantiles"]["displacement"]["max"] == pytest.approx((n - 1) * 0.01, abs=1e-6)
