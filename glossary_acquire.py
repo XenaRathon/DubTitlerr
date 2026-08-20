@@ -186,7 +186,7 @@ def decide(variant: str, variant_count: int, canonical: str, canonical_count: in
     if not midsentence:
         return {"verdict": "flag", "reason": "sentence-initial-only", "bound": 0.0}
     if is_expansion(variant, canonical):
-        return {"verdict": "flag", "reason": "would-expand", "bound": 0.0}
+        return {"verdict": "known", "reason": "short-form", "bound": 0.0}
     if variant == canonical:
         return {"verdict": "flag", "reason": "already-canonical", "bound": 0.0}
     if canonical_count == 0:
@@ -248,7 +248,10 @@ def apply_proposals(gloss: dict, proposals: list, run_id: str) -> dict:
     fixes = g.setdefault("hard_fixes", {})
     acquired = g.setdefault("acquired", {})
     flagged = g.setdefault("flagged", {})
+    known = set(g.get("known", []))
     for p in proposals:
+        if p["verdict"] == "known":
+            known.add(p["variant"]); continue
         if p["verdict"] != "apply":
             flagged[p["variant"]] = p["reason"]
             continue
@@ -259,6 +262,10 @@ def apply_proposals(gloss: dict, proposals: list, run_id: str) -> dict:
                                   "reason": p["reason"], "run": run_id}
     if not flagged:
         g.pop("flagged", None)
+    if known:
+        g["known"] = sorted(known)
+    else:
+        g.pop("known", None)
     return g
 
 
