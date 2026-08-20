@@ -210,7 +210,8 @@ def test_apply_proposals_records_flagged_with_its_reason():
               "reason": "share-too-close", "bound": 0.409}]
     g = ga.apply_proposals({"show": "One Pace"}, props, run_id="run1")
     assert "Smokey" not in g.get("hard_fixes", {})
-    assert g["flagged"]["Smokey"] == "share-too-close"
+    assert g["flagged"]["Smokey"]["reason"] == "share-too-close"
+    assert g["flagged"]["Smokey"]["canonical"] == "Smoker"
 
 
 def test_apply_proposals_records_known_and_never_flags_it():
@@ -457,3 +458,47 @@ def test_acquire_report_counts_apply_known_and_flag_separately(tmp_path, monkeyp
     _write_conf(tmp_path, "Ep01", ["I saw Something today."])
     rep = ga.acquire(str(gp), str(tmp_path), apply=False)
     assert rep["applied"] == 1 and rep["known"] == 1 and rep["flagged"] == 1
+
+
+def test_review_items_normalises_legacy_string_entries():
+    gloss = {"flagged": {"Yuji": "no-match",
+                         "Deccan": {"reason": "share-too-close", "canonical": "Decken",
+                                    "context": ["after Deccan."]}}}
+    items = {i["term"]: i for i in ga.review_items(gloss)}
+    assert items["Yuji"]["reason"] == "no-match" and items["Yuji"]["context"] == []
+    assert items["Deccan"]["canonical"] == "Decken"
+
+
+def test_record_decision_accept_writes_the_fix_and_clears_the_flag():
+    gloss = {"flagged": {"Deccan": {"reason": "share-too-close", "canonical": "Decken"}}}
+    g = ga.record_decision(gloss, "Deccan", accept=True)
+    assert g["hard_fixes"]["Deccan"] == "Decken"
+    assert "Deccan" not in g.get("flagged", {})
+    assert g["acquired"]["Deccan"]["reason"] == "human-approved"
+
+
+def test_record_decision_reject_marks_it_known_so_it_is_never_asked_again():
+    gloss = {"flagged": {"Smokey": {"reason": "share-too-close", "canonical": "Smoker"}}}
+    g = ga.record_decision(gloss, "Smokey", accept=False)
+    assert g["known"] == ["Smokey"]
+    assert "Smokey" not in g.get("flagged", {})
+    assert "Smokey" not in g.get("hard_fixes", {})
+
+
+def test_acquire_apply_persists_tier_b_into_flagged_as_no_wiki_match(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    orig = json.dumps({"show": "One Pace"})
+    gp.write_text(orig)
+    _write_conf(tmp_path, "Ep01", ["I saw Zunesha walk.", "I saw Zunesha again.", "I saw Zunesha thrice."] * 3)
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Shirahoshi"])
+    monkeypatch.setattr(ga.glossary_verify, "adjudicate",
+                        lambda *a, **k: {"canonical": "Zunisha", "confidence": "high", "dub_note": "dub"})
+    ga.acquire(str(gp), str(tmp_path), apply=False)
+    assert gp.read_text() == orig                        # dry run never writes tier_b either
+    rep = ga.acquire(str(gp), str(tmp_path), apply=True)
+    assert rep["tier_b"] == {"Zunesha": "Zunisha"}
+    g = json.loads(gp.read_text())
+    assert g["flagged"]["Zunesha"]["reason"] == "no-wiki-match"
+    assert g["flagged"]["Zunesha"]["canonical"] == "Zunisha"
+    assert "I saw Zunesha walk." in g["flagged"]["Zunesha"]["context"]
