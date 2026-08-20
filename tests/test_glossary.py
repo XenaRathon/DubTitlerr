@@ -90,8 +90,22 @@ def test_name_suspect_flags_unknown_capitalized_proper_noun():
     assert glossary.name_suspect("I saw Krieg coming", gloss(names=["Luffy"]))
 
 
-def test_name_suspect_flags_lowercase_near_name_misspelling():
+def test_name_suspect_flags_lowercase_near_name_misspelling(monkeypatch):
+    """Pin the word set: this assertion's result depends on whether the OS wordlist is
+    installed. It passed locally only because /usr/share/dict/american-english is absent
+    here and present (104k words) in the container -- so it was testing the dev box, not
+    the behaviour."""
+    monkeypatch.setattr(glossary, "_WORDS", {"we", "beat", "today", "the", "saw"})
     assert glossary.name_suspect("we beat zorro today", gloss(names=["Zoro"]))
+
+
+def test_name_suspect_does_not_flag_a_misspelling_that_is_a_real_english_word(monkeypatch):
+    """The C1 English-word gate, doing its job -- and the real production behaviour for
+    this exact pair: `zorro` IS in the container's dictionary, so a Whisper mishear of
+    Zoro as Zorro is deliberately NOT corrected. Recorded so the gate's cost is visible
+    rather than discovered."""
+    monkeypatch.setattr(glossary, "_WORDS", {"we", "beat", "today", "zorro"})
+    assert not glossary.name_suspect("we beat zorro today", gloss(names=["Zoro"]))
 
 
 def test_name_suspect_ignores_clean_line_of_english_and_known_names():
