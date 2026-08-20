@@ -18,7 +18,7 @@ MAX_EVENTS = 500          # bound the detail; quantiles stay complete regardless
 COUNTERS = ("cards_before", "cards_after", "ordinary_under_min_dur_before",
             "ordinary_under_min_dur_after", "orphan_under_min_dur_after",
             "orphan_candidates", "orphan_candidates_fixed",
-            "over_cps", "over_line_len", "violations", "merged_backward", "stolen",
+            "over_cps", "over_line_len", "over_chars", "violations", "merged_backward", "stolen",
             "shortened_by_neighbour", "displaced", "unfixable_runts",
             "cascade_infeasible", "layout_exceptions", "flagged", "low_conf")
 
