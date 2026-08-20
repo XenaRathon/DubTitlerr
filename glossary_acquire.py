@@ -347,7 +347,10 @@ def apply_proposals(gloss: dict, proposals: list, run_id: str) -> dict:
         if p["verdict"] == "known":
             known.add(p["variant"]); continue
         if p["verdict"] != "apply":
-            flagged[p["variant"]] = p["reason"]
+            flagged[p["variant"]] = {"reason": p["reason"], "canonical": p["canonical"],
+                                     "variant_count": p["variant_count"], "canonical_count": p["canonical_count"],
+                                     "score": p["score"], "bound": round(p.get("bound", 0.0), 3),
+                                     "context": p.get("context", [])}
             continue
         fixes[p["variant"]] = p["canonical"]
         acquired[p["variant"]] = {"canonical": p["canonical"], "count": p["variant_count"],
@@ -376,6 +379,45 @@ def revert(gloss: dict, run_id: str | None = None) -> dict:
         if fixes.get(variant) == meta.get("canonical"):
             fixes.pop(variant, None)
         acquired.pop(variant, None)
+    return g
+
+
+def review_items(gloss: dict) -> list:
+    """The pending review queue, normalised.
+
+    glossary_verify writes bare strings; this module writes objects. Both load, so the
+    queue that has been accumulating unread since the verifier shipped is reviewable too."""
+    out = []
+    for term, meta in sorted((gloss.get("flagged") or {}).items()):
+        if isinstance(meta, str):
+            meta = {"reason": meta}
+        out.append({"term": term, "reason": meta.get("reason", ""),
+                    "canonical": meta.get("canonical", ""),
+                    "variant_count": meta.get("variant_count", 0),
+                    "canonical_count": meta.get("canonical_count", 0),
+                    "bound": meta.get("bound", 0.0), "context": meta.get("context", [])})
+    return out
+
+
+def record_decision(gloss: dict, term: str, accept: bool) -> dict:
+    """Apply one human decision and drop the term from the queue for good."""
+    g = json.loads(json.dumps(gloss))
+    meta = (g.get("flagged") or {}).get(term)
+    if isinstance(meta, str):
+        meta = {"reason": meta}
+    meta = meta or {}
+    canon = meta.get("canonical", "")
+    if accept and canon:
+        g.setdefault("hard_fixes", {})[term] = canon
+        g.setdefault("acquired", {})[term] = {"canonical": canon, "count": meta.get("variant_count", 0),
+                                              "canonical_count": meta.get("canonical_count", 0),
+                                              "score": meta.get("score", 0.0), "bound": meta.get("bound", 0.0),
+                                              "reason": "human-approved", "run": "review"}
+    else:
+        g["known"] = sorted(set(g.get("known", [])) | {term})
+    g.get("flagged", {}).pop(term, None)
+    if not g.get("flagged"):
+        g.pop("flagged", None)
     return g
 
 
@@ -420,11 +462,19 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     digest = hashlib.sha1("|".join(f"{p['variant']}>{p['canonical']}" for p in sorted(
         proposals, key=lambda p: p["variant"])).encode()).hexdigest()[:8]
     run_id = f"{show}:{len(titles)}:{files}:{digest}"
-    if apply and proposals:
+    if apply and (proposals or tier_b):
         tmp = gloss_path + ".tmp"
         try:
+            out = apply_proposals(gloss, proposals, run_id)
+            if tier_b:
+                tctx = context_lines(show_dir, list(tier_b))
+                flagged = out.setdefault("flagged", {})
+                for term, canon in tier_b.items():
+                    flagged[term] = {"reason": "no-wiki-match", "canonical": canon,
+                                     "variant_count": counts.get(term, 0), "canonical_count": 0,
+                                     "bound": 0.0, "context": tctx.get(term, [])}
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(apply_proposals(gloss, proposals, run_id), f, indent=2, ensure_ascii=False)
+                json.dump(out, f, indent=2, ensure_ascii=False)
             os.replace(tmp, gloss_path)
         except Exception as e:
             try: os.remove(tmp)
@@ -443,7 +493,23 @@ def main():
     ap.add_argument("--apply", action="store_true", help="write changes (default: dry run)")
     ap.add_argument("--wiki", default=None, help="override the wiki API base")
     ap.add_argument("--revert", action="store_true", help="undo previously acquired fixes and exit")
+    ap.add_argument("--review", action="store_true", help="walk the pending queue interactively")
     a = ap.parse_args()
+    if a.review:
+        g = json.load(open(a.glossary, encoding="utf-8"))
+        for item in review_items(g):
+            log(f"\n{item['term']}  ->  {item['canonical'] or '(no canonical)'}   [{item['reason']}]")
+            log(f"  seen {item['variant_count']}x vs canonical {item['canonical_count']}x, bound {item['bound']:.3f}")
+            for ln in item["context"]:
+                log(f"    | {ln}")
+            ans = input("  accept this fix? [y/N/q] ").strip().lower()
+            if ans == "q":
+                break
+            g = record_decision(g, item["term"], accept=(ans == "y"))
+        if a.apply:
+            json.dump(g, open(a.glossary, "w"), indent=2, ensure_ascii=False)
+        log(json.dumps({"reviewed": True, "written": a.apply, "pending": len(g.get("flagged", {}))}))
+        return
     if a.revert:
         g = json.load(open(a.glossary, encoding="utf-8"))
         out = revert(g)
