@@ -12,7 +12,11 @@ import json
 import os
 import tempfile
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2   # v2: over_chars counter added; cards_before,
+                     # ordinary_under_min_dur_before, flagged and low_conf went from
+                     # permanently-zero to populated. An aggregator must not compare a
+                     # v1 sidecar to a v2 one and read the difference as a change in the
+                     # pipeline rather than in what was being counted.
 MAX_EVENTS = 500          # bound the detail; quantiles stay complete regardless
 
 COUNTERS = ("cards_before", "cards_after", "ordinary_under_min_dur_before",

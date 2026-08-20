@@ -303,16 +303,22 @@ def _record_before(rec, cards, merges):
     counts what shipped, so the pair spans every pass that can change the card count --
     and a retired episode's sidecar is no longer indistinguishable from a flawless one.
 
-    ``ordinary_under_min_dur_before`` counts the runts the timing layer had to fix:
-    every merge absorbed a group that was short BY DEFINITION (_merge_fits gates on
-    is_short, and an orphan never merges backward), plus every card whose SOURCE span --
-    the spoken duration, which no display-timing pass moves -- is still short. That is
-    exactly the population against which ordinary_under_min_dur_after == 0 is the
-    acceptance assertion."""
+    ``ordinary_under_min_dur_before`` counts the runts the timing layer had to fix, in
+    three disjoint parts: every ABSORBED group (short by definition -- _merge_fits gates
+    on is_short and an orphan never merges backward); every merge TARGET that was itself
+    short before it grew (`target_was_short`, captured at merge time because a merged
+    span covers both groups and nothing downstream can recover it); and every surviving
+    card whose SOURCE span -- the spoken duration, which no display pass moves -- is
+    still short. Omitting the middle term undercounted by ~10% and always downward,
+    which flatters exactly the before/after comparison this metric exists to support."""
     rec.count("cards_before", len(cards) + len(merges))
-    rec.count("ordinary_under_min_dur_before", len(merges) + sum(
-        1 for c in cards
-        if not c.get("orphan") and reflow.is_short(c["source_end"] - c["source_start"])))
+    # merge_runts() counts the original short non-orphan groups at entry and stamps the
+    # total on every record; with no merges nothing moved, so the survivors' SOURCE spans
+    # (which no display pass touches) are the same population.
+    rec.count("ordinary_under_min_dur_before",
+              merges[0]["short_groups_before"] if merges else
+              sum(1 for c in cards
+                  if not c.get("orphan") and reflow.is_short(c["source_end"] - c["source_start"])))
 
 
 def _record_qc(rec, cards):
@@ -574,7 +580,6 @@ def process(video):
     for p in (srt, confp):
         try: os.chown(p, UID, GID)
         except OSError as e: log(f"chown failed for {p}: {e}")
-    drop_parked_sidecars(stem)    # the replacement landed -- the insurance can go
     # QC sidecar: observability only -- a write failure is logged, never fatal, since the
     # episode already generated correctly (see qc.write's docstring).
     _record_qc(rec, collapsed)
@@ -590,6 +595,10 @@ def process(video):
     flagged = sum(1 for c in conf if c.get("flag"))
     rec.count("low_conf", low); rec.count("flagged", flagged)   # both were logged and
     _write_qc(rec, stem)                                        # then thrown away
+    # Only now is the replacement COMPLETE -- srt, conf AND sidecar. Dropping the parked
+    # copies before the sidecar exists would leave a window where neither generation's
+    # qc.json is on disk.
+    drop_parked_sidecars(stem)
     max_dur = max((b - a for a, b, _ in rows), default=0.0)
     faults = [_card_faults(t, b - a) for a, b, t in rows]   # B2: the SAME predicate the
     over_cps = sum(1 for f in faults if "over_cps" in f)     # sidecar counts, so the number

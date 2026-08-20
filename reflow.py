@@ -423,6 +423,15 @@ def merge_runts(groups: list[list[dict]]) -> tuple[list[list[dict]], list[dict]]
     to the forward-steal task. Sentence-final punctuation on the predecessor is NOT a
     gate here -- only a preference downstream can weigh it; this function must still
     merge "Done." + "Next." when the profile fits."""
+    # The number of ORIGINAL short, non-orphan groups -- the population the acceptance
+    # assertion (ordinary_under_min_dur_after == 0) is measured against. Counted ONCE
+    # here because it is unrecoverable afterwards: a merged span covers both its parts,
+    # and the settle loop can absorb a group that was itself a merge target, so deriving
+    # it from the records double-counts. Carried on every record so no index is special.
+    census = sum(1 for i, g in enumerate(groups)
+                 if is_short(_dur(g))
+                 and not is_orphan_group(g, groups[i + 1] if i + 1 < len(groups) else None,
+                                         groups[i - 1] if i else None))
     out: list[list[dict]] = []
     merges: list[dict] = []
     for i, g in enumerate(groups):
@@ -430,7 +439,8 @@ def merge_runts(groups: list[list[dict]]) -> tuple[list[list[dict]], list[dict]]
         if out and _merge_fits(out[-1], g) and not is_orphan_group(g, nxt, out[-1]):
             merges.append({"reason": "runt_backward_merge",
                            "into": len(out) - 1,          # index, not id(): CPython
-                           "absorbed": _text(g)})         # reuses ids after GC
+                           "absorbed": _text(g),          # reuses ids after GC
+                           "short_groups_before": census})
             out[-1] = out[-1] + g
             # Absorbing a runt can leave the TARGET still short while making it cheap
             # enough (cps falls as the span grows) to join ITS predecessor -- a pairing
@@ -440,7 +450,8 @@ def merge_runts(groups: list[list[dict]]) -> tuple[list[list[dict]], list[dict]]
             while len(out) > 1 and _merge_fits(out[-2], out[-1]) and not is_orphan_group(out[-1], nxt, out[-2]):
                 absorbed = out.pop()
                 merges.append({"reason": "runt_backward_merge", "into": len(out) - 1,
-                               "absorbed": _text(absorbed)})
+                               "absorbed": _text(absorbed),
+                               "short_groups_before": census})
                 out[-1] = out[-1] + absorbed
             continue
         out.append(g)
