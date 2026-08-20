@@ -257,6 +257,63 @@ def _record_qc(rec, rows):
             rec.count("violations")
 
 
+def _layout_faults(text, dur):
+    """Which profile constraints ``text`` violates at ``dur`` seconds; an empty list means valid.
+    Line lengths are integer character counts, so only the cps comparison needs EPS."""
+    lines = text.split("\n")
+    reasons = []
+    if len(lines) > reflow.MAX_LINES: reasons.append("over_lines")
+    if any(len(ln) > reflow.MAX_LINE for ln in lines): reasons.append("over_line_len")
+    if reflow.card_cps(text, dur) > reflow.MAX_CPS + reflow.EPS: reasons.append("over_cps")
+    return reasons
+
+
+def _revalidate_after_correction(rec, cards):
+    """C7: re-wrap each card's corrected text through reflow.wrap_balance -- the SAME
+    function reflow() already used, so generation has exactly one wrapping algorithm --
+    then validate the whole profile (line count, line length, and cps at the card's
+    actual duration) on the RESULT. Mutates cards in place.
+
+    Order matters: this runs after collapse_runs (which moves a collapsed card's end,
+    hence its cps) and before srt/conf are written, so the text validated is the text
+    written. Correcting per line preserved the pre-correction break; nothing re-checked
+    the profile afterwards.
+
+    The trigger is MEASURED invalidity, never a growth proxy. Wrapping feasibility
+    depends on where word boundaries fall, not on total length: a length-neutral
+    substitution can redistribute characters until no split satisfies both lines (an
+    84-char card whose boundaries land at 20/40/60 has none), and +2 characters on a
+    0.83s card adds ~2.4 cps, enough to cross 17 cps by itself.
+
+    An invalid card KEEPS its correction -- the right name beats the layout profile --
+    and records a layout_exception event. No splitter is built: splitting needs
+    re-timing, which would put layout downstream of timing and give two layout
+    algorithms that can disagree.
+
+    Roughly 1% of cards are unwrappable with no correction involved (82-84 chars with no
+    word boundary near the midpoint, so wrap_balance falls through to its over-long
+    fallback). Those are reported as events with caused_by_correction=False, and are
+    already counted by _record_qc's over_line_len/over_cps; the layout_exceptions COUNTER
+    is C7's revisit trigger (post_glossary_layout_invalid) and counts only what the
+    correction broke."""
+    for c in cards:
+        dur = c["end"] - c["start"]
+        c["text"] = text = reflow.wrap_balance(c["text"].replace("\n", " "))
+        reasons = _layout_faults(text, dur)
+        if not reasons: continue
+        before = c.get("pre_correction_text", text)
+        pre = _layout_faults(reflow.wrap_balance(before.replace("\n", " ")), dur)
+        caused = bool(set(reasons) - set(pre))
+        if caused: rec.count("layout_exceptions")
+        lines = text.split("\n")
+        flat = text.replace("\n", " ")
+        rec.event(reason="layout_exception", start=round(c["start"], 3), end=round(c["end"], 3),
+                  text=flat, layout_exception_reason=reasons, pre_existing_reason=pre,
+                  caused_by_correction=caused, line_count=len(lines),
+                  line_lengths=[len(ln) for ln in lines], max_line_length=max(len(ln) for ln in lines),
+                  visible_chars=len(flat), cps=round(reflow.card_cps(text, dur), 2))
+
+
 def _write_qc(rec, stem):
     """Build and write the sidecar. Observability only: a write failure is logged, never
     fatal (see qc.write's docstring), so this is safe on the failure path too."""
@@ -387,10 +444,15 @@ def process(video):
             fixed, k = glossary.correct(ln, GLOSS); lines.append(fixed); n += k
         fixes += n
         kc = dict(c); kc["text"] = "\n".join(lines)
+        kc["pre_correction_text"] = c["text"]   # C7 tells a broken layout from an inherited one
         kc["flag"] = hallucination.flag_reason(c)  # weaker single signal -> kept but marked
         kc["word_probs"] = _card_word_probs(c, words)  # V2 A6: per-word confidence for repair
         kept.append(kc)
     collapsed = hallucination.collapse_runs(kept)
+    # C7: layout was decided before the glossary rewrote the text -- re-wrap and
+    # re-validate the corrected cards before anything is written.
+    rec = qc.Recorder()
+    _revalidate_after_correction(rec, collapsed)
     rows = [(c["start"], c["end"], c["text"]) for c in collapsed]
     conf = []
     for c in collapsed:
@@ -419,7 +481,6 @@ def process(video):
         except OSError as e: log(f"chown failed for {p}: {e}")
     # QC sidecar: observability only -- a write failure is logged, never fatal, since the
     # episode already generated correctly (see qc.write's docstring).
-    rec = qc.Recorder()
     _record_qc(rec, rows)
     rec.count("cards_after", len(rows))
     # Deferred from Task 5: orphan candidates are quarantined, not fixed -- count them

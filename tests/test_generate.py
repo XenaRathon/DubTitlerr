@@ -22,6 +22,7 @@ import types
 import pytest
 
 import common
+import glossary
 import qc
 import reflow
 
@@ -742,3 +743,130 @@ def test_cascade_infeasible_still_writes_the_qc_sidecar(monkeypatch, tmp_path):
     e = ev[0]
     assert e["residual_shift"] > 0
     assert e["requested_shift"] == pytest.approx(e["applied_shift"] + e["residual_shift"], abs=reflow.EPS)
+
+
+# --- C7 (task 10): post-glossary re-wrap and validate -------------------------
+#
+# Layout is decided by reflow() BEFORE glossary.correct() rewrites the text, so a
+# correction can invalidate a layout nothing re-checks. The pass re-wraps through the
+# SAME wrapping function and validates the whole profile on the RESULT -- measured
+# invalidity, never a growth proxy, because wrapping feasibility depends on where word
+# boundaries fall, not on total length.
+
+# 84 chars, word boundaries at 20/41/62 -> a legal 42/41 split exists.
+_WRAPPABLE_84 = " ".join(("a" * 20, "b" * 20, "c" * 20, "d" * 21))
+# 84 chars again -- length-NEUTRAL, boundaries moved to 20/45/62 -> no split fits 2x42.
+_UNWRAPPABLE_84 = " ".join(("a" * 20, "b" * 24, "c" * 16, "d" * 21))
+
+
+def _card(text, start=0.0, end=6.0, before=None):
+    return {"start": start, "end": end, "text": text,
+            "pre_correction_text": text if before is None else before}
+
+
+def _layout_events(rec):
+    return [e for e in rec.events if e.get("reason") == "layout_exception"]
+
+
+def test_length_neutral_correction_that_breaks_wrapping_is_detected():
+    """Same total length, different word boundaries -> no legal 2x42 split. The
+    correction is KEPT (the right name beats the layout profile) and the card is
+    recorded as a layout exception."""
+    assert len(_WRAPPABLE_84) == len(_UNWRAPPABLE_84) == reflow.MAX_CHARS
+    rec = qc.Recorder()
+    cards = [_card(_UNWRAPPABLE_84, before=_WRAPPABLE_84)]
+    generate._revalidate_after_correction(rec, cards)
+    assert rec.counters["layout_exceptions"] == 1
+    assert cards[0]["text"].replace("\n", " ") == _UNWRAPPABLE_84   # kept, not reverted
+    e = _layout_events(rec)[0]
+    assert e["layout_exception_reason"] == ["over_line_len"]
+    assert e["caused_by_correction"] is True
+    assert max(e["line_lengths"]) > reflow.MAX_LINE
+    assert e["cps"] == pytest.approx(reflow.MAX_CHARS / 6.0, abs=0.01)
+    assert e["start"] == 0.0 and e["end"] == 6.0
+
+
+def test_two_char_growth_on_a_short_card_records_over_cps():
+    """+2 characters on a MIN_DUR card adds ~2.4 cps -- enough to cross 17 cps on its
+    own, with the line length never in question."""
+    before, after = "Meet the shojo", "Meet the Shoujou"
+    dur = reflow.MIN_DUR
+    assert reflow.card_cps(before, dur) <= reflow.MAX_CPS + reflow.EPS
+    assert reflow.card_cps(after, dur) > reflow.MAX_CPS + reflow.EPS
+    rec = qc.Recorder()
+    cards = [_card(after, start=1.0, end=1.0 + dur, before=before)]
+    generate._revalidate_after_correction(rec, cards)
+    assert rec.counters["layout_exceptions"] == 1
+    assert cards[0]["text"] == after
+    e = _layout_events(rec)[0]
+    assert e["layout_exception_reason"] == ["over_cps"]
+    assert e["caused_by_correction"] is True
+    assert e["cps"] > reflow.MAX_CPS
+
+
+def test_a_card_already_unwrappable_before_correction_is_not_blamed_on_the_glossary():
+    """~1% of cards have no word boundary near the midpoint and wrap_balance falls
+    through to its over-long fallback with no glossary involved. Those are reported,
+    but they must not bump the counter C7's revisit trigger reads."""
+    rec = qc.Recorder()
+    cards = [_card(_UNWRAPPABLE_84)]                       # correction changed nothing
+    generate._revalidate_after_correction(rec, cards)
+    assert rec.counters["layout_exceptions"] == 0
+    e = _layout_events(rec)[0]
+    assert e["caused_by_correction"] is False
+    assert e["pre_existing_reason"] == ["over_line_len"]
+
+
+def test_a_valid_corrected_card_is_rewrapped_and_records_nothing():
+    rec = qc.Recorder()
+    cards = [_card("x" * 41 + " " + "y" * 42)]             # 84 chars, splits 41/42
+    generate._revalidate_after_correction(rec, cards)
+    assert cards[0]["text"] == "x" * 41 + "\n" + "y" * 42
+    assert rec.counters["layout_exceptions"] == 0
+    assert _layout_events(rec) == []
+
+
+def test_rewrap_uses_the_one_wrapping_algorithm_not_the_per_line_correction():
+    """Correcting per line preserves the OLD break. Re-wrapping the joined text through
+    reflow.wrap_balance is what makes generation have exactly one wrapping algorithm."""
+    joined = "the quickquick brown fox jumps over lazy dogs and zzz runs away fast today"
+    per_line = "the quickquick brown fox jumps over lazy\ndogs and zzz runs away fast today"
+    rec = qc.Recorder()
+    cards = [_card(per_line, end=8.0)]
+    generate._revalidate_after_correction(rec, cards)
+    assert cards[0]["text"] == reflow.wrap_balance(joined)
+    assert cards[0]["text"] != per_line
+
+
+def _one_card_model(tokens, step=0.35):
+    words, t = [], 0.0
+    for w in tokens:
+        words.append(_FakeWord(" " + w, t, t + step, 0.95)); t += step
+    return _FakeModel([_FakeSegment(0.0, t, 0.05, words)])
+
+
+def test_the_text_validated_is_the_text_written(monkeypatch, tmp_path):
+    """End to end: the srt and conf.json carry the re-wrapped corrected text, and the
+    qc sidecar's exception (if any) describes that same text."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+    monkeypatch.setattr(generate, "GLOSS",
+                        glossary.load_dict({"hard_fixes": {"quick": "quickquick"}}))
+    toks = "the quick brown fox jumps over lazy dogs and zzz runs away fast today".split()
+    monkeypatch.setattr(generate, "WMODEL", _one_card_model(toks))
+
+    assert generate.process(str(v)) == "ok"
+    srt = (tmp_path / "ep.eng.dubtitles.srt").read_text()
+    body = srt.split("\n", 2)[2].strip()                   # index + timestamps stripped
+    assert "quickquick" in body
+    assert body == reflow.wrap_balance(body.replace("\n", " "))   # canonical wrap
+    conf = json.loads((tmp_path / "ep.dubtitles.conf.json").read_text())
+    assert conf[0]["text"] == body.replace("\n", " ")
+    assert "pre_correction_text" not in conf[0]        # C7 bookkeeping stays out of the sidecar
+    doc = json.loads((tmp_path / "ep.dubtitles.qc.json").read_text())
+    for e in doc["events"]:
+        if e.get("reason") == "layout_exception":
+            assert e["text"] == body.replace("\n", " ")
