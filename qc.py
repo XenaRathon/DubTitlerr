@@ -93,7 +93,8 @@ def write(path, doc):
         fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
         with os.fdopen(fd, "w") as f:
             json.dump(doc, f, indent=1)
-        os.replace(tmp, path)
+        os.chmod(tmp, 0o644)          # mkstemp gives 0600; this sidecar exists to be READ
+        os.replace(tmp, path)         # later, library-wide, by whoever aggregates it
         return True
     except Exception:
         if tmp is not None:

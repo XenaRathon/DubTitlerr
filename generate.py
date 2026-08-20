@@ -449,6 +449,11 @@ def _write_qc(rec, stem):
     qcp = out_for(stem + QC_SUFFIX)
     if not qc.write(qcp, doc):
         log(f"  qc sidecar write failed for {qcp}")
+        return
+    # Match every other sidecar's ownership. This one exists to be read library-wide
+    # later; root-owned it is unreadable over the share by whoever aggregates it.
+    try: os.chown(qcp, UID, GID)
+    except OSError: pass
 
 
 MAX_CASCADE_EVENTS = 25   # per episode: the worst displacements, not one per moved card
@@ -641,8 +646,8 @@ def process(video):
             f.write(f"{i}\n{ts_srt(a)} --> {ts_srt(b)}\n{t}\n\n")
     _atomic_write(srt, _render_srt)                 # both atomic: the in-flight marker is
     _atomic_write(confp, lambda f: json.dump(conf, f))   # already gone by here (see helper)
-    for p in (srt, confp):
-        try: os.chown(p, UID, GID)
+    for p in (srt, confp):            # the qc sidecar is chowned in _write_qc, after it
+        try: os.chown(p, UID, GID)    # exists
         except OSError as e: log(f"chown failed for {p}: {e}")
     # QC sidecar: observability only -- a write failure is logged, never fatal, since the
     # episode already generated correctly (see qc.write's docstring).
