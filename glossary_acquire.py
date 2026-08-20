@@ -239,15 +239,16 @@ def adjudicate_merge(variant: str, canonical: str, ctx_v: list, ctx_c: list, sho
     except ValueError:
         return none
     conf = str(d.get("confidence", "none")).lower()
-    return {"same_entity": bool(d.get("same_entity")),
+    return {"same_entity": d.get("same_entity") is True,
             "confidence": conf if conf in ("high", "low", "none") else "low"}
 
 
 def escalate(proposals: list, ctx: dict, show: str) -> list:
     """Re-decide share-too-close proposals with context. Other verdicts pass through.
 
-    ONLY share-too-close escalates. would-expand/short-form never does: expansion is
-    structurally wrong and no amount of evidence makes it right."""
+    ONLY share-too-close escalates. below-floor, sentence-initial-only, already-canonical,
+    english-word and short-form never do: none of those verdicts is evidence-shaped, and
+    short-form (an expansion) is structurally wrong -- no amount of context evidence redeems it."""
     out = []
     for p in proposals:
         if p.get("reason") != "share-too-close":

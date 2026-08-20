@@ -415,6 +415,19 @@ def test_adjudicate_merge_is_a_noop_when_the_llm_is_down(monkeypatch):
     assert ga.adjudicate_merge("a", "b", ["x"], ["y"], "S") == {"same_entity": False, "confidence": "none"}
 
 
+@pytest.mark.parametrize("raw,expect_merge", [
+    ('{"same_entity": true, "confidence": "high"}', True),
+    ('{"same_entity": false, "confidence": "high"}', False),
+    ('{"same_entity": "no", "confidence": "high"}', False),
+    ('{"same_entity": "false", "confidence": "high"}', False),
+    ('{"same_entity": "true", "confidence": "high"}', False),
+    ('{"same_entity": 1, "confidence": "high"}', False),
+])
+def test_adjudicate_merge_requires_a_literal_boolean(monkeypatch, raw, expect_merge):
+    monkeypatch.setattr(ga, "llm_chat", lambda *a, **k: raw)
+    assert ga.adjudicate_merge("Smokey", "Smoker", ["x"], ["y"], "S")["same_entity"] is expect_merge
+
+
 def test_tier_c_runs_only_for_share_too_close(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(ga, "adjudicate_merge",
