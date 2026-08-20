@@ -451,24 +451,56 @@ def _write_qc(rec, stem):
         log(f"  qc sidecar write failed for {qcp}")
 
 
+MAX_CASCADE_EVENTS = 25   # per episode: the worst displacements, not one per moved card
+
+
 def _record_cascades(rec, cards, cascades):
     """Fold time_cards()'s per-cascade records into the recorder. The records are
     positional over the PRE-filter card list -- reflow() emits exactly one card per group
     -- so a displaced/shortened index there addresses cards[i] here. Counters count CARDS
     (B1), so overlapping cascades (one can reach into the next one's span) are unioned
-    rather than summed; cascade_depth is per CASCADE, one observation each."""
+    rather than summed; cascade_depth is per CASCADE, one observation each.
+
+    B1 promises three answers: "counters answer how many; quantiles answer how bad;
+    events answer which ones". The third one needs an event per affected card, because
+    neither a count of 431 nor a p99 displacement can name a card anyone can go and look
+    at. ONE event per card carrying an effect LIST, never one per effect: the counters
+    keep displaced and shortened_by_neighbour deliberately separate, and the same cascade
+    routinely does both to the same card."""
     displaced, shortened = set(), set()
+    hops, dur_before = {}, {}
     for r in cascades:
         if r["unfixable"]:                      # the tail clamp: nothing left to steal from
             rec.count("unfixable_runts"); continue
         rec.count("stolen")                     # the runt at r["index"] took the time
         rec.observe("cascade_depth", r["hops"])
         displaced.update(r["displaced"]); shortened.update(r["shortened"])
+        for i in r["displaced"]:                # first cascade to touch a card saw its true
+            dur_before.setdefault(i, r["dur_before"].get(i))    # "before"; cascades run in order
+            hops[i] = max(hops.get(i, 0), r["hops"])
     rec.count("displaced", len(displaced))
     rec.count("shortened_by_neighbour", len(shortened))
-    for i in sorted(displaced):
-        if i < len(cards):
-            rec.observe("displacement", cards[i]["start"] - cards[i]["source_start"])
+    moved = {i for i in displaced | shortened if i < len(cards)}
+    disp = {i: cards[i]["start"] - cards[i]["source_start"] for i in moved}
+    for i in sorted(displaced & moved):
+        rec.observe("displacement", disp[i])
+    # WORST N ONLY. qc.MAX_EVENTS is 500 and Recorder.event() keeps the FIRST ones, so an
+    # event per moved card (431 on a measured episode) would evict the rare classes that
+    # exist in no counter at all. The quantiles above already carry the whole
+    # distribution; the events only have to name the offenders. Not priority=True either:
+    # that tier is reserved for correction-introduced layout exceptions.
+    for i in sorted(moved, key=lambda i: (-disp[i], i))[:MAX_CASCADE_EVENTS]:
+        c, d0 = cards[i], dur_before.get(i)
+        rec.event(reason="cascade_shift", card_index=i,
+                  effects=(["displaced"] if i in displaced else []) +
+                          (["shortened"] if i in shortened else []),
+                  start=round(c["start"], 3), end=round(c["end"], 3),
+                  # the audio window is the durable identity: card_index is positional
+                  # over the pre-filter list, and hallucination dropping renumbers it.
+                  source_start=round(c["source_start"], 3), source_end=round(c["source_end"], 3),
+                  displacement=round(disp[i], 3), hops=hops.get(i, 0),
+                  dur_before=None if d0 is None else round(d0, 3),
+                  dur_after=round(c["end"] - c["start"], 3))
 
 
 def _cascade_infeasible(stem, fail, exc):
