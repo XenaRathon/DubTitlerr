@@ -632,7 +632,7 @@ def test_the_whole_stream_satisfies_the_profile_after_stealing():
         assert c - b >= reflow.MIN_GAP - reflow.EPS
     assert records
     for r in records:
-        assert r["requested_shift"] == pytest.approx(r["applied_shift"] + r["residual_shift"], abs=reflow.EPS)
+        assert r["requested_shift"] > reflow.EPS
         assert r["hops"] >= 1
 
 
@@ -648,6 +648,29 @@ def test_a_cascade_record_carries_the_duration_each_hop_found():
     assert set(r["dur_before"]) == set(r["displaced"])
     assert r["dur_before"][1] == pytest.approx(2.85, abs=reflow.EPS)   # 3.0 - 0.15, pre-steal
     assert times[1][1] - times[1][0] < r["dur_before"][1]              # it really lost time
+
+
+def test_a_successful_steal_records_only_what_it_can_measure():
+    """applied_shift and residual_shift were constants wearing meaningful names. _cascade
+    returns its ORIGINAL request on every success path, so every forward_steal record
+    carried applied == requested and residual == 0.0 -- zero nonzero residuals over
+    thousands of generated streams. A future aggregate reporter would read them and
+    conclude "steals always fully fit", a claim the fields are incapable of making.
+
+    They stay on CascadeInfeasible, where the two really do differ and the identity is a
+    live invariant rather than an arithmetic restatement."""
+    times, records = reflow.time_cards(_mixed_corpus())
+    assert records
+    for r in records:
+        assert "applied_shift" not in r
+        assert "residual_shift" not in r
+        assert r["requested_shift"] > reflow.EPS and r["hops"] >= 1
+    groups = [[mkword("Oh.", 0.0, 0.02, seg=0)], [mkword("And then this.", 0.05, 0.9, seg=0)]]
+    with pytest.raises(reflow.CascadeInfeasible) as ei:
+        reflow.time_cards(groups, audio_duration=0.5)
+    e = ei.value
+    assert e.residual > reflow.EPS and e.applied >= 0.0
+    assert e.requested == pytest.approx(e.applied + e.residual, abs=reflow.EPS)
 
 
 def test_a_stream_that_needs_nothing_records_no_cascades():

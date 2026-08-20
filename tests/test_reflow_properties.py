@@ -234,6 +234,8 @@ def test_bounded_audio_keeps_the_invariants_or_raises_with_full_accounting(seed)
     try:
         times, records = reflow.time_cards(groups, audio_duration=audio)
     except reflow.CascadeInfeasible as e:
+        # the one place the accounting is not a tautology: applied is what the cascade
+        # already realized across the cards it hopped, residual is what would not fit.
         assert abs(e.requested - (e.applied + e.residual)) <= reflow.EPS
         assert e.residual > 0 and e.applied >= 0
         assert 0 <= e.index < len(groups)
@@ -248,7 +250,16 @@ def test_bounded_audio_keeps_the_invariants_or_raises_with_full_accounting(seed)
         assert not short or any(r["index"] == i and r["unfixable"] for r in records)
         assert en - s <= reflow.MAX_DUR + reflow.EPS
     for r in records:
-        assert abs(r["requested_shift"] - (r["applied_shift"] + r["residual_shift"])) <= reflow.EPS
+        assert r["requested_shift"] > reflow.EPS
+        if r["unfixable"]:                       # the tail clamp: NONE of the ask was applied,
+            assert r["applied_shift"] == 0.0     # so requested == applied + residual is a real
+            assert abs(r["requested_shift"] - r["residual_shift"]) <= reflow.EPS   # statement
+            assert r["hops"] == 0
+        else:                                    # a SUCCESS record: _cascade returns its own
+            assert r["hops"] >= 1                # request on every success path, so applied
+            assert r["displaced"]                # == requested and residual == 0.0 ALWAYS. The
+            assert "applied_shift" not in r      # identity was true by construction and would
+            assert "residual_shift" not in r     # survive replacing both fields with literals.
 
 
 # --- degenerate inputs -------------------------------------------------------
