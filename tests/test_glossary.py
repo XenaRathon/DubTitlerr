@@ -128,3 +128,12 @@ def test_phonetic_graceful_if_jellyfish_missing(monkeypatch):
     # No hard_fix and the fuzzy cutoff rejects it (see test_phonetic_matches_spondum) --
     # without jellyfish this must degrade to a no-op, not raise.
     assert glossary.correct("it was Spondum today", g) == ("it was Spondum today", 0)
+
+
+def test_hard_fix_never_fires_inside_a_longer_token():
+    """glossary_acquire writes short variants as hard_fixes; token-level substitution is
+    what keeps 'Hoshi' from rewriting the middle of 'Shirahoshi'."""
+    g = glossary.load_dict({"names": [], "hard_fixes": {"hoshi": "Hoshi"}})
+    out, n = glossary.correct("Shirahoshi met Hoshi", g)
+    assert out == "Shirahoshi met Hoshi"
+    assert "ShiraHoshi" not in out
