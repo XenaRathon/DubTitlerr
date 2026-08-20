@@ -641,3 +641,70 @@ def test_a_stream_that_needs_nothing_records_no_cascades():
     times, records = reflow.time_cards(groups)
     assert records == []
     assert times == [(0.0, 1.2), (2.0, 3.4)]
+
+
+# --- T11: source timing vs display timing (C6) -------------------------------
+
+def _runt_then_surplus_words():
+    """A runt that has to steal time forward, followed by a card with the surplus to
+    give it: the successor's DISPLAY start moves later, its spoken onset does not."""
+    return [mkword("Oh.", 0.0, 0.10, seg=0),
+            mkword("A much longer line here.", 0.15, 3.0, seg=0)]
+
+
+def test_reflow_emits_the_spoken_span_as_the_source_window():
+    words = _runt_then_surplus_words()
+    segs = [{"start": 0.0, "end": 3.0, "no_speech_prob": 0.1}]
+    cards = reflow.reflow(words, segs)
+    assert len(cards) == 2
+    assert (cards[0]["source_start"], cards[0]["source_end"]) == (0.0, 0.10)
+    assert (cards[1]["source_start"], cards[1]["source_end"]) == (0.15, 3.0)
+
+
+def test_source_start_is_the_onset_even_when_the_display_start_was_stolen_forward():
+    """Task 7 pushes a successor's display start later; the audio it describes did not
+    move, so repair must still be able to find the evidence window."""
+    words = _runt_then_surplus_words()
+    segs = [{"start": 0.0, "end": 3.0, "no_speech_prob": 0.1}]
+    cards = reflow.reflow(words, segs)
+    assert cards[1]["start"] > cards[1]["source_start"] + reflow.EPS      # displaced
+    assert cards[1]["source_start"] == 0.15                               # onset unmoved
+
+
+def test_source_end_ignores_the_readability_extension():
+    """A short card's display end is extended into trailing silence; the spoken span is
+    not."""
+    words = [mkword("Oh.", 0.0, 0.10, seg=0)]
+    segs = [{"start": 0.0, "end": 5.0, "no_speech_prob": 0.1}]
+    (card,) = reflow.reflow(words, segs)
+    assert card["end"] - card["start"] >= reflow.MIN_DUR - reflow.EPS
+    assert card["source_end"] == 0.10
+
+
+def test_merged_card_source_window_is_the_union():
+    """merge_runts() concatenates word lists, so the merged card's span runs from the
+    FIRST group's onset to the LAST group's final word end."""
+    words = sentence(["Fine."], t0=0.0, dur=1.0, gap=0.08, seg=0) + \
+        sentence(["Monster."], t0=1.08, dur=0.30, seg=0)
+    segs = [{"no_speech_prob": 0.1}]
+    log = []
+    (card,) = reflow.reflow(words, segs, merge_log=log)
+    assert log and log[0]["reason"] == "runt_backward_merge"
+    assert card["source_start"] == 0.0
+    assert card["source_end"] == pytest.approx(1.38, abs=reflow.EPS)
+
+
+def test_reflow_threads_audio_duration_into_the_cascade():
+    """The runt's forward steal puts its successor's start at 0.913s; declare the audio
+    0.9s long and the shift no longer fits, which only time_cards() can know."""
+    words = _runt_then_surplus_words()
+    segs = [{"start": 0.0, "end": 3.0, "no_speech_prob": 0.1}]
+    with pytest.raises(reflow.CascadeInfeasible):
+        reflow.reflow(words, segs, audio_duration=0.9)
+
+
+def test_reflow_without_an_audio_duration_stays_unbounded():
+    words = _runt_then_surplus_words()
+    segs = [{"start": 0.0, "end": 3.0, "no_speech_prob": 0.1}]
+    cards = reflow.reflow(words, segs)          # audio_duration defaults to None
+    assert [c["start"] for c in cards] == [0.0, pytest.approx(0.913, abs=reflow.EPS)]

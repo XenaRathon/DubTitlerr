@@ -159,6 +159,8 @@ def test_whole_list_invariants(seed):
     for i, (c, g) in enumerate(zip(cards, groups)):
         onset, last_end = g[0]["start"], g[-1]["end"]
         assert c["start"] < c["end"]
+        # C6: the source window is the spoken span, whatever timing did to the display.
+        assert (c["source_start"], c["source_end"]) == (onset, last_end)
         # A card may end before its own last word ONLY where the profile caps it: at
         # MAX_DUR past its onset, or MIN_GAP before the successor's spoken onset (which
         # is where time_cards() caps it, using the successor's PRE-shift onset).
