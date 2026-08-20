@@ -286,8 +286,41 @@ def is_orphan_group(group: list[dict], nxt: list[dict] | None, prev: list[dict] 
             or group[0]["start"] - prev[-1]["end"] > GAP_MAX)       # ...or a pause splits them
 
 
-def reflow(words: list[dict], segments: list[dict]) -> list[dict]:
-    """Turn whisper word/segment data into finished Cards (see module docstring)."""
+def merge_runts(groups: list[list[dict]]) -> tuple[list[list[dict]], list[dict]]:
+    """Absorb a too-short group into its predecessor when the merged card would satisfy
+    the whole profile. Runs at GROUP level, before time_cards(), so timings are
+    re-derived rather than hand-patched. Left-to-right, single pass, fixed point: a
+    predecessor that already absorbed a runt is a legal target for the next, with all
+    four constraints re-evaluated on the merged form. An orphan (Task 5) never merges
+    backward. A merged group still below MIN_DUR is not a failure -- it falls through
+    to the forward-steal task. Sentence-final punctuation on the predecessor is NOT a
+    gate here -- only a preference downstream can weigh it; this function must still
+    merge "Done." + "Next." when the profile fits."""
+    out: list[list[dict]] = []
+    merges: list[dict] = []
+    for i, g in enumerate(groups):
+        nxt = groups[i + 1] if i + 1 < len(groups) else None
+        if out and is_short(_dur(g)) and not is_orphan_group(g, nxt, out[-1]):
+            p = out[-1]
+            merged_text = _text(p) + " " + _text(g)
+            span = g[-1]["end"] - p[0]["start"]
+            if (g[0]["start"] - p[-1]["end"] <= GAP_MAX + EPS
+                    and len(merged_text) <= MAX_CHARS
+                    and span <= MAX_DUR + EPS
+                    and card_cps(merged_text, span) <= MAX_CPS + EPS):
+                out[-1] = p + g
+                merges.append({"reason": "runt_backward_merge",
+                               "into": id(p), "absorbed": _text(g)})
+                continue
+        out.append(g)
+    return out, merges
+
+
+def reflow(words: list[dict], segments: list[dict], merge_log: list[dict] | None = None) -> list[dict]:
+    """Turn whisper word/segment data into finished Cards (see module docstring).
+    ``merge_log``, if given, is extended with merge_runts()'s per-merge records (so a
+    caller like generate.py can count them for the QC sidecar without reflow() itself
+    growing a wider return type)."""
     groups: list[list[dict]] = []
     for span in split_spans(_dejitter(_clamp_to_segments(_normalize(words), segments))):
         for g in segment_span(span):
@@ -295,6 +328,9 @@ def reflow(words: list[dict], segments: list[dict]) -> list[dict]:
                 groups.append(g)
     if not groups:
         return []
+    groups, merges = merge_runts(groups)
+    if merge_log is not None:
+        merge_log.extend(merges)
     cards = []
     nxts = groups[1:] + [None]
     prevs = [None] + groups[:-1]

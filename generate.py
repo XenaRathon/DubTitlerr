@@ -302,7 +302,8 @@ def process(video):
     except OSError: pass
     # A1: reflow whisper's words into clean, well-timed cards. C1: name-correct each card.
     # B1: drop near-certain hallucinations, flag the suspect, collapse runaway repeat runs.
-    cards = reflow.reflow(words, segments)
+    merge_log = []
+    cards = reflow.reflow(words, segments, merge_log=merge_log)
     kept, fixes, dropped = [], 0, 0
     for c in cards:
         if hallucination.drop_reason(c):          # blocklist / repetition / music -> drop
@@ -342,6 +343,11 @@ def process(video):
     rec = qc.Recorder()
     _record_qc(rec, rows)
     rec.count("cards_after", len(rows))
+    # Deferred from Task 5: orphan candidates are quarantined, not fixed -- count them
+    # separately from merges, and never bump orphan_candidates_fixed (nothing here fixes
+    # one). merged_backward comes from merge_runts()'s own records, not re-derived.
+    rec.count("orphan_candidates", sum(1 for c in cards if c.get("orphan")))
+    rec.count("merged_backward", len(merge_log))
     show = os.environ.get("SHOW_NAME", "") or GLOSS.get("show", "") or "unknown_show"
     doc = rec.build(show=show, episode=os.path.basename(stem), stem=stem,
                      glossary_sha=_glossary_version(), pipeline_version=_model_version())

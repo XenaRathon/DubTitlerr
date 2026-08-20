@@ -405,3 +405,106 @@ def test_fragment_split_from_its_predecessor_by_a_pause_is_an_orphan():
     group = [{"text": "Wait", "start": 2.0, "end": 2.2, "prob": .9, "seg": 0}]
     nxt = [{"text": "for", "start": 5.0, "end": 5.4, "prob": .9, "seg": 1}]
     assert reflow.is_orphan_group(group, nxt, prev) is True
+
+
+# --- T9: merge_runts (backward merge of too-short groups) --------------------
+
+def _two_groups(gap, pred_text, runt_text, pd, rd, seg=0):
+    """Two single-"word" groups: a predecessor spanning [0, pd] and a runt
+    starting `gap` after it, spanning `rd`. Internal word-splitting doesn't
+    matter to merge legality -- only total text length and the extreme
+    timestamps do -- so one word per group keeps the arithmetic exact."""
+    p = [mkword(pred_text, 0.0, pd, seg=seg)]
+    start = pd + gap
+    r = [mkword(runt_text, start, start + rd, seg=seg)]
+    return [p, r]
+
+
+def _two_shorts(pd, rd, gap):
+    return _two_groups(gap, "Hi", "Bye", pd, rd)
+
+
+def _corpus_like_groups():
+    """Four groups, same segment throughout (so orphan detection never engages):
+    a normal sentence, two short runts in a row (each legally mergeable, the
+    second only once the first has already been absorbed into the predecessor),
+    and a final normal sentence separated by a real pause."""
+    g0 = [mkword("Hello there.", 0.0, 1.0, seg=0)]
+    g1 = [mkword("Wait", 1.08, 1.28, seg=0)]
+    g2 = [mkword("for", 1.36, 1.56, seg=0)]
+    g3 = [mkword("General Kenobi.", 2.16, 3.16, seg=0)]
+    return [g0, g1, g2, g3]
+
+
+def _orphan_then_utterance():
+    """Same shape as _orphan_words()/_orphan_segments() above, but as groups:
+    a finished sentence, then a short fragment ("Wait") that is an orphan --
+    its true utterance ("for me.") starts in the next segment after a real
+    pause. The orphan guard must keep "Wait" from merging into "Hello there."
+    even though it is short and otherwise legal."""
+    g0 = [mkword("Hello", 0.0, 0.3, seg=0), mkword("there.", 0.4, 0.7, seg=0)]
+    g1 = [mkword("Wait", 0.8, 1.0, seg=0)]
+    g2 = [mkword("for", 1.6, 1.9, seg=1), mkword("me.", 2.0, 2.3, seg=1)]
+    return [g0, g1, g2]
+
+
+CASES = [   # (gap, pred_text, runt_text, pred_dur, runt_dur, should_merge, why)
+    (0.08, "It's a", "monster.",  1.0, 0.30, True,  "ordinary sentence tail"),
+    (0.60, "It's a", "monster.",  1.0, 0.30, False, "gap exceeds GAP_MAX"),
+    (0.08, "x" * 70, "monster.",  1.0, 0.30, False, "merged text over MAX_CHARS"),
+    (0.08, "It's a", "monster.",  6.9, 0.30, False, "merged span over MAX_DUR"),
+    (0.08, "a" * 30, "b" * 20,    2.0, 0.30, False, "merged cps over MAX_CPS"),
+    (0.08, "Done.",  "Next.",     1.0, 0.30, True,  "sentence-integrity is a PREFERENCE"),
+]
+
+
+@pytest.mark.parametrize("gap,pred,runt,pd,rd,expect,why", CASES)
+def test_merge_legality(gap, pred, runt, pd, rd, expect, why):
+    groups = _two_groups(gap, pred, runt, pd, rd)
+    out, merges = reflow.merge_runts(groups)
+    assert (len(out) == 1) is expect, why
+
+
+def test_merge_is_idempotent():
+    g = _corpus_like_groups()
+    once, _ = reflow.merge_runts(g)
+    twice, m2 = reflow.merge_runts(once)
+    assert twice == once and m2 == []
+
+
+def test_merge_preserves_every_word_in_order():
+    g = _corpus_like_groups()
+    out, _ = reflow.merge_runts(g)
+    assert [w["text"] for grp in out for w in grp] == [w["text"] for grp in g for w in grp]
+
+
+def test_orphan_is_never_merged_backward():
+    groups = _orphan_then_utterance()
+    out, merges = reflow.merge_runts(groups)
+    # NOTE: with merges == [] the output group count can only equal the input
+    # count (3) -- merge_runts never drops groups, it only merges or keeps them.
+    # The brief's draft asserted len(out) == 2, which is unreachable whenever
+    # merges == [] on a 3-group input; see task-6-report.md.
+    assert len(out) == 3 and merges == []
+
+
+def test_two_short_groups_may_merge_and_still_be_short():
+    """Both parts 0.20s -> merged 0.40s, still under MIN_DUR. Not a failure:
+    Task 7 handles it. (Rejected groq A1-E1 claimed this could not happen.)"""
+    out, merges = reflow.merge_runts(_two_shorts(0.20, 0.20, gap=0.05))
+    assert len(out) == 1
+    assert reflow.is_short(out[0][-1]["end"] - out[0][0]["start"])
+
+
+def test_merge_log_collects_merge_records_from_reflow():
+    """generate.py needs the per-episode merge count for the QC sidecar
+    (merged_backward). reflow() takes an optional out-param so the public
+    return type (a plain list of cards) never changes for existing callers."""
+    words = sentence(["Fine."], t0=0.0, dur=1.0, gap=0.08, seg=0) + \
+        sentence(["Monster."], t0=1.08, dur=0.30, seg=0)
+    segs = [{"no_speech_prob": 0.1}]
+    log = []
+    cards = reflow.reflow(words, segs, merge_log=log)
+    assert len(cards) == 1
+    assert len(log) == 1
+    assert log[0]["reason"] == "runt_backward_merge"
