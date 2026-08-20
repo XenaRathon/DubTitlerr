@@ -389,9 +389,10 @@ def test_process_two_pass_reverifies_name_change(tmp_path, monkeypatch):
     conf_path = stem + repair.CONF_SUFFIX
     srt_path = stem + repair.SRT_SUFFIX
     _write_conf(conf_path, srt_path,
-                [{"start": 0.0, "end": 1.0, "text": "I saw spondum",
-                  "avg_logprob": -0.6, "no_speech_prob": 0.1}])
-
+                [{"start": 0.0, "end": 2.0, "text": "I saw spondum",
+                  "avg_logprob": -0.6, "no_speech_prob": 0.1}])   # 2.0s: the secondary's
+                                                    # 19-char output is legal here (9.5 cps);
+                                                    # the C5 gate is tested separately below
     g = gl(names=["Spandam"])
     monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_2pass.mkv"))
     monkeypatch.setattr(repair, "glossary_for", lambda video: g)
@@ -756,29 +757,32 @@ def test_borrowed_from_ref_ignores_new_words_absent_from_the_reference():
     assert repair.borrowed_from_ref("the cat sat", "the cat waited", "the dog ran") == []
 
 
+# dur=6.0 throughout the block below: a roomy card, so the C2/C4 card-profile gate is
+# never what fires and each test still exercises the guard it was written for.
+
 def test_accept_rejects_a_wholesale_substitution_from_the_reference():
     assert not repair.accept_repair("That's enough of that, idiots!", "Hold it, you brats!",
-                                    "Hold it, you brats!")
+                                    "Hold it, you brats!", dur=6.0)
 
 
 def test_accept_rejects_an_appended_clause_lifted_from_the_reference():
     assert not repair.accept_repair(
         "It's a bunch of baby snowbirds.",
         "It's a bunch of baby snowbirds. So, if we close the door, they'll fall.",
-        "They're snowbird hatchlings.\nSo, if we close the door, they'll fall.")
+        "They're snowbird hatchlings.\nSo, if we close the door, they'll fall.", dur=6.0)
 
 
 def test_accept_keeps_a_single_word_name_fix():
     """The whole point of having a reference: one wrong proper noun, corrected from it."""
     assert repair.accept_repair("Spondum drew his blade.", "Spandam drew his blade.",
-                                "Spandam drew his blade, sneering.")
+                                "Spandam drew his blade, sneering.", dur=6.0)
 
 
 def test_accept_keeps_a_punctuation_only_repair():
     assert repair.accept_repair(
         "He's just a reindeer with a blue nose, that's all.",
         "He's just a reindeer with a blue nose. That's all.",
-        "He's just a reindeer with a blue nose. That's all.")
+        "He's just a reindeer with a blue nose. That's all.", dur=6.0)
 
 
 def test_accept_keeps_a_garbled_line_rebuilt_from_its_own_words():
@@ -786,28 +790,28 @@ def test_accept_keeps_a_garbled_line_rebuilt_from_its_own_words():
     assert repair.accept_repair(
         "human human fruit a Devil Fruit right that's That's right.",
         "Human human fruit, a Devil Fruit, right? That's right.",
-        "The Human-Human Fruit, a Devil Fruit.")
+        "The Human-Human Fruit, a Devil Fruit.", dur=6.0)
 
 
 def test_accept_rejects_a_line_that_more_than_doubles():
     """"Huh?" -> "Huh? Help!" passed the old 2.5 band exactly. Adding dialogue the dub
     never spoke is the failure mode, regardless of where the word came from."""
-    assert not repair.accept_repair("Huh?", "Huh? Help!", "Huh? Help!")
+    assert not repair.accept_repair("Huh?", "Huh? Help!", "Huh? Help!", dur=6.0)
 
 
 def test_accept_rejects_a_line_that_collapses():
     assert not repair.accept_repair("I'll be taking fifty percent of this restaurant.",
-                                    "Fifty percent.", "Fifty percent.")
+                                    "Fifty percent.", "Fifty percent.", dur=6.0)
 
 
 def test_accept_rejects_an_unchanged_line():
     """Nothing to write, and it must not be counted as a repair."""
-    assert not repair.accept_repair("Same line.", "Same line.", "some reference")
-    assert not repair.accept_repair("Same line.", "same LINE.", "some reference")
+    assert not repair.accept_repair("Same line.", "Same line.", "some reference", dur=6.0)
+    assert not repair.accept_repair("Same line.", "same LINE.", "some reference", dur=6.0)
 
 
 def test_accept_rejects_empty_output():
-    assert not repair.accept_repair("A line.", "", "ref")
+    assert not repair.accept_repair("A line.", "", "ref", dur=6.0)
 
 
 def test_borrow_limit_is_configurable(monkeypatch):
@@ -817,9 +821,161 @@ def test_borrow_limit_is_configurable(monkeypatch):
     orig, new, ref = "the small cat sat down", "the small cat sat here", "it sat here"
     assert len(new) == len(orig)                  # the length gate cannot be what fires
     monkeypatch.setattr(repair, "MAX_REF_BORROW", 1)
-    assert not repair.accept_repair(orig, new, ref)
+    assert not repair.accept_repair(orig, new, ref, dur=6.0)
     monkeypatch.setattr(repair, "MAX_REF_BORROW", 99)
-    assert repair.accept_repair(orig, new, ref)
+    assert repair.accept_repair(orig, new, ref, dur=6.0)
+
+
+# --- C2/C4/C5: the acceptance gate knows the card it is repairing ---------------
+
+def test_accept_rejects_a_repair_that_breaches_cps_for_this_cards_duration():
+    """C2. The length band alone allows +50%; readability is a function of the card's
+    DURATION, which the ratio cannot see. Same repair, same reference -- only the card
+    the text has to fit in decides."""
+    orig, new = "We need to get back to the ship.", "We really need to get back to the ship now."
+    assert repair.LEN_RATIO_MIN <= len(new) / len(orig) <= repair.LEN_RATIO_MAX    # ratio 1.34: in band
+    assert reflow.card_cps(new, 2.0) > reflow.MAX_CPS                   # 21.5 cps -- unreadable
+    assert not repair.accept_repair(orig, new, "", dur=2.0)
+    assert reflow.card_cps(new, 3.0) < reflow.MAX_CPS                   # 14.3 cps -- fine
+    assert repair.accept_repair(orig, new, "", dur=3.0)
+
+
+def test_accept_rejects_the_fifty_percent_growth_the_ratio_band_allows():
+    """The brief's worked example: 40 chars at 3.0s is 13 cps, 58 chars is 19.3."""
+    assert not repair.accept_repair("a" * 40, "b" * 58, ref="", dur=3.0)
+
+
+def test_accept_rejects_a_repair_valid_in_total_but_unwrappable_per_line():
+    """C4. A total-char check says nothing about whether the text can be DISPLAYED as
+    <=MAX_LINES lines of <=MAX_LINE chars -- that depends on where the word boundaries
+    fall. Passing text that is visually invalid is exactly how the wrapping defect
+    survived, so validate the candidate AS WRAPPED."""
+    orig, new = "a" * 40, "b" * 44 + " tail"
+    assert len(new) <= reflow.MAX_CHARS                                 # total is legal ...
+    assert reflow.card_cps(new, 6.0) < reflow.MAX_CPS                   # ... and so is the density
+    assert max(len(ln) for ln in reflow.wrap_balance(new).split("\n")) > reflow.MAX_LINE
+    assert not repair.accept_repair(orig, new, "", dur=6.0)
+
+
+def test_accept_rejects_a_repair_over_max_chars_even_when_every_line_fits():
+    """MAX_CHARS is not implied by the per-line check: two full 42-char lines flatten to
+    85 visible characters (the break counts as the space it replaces), one over the
+    card ceiling."""
+    orig, new = "z" * 60, "x" * 42 + " " + "y" * 42
+    lines = reflow.wrap_balance(new).split("\n")
+    assert len(lines) == reflow.MAX_LINES and max(len(ln) for ln in lines) <= reflow.MAX_LINE
+    assert len(new) > reflow.MAX_CHARS
+    assert not repair.accept_repair(orig, new, "", dur=10.0)
+
+
+def test_accept_keeps_a_name_only_repair_at_its_cards_duration():
+    """The case repair exists to serve. If the card-aware gate rejects this it is wrong."""
+    assert repair.accept_repair("Hi Zorro", "Hi Zoro", ref="", dur=2.0)
+
+
+def test_accept_keeps_a_name_only_repair_on_a_dense_but_legal_card():
+    """Permissiveness has to survive a tight card, not just a roomy one: 40 chars at
+    2.5s is 16 cps -- under the ceiling, and the repair does not move it."""
+    orig = "Spondum drew his blade and stepped back."
+    new = "Spandam drew his blade and stepped back."
+    assert len(new) == len(orig) and reflow.card_cps(new, 2.5) < reflow.MAX_CPS
+    assert repair.accept_repair(orig, new, "Spandam drew his blade, sneering.", dur=2.5)
+
+
+def test_accept_still_rejects_reference_borrowing_on_a_card_with_room():
+    """The C2/C4 additions must not become an escape hatch: a long card cannot buy a
+    wholesale lift from the reference."""
+    assert not repair.accept_repair("That's enough of that, idiots!", "Hold it, you brats!",
+                                    "Hold it, you brats!", dur=7.0)
+
+
+def _conf_row(start, end, text, **extra):
+    row = {"start": start, "end": end, "text": text, "avg_logprob": -0.6, "no_speech_prob": 0.1}
+    row.update(extra); return row
+
+
+def _repair_env(tmp_path, monkeypatch, stem, rows, out, g=None):
+    """Drive process() over one hand-built conf.json with a canned LLM reply."""
+    conf_path = stem + repair.CONF_SUFFIX
+    _write_conf(conf_path, stem + repair.SRT_SUFFIX, rows)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g or gl())
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 30.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", out if callable(out) else (lambda prompt, model=None: out))
+    return conf_path
+
+
+def test_process_rejects_a_repair_that_does_not_fit_the_cards_duration(tmp_path, monkeypatch):
+    """C2 wiring: the call site passes the card's duration, so the same model output is
+    refused on a 1.0s card and accepted on a 2.0s one. Timing is never touched to make
+    a repair fit (C1) -- the repair is what gives way."""
+    stem = str(tmp_path / "ep_tight")
+    conf_path = _repair_env(tmp_path, monkeypatch, stem,
+                            [_conf_row(0.0, 1.0, "garbled line here")], "a garbled line here")
+    assert repair.process(conf_path) == "repaired"          # the srt is always rewritten
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["repaired"] == 0 and summary["rejected_guard"] == 1
+    srt = open(stem + repair.SRT_SUFFIX).read()
+    assert "a garbled line here" not in srt and "garbled line here" in srt    # the card kept its text
+    with open(stem + ".dubtitles.repair.csv") as f:
+        assert len(list(csv.reader(f))) == 1                # header only: nothing written
+
+
+def test_process_accepts_the_same_repair_on_a_card_with_room(tmp_path, monkeypatch):
+    stem = str(tmp_path / "ep_roomy")
+    conf_path = _repair_env(tmp_path, monkeypatch, stem,
+                            [_conf_row(0.0, 2.0, "garbled line here")], "a garbled line here")
+    assert repair.process(conf_path) == "repaired"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["repaired"] == 1 and summary["rejected_guard"] == 0
+
+
+def test_process_gates_on_display_duration_not_source_duration(tmp_path, monkeypatch):
+    """The viewer reads the card for as long as it is ON SCREEN. A card whose audio ran
+    for 5s but which displays for 1.0s gets 1.0s worth of characters."""
+    stem = str(tmp_path / "ep_src")
+    conf_path = _repair_env(tmp_path, monkeypatch, stem,
+                            [_conf_row(0.0, 1.0, "garbled line here", source_start=0.0, source_end=5.0)],
+                            "a garbled line here")
+    repair.process(conf_path)
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["repaired"] == 0 and summary["rejected_guard"] == 1
+
+
+def test_process_secondary_output_goes_through_the_same_gate(tmp_path, monkeypatch):
+    """C5. The secondary model's output was written straight over the first pass with no
+    validation at all -- a stronger model is still a model. When it fails the gate the
+    already-validated first-pass repair stands; the card is not left garbled."""
+    stem = str(tmp_path / "ep_sec")
+    g = gl(names=["Spandam"])
+
+    def fake_llm(prompt, model=None):
+        return "I saw Spandam there" if model == "secondary-model" else "I saw Spandam"
+    conf_path = _repair_env(tmp_path, monkeypatch, stem, [_conf_row(0.0, 1.0, "I saw spondum")],
+                            fake_llm, g=g)
+    monkeypatch.setattr(repair, "MODEL_SECONDARY", "secondary-model")
+
+    assert repair.process(conf_path) == "repaired"
+    with open(stem + ".dubtitles.repair.csv") as f:
+        rows = list(csv.reader(f))
+    assert rows[1][1] == "I saw Spandam"            # 19 chars at 1.0s is 19 cps -- refused
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["repaired"] == 1 and summary["rejected_secondary"] == 1
+
+
+def test_process_secondary_output_that_borrows_the_reference_is_refused(tmp_path, monkeypatch):
+    """The borrow guard applies to the second pass too, not just the length profile."""
+    stem = str(tmp_path / "ep_sec_borrow")
+    g = gl(names=["Spandam"])
+
+    def fake_llm(prompt, model=None):
+        return "the official sub" if model == "secondary-model" else "I saw Spandam"
+    conf_path = _repair_env(tmp_path, monkeypatch, stem, [_conf_row(0.0, 3.0, "I saw spondum")],
+                            fake_llm, g=g)
+    monkeypatch.setattr(repair, "MODEL_SECONDARY", "secondary-model")
+    repair.process(conf_path)
+    with open(stem + ".dubtitles.repair.csv") as f:
+        assert list(csv.reader(f))[1][1] == "I saw Spandam"
 
 
 # --- C6: reference selection anchors on SOURCE timing, not display timing -----

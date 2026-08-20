@@ -37,6 +37,12 @@ Env:
                                 present in the fansub reference — see accept_repair)
   LEN_RATIO_MIN default 0.6    (…and reject one whose length ratio leaves this band)
   LEN_RATIO_MAX default 1.5
+                               C2/C4/C5: on top of these, a repair is rejected unless the
+                               RESULT still fits the card — <=MAX_LINES lines of <=MAX_LINE
+                               after reflow.wrap_balance, <=MAX_CHARS, and <=MAX_CPS at the
+                               card's DISPLAY duration. Card timing is immutable in repair
+                               (C1), so the repair gives way, never the timing. The
+                               secondary-model pass goes through the identical gate.
   LOGPROB_MIN   default -0.4   (mid-confidence-and-lower; below this is a repair target)
   NSP_MAX       default 0.5    (…and below this no_speech_prob — i.e. it IS speech)
   GLOSSARY_DIR  default /config/glossaries   (per-show glossary, resolved from the path)
@@ -234,8 +240,26 @@ def borrowed_from_ref(orig, new, ref):
     return [w for w in have if w not in had and w in in_ref]
 
 
-def accept_repair(orig, new, ref):
-    """Whether to write ``new`` over ``orig``.
+def fits_card(text, dur):
+    """Whether ``text`` can be DISPLAYED legally on a card lasting ``dur`` seconds (C4).
+
+    Validates the candidate as it will actually be written: through the same
+    ``reflow.wrap_balance`` + flatten normalisation generate.py uses, so the thing checked
+    is the thing shipped. Per line, not total only -- a total-char check passes text that
+    is visually invalid (an 85-char card wraps to two legal 42-char lines but is one
+    character over the card ceiling; a 49-char card whose word boundaries fall badly wraps
+    to a 44-char line), and that blind spot is exactly how the library-wide wrapping defect
+    survived. Line lengths are integer character counts, so only cps needs EPS."""
+    wrapped = reflow.wrap_balance((text or "").replace("\n", " "))
+    lines = wrapped.split("\n")
+    if len(lines) > reflow.MAX_LINES: return False
+    if any(len(ln) > reflow.MAX_LINE for ln in lines): return False
+    if len(wrapped.replace("\n", " ")) > reflow.MAX_CHARS: return False
+    return reflow.card_cps(wrapped, dur) <= reflow.MAX_CPS + reflow.EPS
+
+
+def accept_repair(orig, new, ref, dur):
+    """Whether to write ``new`` over ``orig`` on a card lasting ``dur`` seconds.
 
     A dubtitle must match the DUB AUDIO. The reference is a different translation of the
     same scene, so lifting its phrasing produces a subtitle that reads well and is wrong
@@ -247,6 +271,12 @@ def accept_repair(orig, new, ref):
     it, you brats!" — the reference, verbatim. The old gate was a 0.4–2.5 length band,
     which a same-length rewrite sails straight through.
 
+    C2: the length ratio cannot see readability. LEN_RATIO_MAX is 1.5, so 40 chars on a
+    3.0s card (13 cps) may become 58 (19.3 cps) with nothing re-checking it. The card's
+    timing is immutable here (C1) -- a repair that does not fit the card it is repairing
+    is rejected, never accommodated by moving the card -- so ``dur`` is required, not
+    optional: a caller that does not know the card cannot be allowed to skip the check.
+
     Kept deliberately permissive for the case the reference exists to serve: a single
     misheard proper noun corrected from it."""
     if not new:
@@ -256,6 +286,8 @@ def accept_repair(orig, new, ref):
     ratio = len(new) / max(1, len(orig))
     if not (LEN_RATIO_MIN <= ratio <= LEN_RATIO_MAX):
         return False                                   # added or dropped a clause
+    if not fits_card(new, dur):
+        return False                                   # unreadable/undisplayable on THIS card
     return len(borrowed_from_ref(orig, new, ref)) < MAX_REF_BORROW
 
 
@@ -351,6 +383,7 @@ def process(conf_path):
         return "clean"          # nothing to repair (e.g. S15E01)
     ivals = dialogue_intervals(video)
     audit, fixed, skipped_no_ref, rejected = [], 0, 0, 0
+    rejected_secondary = 0                           # C5: second-pass output refused by the gate
     repaired_lines = []                              # A10: per-line detail for the summary
     for i, c in targets:
         # C6: select the reference on the SOURCE window -- where the audio actually was --
@@ -370,7 +403,11 @@ def process(conf_path):
         latency_ms = round((time.monotonic() - t0) * 1000)
         if new:
             new = glossary.correct(new, gloss)[0]         # enforce canonical spelling on output
-        if not accept_repair(c["text"], new, ref):
+        # C2: the card's DISPLAY duration -- how long the viewer actually has to read it.
+        # (source_start/source_end anchor the EVIDENCE window above; they are not what is
+        # on screen.) Timing stays immutable: a repair that does not fit is rejected.
+        dur = c["end"] - c["start"]
+        if not accept_repair(c["text"], new, ref, dur):
             if new and new.lower() != c["text"].lower():
                 rejected += 1          # surfaced in the summary so the guard stays visible
         else:
@@ -382,8 +419,14 @@ def process(conf_path):
                 latency_ms += round((time.monotonic() - t1) * 1000)
                 if new2:
                     new2 = glossary.correct(new2, gloss)[0]
-                    if new2:
+                    # C5: a stronger model is still a model. Its output went straight over
+                    # the first pass with no validation at all -- same gate, same card. When
+                    # it fails, the already-accepted first-pass repair stands rather than the
+                    # card being left garbled.
+                    if new2 and accept_repair(c["text"], new2, ref, dur):
                         new = new2
+                    elif new2 and new2.lower() != new.lower():
+                        rejected_secondary += 1
             audit.append((c["text"], new, ref[:80], latency_ms))
             repaired_lines.append({"orig": c["text"], "repaired": new, "ref": ref[:80], "latency_ms": latency_ms})
             c["text"] = new; fixed += 1
@@ -405,6 +448,7 @@ def process(conf_path):
         "repaired": fixed,
         "skipped_no_ref": skipped_no_ref,
         "rejected_guard": rejected,      # model proposed an edit, accept_repair() refused it
+        "rejected_secondary": rejected_secondary,   # C5: second pass refused, first pass kept
         "mean_latency_ms": round(sum(lat_values) / len(lat_values)) if lat_values else 0,
         "p95_latency_ms": round(_p95(lat_values)) if lat_values else 0,
         "model": MODEL,
