@@ -166,26 +166,94 @@ def wrap_balance(text: str) -> str:
     return fallback_text if fallback_text is not None else text
 
 
-def time_cards(groups: list[list[dict]]) -> list[tuple[float, float]]:
-    """Assign (start, end) to each group in global order. start = first word
-    onset (pinned); end extended into trailing silence to satisfy MIN_DUR/MAX_CPS,
-    capped at MAX_DUR and at MIN_GAP before the next group's start."""
-    out: list[tuple[float, float]] = []
+class CascadeInfeasible(Exception):
+    """A forward steal ran out of audio: absorbing the rest of the shift would put a
+    card's start at or past the end of the media. Carries the accounting -- with
+    ``requested == applied + residual`` -- so the caller can log exactly how much did
+    not fit. Emitting a knowingly invalid card would be worse than skipping the
+    episode, so time_cards() raises instead of truncating."""
+
+    def __init__(self, index: int, requested: float, applied: float, residual: float,
+                 audio_duration: float | None = None):
+        super().__init__(f"card {index}: {residual:.3f}s of a {requested:.3f}s forward steal does not "
+                         f"fit before the end of the audio ({audio_duration}s)")
+        self.index, self.audio_duration = index, audio_duration
+        self.requested, self.applied, self.residual = requested, applied, residual
+
+
+def _cascade(st: list[float], en: list[float], k: int, shift: float,
+             audio_duration: float | None) -> tuple[float, int]:
+    """Push card ``k`` -- and its successors in turn, if it cannot swallow the whole
+    shift -- ``shift`` seconds later. Absorption order: the card's own SURPLUS above
+    MIN_DUR first (it merely gets shorter, its END DOES NOT MOVE, and the cascade
+    terminates), then the gap behind it, then the next card. Mutates ``st``/``en`` in
+    place and returns (applied, hops); ``hops`` counts the cards actually displaced."""
+    requested, hops = shift, 0
+    while shift > EPS:
+        if audio_duration is not None and st[k] + shift >= audio_duration - EPS:
+            raise CascadeInfeasible(k, requested, requested - shift, shift, audio_duration)
+        st[k] += shift
+        hops += 1
+        if en[k] - st[k] >= MIN_DUR - EPS:      # its own surplus covered it; end unmoved
+            return requested, hops
+        en[k] = st[k] + MIN_DUR                 # no surplus: its end has to move too
+        if k + 1 == len(st):                    # last card: nothing left to push
+            return requested, hops
+        shift = max(en[k] + MIN_GAP - st[k + 1], 0.0)   # what the gap behind it cannot absorb
+        k += 1
+    return requested, hops
+
+
+def time_cards(groups: list[list[dict]],
+               audio_duration: float | None = None) -> tuple[list[tuple[float, float]], list[dict]]:
+    """Assign (start, end) to each group in global order. start = first word onset
+    (pinned); end extended into trailing silence to satisfy MIN_DUR/MAX_CPS, capped at
+    MAX_DUR and at MIN_GAP before the next group's start.
+
+    Where that cap leaves a card under MIN_DUR the time is STOLEN FORWARD: the
+    successor is pushed later (see :func:`_cascade`) until the card fits. The shift is
+    NOT the extension delta -- the pre-cap end can already run past the successor's
+    start (9 such pairs ship today), so the required shift is measured from where the
+    successor must END UP, ``end + MIN_GAP``, absorbing that pre-existing deficit too.
+    Starts only ever move LATER: a caption revealed early spoils its own line.
+
+    Returns the timings plus one record per cascade. Raises :class:`CascadeInfeasible`
+    when a shift would push a start to or past ``audio_duration`` (None == unbounded)."""
     n = len(groups)
+    st = [g[0]["start"] for g in groups]
+    en: list[float] = []
     for j, g in enumerate(groups):
-        start = g[0]["start"]
-        natural_end = g[-1]["end"]
-        chars = len(_text(g))
-        # extend (never shrink below the spoken span) to satisfy min duration + reading speed
-        target = max(natural_end, start + MIN_DUR, start + chars / MAX_CPS)
-        cap = start + MAX_DUR
+        want = max(g[-1]["end"], st[j] + MIN_DUR, st[j] + len(_text(g)) / MAX_CPS)
+        end = min(want, st[j] + MAX_DUR)
         if j + 1 < n:                       # never overlap the next card; keep a 2-frame gap
-            cap = min(cap, groups[j + 1][0]["start"] - MIN_GAP)
-        end = min(target, cap)
-        if end <= start:                    # degenerate (next card starts almost immediately)
-            end = start + MIN_GAP
-        out.append((start, end))
-    return out
+            end = min(end, st[j + 1] - MIN_GAP)
+        if end < st[j] + MIN_GAP:           # degenerate (next card starts almost immediately)
+            end = st[j] + MIN_GAP
+        en.append(end)
+
+    records: list[dict] = []
+    for j in range(n):
+        need = max(en[j], st[j] + MIN_DUR)          # ends only ever move later, too
+        if j + 1 < n:
+            shift = need + MIN_GAP - st[j + 1]      # covers deficit AND extension in one measure
+            if shift > EPS:
+                deficit = max(en[j] + MIN_GAP - st[j + 1], 0.0)
+                applied, hops = _cascade(st, en, j + 1, shift, audio_duration)
+                records.append({"reason": "forward_steal", "index": j,
+                                "requested_shift": shift, "applied_shift": applied,
+                                "residual_shift": shift - applied, "hops": hops,
+                                "preexisting_gap_deficit": deficit, "unfixable": False})
+        en[j] = need
+    # the tail has no successor to steal from -- only the media itself bounds it
+    if n and audio_duration is not None and en[-1] > audio_duration + EPS and audio_duration > st[-1] + EPS:
+        en[-1] = audio_duration
+        if is_short(en[-1] - st[-1]):
+            short_by = MIN_DUR - (en[-1] - st[-1])
+            records.append({"reason": "audio_truncated_tail", "index": n - 1,
+                            "requested_shift": short_by, "applied_shift": 0.0,
+                            "residual_shift": short_by, "hops": 0,
+                            "preexisting_gap_deficit": 0.0, "unfixable": True})
+    return list(zip(st, en)), records
 
 
 def card_confidence(words: list[dict], segments: list[dict]) -> tuple[float, float]:
@@ -335,7 +403,8 @@ def reflow(words: list[dict], segments: list[dict], merge_log: list[dict] | None
     cards = []
     nxts = groups[1:] + [None]
     prevs = [None] + groups[:-1]
-    for (start, end), g, nxt, prv in zip(time_cards(groups), groups, nxts, prevs):
+    times, _cascades = time_cards(groups)
+    for (start, end), g, nxt, prv in zip(times, groups, nxts, prevs):
         avg, nsp = card_confidence(g, segments)
         cards.append({
             "start": start, "end": end, "text": wrap_balance(_text(g)),

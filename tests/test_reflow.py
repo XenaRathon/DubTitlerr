@@ -155,38 +155,38 @@ def test_wrap_balance_single_overlong_word_returned_unwrapped():
 
 def test_time_cards_start_is_pinned_to_first_word_onset():
     groups = [sentence(["Hello", "world."], t0=3.2)]
-    (start, _end), = reflow.time_cards(groups)
+    ((start, _end),), _ = reflow.time_cards(groups)
     assert start == 3.2
 
 
 def test_time_cards_extends_short_card_to_minimum_duration():
     groups = [[mkword("Oh", 0.5, 0.7)]]      # 0.2s spoken, no trailing card
-    (start, end), = reflow.time_cards(groups)
+    ((start, end),), _ = reflow.time_cards(groups)
     assert end == pytest.approx(start + reflow.MIN_DUR)
 
 
 def test_time_cards_extends_dense_card_for_reading_speed():
     groups = [[mkword("a" * 68, 1.0, 2.0)]]  # 68 chars / 17 cps = 4.0s needed
-    (start, end), = reflow.time_cards(groups)
+    ((start, end),), _ = reflow.time_cards(groups)
     assert end == pytest.approx(start + 68 / reflow.MAX_CPS)
 
 
 def test_time_cards_never_exceeds_max_duration():
     groups = [[mkword("a" * 150, 0.0, 0.5)]]  # would want ~8.8s for cps
-    (_start, end), = reflow.time_cards(groups)
+    ((_start, end),), _ = reflow.time_cards(groups)
     assert end == pytest.approx(reflow.MAX_DUR)
 
 
 def test_time_cards_extension_capped_by_next_card_with_gap():
     groups = [[mkword("a" * 50, 0.0, 0.3)], [mkword("b", 1.5, 1.8)]]
-    times = reflow.time_cards(groups)
+    times, _ = reflow.time_cards(groups)
     end0 = times[0][1]
     assert end0 == pytest.approx(1.5 - reflow.MIN_GAP)   # held off the next card
 
 
 def test_time_cards_never_overlaps_next_card():
     groups = [[mkword("a" * 50, 0.0, 0.3)], [mkword("b" * 50, 1.5, 1.8)]]
-    times = reflow.time_cards(groups)
+    times, _ = reflow.time_cards(groups)
     assert times[0][1] <= times[1][0] - reflow.MIN_GAP + 1e-9
 
 
@@ -513,3 +513,131 @@ def test_merge_log_collects_merge_records_from_reflow():
     assert len(cards) == 1
     assert len(log) == 1
     assert log[0]["reason"] == "runt_backward_merge"
+
+
+# --- T10: time_cards forward steal + cascade ---------------------------------
+
+def _overlapping_pair(pred_end=0.083, succ_start=0.050):
+    """The shipped defect, in shape: the degenerate branch ends the predecessor at
+    start+MIN_GAP without ever consulting the successor, so it ends AFTER the
+    successor starts -- 9 such pairs ship today ('Huh.' running -0.083s into
+    "Let's be honest."). Shifting by the MIN_DUR extension delta alone preserves the
+    overlap; the pre-existing gap deficit has to be absorbed too."""
+    return [[mkword("Huh.", 0.0, pred_end, seg=0)],
+            [mkword("Let's be honest.", succ_start, succ_start + 1.4, seg=1)]]
+
+
+def _runt_then_long(runt_dur=0.10, gap=0.05, succ_dur=2.85):
+    """A runt whose successor carries surplus duration: the successor absorbs the
+    whole shift by simply getting shorter, so its END must not move."""
+    t = runt_dur + gap
+    return [[mkword("Oh", 0.0, runt_dur, seg=0)],
+            [mkword("A much longer line here.", t, t + succ_dur, seg=0)]]
+
+
+def _runt_then_tight_chain(n=3):
+    """A runt followed by cards that are exactly MIN_DUR long, exactly MIN_GAP
+    apart: zero surplus and zero gap slack anywhere, so the shift has to travel."""
+    groups = [[mkword("Oh", 0.0, 0.10, seg=0)]]
+    t = 0.15
+    for i in range(n):
+        groups.append([mkword(f"Line {i}.", t, t + reflow.MIN_DUR, seg=0)])
+        t += reflow.MIN_DUR + reflow.MIN_GAP
+    return groups
+
+
+def _single_short_group():
+    return [[mkword("Oh", 0.1, 0.2, seg=0)]]
+
+
+def _dense_no_slack_chain():
+    """The tight chain, tailed by a runt that ends just shy of a 3.0s audio track:
+    every card is inside the media, and there is nowhere for a shift to go."""
+    groups = _runt_then_tight_chain(3)
+    groups.append([mkword("Last.", 2.889, 2.99, seg=0)])
+    return groups
+
+
+def _shifted(groups, dt):
+    return [[{**w, "start": w["start"] + dt, "end": w["end"] + dt} for w in g] for g in groups]
+
+
+def _mixed_corpus():
+    return (_overlapping_pair()
+            + _shifted(_runt_then_long(), 10.0)
+            + _shifted(_runt_then_tight_chain(3), 20.0)
+            + [[mkword("The end.", 30.0, 31.5, seg=9)]])
+
+
+def test_steal_absorbs_a_preexisting_overlap_not_just_the_deficit():
+    """The 9 live overlaps: predecessor ends AFTER successor starts."""
+    groups = _overlapping_pair(pred_end=0.083, succ_start=0.050)
+    times, _ = reflow.time_cards(groups)
+    for (a, b), (c, _d) in zip(times, times[1:]):
+        assert a < b
+        assert c - b >= reflow.MIN_GAP - reflow.EPS
+    assert times[0][1] - times[0][0] >= reflow.MIN_DUR - reflow.EPS
+
+
+def test_the_cascade_record_names_the_preexisting_deficit():
+    _, records = reflow.time_cards(_overlapping_pair())
+    assert records[0]["preexisting_gap_deficit"] > 0     # the shipped overlap, +MIN_GAP
+
+
+def test_surplus_successor_terminates_the_cascade_in_one_hop():
+    times, records = reflow.time_cards(_runt_then_long())
+    assert records[0]["hops"] == 1
+    assert times[1][1] == pytest.approx(_runt_then_long()[1][-1]["end"], abs=1e-6)  # end unmoved
+    assert times[1][0] > _runt_then_long()[1][0]["start"]                           # start moved
+
+
+def test_zero_surplus_successor_propagates():
+    _, records = reflow.time_cards(_runt_then_tight_chain())
+    assert records[0]["hops"] > 1
+
+
+def test_last_card_runt_extends_but_never_past_the_audio():
+    times, _ = reflow.time_cards(_single_short_group(), audio_duration=0.5)
+    assert times[-1][1] <= 0.5 + reflow.EPS
+    assert times[-1][0] < times[-1][1]
+
+
+def test_infeasible_cascade_raises_rather_than_emitting_junk():
+    with pytest.raises(reflow.CascadeInfeasible) as e:
+        reflow.time_cards(_dense_no_slack_chain(), audio_duration=3.0)
+    assert e.value.requested == pytest.approx(e.value.applied + e.value.residual, abs=1e-6)
+    assert e.value.residual > 0
+
+
+def test_dense_chain_is_feasible_when_the_audio_length_is_unknown():
+    times, _ = reflow.time_cards(_dense_no_slack_chain())        # audio_duration=None
+    for (_a, b), (c, _d) in zip(times, times[1:]):
+        assert c - b >= reflow.MIN_GAP - reflow.EPS
+
+
+def test_steal_never_reveals_a_card_earlier_than_its_onset():
+    """Late is acceptable, early is not -- an early caption spoils its own line."""
+    groups = _runt_then_tight_chain(4)
+    times, _ = reflow.time_cards(groups)
+    for (start, _end), g in zip(times, groups):
+        assert start >= g[0]["start"] - reflow.EPS
+
+
+def test_the_whole_stream_satisfies_the_profile_after_stealing():
+    times, records = reflow.time_cards(_mixed_corpus())
+    for start, end in times:
+        assert start < end
+        assert end - start >= reflow.MIN_DUR - reflow.EPS
+    for (_a, b), (c, _d) in zip(times, times[1:]):
+        assert c - b >= reflow.MIN_GAP - reflow.EPS
+    assert records
+    for r in records:
+        assert r["requested_shift"] == pytest.approx(r["applied_shift"] + r["residual_shift"], abs=reflow.EPS)
+        assert r["hops"] >= 1
+
+
+def test_a_stream_that_needs_nothing_records_no_cascades():
+    groups = [[mkword("Hello there.", 0.0, 1.2, seg=0)], [mkword("General Kenobi.", 2.0, 3.4, seg=0)]]
+    times, records = reflow.time_cards(groups)
+    assert records == []
+    assert times == [(0.0, 1.2), (2.0, 3.4)]
