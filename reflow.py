@@ -213,12 +213,14 @@ class CascadeInfeasible(Exception):
 
 
 def _cascade(st: list[float], en: list[float], k: int, shift: float,
-             audio_duration: float | None) -> tuple[float, list[int], list[int], dict[int, float]]:
+             audio_duration: float | None) -> tuple[list[int], list[int], dict[int, float]]:
     """Push card ``k`` -- and its successors in turn, if it cannot swallow the whole
     shift -- ``shift`` seconds later. Absorption order: the card's own SURPLUS above
     MIN_DUR first (it merely gets shorter, its END DOES NOT MOVE, and the cascade
     terminates), then the gap behind it, then the next card. Mutates ``st``/``en`` in
-    place and returns (applied, displaced, shortened, dur_before).
+    place and returns (displaced, shortened, dur_before). It does NOT return the shift:
+    every success path applies the whole request, so an "applied" result could only ever
+    hand back the caller's own argument. What did not fit is reported by raising.
 
     ``displaced`` lists every card whose START moved; ``shortened`` the subset that also
     LOST duration. The two are separate QC counters (B1: "a card that lost duration is a
@@ -229,7 +231,7 @@ def _cascade(st: list[float], en: list[float], k: int, shift: float,
     ``dur_before`` maps each touched card to its duration as this hop found it, which is
     likewise unrecoverable afterwards: a displaced card whose end had to move ends up at
     exactly MIN_DUR whatever it was before. B1's event schema names it."""
-    requested, applied = shift, 0.0
+    applied = 0.0
     displaced: list[int] = []
     shortened: list[int] = []
     durs: dict[int, float] = {}
@@ -242,15 +244,15 @@ def _cascade(st: list[float], en: list[float], k: int, shift: float,
         displaced.append(k); durs[k] = dur_before
         if en[k] - st[k] >= MIN_DUR - EPS:      # its own surplus covered it; end unmoved
             shortened.append(k)                 # ...so the whole shift came out of its duration
-            return requested, displaced, shortened, durs
+            return displaced, shortened, durs
         en[k] = st[k] + MIN_DUR                 # no surplus: its end has to move too
         if MIN_DUR < dur_before - EPS:          # a runt is LENGTHENED here, not shortened
             shortened.append(k)
         if k + 1 == len(st):                    # last card: nothing left to push
-            return requested, displaced, shortened, durs
+            return displaced, shortened, durs
         shift = max(en[k] + MIN_GAP - st[k + 1], 0.0)   # what the gap behind it cannot absorb
         k += 1
-    return requested, displaced, shortened, durs
+    return displaced, shortened, durs
 
 
 def time_cards(groups: list[list[dict]],
@@ -287,10 +289,14 @@ def time_cards(groups: list[list[dict]],
             shift = need + MIN_GAP - st[j + 1]      # covers deficit AND extension in one measure
             if shift > EPS:
                 deficit = max(en[j] + MIN_GAP - st[j + 1], 0.0)
-                applied, displaced, shortened, durs = _cascade(st, en, j + 1, shift, audio_duration)
+                displaced, shortened, durs = _cascade(st, en, j + 1, shift, audio_duration)
+                # no applied_shift/residual_shift here: a success applies the whole
+                # request, so they were requested and 0.0 on every record ever written --
+                # a reporter reading them would conclude "steals always fully fit", which
+                # is not something a constant can say. They live on CascadeInfeasible and
+                # on the tail clamp below, where the two really do differ.
                 records.append({"reason": "forward_steal", "index": j,
-                                "requested_shift": shift, "applied_shift": applied,
-                                "residual_shift": shift - applied, "hops": len(displaced),
+                                "requested_shift": shift, "hops": len(displaced),
                                 "displaced": displaced, "shortened": shortened,
                                 "dur_before": durs,
                                 "preexisting_gap_deficit": deficit, "unfixable": False})
