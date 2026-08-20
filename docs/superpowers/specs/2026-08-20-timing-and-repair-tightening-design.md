@@ -643,23 +643,35 @@ the glossary unattended. This is the escalation ladder applied to the miner: a t
 deterministic rule cannot settle on bare evidence goes to a human, with its bare and
 possessive counts attached as the reason.
 
-Measured on this corpus: **89 terms auto-append on bare count alone; the crossing queue
-holds exactly 1** -- `Traffy` (bare 2, possessive 2), a nickname worth a human glance.
-The recovered evidence is still real (`Vegapunk` 4 -> 7, `Caesar` 62 -> 69); it now
-reinforces terms that already qualified rather than admitting new ones.
+**v5 measurement correction.** The v4 figures ("89 auto-append, crossing queue holds
+1 -- `Traffy`") came from a scratch script written during design, which counted bare
+occurrences ONLY from mid-sentence positions. The real miner counts every occurrence and
+applies mid-sentence as a SEPARATE gate. `Traffy` therefore already cleared the floor and
+was already being auto-appended before this change; possessive folding did not push it
+anywhere.
+
+Measured against the shipped implementation, A/B on the same 22-episode corpus:
+
+| | old | new |
+|---|---|---|
+| auto-append lane | 122 terms | **122 terms, byte-identical** |
+| possessive_floor_crossing queue | n/a | **0** |
+
+The safety property is what matters and it holds exactly: the lane that writes to the
+glossary with no human in the loop is unchanged, term for term. The recovered evidence is
+real but purely reinforcing -- `Caesar` 81 -> 97, `Vegapunk` 14 -> 22, `Nami` 38 -> 46 --
+and on this corpus it moves nothing between lanes.
+
+So the review lane currently catches NOTHING. That is an acceptable thing to ship: it is
+a structural guarantee that possessive evidence cannot originate a term, not a feature
+expected to fire. It should not be described as one.
 
 The extraction is shared; the admission policy is not:
 
-```python
-def iter_candidates(text, *, fold_possessive):   # shared lexical extraction
-    ...
-
-def mine_fansub_text(...):        # existing conservative admission
-    ...                           # NO dictionary gate -- see v4 below
-
-def harvest_transcript_text(...): # normalised candidates, provenance retained
-    ...
-```
+*(A code sketch stood here in v2 proposing a shared-extraction split with a dictionary
+gate. It is REMOVED rather than annotated: revised prose sitting above stale code reads
+as an instruction, which is exactly how the v3 review found an implementer would have
+re-added the withdrawn gate. The two-lane rule below is the whole design.)*
 
 Both paths get possessive folding, because the evidence loss is real on both. No
 dictionary gate is added on either path -- see the v4 lane split below for what makes
@@ -1022,9 +1034,13 @@ contradiction is not cosmetic.
 **My "measured cost: zero" for D5 tested the wrong population.** It checked terms with
 a bare count of ZERO and found none, and I reported that as proof the rule was safe.
 The actual hazard is a term with a bare count of ONE plus two possessives -- which my
-query never looked at. Re-measured with the correct rule: 89 terms auto-append on bare
-count alone, and the `possessive_floor_crossing` queue holds exactly one entry
-(`Traffy`, bare 2 / possessive 2).
+query never looked at.
+
+(The "89 auto-append / 1 crossing" figures recorded here in v4 were themselves from that
+same scratch script and are also wrong -- see D5's v5 correction. Against the shipped
+miner the auto lane is 122 terms, byte-identical before and after, and the crossing queue
+is empty. The lesson stands and is if anything sharper: the re-measurement that "fixed"
+the first bad number was taken with the same instrument that produced it.)
 
 A measurement that confirms a design is only evidence if it queried the population the
 design could actually fail on.
