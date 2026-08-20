@@ -114,6 +114,40 @@ def test_best_title_returns_empty_when_nothing_is_close():
     assert name == "" and score == 0.0
 
 
+# --- perf refactor: the precomputed title index must agree with best_title's original
+# per-call implementation byte-for-byte, since propose()/unmatched() now always go
+# through it. These pin that equivalence directly rather than only through propose().
+
+@pytest.mark.parametrize("token,titles", [
+    ("Syrahose", ["Shirahoshi", "Hody Jones", "Neptune (character)", "Van der Decken"]),
+    ("Neptune", ["Neptune (character)"]),
+    ("Surrender", ["Shirahoshi", "Hody Jones"]),
+    ("Deccan", ["Decken", "Shirahoshi"]),
+    ("Vanderdecken", ["Van der Decken", "Shirahoshi"]),
+])
+def test_best_title_indexed_agrees_with_best_title_on_a_fixture(token, titles):
+    index = ga._title_index(titles)
+    assert ga._best_title_indexed(token, index) == ga.best_title(token, titles)
+
+
+def test_title_index_drops_titles_whose_reduced_form_is_empty():
+    # "-" reduces to "" (reduce_form strips hyphens): such a title can never win (similarity
+    # returns 0.0 for it, below MIN_SIM), so the index drops it -- fewer entries, same result.
+    titles = ["-", "Shirahoshi"]
+    index = ga._title_index(titles)
+    assert [n for n, *_ in index] == ["Shirahoshi"]
+    assert ga._best_title_indexed("Syrahose", index) == ga.best_title("Syrahose", titles)
+
+
+def test_title_index_collapses_duplicate_normalised_titles():
+    # Two disambiguated articles for the same name normalise identically; every extra
+    # occurrence would score identically to the first, so only one entry is kept.
+    titles = ["Neptune (character)", "Neptune (anime)", "Shirahoshi"]
+    index = ga._title_index(titles)
+    assert [n for n, *_ in index] == ["Neptune", "Shirahoshi"]
+    assert ga._best_title_indexed("Surrender", index) == ga.best_title("Surrender", titles)
+
+
 def test_decide_applies_a_lopsided_mishearing():
     d = ga.decide("Syrahose", 2, "Shirahoshi", 56, 0.755, True)
     assert d["verdict"] == "apply" and d["bound"] == pytest.approx(0.883, abs=0.001)
@@ -176,6 +210,33 @@ def test_propose_emits_one_proposal_per_variant_with_the_canonical_count(monkeyp
     # clears dominance -- amended from the brief, whose test predates the cluster-total floor.
     assert by_variant["Hirohoshi"]["verdict"] == "apply"
     assert by_variant["Hirohoshi"]["reason"] == "dominant"
+
+
+def test_resolve_tokens_does_not_prefilter_below_floor_variants(monkeypatch):
+    # Perf refactor pin: R6's floor gate is on variant_count + canonical_count, not
+    # variant_count alone, so _resolve_tokens must still resolve a token whose OWN count
+    # (1) is below MIN_COUNT -- dropping it early would silently turn this cluster's
+    # "apply"/"dominant" verdict into a wrongly-skipped "below-floor" one.
+    monkeypatch.setattr(ga.glossary, "is_english", lambda w: False)
+    titles = ["Shirahoshi", "Hody Jones"]
+    counts = {"Shirahoshi": 56, "Syrahose": 2, "Hirohoshi": 1, "Hody": 9}
+    resolved = ga._resolve_tokens(counts, titles)
+    assert resolved["Hirohoshi"][0] == "Shirahoshi" and resolved["Hirohoshi"][1] >= ga.MIN_SIM
+    assert "Syrahose" in resolved
+
+
+def test_propose_and_unmatched_agree_whether_resolved_is_shared_or_recomputed(monkeypatch):
+    # Perf refactor pin: acquire() now computes _resolve_tokens() once and passes it to
+    # both propose() and unmatched(); the shared-resolved call must produce exactly what
+    # each function's own from-scratch (resolved=None) call would have.
+    monkeypatch.setattr(ga.glossary, "is_english", lambda w: False)
+    titles = ["Shirahoshi", "Hody Jones"]
+    counts = {"Shirahoshi": 56, "Syrahose": 2, "Hirohoshi": 1, "Hody": 9, "Maybe": 20}
+    mid = {"Shirahoshi", "Syrahose", "Hirohoshi", "Hody", "Maybe"}
+    resolved = ga._resolve_tokens(counts, titles)
+    assert ga.propose(counts, mid, titles, resolved=resolved) == ga.propose(counts, mid, titles)
+    assert ga.unmatched(counts, mid, titles, resolved=resolved) == ga.unmatched(counts, mid, titles)
+    assert ga.unmatched(counts, mid, titles) == ["Maybe"]        # never resolves -> tier B
 
 
 def test_propose_ignores_tokens_that_match_no_title():
