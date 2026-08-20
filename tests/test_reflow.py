@@ -735,3 +735,19 @@ def test_cascade_record_separates_a_displaced_card_from_a_shortened_one():
     assert r["hops"] > 1
     assert r["displaced"] == list(range(1, 1 + r["hops"]))
     assert set(r["shortened"]) <= set(r["displaced"])
+
+
+def test_merge_census_counts_a_short_target_too():
+    """The absorbed group is short by definition; the TARGET may be too. Once merged its
+    span covers both, so the fact is unrecoverable downstream -- a baseline that omits it
+    undercounts, and always downward, flattering the before/after comparison."""
+    groups = _two_shorts(0.40, 0.40, gap=0.05)
+    out, merges = reflow.merge_runts(groups)
+    assert len(merges) == 1
+    assert merges[0]["short_groups_before"] == 2      # BOTH groups were short
+
+
+def test_merge_census_excludes_a_long_target():
+    groups = _two_groups(0.08, "It's a", "monster.", 2.0, 0.30)
+    _out, merges = reflow.merge_runts(groups)
+    assert merges and merges[0]["short_groups_before"] == 1   # only the runt
