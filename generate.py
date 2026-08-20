@@ -307,7 +307,11 @@ def _revalidate_after_correction(rec, cards):
         if caused: rec.count("layout_exceptions")
         lines = text.split("\n")
         flat = text.replace("\n", " ")
-        rec.event(reason="layout_exception", start=round(c["start"], 3), end=round(c["end"], 3),
+        # priority: a correction-introduced fault exists in no counter and cannot be
+        # reconstructed, so it must survive the event cap. Pre-existing faults are
+        # already counted losslessly by _record_qc and described by the cps quantiles.
+        rec.event(priority=caused,
+                  reason="layout_exception", start=round(c["start"], 3), end=round(c["end"], 3),
                   text=flat, layout_exception_reason=reasons, pre_existing_reason=pre,
                   caused_by_correction=caused, line_count=len(lines),
                   line_lengths=[len(ln) for ln in lines], max_line_length=max(len(ln) for ln in lines),
