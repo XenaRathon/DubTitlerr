@@ -260,12 +260,7 @@ def _record_qc(rec, rows):
 def _layout_faults(text, dur):
     """Which profile constraints ``text`` violates at ``dur`` seconds; an empty list means valid.
     Line lengths are integer character counts, so only the cps comparison needs EPS."""
-    lines = text.split("\n")
-    reasons = []
-    if len(lines) > reflow.MAX_LINES: reasons.append("over_lines")
-    if any(len(ln) > reflow.MAX_LINE for ln in lines): reasons.append("over_line_len")
-    if reflow.card_cps(text, dur) > reflow.MAX_CPS + reflow.EPS: reasons.append("over_cps")
-    return reasons
+    return reflow.layout_faults(text, dur)
 
 
 def _revalidate_after_correction(rec, cards):

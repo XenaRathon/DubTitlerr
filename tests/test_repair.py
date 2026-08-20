@@ -1040,3 +1040,39 @@ def test_process_still_uses_display_timing_for_a_pre_c6_sidecar(tmp_path, monkey
     with open(stem + ".dubtitles.repair.csv") as f:
         rows = list(csv.reader(f))
     assert rows[1][2] == "the neighbour's line"
+
+
+# --- non-worsening gate on an already-invalid card (C2 refinement) --------------
+# ~28% of cards are over cps and A2 deliberately does not retime for cps, so an
+# absolute gate would refuse to fix a misheard name on any dense line -- the exact
+# case repair exists to serve.
+
+def _dense(n):
+    return "word " * n
+
+
+def test_repair_that_improves_an_already_over_cps_card_is_accepted():
+    dur = 1.0
+    orig, new = "Zorro " * 6, "Zoro " * 6          # shorter, still over cps
+    assert reflow.card_cps(orig, dur) > reflow.MAX_CPS
+    assert reflow.card_cps(new, dur) > reflow.MAX_CPS
+    assert repair.fits_card(new, dur, orig) is True
+
+
+def test_repair_that_worsens_an_already_over_cps_card_is_rejected():
+    dur = 1.0
+    orig, new = "Zoro " * 6, "Zorro " * 6          # longer, and already over
+    assert repair.fits_card(new, dur, orig) is False
+
+
+def test_a_clean_card_is_still_gated_absolutely():
+    """Non-worsening applies only when the card was ALREADY invalid. A repair may not
+    push a valid card over the ceiling just because it is an improvement elsewhere."""
+    dur = 3.0
+    orig, new = "a" * 40, "b" * 58                 # 13 cps -> 19.3 cps
+    assert reflow.card_cps(orig, dur) <= reflow.MAX_CPS
+    assert repair.fits_card(new, dur, orig) is False
+
+
+def test_fits_card_without_orig_stays_absolute():
+    assert repair.fits_card("z" * 60, 1.0) is False
