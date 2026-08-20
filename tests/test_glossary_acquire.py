@@ -155,7 +155,55 @@ def test_decide_applies_a_lopsided_mishearing():
 
 def test_decide_applies_when_the_canonical_never_appears():
     # Whisper said 'Kinemon' 12x and 'Kin'emon' never. Wilson is 0.0; the escape clause carries it.
+    # 0.90 is stale as a *score* now that canonical-unseen has a similarity bar (this pair's
+    # real similarity() is 1.000, see test_decide_still_applies_a_reduced_form_match_with_no_
+    # competing_evidence) -- but 'Kinemon'/'Kin'emon' are reduce_form-equal, so this still
+    # applies via the orthographic half of the bar regardless of the (unrealistic) 0.90 passed.
     d = ga.decide("Kinemon", 12, "Kin'emon", 0, 0.90, True)
+    assert d["verdict"] == "apply" and d["reason"] == "canonical-unseen"
+
+
+# --- 2026-08-19 dry-run reproduction: canonical-unseen corrupted 11 correctly-spelled names
+# (Zoro, Doflamingo, Momonosuke, Akainu, Aokiji, Wano, Traffy, Toshiki, Kung, Gotta -- plus a
+# below-floor case) because "canonical never appears" was read as evidence on its own. It
+# isn't: with no competing evidence, the only safe fix is one that isn't really a phonetic
+# claim (an apostrophe, spacing, a doubled letter) -- ACQUIRE_UNSEEN_SIM draws that line.
+# Scores below are ga.similarity()'s real output for each pair (see task notes), not guesses.
+
+def test_decide_flags_a_phonetic_leap_with_no_competing_evidence():
+    # 'Akainu' (a main-cast admiral, spelled correctly) scored 0.858 against 'Akisu' (an
+    # obscure, unrelated wiki article) with canonical_count 0 in the real dry run. The old
+    # escape clause applied this and would have corrupted every future 'Akainu' in the dub.
+    d = ga.decide("Akainu", 16, "Akisu", 0, 0.858, True)
+    assert d["verdict"] == "flag" and d["reason"] == "unseen-needs-evidence" and d["bound"] == 0.0
+
+
+@pytest.mark.parametrize("variant,canonical,score", [
+    ("Zoro", "Zoryu", 0.868),
+    ("Doflamingo", "Domino", 0.893),
+    ("Momonosuke", "Momoo", 0.900),
+    ("Aokiji", "Akibi", 0.840),
+    ("Wano", "Wany", 0.903),
+    ("Traffy", "Troff", 0.878),
+    ("Toshiki", "Shiki", 0.905),
+    ("Kung", "Kuni", 0.883),
+    ("Gotta", "Gotti", 0.940),
+])
+def test_decide_holds_every_real_corruption_from_the_2026_08_19_dry_run(variant, canonical, score):
+    d = ga.decide(variant, 16, canonical, 0, score, True)
+    assert d["verdict"] == "flag" and d["reason"] == "unseen-needs-evidence"
+
+
+def test_decide_still_applies_a_near_respelling_with_no_competing_evidence():
+    # Brooke -> Brook, 0.987: NOT reduce_form-equal (a genuinely added letter), but close
+    # enough that UNSEEN_SIM's score half of the bar admits it. This is the case the bar is
+    # calibrated to still let through, not just the trivially-orthographic ones.
+    d = ga.decide("Brooke", 14, "Brook", 0, 0.987, True)
+    assert d["verdict"] == "apply" and d["reason"] == "canonical-unseen"
+
+
+def test_decide_still_applies_a_reduced_form_match_with_no_competing_evidence():
+    d = ga.decide("Vanderdecken", 9, "Van der Decken", 0, ga.similarity("Vanderdecken", "Van der Decken"), True)
     assert d["verdict"] == "apply" and d["reason"] == "canonical-unseen"
 
 
@@ -242,6 +290,44 @@ def test_propose_and_unmatched_agree_whether_resolved_is_shared_or_recomputed(mo
 def test_propose_ignores_tokens_that_match_no_title():
     props = ga.propose({"Surrender": 22, "Maybe": 20}, {"Surrender", "Maybe"}, ["Shirahoshi"])
     assert props == []
+
+
+# --- Fix 2 (2026-08-19 dry run): a correctly-spelled given name is a WHOLE WORD of its own
+# full-name wiki title ('Zoro' of 'Roronoa Zoro'), which best_title's plain highest-similarity
+# pick was losing to a short, unrelated, phonetically-closer decoy article -- exactly the
+# five real corruptions below (see test_decide_holds_every_real_corruption... for the other
+# five, which Fix 1's similarity bar catches instead since they have no containing title).
+
+@pytest.mark.parametrize("variant,titles,decoy", [
+    ("Zoro", ["Roronoa Zoro", "Zoryu"], "Zoryu"),
+    ("Doflamingo", ["Donquixote Doflamingo", "Domino"], "Domino"),
+    ("Momonosuke", ["Kouzuki Momonosuke", "Momoo"], "Momoo"),
+    ("Wano", ["Wano Country", "Wany"], "Wany"),
+    ("Kung", ["Kung Fu Point", "Kuni"], "Kuni"),
+])
+def test_propose_prefers_a_containing_title_over_a_closer_fuzzy_decoy(monkeypatch, variant, titles, decoy):
+    # Confirmed against the unindexed fuzzy path (no word_index) that each decoy really is
+    # the higher-scoring pick pre-fix: Zoro/Zoryu 0.868, Doflamingo/Domino 0.893,
+    # Momonosuke/Momoo 0.900, Wano/Wany 0.903, Kung/Kuni 0.883 -- all above MIN_SIM, all
+    # picked over the correct containing title by best_title's old highest-score-wins rule.
+    monkeypatch.setattr(ga.glossary, "is_english", lambda w: False)
+    props = ga.propose({variant: 20}, {variant}, titles)
+    assert len(props) == 1
+    p = props[0]
+    assert p["canonical"] != decoy
+    assert p["verdict"] == "known" and p["reason"] == "short-form"
+
+
+def test_best_title_prefers_a_whole_word_containing_title_over_the_fuzzy_winner():
+    name, score = ga.best_title("Zoro", ["Roronoa Zoro", "Zoryu"])
+    assert name == "Roronoa Zoro" and score == 1.0
+
+
+def test_word_index_does_not_override_a_genuine_respelling():
+    # 'Vargo' is not a whole word of anything here -- Fix 2 must not touch a real tier-C
+    # fix; it should still resolve through the ordinary fuzzy path untouched.
+    name, score = ga.best_title("Vargo", ["Vergo", "Roronoa Zoro"])
+    assert name == "Vergo" and score == pytest.approx(ga.similarity("Vargo", "Vergo"))
 
 
 def test_propose_flags_an_ordinary_english_word(monkeypatch):
@@ -407,11 +493,17 @@ def test_acquire_write_failure_leaves_original_glossary_intact(tmp_path, monkeyp
 
 
 def test_acquire_run_id_differs_when_title_content_differs(tmp_path, monkeypatch):
-    # "Syrahose" alone (never harvested as "Shirahoshi"/"Shirahoshy") hits the
-    # canonical-unseen escape clause, so both runs apply -- only the matched canonical
-    # spelling differs between them, same title COUNT (1) either way.
+    # "Kinemon" alone (never harvested as "Kin'emon"/"Kin-emon") hits the canonical-unseen
+    # escape clause via the orthographic bar (reduce_form equal either way -- an apostrophe
+    # vs a hyphen), so both runs still apply -- only the matched canonical spelling differs
+    # between them, same title COUNT (1) either way.
+    # NOTE: was "Syrahose"/"Shirahoshi"/"Shirahoshy" before the ACQUIRE_UNSEEN_SIM guard
+    # (see test_decide_flags_a_phonetic_leap_with_no_competing_evidence): that pair's score
+    # (0.755) no longer clears canonical-unseen's new similarity bar, so it would flag
+    # instead of apply and never reach `acquired`. Swapped to a pair that is genuinely
+    # orthographic so the run-id-differs behaviour this test actually pins is unaffected.
     monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
-    texts = ["I fear Syrahose."] * 5
+    texts = ["I fear Kinemon."] * 5
     dir_a, dir_b = tmp_path / "a", tmp_path / "b"
     dir_a.mkdir(); dir_b.mkdir()
     _write_conf(dir_a, "Ep01", texts)
@@ -419,12 +511,12 @@ def test_acquire_run_id_differs_when_title_content_differs(tmp_path, monkeypatch
     gp_a, gp_b = dir_a / "One Pace.json", dir_b / "One Pace.json"
     gp_a.write_text(json.dumps({"show": "One Pace"}))
     gp_b.write_text(json.dumps({"show": "One Pace"}))
-    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Shirahoshi"])
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Kin'emon"])
     ga.acquire(str(gp_a), str(dir_a), apply=True)
-    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Shirahoshy"])
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Kin-emon"])
     ga.acquire(str(gp_b), str(dir_b), apply=True)
-    run_a = json.loads(gp_a.read_text())["acquired"]["Syrahose"]["run"]
-    run_b = json.loads(gp_b.read_text())["acquired"]["Syrahose"]["run"]
+    run_a = json.loads(gp_a.read_text())["acquired"]["Kinemon"]["run"]
+    run_b = json.loads(gp_b.read_text())["acquired"]["Kinemon"]["run"]
     assert run_a != run_b
 
 

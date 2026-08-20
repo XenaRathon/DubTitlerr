@@ -104,6 +104,25 @@ def similarity(a: str, b: str) -> float:
     return score
 
 
+_WORD_RE = re.compile(r"[^\W_]+")
+
+
+def _word_index(index: list) -> dict[str, str]:
+    """word (lowercase) -> the first normalised title in `index` containing it as a whole word.
+
+    Built from _title_index()'s already-computed normalised titles -- a cheap string split
+    over data that pass already produced, not a second scan that re-runs jaro-winkler,
+    metaphone or soundex per title. This is what lets 'Zoro' resolve to 'Roronoa Zoro'
+    rather than to some unrelated, similarly-spelled article: this wiki titles characters by
+    full name, so a bare given name in dialogue is a SHORT FORM of the full-name title, not a
+    fuzzy near-match to be corrected. See _best_title_indexed."""
+    out: dict = {}
+    for norm, *_rest in index:
+        for w in _WORD_RE.findall(norm.lower()):
+            out.setdefault(w, norm)
+    return out
+
+
 def _title_index(titles: list) -> list[tuple[str, str, str, str]]:
     """(normalised title, reduced form, metaphone, soundex) per title, computed once.
 
@@ -129,15 +148,25 @@ def _title_index(titles: list) -> list[tuple[str, str, str, str]]:
     return out
 
 
-def _best_title_indexed(token: str, index: list) -> tuple[str, float]:
+def _best_title_indexed(token: str, index: list, word_index: dict | None = None) -> tuple[str, float]:
     """(normalised title, score) of the closest entry in a precomputed _title_index().
 
     Token-side reduce_form/metaphone/soundex computed once here rather than once per
     title, mirroring similarity()'s formula exactly (same jaro-winkler call, same +0.02
-    phonetic nudge, same score) so results are byte-identical to the unindexed path."""
+    phonetic nudge, same score) so results are byte-identical to the unindexed path.
+
+    `word_index`, when given, is checked first: a token that is a whole word (case-
+    insensitive) of some title wins outright over any fuzzy near-match, score 1.0 -- see
+    _word_index. A bare token score-losing to a wrong-but-similar-length title (a short
+    given name scores higher against an unrelated short article than against its own long
+    full-name title) is exactly the failure this pre-check exists to short-circuit."""
     ra = reduce_form(token)
     if not ra:
         return ("", 0.0)
+    if word_index is not None:
+        hit = word_index.get(token.lower())
+        if hit is not None:
+            return (hit, 1.0)
     ma, sa = jellyfish.metaphone(ra), jellyfish.soundex(ra)
     best, best_score = "", 0.0
     for norm, rb, mb, sb in index:
@@ -150,8 +179,12 @@ def _best_title_indexed(token: str, index: list) -> tuple[str, float]:
 
 
 def best_title(token: str, titles: list) -> tuple[str, float]:
-    """(normalised title, score) of the closest title above MIN_SIM, else ('', 0.0)."""
-    return _best_title_indexed(token, _title_index(titles))
+    """(normalised title, score) of the closest title above MIN_SIM, else ('', 0.0).
+
+    Not the hot path (see _resolve_tokens) -- a one-off convenience that builds its own
+    title/word index per call, fine for a single token against a single title list."""
+    index = _title_index(titles)
+    return _best_title_indexed(token, index, _word_index(index))
 
 
 CONF_SUFFIX = ".dubtitles.conf.json"
@@ -284,8 +317,11 @@ def escalate(proposals: list, ctx: dict, show: str) -> list:
     """Re-decide share-too-close proposals with context. Other verdicts pass through.
 
     ONLY share-too-close escalates. below-floor, sentence-initial-only, already-canonical,
-    english-word and short-form never do: none of those verdicts is evidence-shaped, and
-    short-form (an expansion) is structurally wrong -- no amount of context evidence redeems it."""
+    english-word, unseen-needs-evidence and short-form never do: none of those verdicts is
+    evidence-shaped, and short-form (an expansion) is structurally wrong -- no amount of
+    context evidence redeems it. unseen-needs-evidence specifically has no `canonical`
+    context to escalate WITH -- canonical_count is 0 by definition of the branch that
+    produced it, so there is nothing on the canonical side for tier-C to compare against."""
     out = []
     for p in proposals:
         if p.get("reason") != "share-too-close":
@@ -303,6 +339,7 @@ def escalate(proposals: list, ctx: dict, show: str) -> list:
 
 MIN_COUNT = int(os.environ.get("ACQUIRE_MIN_COUNT", "3"))
 MIN_SHARE = float(os.environ.get("ACQUIRE_MIN_SHARE", "0.80"))
+UNSEEN_SIM = float(os.environ.get("ACQUIRE_UNSEEN_SIM", "0.98"))
 
 
 def decide(variant: str, variant_count: int, canonical: str, canonical_count: int,
@@ -311,7 +348,17 @@ def decide(variant: str, variant_count: int, canonical: str, canonical_count: in
 
     Order matters: the cheap structural rejections come first so the report's reason is the
     most specific true one. R2 (expansion) and R3 (dominance) are the only gates carrying
-    real safety -- `score` is a recall floor that has already been applied upstream."""
+    real safety -- `score` is a recall floor that has already been applied upstream.
+
+    canonical-unseen means there is NO competing evidence: the canonical spelling never
+    appears, so Wilson has nothing to weigh. With no evidence the only safe correction is one
+    that is not really a phonetic judgement -- an apostrophe, spacing, a doubled letter --
+    which is what reduce_form(variant) == reduce_form(canonical) or score >= UNSEEN_SIM
+    tests for. A genuine phonetic leap ('Zoro'->'Zoryu', 0.87) is a CLAIM about what was
+    actually said, and a claim needs evidence: either R3 dominance or tier-C context. Absent
+    that bar every one of 8109 wiki titles finds SOME obscure article within MIN_SIM of any
+    correctly-spelled name, which never appears in dialogue for the excellent reason that it
+    is not in the show -- and canonical_count==0 would read that silence as proof."""
     if variant_count + canonical_count < MIN_COUNT:
         return {"verdict": "flag", "reason": "below-floor", "bound": 0.0}
     if not midsentence:
@@ -321,7 +368,9 @@ def decide(variant: str, variant_count: int, canonical: str, canonical_count: in
     if variant == canonical:
         return {"verdict": "flag", "reason": "already-canonical", "bound": 0.0}
     if canonical_count == 0:
-        return {"verdict": "apply", "reason": "canonical-unseen", "bound": 0.0}
+        if reduce_form(variant) == reduce_form(canonical) or score >= UNSEEN_SIM:
+            return {"verdict": "apply", "reason": "canonical-unseen", "bound": 0.0}
+        return {"verdict": "flag", "reason": "unseen-needs-evidence", "bound": 0.0}
     bound = wilson_lower(canonical_count, canonical_count + variant_count)
     if bound > MIN_SHARE:
         return {"verdict": "apply", "reason": "dominant", "bound": bound}
@@ -344,9 +393,10 @@ def _resolve_tokens(counts: dict, titles: list) -> dict:
     safe (skip a token only if even its best possible booster couldn't clear the floor)
     prunes zero of 8202 tokens, so no such pre-filter is applied."""
     index = _title_index(titles)
+    word_index = _word_index(index)
     resolved = {}
     for tok in counts:
-        name, score = _best_title_indexed(tok, index)
+        name, score = _best_title_indexed(tok, index, word_index)
         if name:
             resolved[tok] = (name, score)
     return resolved
