@@ -306,3 +306,73 @@ def test_is_short_still_catches_a_real_runt():
 
 def test_card_cps_uses_visible_chars():
     assert reflow.card_cps("ab\ncd", 1.0) == 5.0   # newline counts as one space
+
+
+# --- T8: is_orphan_group + orphan flag on cards -------------------------------
+
+def test_single_word_group_from_a_previous_segment_is_an_orphan():
+    g = [{"text": "Wait", "start": 10.0, "end": 10.2, "prob": .9, "seg": 0}]
+    nxt = [{"text": "for", "start": 12.0, "end": 12.3, "prob": .9, "seg": 1}]
+    assert reflow.is_orphan_group(g, nxt) is True
+
+
+def test_a_legitimate_one_word_utterance_is_not_an_orphan():
+    """'Yes.' spoken alone, in its own segment, with silence both sides."""
+    g = [{"text": "Yes.", "start": 10.0, "end": 10.6, "prob": .9, "seg": 3}]
+    nxt = [{"text": "I", "start": 14.0, "end": 14.2, "prob": .9, "seg": 4}]
+    assert reflow.is_orphan_group(g, nxt) is False
+
+
+def test_is_orphan_group_false_when_no_next_group():
+    g = [{"text": "Wait", "start": 10.0, "end": 10.2, "prob": .9, "seg": 0}]
+    assert reflow.is_orphan_group(g, None) is False
+
+
+def test_is_orphan_group_false_when_next_group_same_segment():
+    g = [{"text": "Wait", "start": 10.0, "end": 10.2, "prob": .9, "seg": 0}]
+    nxt = [{"text": "for", "start": 12.0, "end": 12.3, "prob": .9, "seg": 0}]
+    assert reflow.is_orphan_group(g, nxt) is False
+
+
+def test_is_orphan_group_false_when_group_too_long():
+    g = [
+        {"text": "Wait", "start": 10.0, "end": 10.2, "prob": .9, "seg": 0},
+        {"text": "right", "start": 10.3, "end": 10.5, "prob": .9, "seg": 0},
+        {"text": "there", "start": 10.6, "end": 10.8, "prob": .9, "seg": 0},
+    ]
+    nxt = [{"text": "for", "start": 12.0, "end": 12.3, "prob": .9, "seg": 1}]
+    assert reflow.is_orphan_group(g, nxt) is False
+
+
+def _orphan_words():
+    # seg 0: a complete sentence, then a stray "Wait" tacked on at the segment's
+    # tail; seg 1 (after a >GAP_MAX silence) is the utterance "Wait" really belongs to.
+    return [
+        {"text": "Hello", "start": 0.0, "end": 0.3, "prob": .9, "seg": 0},
+        {"text": "there.", "start": 0.4, "end": 0.7, "prob": .9, "seg": 0},
+        {"text": "Wait", "start": 0.8, "end": 1.0, "prob": .9, "seg": 0},
+        {"text": "for", "start": 1.6, "end": 1.9, "prob": .9, "seg": 1},
+        {"text": "me.", "start": 2.0, "end": 2.3, "prob": .9, "seg": 1},
+    ]
+
+
+def _orphan_segments():
+    return [
+        {"start": 0.0, "end": 1.0, "no_speech_prob": 0.1},
+        {"start": 1.6, "end": 2.3, "no_speech_prob": 0.1},
+    ]
+
+
+def test_orphan_flag_reaches_the_card():
+    cards = reflow.reflow(_orphan_words(), _orphan_segments())
+    assert any(c.get("orphan") for c in cards)
+
+
+def test_reflow_end_to_end_two_sentences_across_a_gap_marks_no_orphans():
+    # regression: the flag must be additive only -- unrelated existing scenarios
+    # (no cross-segment stranded runt) stay unflagged.
+    words = sentence(["Hello", "there."], t0=0.0, seg=0) + \
+        sentence(["General", "Kenobi."], t0=2.0, seg=1)
+    segs = [{"no_speech_prob": 0.1}, {"no_speech_prob": 0.2}]
+    cards = reflow.reflow(words, segs)
+    assert all(c.get("orphan") is False for c in cards)
