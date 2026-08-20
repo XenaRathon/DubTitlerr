@@ -221,11 +221,12 @@ the Punk Hazard data, not from caution in the abstract.
 
    **[v3] The escape clause carries most of the real cases, and that is not a detail.**
    A canonical that never appears in the transcripts at all auto-applies, because there is
-   no competing spelling to be wrong about. Both must-apply cases in the verification plan
-   go through this branch, not the Wilson test: Whisper produced `Kinemon` 12 times and
-   `Kin'emon` zero, `Brooke` 9 times and `Brook` zero, so each scores a Wilson bound of
-   **0.000** on the dominance rule. An implementation that only checks `wilson > 0.80`
-   fails the entire acceptance test.
+   no competing spelling to be wrong about. `Kinemon`/`Kin'emon` goes through this branch,
+   not the Wilson test: Whisper produced `Kinemon` 12 times and `Kin'emon` zero, so it
+   scores a Wilson bound of **0.000** on the dominance rule. An implementation that only
+   checks `wilson > 0.80` fails the acceptance test. (`Brooke`/`Brook` scores the same
+   0.000 escape-clause bound, but is then demoted to flagged by the later english-word
+   gate — see the corrected acceptance table below; it is no longer a must-apply case.)
 
    **[v3] What this rule deliberately gives up.** When the correct form is present but in
    the minority, it is flagged rather than fixed. `Decken` (8) against `Deccan` (21) scores
@@ -367,8 +368,10 @@ GPU — the pattern `glossary_verify`'s tests already use.
 - **[v2]** Scoring groups `Syrahose`/`Hirohoshi` with `Shirahoshi` and `Deccan` with
   `Decken` — the cases exact metaphone bucketing dropped.
 - **[v2]** A `hard_fix` for a short variant never fires inside a longer token.
-- A consistent mis-hearing with no correct form present (`Brooke`, canonical `Brook`) is
-  applied.
+- A consistent mis-hearing with no correct form present (`Kinemon`, canonical `Kin'emon`)
+  is applied via the canonical-unseen escape clause. `Brooke`/`Brook` has the same shape
+  but is flagged instead: `is_english("brooke")` is True, so it exercises the english-word
+  gate — see the corrected acceptance table.
 - Wiki failure and LLM failure are each a no-op, not a crash.
 - **[v3]** A cluster failing R2 or R3 is flagged and never reaches the tier-B LLM.
 - **[v3]** `initial_prompt` regeneration excludes `acquired` names.
@@ -384,15 +387,21 @@ decision rather than only the result.
 no fansub track, its glossary is starved, and its transcripts contain every failure mode
 at once.
 
-Acceptance:
+Acceptance — corrected after the final-fix review reproduced this table against real
+Punk Hazard data and found two rows wrong and two right for the wrong reason:
 
 | Cluster | Counts | Required behaviour |
 |---|---|---|
-| `Kinemon` | 12 | applied → `Kin'emon` |
-| `Brooke` | 9 | applied → `Brook` |
-| `Smokey` / `Smoker` | 16 / 21 | **not** applied (Wilson bound far below 0.80) |
-| `Warlords` | 10 | **not** applied (would expand) |
-| `Surrender`, `Maybe`, `Hurry`, `Listen` | 10–22 | ignored (no wiki match) |
+| `Kinemon` | 12 | applied → `Kin'emon` (canonical-unseen escape clause, Wilson bound 0.000) |
+| `Brooke` | 9 | **flagged**, reason `english-word` — `is_english("brooke")` is True on both `cracklib-small` and the container's `wamerican` (SCOWL ships given names), so the english-word gate demotes what would otherwise be an apply. Not an acceptance failure: this is the gate working as designed on real data, not the canonical-unseen case it was originally (wrongly) claimed to be. |
+| `Smokey` / `Smoker` | 16 / 21 | reaches tier C (`share-too-close`, bound 0.409, escalated to the LLM merge adjudicator) — outcome depends on the LLM's merge verdict, not on the 0.409 bound alone; a low/none-confidence verdict leaves it flagged, matching the spec's intent either way. |
+| `Warlords` | 10 | **not** applied, but not via tier 0/R2: `similarity("Warlords", "Seven Warlords of the Sea")` is 0.627, below `MIN_SIM` 0.72, so `best_title` returns nothing and R2 is never reached. It falls to `unmatched()` → tier B instead; even if tier B's LLM matched it to that title, C1's tier-B validation re-runs the expansion check and rejects it there. |
+| `Surrender`, `Maybe`, `Hurry`, `Listen` | 10–22 | **not** ignored — each clears the frequency floor and appears mid-sentence, so it reaches either tier A (flagged, e.g. `english-word` or `share-too-close`) or tier B (`unmatched()` → LLM adjudication → flagged `no-wiki-match` if nothing clears high-confidence). `similarity("Maybe", "Mabe")` is 0.967, well above `MIN_SIM`, illustrating how easily an ordinary word can score close enough to a real title to require a human, not a silent drop. |
+
+Running the acceptance pass requires `WORDLIST_PATH=/usr/share/cracklib/cracklib-small` on
+this laptop (or an equivalent real English wordlist) — without it, `is_english` degrades to
+the bundled fallback list and the english-word gate is effectively disabled, which changes
+the `Brooke` row's outcome back to "applied".
 
 ## Rollout
 
