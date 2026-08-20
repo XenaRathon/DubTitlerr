@@ -334,3 +334,30 @@ def test_acquire_run_id_differs_when_title_content_differs(tmp_path, monkeypatch
     run_a = json.loads(gp_a.read_text())["acquired"]["Syrahose"]["run"]
     run_b = json.loads(gp_b.read_text())["acquired"]["Syrahose"]["run"]
     assert run_a != run_b
+
+
+def test_unmatched_lists_frequent_tokens_with_no_title_match():
+    counts = {"Shirahoshi": 56, "Zunesha": 7, "Maybe": 20}
+    mid = {"Shirahoshi", "Zunesha", "Maybe"}
+    out = ga.unmatched(counts, mid, ["Shirahoshi", "Maybe"])
+    assert out == ["Zunesha"]
+
+
+def test_unmatched_respects_the_frequency_floor():
+    assert ga.unmatched({"Zunesha": 2}, {"Zunesha"}, ["Shirahoshi"]) == []
+
+
+def test_acquire_reports_tier_b_adjudications(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    gp.write_text(json.dumps({"show": "One Pace"}))
+    # NOTE: brief's literal fixture puts "Zunesha" sentence-initial in every line, so it never
+    # enters `midsentence` (see mine_glossary.mine_text) and unmatched() -- which gates on
+    # midsentence exactly like decide() does for tier A -- would never see it. Reworded so the
+    # token is genuinely mid-sentence. See task-11-report.md.
+    _write_conf(tmp_path, "Ep01", ["I saw Zunesha walk.", "I saw Zunesha again.", "I saw Zunesha thrice."] * 3)
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Shirahoshi"])
+    monkeypatch.setattr(ga.glossary_verify, "adjudicate",
+                        lambda *a, **k: {"canonical": "Zunisha", "confidence": "high", "dub_note": "dub"})
+    rep = ga.acquire(str(gp), str(tmp_path), apply=False)
+    assert rep["tier_b"] == {"Zunesha": "Zunisha"}
