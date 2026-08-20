@@ -195,13 +195,22 @@ def _card_word_probs(card, words):
     reflow.Card doesn't retain which whisper words it was built from, so this
     re-derives the association here rather than threading it through reflow.py.
 
+    Joined on the SOURCE window (C6), never the display one. A forward steal moves
+    display timing -- starts later, ends past the old cap -- so a displaced card's
+    display window can be entirely disjoint from its own audio while covering its
+    neighbour's. Joining on display timing therefore hands repair.has_low_prob_word()
+    the wrong card's confidences: a false negative on the card holding the mis-heard
+    word and a false positive on the runt that stole the time. Same repoint, and the
+    same pre-C6 fallback, as repair.overlap_ref(). The audio a card describes never moves.
+
     Must be called with the card's PRE-collapse boundaries (i.e. inside the per-card
     loop below, before hallucination.collapse_runs()): a later run-collapse keeps
     run[0]'s text verbatim, so computing word_probs against that same card's own
-    [start, end] window -- rather than re-querying after the merge widens the window
-    to cover the whole repeated run -- keeps the list aligned with the text it
+    source window -- rather than re-querying after the merge widens the window to
+    cover the whole repeated run -- keeps the list aligned with the text it
     actually describes."""
-    return [round(w["prob"], 3) for w in words if w["end"] > card["start"] and w["start"] < card["end"]]
+    a = card.get("source_start", card["start"]); b = card.get("source_end", card["end"])
+    return [round(w["prob"], 3) for w in words if w["end"] > a and w["start"] < b]
 
 
 def discard_stale_sidecars(stem):

@@ -176,6 +176,27 @@ def test_card_word_probs_empty_when_no_overlap():
     assert generate._card_word_probs({"start": 0.0, "end": 1.0}, words) == []
 
 
+def test_card_word_probs_joins_on_source_not_display_timing():
+    """C6: the forward steal moves DISPLAY timing; the audio a card describes never
+    moves. Joining on the display window hands the LLM the NEIGHBOUR's word confidences
+    -- a false positive on the runt that stole the time and a false negative on the card
+    that actually holds the mis-heard word. Task 9 repointed overlap_ref(); this is the
+    other evidence consumer."""
+    words = [{"text": " Huh.", "start": 10.0, "end": 10.05, "prob": 0.9, "seg": 0},
+             {"text": " friend,", "start": 10.2, "end": 10.5, "prob": 0.05, "seg": 0}]
+    runt = {"start": 10.0, "end": 10.83, "source_start": 10.0, "source_end": 10.05}
+    displaced = {"start": 10.913, "end": 11.743, "source_start": 10.2, "source_end": 10.5}
+    assert generate._card_word_probs(runt, words) == [0.9]
+    assert generate._card_word_probs(displaced, words) == [0.05]
+
+
+def test_card_word_probs_falls_back_to_display_timing():
+    """Back-compat, matching overlap_ref(): a card without the C6 source window (a
+    pre-C6 sidecar) still joins on its display window rather than raising."""
+    words = [{"text": " x", "start": 0.0, "end": 0.5, "prob": 0.4, "seg": 0}]
+    assert generate._card_word_probs({"start": 0.0, "end": 1.0}, words) == [0.4]
+
+
 class _FakeWord:
     def __init__(self, text, start, end, prob):
         self.word, self.start, self.end, self.probability = text, start, end, prob
@@ -215,6 +236,34 @@ def test_word_probs_written_to_conf_json(monkeypatch, tmp_path):
     assert len(conf) == 1
     assert conf[0]["word_probs"] == [0.95, 0.1]
     assert len(conf[0]["word_probs"]) == len(conf[0]["text"].split())
+
+
+def test_word_probs_stay_with_their_own_card_across_a_forward_steal(monkeypatch, tmp_path):
+    """End-to-end: a runt steals time from its successor, so the successor's DISPLAY
+    window no longer contains its own audio. Each card's word_probs must still describe
+    ITS text -- one probability per word, and the 0.05 on the card that actually
+    contains the mis-heard word (repair.has_low_prob_word reads exactly this list)."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setattr(generate, "media_duration", lambda path: None)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+
+    words = [_FakeWord(" Huh.", 10.0, 10.05, 0.9),
+             _FakeWord(" Hello", 10.2, 10.25, 0.9), _FakeWord(" there", 10.3, 10.35, 0.9),
+             _FakeWord(" friend,", 10.36, 10.42, 0.05), _FakeWord(" okay?", 10.43, 10.5, 0.9)]
+    seg = _FakeSegment(10.0, 10.5, 0.05, words)
+    monkeypatch.setattr(generate, "WMODEL", _FakeModel([seg]))
+
+    assert generate.process(str(v)) == "ok"
+    conf = json.loads((tmp_path / "ep.dubtitles.conf.json").read_text())
+    assert len(conf) == 2
+    assert conf[1]["start"] > conf[1]["source_start"]          # the steal really displaced it
+    for row in conf:
+        assert len(row.get("word_probs", [])) == len(row["text"].split())
+    assert 0.05 not in conf[0]["word_probs"]                   # the runt is not credited with it
+    assert 0.05 in conf[1]["word_probs"]                       # the card that said it is
 
 
 # --- V2 A8: WHISPER_AUDIO_FILTER in extract_wav() -----------------------------
