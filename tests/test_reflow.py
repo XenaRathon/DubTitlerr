@@ -284,3 +284,24 @@ def test_reflow_no_tiny_fragment_from_small_intra_segment_gap():
     assert len(cards) == 1
     assert cards[0]["text"] == "I couldn't win."
     assert cards[0]["start"] >= 122.0     # leading "I" pulled to the body, no early reveal
+
+
+# --- T7: epsilon and duration helpers ----------------------------------------
+
+def test_eps_absorbs_json_round_trip_error():
+    """A card set to exactly start+MIN_DUR, round-tripped through 3-decimal JSON,
+    must NOT count as short. This is the bug that inflated the runt count by 56%."""
+    # A duration slightly below MIN_DUR due to floating-point rounding.
+    # With EPS=1e-6, this is caught at >= MIN_DUR - EPS, not < MIN_DUR
+    dur = 0.8299995  # less than MIN_DUR, but >= MIN_DUR - EPS
+    assert dur < reflow.MIN_DUR                  # the float artifact is real
+    assert not reflow.is_short(dur)              # ...and is_short must ignore it
+
+
+def test_is_short_still_catches_a_real_runt():
+    assert reflow.is_short(0.02)
+    assert reflow.is_short(reflow.MIN_DUR - 0.01)
+
+
+def test_card_cps_uses_visible_chars():
+    assert reflow.card_cps("ab\ncd", 1.0) == 5.0   # newline counts as one space
