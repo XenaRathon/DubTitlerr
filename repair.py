@@ -240,7 +240,7 @@ def borrowed_from_ref(orig, new, ref):
     return [w for w in have if w not in had and w in in_ref]
 
 
-def fits_card(text, dur):
+def fits_card(text, dur, orig=None):
     """Whether ``text`` can be DISPLAYED legally on a card lasting ``dur`` seconds (C4).
 
     Validates the candidate as it will actually be written: through the same
@@ -251,11 +251,17 @@ def fits_card(text, dur):
     to a 44-char line), and that blind spot is exactly how the library-wide wrapping defect
     survived. Line lengths are integer character counts, so only cps needs EPS."""
     wrapped = reflow.wrap_balance((text or "").replace("\n", " "))
-    lines = wrapped.split("\n")
-    if len(lines) > reflow.MAX_LINES: return False
-    if any(len(ln) > reflow.MAX_LINE for ln in lines): return False
-    if len(wrapped.replace("\n", " ")) > reflow.MAX_CHARS: return False
-    return reflow.card_cps(wrapped, dur) <= reflow.MAX_CPS + reflow.EPS
+    if not reflow.layout_faults(wrapped, dur):
+        return True
+    if orig is None:
+        return False
+    # The card ALREADY breaks the profile -- ~28% of cards are over cps, and A2
+    # deliberately does not retime for cps. Refusing every repair on those would refuse
+    # to fix `Zorro`->`Zoro` on a dense line, which is the exact case repair exists to
+    # serve. Accept a repair that worsens NO dimension; reject one that worsens any.
+    before = reflow.layout_metrics(reflow.wrap_balance((orig or "").replace("\n", " ")), dur)
+    after = reflow.layout_metrics(wrapped, dur)
+    return all(a <= b + reflow.EPS for a, b in zip(after, before))
 
 
 def accept_repair(orig, new, ref, dur):
@@ -286,7 +292,7 @@ def accept_repair(orig, new, ref, dur):
     ratio = len(new) / max(1, len(orig))
     if not (LEN_RATIO_MIN <= ratio <= LEN_RATIO_MAX):
         return False                                   # added or dropped a clause
-    if not fits_card(new, dur):
+    if not fits_card(new, dur, orig):
         return False                                   # unreadable/undisplayable on THIS card
     return len(borrowed_from_ref(orig, new, ref)) < MAX_REF_BORROW
 

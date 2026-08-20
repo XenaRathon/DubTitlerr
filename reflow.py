@@ -52,6 +52,28 @@ def is_short(dur: float) -> bool:
     return dur < MIN_DUR - EPS
 
 
+def layout_faults(text: str, dur: float) -> list[str]:
+    """Which display-profile constraints ``text`` violates at ``dur`` seconds; an empty
+    list means valid. THE single definition of the profile -- generate.py and repair.py
+    both call it, so a repair cannot be accepted against one set of rules and then
+    rejected by another. Line lengths are integer character counts, so only cps needs EPS."""
+    lines = text.split("\n")
+    out = []
+    if len(lines) > MAX_LINES: out.append("over_lines")
+    if any(len(ln) > MAX_LINE for ln in lines): out.append("over_line_len")
+    if len(text.replace("\n", " ")) > MAX_CHARS: out.append("over_chars")
+    if card_cps(text, dur) > MAX_CPS + EPS: out.append("over_cps")
+    return out
+
+
+def layout_metrics(text: str, dur: float) -> tuple:
+    """(line count, longest line, visible chars, cps) -- comparable dimension by
+    dimension, so "did this edit make the card worse?" is answerable."""
+    lines = text.split("\n")
+    flat = text.replace("\n", " ")
+    return (len(lines), max((len(ln) for ln in lines), default=0), len(flat), card_cps(text, dur))
+
+
 def card_cps(text: str, dur: float) -> float:
     """Visible characters per second. A line break displays as a break, not a char,
     but counts as the space it replaces."""

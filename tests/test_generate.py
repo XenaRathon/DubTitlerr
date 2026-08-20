@@ -874,3 +874,12 @@ def test_the_text_validated_is_the_text_written(monkeypatch, tmp_path):
     for e in doc["events"]:
         if e.get("reason") == "layout_exception":
             assert e["text"] == body.replace("\n", " ")
+
+
+def test_generate_and_repair_share_one_profile_definition():
+    """Two copies of the layout profile is the 'two algorithms that can disagree' hazard
+    C7 warns about -- repair.fits_card and generate._layout_faults must both resolve to
+    reflow.layout_faults, so a repair cannot be accepted against one set of rules and
+    then judged by another."""
+    for text, dur in [("ok", 3.0), ("x" * 90, 1.0), ("a\nb\nc", 2.0), ("y" * 50, 0.9)]:
+        assert generate._layout_faults(text, dur) == reflow.layout_faults(text, dur)

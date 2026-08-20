@@ -391,6 +391,29 @@ visually invalid -- which is exactly how Problem 4 survived.
 **C5 (v2).** The secondary-model output (`_needs_secondary_check` path) goes through
 the same acceptance validation as the first pass. Today it does not.
 
+**C5 confirmed during implementation, and worse than stated:** the secondary output did
+not bypass *part* of the gate, it bypassed `accept_repair` ENTIRELY -- no length band,
+no reference-borrow guard, no profile check. `new2` was written over an already-accepted
+first-pass repair after only `glossary.correct()`. Since `_needs_secondary_check` fires
+on ~every name-changing repair by design, that was the COMMON path, not a rare one. Now
+gated identically; on failure the validated first-pass repair stands.
+
+**C2a (v5) -- the profile gate is NON-WORSENING, not absolute.** As written, C2 rejects
+any repair leaving the card over `MAX_CPS`. But ~28% of cards are already over cps and
+A3 deliberately declines to retime for it, so an absolute gate refuses to fix a misheard
+name on any dense line -- precisely the case repair exists to serve, and a direct
+contradiction of C2's own "keep it permissive" clause.
+
+Rule: a card that is currently VALID must stay valid -- a repair may not push it over
+any limit. A card that is ALREADY invalid accepts a repair that worsens no dimension
+(line count, longest line, visible chars, cps) and rejects one that worsens any.
+
+**C4a (v5) -- one profile definition.** `repair.fits_card` and
+`generate._layout_faults` were separate implementations of the same rules: the "two
+algorithms that can disagree" hazard C7 warns about, reintroduced in the module that
+consumes C7's output. Both now delegate to `reflow.layout_faults(text, dur)`, with
+`reflow.layout_metrics(text, dur)` supplying the comparable dimensions C2a needs.
+
 **C6 (v3) -- source timing vs display timing. BLOCKER for shipping A before C.**
 
 A2 moves a card's display start later. `overlap_ref()` then selects the fansub
