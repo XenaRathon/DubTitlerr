@@ -451,7 +451,12 @@ def _orphan_then_utterance():
 CASES = [   # (gap, pred_text, runt_text, pred_dur, runt_dur, should_merge, why)
     (0.08, "It's a", "monster.",  1.0, 0.30, True,  "ordinary sentence tail"),
     (0.60, "It's a", "monster.",  1.0, 0.30, False, "gap exceeds GAP_MAX"),
-    (0.08, "x" * 70, "monster.",  1.0, 0.30, False, "merged text over MAX_CHARS"),
+    # NB: this row is 79 chars -- UNDER MAX_CHARS. It is rejected at 57 cps. Kept as a
+    # valid rejection, relabelled honestly; the row below is what isolates MAX_CHARS.
+    (0.08, "x" * 70, "monster.",  1.0, 0.30, False, "short+dense: rejected on cps"),
+    # 89 chars (over 84) at 16.5 cps and 5.38s span -- both other gates pass, so only
+    # MAX_CHARS can reject it. Without this the MAX_CHARS gate is never exercised.
+    (0.08, "x" * 80, "monster.",  5.0, 0.30, False, "merged text over MAX_CHARS"),
     (0.08, "It's a", "monster.",  6.9, 0.30, False, "merged span over MAX_DUR"),
     (0.08, "a" * 30, "b" * 20,    2.0, 0.30, False, "merged cps over MAX_CPS"),
     (0.08, "Done.",  "Next.",     1.0, 0.30, True,  "sentence-integrity is a PREFERENCE"),

@@ -308,9 +308,10 @@ def merge_runts(groups: list[list[dict]]) -> tuple[list[list[dict]], list[dict]]
                     and len(merged_text) <= MAX_CHARS
                     and span <= MAX_DUR + EPS
                     and card_cps(merged_text, span) <= MAX_CPS + EPS):
-                out[-1] = p + g
                 merges.append({"reason": "runt_backward_merge",
-                               "into": id(p), "absorbed": _text(g)})
+                               "into": len(out) - 1,      # index, not id(): CPython
+                               "absorbed": _text(g)})     # reuses ids after GC
+                out[-1] = p + g
                 continue
         out.append(g)
     return out, merges
