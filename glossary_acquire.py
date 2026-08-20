@@ -104,17 +104,54 @@ def similarity(a: str, b: str) -> float:
     return score
 
 
-def best_title(token: str, titles: list) -> tuple[str, float]:
-    """(normalised title, score) of the closest title above MIN_SIM, else ('', 0.0)."""
-    best, best_score = "", 0.0
+def _title_index(titles: list) -> list[tuple[str, str, str, str]]:
+    """(normalised title, reduced form, metaphone, soundex) per title, computed once.
+
+    similarity() used to recompute a title's reduce_form/metaphone/soundex on every token
+    comparison it took part in -- 8202 x 8109 times on One Pace instead of 8109. Titles
+    don't change within a run; only the per-title values are safe to hoist out of the join.
+    A title whose reduced form is empty can never win (similarity() returns 0.0 for it,
+    same as MIN_SIM's floor), so it is dropped here exactly as it was silently ignored
+    before -- fewer entries to scan, identical winners and scores. Duplicate normalised
+    titles (a name appearing as several disambiguated articles) are likewise collapsed to
+    one entry: every occurrence would have produced the same score, so only the first is
+    kept, in title order, matching best_title's original first-wins tie-break."""
+    out, seen = [], set()
     for t in titles:
         norm = normalize_title(t)
-        if not norm:
+        if not norm or norm in seen:
             continue
-        s = similarity(token, norm)
+        r = reduce_form(norm)
+        if not r:
+            continue
+        seen.add(norm)
+        out.append((norm, r, jellyfish.metaphone(r), jellyfish.soundex(r)))
+    return out
+
+
+def _best_title_indexed(token: str, index: list) -> tuple[str, float]:
+    """(normalised title, score) of the closest entry in a precomputed _title_index().
+
+    Token-side reduce_form/metaphone/soundex computed once here rather than once per
+    title, mirroring similarity()'s formula exactly (same jaro-winkler call, same +0.02
+    phonetic nudge, same score) so results are byte-identical to the unindexed path."""
+    ra = reduce_form(token)
+    if not ra:
+        return ("", 0.0)
+    ma, sa = jellyfish.metaphone(ra), jellyfish.soundex(ra)
+    best, best_score = "", 0.0
+    for norm, rb, mb, sb in index:
+        s = jellyfish.jaro_winkler_similarity(ra, rb)
+        if ma == mb or sa == sb:
+            s = min(1.0, s + 0.02)
         if s > best_score:
             best, best_score = norm, s
     return (best, best_score) if best_score >= MIN_SIM else ("", 0.0)
+
+
+def best_title(token: str, titles: list) -> tuple[str, float]:
+    """(normalised title, score) of the closest title above MIN_SIM, else ('', 0.0)."""
+    return _best_title_indexed(token, _title_index(titles))
 
 
 CONF_SUFFIX = ".dubtitles.conf.json"
@@ -291,7 +328,32 @@ def decide(variant: str, variant_count: int, canonical: str, canonical_count: in
     return {"verdict": "flag", "reason": "share-too-close", "bound": bound}
 
 
-def propose(counts: dict, midsentence: set, titles: list, settled: set | None = None) -> list:
+def _resolve_tokens(counts: dict, titles: list) -> dict:
+    """token -> (canonical, score) for every harvested token that resolves to a wiki title.
+
+    This is the module's dominant cost -- 8202 tokens x 8109 titles on One Pace -- so it is
+    computed once per acquire() run and shared: propose() and unmatched() both need it, and
+    used to each run best_title() over every token independently, doubling the join for no
+    reason (unmatched's tokens are a subset of counts, already resolved or not by propose's
+    pass). No count/mid-sentence pre-filtering happens here: R6's floor gate compares
+    variant_count + canonical_count, not variant_count alone (see
+    test_propose_emits_one_proposal_per_variant_with_the_canonical_count's
+    Hirohoshi/Shirahoshi cluster), so a token's own low count never proves in advance that
+    its match would be discarded -- the canonical it turns out to match could itself be a
+    high-count token. Measured on One Pace, the tightest count-only bound that IS always
+    safe (skip a token only if even its best possible booster couldn't clear the floor)
+    prunes zero of 8202 tokens, so no such pre-filter is applied."""
+    index = _title_index(titles)
+    resolved = {}
+    for tok in counts:
+        name, score = _best_title_indexed(tok, index)
+        if name:
+            resolved[tok] = (name, score)
+    return resolved
+
+
+def propose(counts: dict, midsentence: set, titles: list, settled: set | None = None,
+            resolved: dict | None = None) -> list:
     """One proposal per harvested token that resolves to a wiki title.
 
     A token matching no title yields nothing here -- it is the tier-B queue's business
@@ -303,13 +365,13 @@ def propose(counts: dict, midsentence: set, titles: list, settled: set | None = 
 
     `settled` (already `known` or `acquired`) is skipped entirely -- C2: without this, an
     unattended sweep re-proposes a term a human already rejected via --review, and
-    apply_proposals happily re-applies it, silently overriding the human decision."""
+    apply_proposals happily re-applies it, silently overriding the human decision.
+
+    `resolved` lets a caller that already ran _resolve_tokens() (acquire(), sharing it with
+    unmatched()) pass the result straight in instead of paying for the join twice."""
     settled = settled or set()
-    resolved = {}
-    for tok in counts:
-        name, score = best_title(tok, titles)
-        if name:
-            resolved[tok] = (name, score)
+    if resolved is None:
+        resolved = _resolve_tokens(counts, titles)
     out = []
     for tok, (canon, score) in sorted(resolved.items()):
         if tok in settled:
@@ -329,14 +391,19 @@ def propose(counts: dict, midsentence: set, titles: list, settled: set | None = 
     return out
 
 
-def unmatched(counts: dict, midsentence: set, titles: list) -> list:
+def unmatched(counts: dict, midsentence: set, titles: list, resolved: dict | None = None) -> list:
     """Frequent, mid-sentence tokens that resolved to no wiki title at all.
 
     This is the dub-only-name queue: a character the dub renamed outright ('Ash' where the
     wiki is titled in romaji) matches nothing phonetically, which is a MISS, never a
-    corruption. Tier B asks the wiki's full-text search about these."""
+    corruption. Tier B asks the wiki's full-text search about these.
+
+    `resolved` lets a caller share one _resolve_tokens() pass with propose() instead of
+    the join running twice (see propose's docstring)."""
+    if resolved is None:
+        resolved = _resolve_tokens(counts, titles)
     return sorted(t for t, c in counts.items()
-                  if c >= MIN_COUNT and t in midsentence and not best_title(t, titles)[0])
+                  if c >= MIN_COUNT and t in midsentence and t not in resolved)
 
 
 def apply_proposals(gloss: dict, proposals: list, run_id: str) -> dict:
@@ -504,7 +571,11 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     # C2: skip anything a human or an earlier sweep already settled, so an unattended
     # rerun can never re-propose (and re-apply) a term someone already rejected.
     settled = set(gloss.get("known", [])) | set(gloss.get("acquired", {}))
-    proposals = propose(counts, mid, titles, settled)
+    # I6/perf: the token x title join is the module's dominant cost -- resolve every
+    # harvested token against the wiki exactly once and hand the same result to propose()
+    # and unmatched(), instead of each independently re-running it (was ~1.5x the work).
+    resolved = _resolve_tokens(counts, titles)
+    proposals = propose(counts, mid, titles, settled, resolved=resolved)
     close = [p for p in proposals if p.get("reason") == "share-too-close"]
     if close:
         toks = sorted({p["variant"] for p in close} | {p["canonical"] for p in close})
@@ -518,7 +589,7 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
             if p["verdict"] == "flag":
                 p["context"] = fctx.get(p["variant"], [])
     tier_b = {}
-    for term in unmatched(counts, mid, titles):
+    for term in unmatched(counts, mid, titles, resolved=resolved):
         try:
             adj = glossary_verify.adjudicate(term, glossary_verify.candidates(term, titles), show)
         except Exception as e:
