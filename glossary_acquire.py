@@ -237,19 +237,60 @@ def _iter_episode_texts(show_dir: str):
             yield stem, text
 
 
-def harvest(show_dir: str) -> tuple[dict, set, int]:
-    """(counts, midsentence, n_files) of capitalised tokens across the show's own output.
+SOURCE_TRANSCRIPT = "transcript"
+SOURCE_FANSUB = "fansub"
+
+
+def _candidate(variant: str, source: str) -> dict:
+    """The D3a candidate record, zeroed. Every field the apply rule or a reviewer needs.
+
+    `settled_target` is filled per PROPOSAL, not here: it depends on the wiki canonical
+    the token resolves to, which harvest cannot know."""
+    return {"variant": variant, "source": source, "raw_forms": {}, "normalized_forms": [],
+            "settled_target": None, "occurrence_count": 0, "episode_count": 0, "contexts": []}
+
+
+def harvest_candidates(show_dir: str, source: str = SOURCE_TRANSCRIPT) -> tuple[dict, set, list]:
+    """({variant: candidate}, midsentence, scope) across the show's own output.
+
+    D3a: aggregate counts cannot express provenance, so the unit here is a candidate
+    record, not an integer. D3b: `scope` is the list of episode stems the counts were
+    taken over -- without it the recurrence floors are not the floors that were measured.
+
+    `occurrence_count` is the BARE lane only, exactly what harvest() has always counted.
+    Possessive forms appear in `raw_forms` as evidence for a reviewer but never raise a
+    count: D5's rule is that possessive evidence may reinforce a candidate, never
+    originate one, and lowering this module's floors with it would do the latter.
 
     conf.json is preferred; the SRT is the fallback for episodes whose conf is gone (104 of
     696 stamped episodes at time of writing). One source per episode stem, never both."""
-    counter: dict = {}
-    poss: dict = {}          # D5/task 12: possessive lane, discarded here -- this path's
-    mid: set = set()         # admission policy is task 13's subject, not task 12's
-    files = 0
-    for _stem, text in _iter_episode_texts(show_dir):
-        files += 1
-        mine_glossary.mine_text(text, counter, poss, mid)
-    return counter, mid, files
+    cands: dict = {}
+    mid: set = set()
+    scope: list = []
+    for stem, text in _iter_episode_texts(show_dir):
+        scope.append(stem)
+        bare: dict = {}
+        poss: dict = {}      # D5/task 12: counted separately, never folded into `bare`
+        forms: dict = {}
+        mine_glossary.mine_text(text, bare, poss, mid, forms)
+        for tok in set(bare) | set(poss):
+            c = cands.setdefault(tok, _candidate(tok, source))
+            c["occurrence_count"] += bare.get(tok, 0)
+            c["episode_count"] += 1
+            for surface, n in forms.get(tok, {}).items():
+                c["raw_forms"][surface] = c["raw_forms"].get(surface, 0) + n
+    for c in cands.values():
+        c["normalized_forms"] = sorted({reduce_form(f) for f in c["raw_forms"]})
+    return cands, mid, scope
+
+
+def harvest(show_dir: str) -> tuple[dict, set, int]:
+    """(counts, midsentence, n_files) of capitalised tokens across the show's own output.
+
+    The pre-D3a view of harvest_candidates, kept because the counts ARE the unit the
+    scoring gates work in; numerically identical to what it returned before task 13."""
+    cands, mid, scope = harvest_candidates(show_dir)
+    return {t: c["occurrence_count"] for t, c in cands.items() if c["occurrence_count"]}, mid, len(scope)
 
 
 CONTEXT_LINES = int(os.environ.get("ACQUIRE_CONTEXT_LINES", "4"))
@@ -341,11 +382,101 @@ def escalate(proposals: list, ctx: dict, show: str) -> list:
 MIN_COUNT = int(os.environ.get("ACQUIRE_MIN_COUNT", "3"))
 MIN_SHARE = float(os.environ.get("ACQUIRE_MIN_SHARE", "0.80"))
 UNSEEN_SIM = float(os.environ.get("ACQUIRE_UNSEEN_SIM", "0.98"))
+# D4: split recurrence floors. The distribution runs opposite to intuition -- high counts
+# are CORRECT names missing from the glossary (Momonosuke 21x, Brownbeard 16x, Vegapunk
+# 14x), because Whisper hears a clear name consistently; the ERRORS live in the tail
+# (Kinamon 2x, Whitestrom 2x, Hazzard 4x). So a near-miss of a settled term needs less
+# recurrence to be worth looking at than a brand-new term does.
+NEAR_MISS_MIN_COUNT = int(os.environ.get("ACQUIRE_NEAR_MISS_MIN_COUNT", "2"))
+# C7: a candidate-admission throttle on D auto-applies, guarding against large wiki
+# expansions like the rejected Zunesha -> "Zou Elephant (Zunisha)" (+16). It is explicitly
+# NOT a layout-safety proof -- wrapping depends on where word boundaries fall, not on total
+# length, and C7's measured post-glossary validation in generate.py owns that question.
+GROWTH_MAX = int(os.environ.get("ACQUIRE_GROWTH_MAX", "2"))
+
+
+def anchor_terms(gloss: dict) -> set:
+    """Terms a transcript candidate may anchor itself to: `names` plus every hard_fix
+    canonical (which is where `acquired` canonicals live too).
+
+    `known` is deliberately excluded. Those are spellings a human REJECTED via --review;
+    anchoring a new candidate to one would make a rejected misspelling the corroborating
+    evidence for the next correction."""
+    return ({str(n) for n in gloss.get("names") or []}
+            | {str(v) for v in (gloss.get("hard_fixes") or {}).values() if v})
+
+
+def settled_target(variant: str, canonical: str, anchors: set | None) -> str | None:
+    """The already-settled term `variant` is a near-miss of, or None.
+
+    Two conditions, both required, and the second is the one that is easy to lose:
+
+    1. `variant` is a near-miss of the term -- reduced-form equality (Kaido/Kaidou) or
+       similarity >= MIN_SIM (Kinamon/Kin'emon).
+    2. the term IS the canonical the wiki proposed, reduced-form equal.
+
+    Without (2) the anchor corroborates nothing about the string being written into
+    hard_fixes: `Zunesha` sits close to a settled `Zunisha`, but the canonical on the
+    proposal is "Zou Elephant", and applying it because some OTHER term is nearby is
+    precisely the failure D3 exists to prevent. An exact match is not a near-miss --
+    the token IS the settled term, and there is nothing to correct."""
+    if not anchors or not canonical:
+        return None
+    rc = reduce_form(canonical)
+    best, best_score = None, 0.0
+    for term in sorted(anchors):
+        if reduce_form(term) != rc or variant == term:
+            continue
+        if reduce_form(variant) == reduce_form(term):
+            return term
+        s = similarity(variant, term)
+        if s >= MIN_SIM and s > best_score:
+            best, best_score = term, s
+    return best
+
+
+def source_gate(proposals: list) -> list:
+    """D3, the source-asymmetry APPLY rule. Runs AFTER the tier logic and AFTER escalate().
+
+    A fansub candidate was written by a human who knew the show; a transcript candidate is
+    Whisper guessing at audio, so a wiki title match means something weaker -- it may
+    confirm the wiki's word while the audio said something else.
+
+        fansub                            -> existing miner policy, untouched
+        transcript + settled_target set   -> may auto-apply (the wiki corroborates an anchor)
+        transcript + settled_target None  -> review, regardless of tier, count, or LLM
+                                             adjudication confidence
+
+    The last line is why this is a separate pass over finished proposals rather than
+    another branch in decide(): escalate() can promote a high-confidence context
+    adjudication straight to an apply, and for a new transcript term that must be
+    impossible. A proposal carrying no `source` is treated as transcript -- missing
+    provenance takes the safe branch, never the permissive one.
+
+    The floor is re-checked here because D4's near-miss floor is on the candidate's OWN
+    recurrence, while decide()'s gate deliberately weighs variant + canonical together."""
+    out = []
+    for p in proposals:
+        if p.get("verdict") != "apply" or p.get("source", SOURCE_TRANSCRIPT) != SOURCE_TRANSCRIPT:
+            out.append(p); continue
+        target, grew = p.get("settled_target"), len(p["canonical"]) - len(p["variant"])
+        if not target:
+            out.append({**p, "verdict": "flag", "reason": "transcript-new-term"})
+        elif p.get("variant_count", 0) < NEAR_MISS_MIN_COUNT:
+            out.append({**p, "verdict": "flag", "reason": "below-floor"})
+        elif grew > GROWTH_MAX:
+            out.append({**p, "verdict": "flag", "reason": "growth-over-cap"})
+        else:
+            out.append(p)
+    return out
 
 
 def decide(variant: str, variant_count: int, canonical: str, canonical_count: int,
-           score: float, midsentence: bool) -> dict:
+           score: float, midsentence: bool, floor: int | None = None) -> dict:
     """Run the four gates over one variant->canonical proposal.
+
+    `floor` is D4's split recurrence floor, defaulting to MIN_COUNT (a brand-new term).
+    propose() passes NEAR_MISS_MIN_COUNT for a candidate anchored to a settled term.
 
     Order matters: the cheap structural rejections come first so the report's reason is the
     most specific true one. R2 (expansion) and R3 (dominance) are the only gates carrying
@@ -360,7 +491,8 @@ def decide(variant: str, variant_count: int, canonical: str, canonical_count: in
     that bar every one of 8109 wiki titles finds SOME obscure article within MIN_SIM of any
     correctly-spelled name, which never appears in dialogue for the excellent reason that it
     is not in the show -- and canonical_count==0 would read that silence as proof."""
-    if variant_count + canonical_count < MIN_COUNT:
+    floor = MIN_COUNT if floor is None else floor
+    if variant_count + canonical_count < floor:
         return {"verdict": "flag", "reason": "below-floor", "bound": 0.0}
     if not midsentence:
         return {"verdict": "flag", "reason": "sentence-initial-only", "bound": 0.0}
@@ -404,7 +536,8 @@ def _resolve_tokens(counts: dict, titles: list) -> dict:
 
 
 def propose(counts: dict, midsentence: set, titles: list, settled: set | None = None,
-            resolved: dict | None = None) -> list:
+            resolved: dict | None = None, candidates: dict | None = None,
+            anchors: set | None = None) -> list:
     """One proposal per harvested token that resolves to a wiki title.
 
     A token matching no title yields nothing here -- it is the tier-B queue's business
@@ -419,8 +552,15 @@ def propose(counts: dict, midsentence: set, titles: list, settled: set | None = 
     apply_proposals happily re-applies it, silently overriding the human decision.
 
     `resolved` lets a caller that already ran _resolve_tokens() (acquire(), sharing it with
-    unmatched()) pass the result straight in instead of paying for the join twice."""
+    unmatched()) pass the result straight in instead of paying for the join twice.
+
+    `candidates` (D3a) carries each token's provenance onto its proposal, so the apply rule
+    downstream can see WHERE the token came from; `anchors` (D3) is the settled-term set a
+    transcript candidate may be a near-miss OF, which also picks D4's floor. Both are
+    optional: without them every token is treated as an unanchored transcript token, which
+    is the safe reading."""
     settled = settled or set()
+    candidates = candidates or {}
     if resolved is None:
         resolved = _resolve_tokens(counts, titles)
     out = []
@@ -428,7 +568,10 @@ def propose(counts: dict, midsentence: set, titles: list, settled: set | None = 
         if tok in settled:
             continue
         canon_count = counts.get(canon, 0)
-        d = decide(tok, counts[tok], canon, canon_count, score, tok in midsentence)
+        cand = candidates.get(tok) or _candidate(tok, SOURCE_TRANSCRIPT)
+        target = settled_target(tok, canon, anchors)
+        floor = NEAR_MISS_MIN_COUNT if (target and cand["source"] == SOURCE_TRANSCRIPT) else MIN_COUNT
+        d = decide(tok, counts[tok], canon, canon_count, score, tok in midsentence, floor)
         if d["reason"] == "already-canonical":
             continue
         # R6e: the english-word gate must never touch a 'known'/'short-form' verdict --
@@ -438,7 +581,10 @@ def propose(counts: dict, midsentence: set, titles: list, settled: set | None = 
         if d["verdict"] != "known" and glossary.is_english(tok.lower()):
             d = {"verdict": "flag", "reason": "english-word", "bound": 0.0}
         out.append({"variant": tok, "canonical": canon, "variant_count": counts[tok],
-                    "canonical_count": canon_count, "score": round(score, 3), **d})
+                    "canonical_count": canon_count, "score": round(score, 3),
+                    "source": cand["source"], "settled_target": target,
+                    "occurrence_count": counts[tok], "episode_count": cand["episode_count"],
+                    "raw_forms": cand["raw_forms"], **d})
     return out
 
 
@@ -457,7 +603,17 @@ def unmatched(counts: dict, midsentence: set, titles: list, resolved: dict | Non
                   if c >= MIN_COUNT and t in midsentence and t not in resolved)
 
 
-def apply_proposals(gloss: dict, proposals: list, run_id: str) -> dict:
+def _provenance(p: dict, scope: int) -> dict:
+    """D3a/D3b: the source, the anchor, and the episode set the counts were taken over.
+
+    Recorded on BOTH lanes. On `acquired` it is the justification for an unattended write;
+    on `flagged` it is the evidence a reviewer needs -- a review queue whose entries arrive
+    without the reason they escalated defeats the point of escalating."""
+    return {"source": p.get("source", SOURCE_TRANSCRIPT), "settled_target": p.get("settled_target"),
+            "episode_count": p.get("episode_count", 0), "scope": scope}
+
+
+def apply_proposals(gloss: dict, proposals: list, run_id: str, scope: int = 0) -> dict:
     """Write applied proposals into hard_fixes + acquired; record the rest in flagged.
 
     Pure: deep-copies its input the way glossary_verify.apply_results does, so curated
@@ -487,14 +643,14 @@ def apply_proposals(gloss: dict, proposals: list, run_id: str) -> dict:
             flagged[term] = {"reason": p["reason"], "canonical": p["canonical"],
                              "variant_count": p["variant_count"], "canonical_count": p["canonical_count"],
                              "score": p["score"], "bound": round(p.get("bound", 0.0), 3),
-                             "context": p.get("context", [])}
+                             "context": p.get("context", []), **_provenance(p, scope)}
             continue
         known.discard(term)                          # C2: an apply verdict wins over a stale known
         fixes[term] = p["canonical"]
         acquired[term] = {"canonical": p["canonical"], "count": p["variant_count"],
                           "canonical_count": p["canonical_count"],
                           "score": p["score"], "bound": round(p.get("bound", 0.0), 3),
-                          "reason": p["reason"], "run": run_id}
+                          "reason": p["reason"], "run": run_id, **_provenance(p, scope)}
     if not flagged:
         g.pop("flagged", None)
     if known:
@@ -530,16 +686,26 @@ def review_items(gloss: dict) -> list:
     """The pending review queue, normalised.
 
     glossary_verify writes bare strings; this module writes objects. Both load, so the
-    queue that has been accumulating unread since the verifier shipped is reviewable too."""
+    queue that has been accumulating unread since the verifier shipped is reviewable too.
+
+    Normalisation FILLS the fixed key set; it does not restrict the entry to it. Producers
+    attach the evidence they escalated on -- mine_glossary's possessive_floor_crossing
+    carries `bare`/`possessive`, this module's entries carry `source`/`settled_target`/
+    `scope` -- and a queue whose entries arrive stripped of the reason they escalated
+    cannot be reviewed, which is the whole point of escalating."""
     out = []
     for term, meta in sorted((gloss.get("flagged") or {}).items()):
         if isinstance(meta, str):
             meta = {"reason": meta}
-        out.append({"term": term, "reason": meta.get("reason", ""),
-                    "canonical": meta.get("canonical", ""),
-                    "variant_count": meta.get("variant_count", 0),
-                    "canonical_count": meta.get("canonical_count", 0),
-                    "bound": meta.get("bound", 0.0), "context": meta.get("context", [])})
+        item = {"term": term, "reason": meta.get("reason", ""),
+                "canonical": meta.get("canonical", ""),
+                "variant_count": meta.get("variant_count", 0),
+                "canonical_count": meta.get("canonical_count", 0),
+                "bound": meta.get("bound", 0.0), "context": meta.get("context", [])}
+        for k, v in meta.items():
+            if k not in item:
+                item[k] = v
+        out.append(item)
     return out
 
 
@@ -606,7 +772,9 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
         return {"note": f"load-failed: {e}"}
     show = gloss.get("show") or os.path.basename(gloss_path)[:-5]
     # Harvest-first: nothing to score means no reason to spend a wiki round-trip.
-    counts, mid, files = harvest(show_dir)
+    cands, mid, scope = harvest_candidates(show_dir)
+    counts = {t: c["occurrence_count"] for t, c in cands.items() if c["occurrence_count"]}
+    files = len(scope)
     if not counts:
         return {"show": show, "note": "nothing harvested", "files": files}
     api = glossary_verify.resolve_wiki(show, override or gloss.get("wiki"))
@@ -626,11 +794,16 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     # harvested token against the wiki exactly once and hand the same result to propose()
     # and unmatched(), instead of each independently re-running it (was ~1.5x the work).
     resolved = _resolve_tokens(counts, titles)
-    proposals = propose(counts, mid, titles, settled, resolved=resolved)
+    proposals = propose(counts, mid, titles, settled, resolved=resolved,
+                        candidates=cands, anchors=anchor_terms(gloss))
     close = [p for p in proposals if p.get("reason") == "share-too-close"]
     if close:
         toks = sorted({p["variant"] for p in close} | {p["canonical"] for p in close})
         proposals = escalate(proposals, context_lines(show_dir, toks), show)
+    # D3: the source-aware apply rule runs LAST, over finished proposals -- after the tier
+    # logic and after escalate(), which can otherwise promote a confident context
+    # adjudication for a brand-new transcript term straight into the glossary.
+    proposals = source_gate(proposals)
     # I4: attach real transcript evidence to every flagged proposal so the review queue
     # (and --review's CLI) has something to show a human, instead of an empty context: [].
     flag_terms = sorted({p["variant"] for p in proposals if p["verdict"] == "flag"})
@@ -661,14 +834,15 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     run_id = f"{show}:{len(titles)}:{files}:{digest}"
     if apply and (proposals or tier_b):
         try:
-            out = apply_proposals(gloss, proposals, run_id)
+            out = apply_proposals(gloss, proposals, run_id, files)
             if tier_b:
                 tctx = context_lines(show_dir, list(tier_b))
                 flagged = out.setdefault("flagged", {})
                 for term, canon in tier_b.items():
                     flagged[term] = {"reason": "no-wiki-match", "canonical": canon,
                                      "variant_count": counts.get(term, 0), "canonical_count": 0,
-                                     "bound": 0.0, "context": tctx.get(term, [])}
+                                     "bound": 0.0, "context": tctx.get(term, []),
+                                     **_provenance(cands.get(term, {}), files)}
             _write_json(gloss_path, out)
         except Exception as e:
             try: os.remove(gloss_path + ".tmp")
@@ -676,7 +850,8 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
             return {"show": show, "wiki": api, "note": f"write-failed: {e}", "files": files}
     return {"show": show, "wiki": api, "files": files, "titles": len(titles),
             "proposed": len(proposals), "applied": len(applied), "known": len(known),
-            "flagged": len(flag_props), "dry_run": not apply,
+            "flagged": len(flag_props), "dry_run": not apply, "scope": len(scope),
+            "scope_episodes": [os.path.basename(s) for s in scope],
             "proposals": proposals, "tier_b": tier_b}
 
 

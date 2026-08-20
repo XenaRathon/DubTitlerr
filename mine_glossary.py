@@ -103,7 +103,7 @@ def _fold(w):
     return _POSS_RE.sub("", w)
 
 
-def mine_text(text, bare, poss, midsentence):
+def mine_text(text, bare, poss, midsentence, forms=None):
     """Count capitalized proper-noun candidates into TWO lanes and track which appear
     MID-sentence (not just sentence-initial, where any word is capitalized).
 
@@ -115,7 +115,13 @@ def mine_text(text, bare, poss, midsentence):
     the auto-append lane (the count floor and the mid-sentence requirement) therefore see
     exactly what they saw before this change, which is what makes the fold safe without an
     English-dictionary gate: possessive evidence can REINFORCE a candidate but can never
-    ORIGINATE one. admit() reads the second lane."""
+    ORIGINATE one. admit() reads the second lane.
+
+    `forms` (optional) collects the SURFACE spellings behind each folded key --
+    {folded: {surface: count}} -- so a consumer can show a reviewer the evidence a term
+    was escalated on rather than a bare number. Purely observational: no admission rule
+    reads it, and it exists here rather than in the caller so there is exactly one
+    tokeniser and one fold in the repo (D3a needs the forms; task 13)."""
     for sent in re.split(r"[.!?…]+|\n", text):
         words = re.findall(r"[A-Za-z][A-Za-z'’\-]{2,}", sent)
         for i, w in enumerate(words):
@@ -123,6 +129,8 @@ def mine_text(text, bare, poss, midsentence):
             folded = _fold(core)
             if not re.match(r"^[A-Z][a-z]{3,}$", folded):
                 continue
+            if forms is not None:
+                seen = forms.setdefault(folded, {}); seen[core] = seen.get(core, 0) + 1
             if folded != core:                  # possessive: reinforces, never originates
                 poss[folded] = poss.get(folded, 0) + 1
                 continue

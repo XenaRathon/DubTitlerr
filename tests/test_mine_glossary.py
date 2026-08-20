@@ -289,3 +289,23 @@ def test_main_never_clobbers_a_stronger_flagged_entry(tmp_path, monkeypatch):
                     monkeypatch, cfg=cfg)
     assert out["flagged"]["Boss"] == {"reason": "share-too-close"}
     assert "Boss" not in out["names"]
+
+
+def test_mine_text_optionally_reports_the_surface_spellings(monkeypatch):
+    """D3a: a consumer needs the forms behind a folded key, not just the count -- a review
+    queue entry stripped of the evidence it escalated on cannot be reviewed."""
+    bare, poss, mid, forms = {}, {}, set(), {}
+    mine_glossary.mine_text("We fought Brownbeard here. The Brownbeard" + chr(0x2019) + "s crew fled. "
+                 "I know Brownbeard's ship.", bare, poss, mid, forms)
+    assert forms["Brownbeard"] == {"Brownbeard": 1, "Brownbeard" + chr(0x2019) + "s": 1,
+                                   "Brownbeard's": 1}
+    assert bare["Brownbeard"] == 1 and poss["Brownbeard"] == 2   # lanes unaffected by `forms`
+
+
+def test_mine_text_forms_is_optional_and_changes_nothing():
+    a = ({}, {}, set())
+    b = ({}, {}, set())
+    text = "We fought Brownbeard here. Brownbeard's crew fled."
+    mine_glossary.mine_text(text, *a)
+    mine_glossary.mine_text(text, *b, None)
+    assert a == b
