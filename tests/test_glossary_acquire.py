@@ -430,7 +430,9 @@ def test_acquire_skips_the_wiki_entirely_when_nothing_was_harvested(tmp_path, mo
 
 def test_acquire_dry_run_does_not_write(tmp_path, monkeypatch):
     gp = tmp_path / "One Pace.json"
-    gp.write_text(json.dumps({"show": "One Pace"}))
+    # D3: `Shirahoshi` must already be settled from an independent source, or Syrahose is a
+    # NEW transcript term and the source gate sends it to review however dominant it is.
+    gp.write_text(json.dumps({"show": "One Pace", "names": ["Shirahoshi"]}))
     # NOTE: brief's literal fixture (Syrahose x60 vs Shirahoshi x20) makes the VARIANT
     # dominate the CANONICAL, which R3 (dominance) correctly flags rather than applies --
     # verified against decide()/wilson_lower directly. Swapped to mirror the 56-vs-2 case
@@ -441,7 +443,7 @@ def test_acquire_dry_run_does_not_write(tmp_path, monkeypatch):
     monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Shirahoshi"])
     rep = ga.acquire(str(gp), str(tmp_path), apply=False)
     assert rep["applied"] == 1
-    assert json.loads(gp.read_text()) == {"show": "One Pace"}   # untouched
+    assert json.loads(gp.read_text()) == {"show": "One Pace", "names": ["Shirahoshi"]}  # untouched
 
 
 def test_acquire_never_escalates_a_gate_failure_to_the_llm(tmp_path, monkeypatch):
@@ -509,8 +511,10 @@ def test_acquire_run_id_differs_when_title_content_differs(tmp_path, monkeypatch
     _write_conf(dir_a, "Ep01", texts)
     _write_conf(dir_b, "Ep01", texts)
     gp_a, gp_b = dir_a / "One Pace.json", dir_b / "One Pace.json"
-    gp_a.write_text(json.dumps({"show": "One Pace"}))
-    gp_b.write_text(json.dumps({"show": "One Pace"}))
+    # D3: each glossary already carries the settled spelling its wiki title corroborates,
+    # so Kinemon stays a near-miss auto-apply rather than a new transcript term.
+    gp_a.write_text(json.dumps({"show": "One Pace", "names": ["Kin" + chr(0x27) + "emon"]}))
+    gp_b.write_text(json.dumps({"show": "One Pace", "names": ["Kin-emon"]}))
     monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Kin'emon"])
     ga.acquire(str(gp_a), str(dir_a), apply=True)
     monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Kin-emon"])
@@ -643,7 +647,8 @@ def test_acquire_report_counts_apply_known_and_flag_separately(tmp_path, monkeyp
     monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Shirahoshi"])
     monkeypatch.setattr(ga, "propose", lambda *a, **k: [
         {"variant": "Syrahose", "canonical": "Shirahoshi", "variant_count": 2, "canonical_count": 56,
-         "score": 0.9, "verdict": "apply", "reason": "dominant", "bound": 0.9},
+         "score": 0.9, "verdict": "apply", "reason": "dominant", "bound": 0.9,
+         "source": ga.SOURCE_TRANSCRIPT, "settled_target": "Shirahoshi"},
         {"variant": "Ace", "canonical": "Portgas D. Ace", "variant_count": 5, "canonical_count": 0,
          "score": 0.8, "verdict": "known", "reason": "short-form", "bound": 0.0},
         {"variant": "Maybe", "canonical": "Nami", "variant_count": 4, "canonical_count": 1,
@@ -927,3 +932,161 @@ def test_c3_main_revert_apply_writes_through_write_json(tmp_path, monkeypatch):
     ga.main()
     assert not (tmp_path / "One Pace.json.tmp").exists()
     assert json.loads(gp.read_text()).get("hard_fixes", {}) == {}
+
+
+# --- Task 13 / D1-D4: transcript-sourced candidates and the source-aware apply rule ---
+
+def _apply_prop(**over):
+    """A transcript-sourced proposal that has already reached verdict 'apply'."""
+    p = {"variant": "Syrahose", "canonical": "Shirahoshi", "variant_count": 4, "canonical_count": 0,
+         "score": 0.99, "verdict": "apply", "reason": "canonical-unseen", "bound": 0.0,
+         "source": ga.SOURCE_TRANSCRIPT, "settled_target": "Shirahoshi"}
+    p.update(over)
+    return p
+
+
+def test_harvest_scope_is_recorded_with_the_counts(tmp_path):
+    # D3b: the floors are only the measured floors if the episode set is recorded too.
+    _write_conf(tmp_path, "Ep01", ["I saw Hazzard today."])
+    _write_conf(tmp_path, "Ep02", ["The Hazzard gate opened.", "We met Hazzard again."])
+    cands, mid, scope = ga.harvest_candidates(str(tmp_path))
+    assert [s.rsplit("/", 1)[-1] for s in scope] == ["Ep01", "Ep02"]
+    c = cands["Hazzard"]
+    assert c["occurrence_count"] == 3 and c["episode_count"] == 2
+    assert "Hazzard" in mid
+
+
+def test_candidate_record_carries_source_and_forms(tmp_path):
+    # D3a: provenance must be representable -- aggregate counts alone cannot express it.
+    _write_conf(tmp_path, "Ep01", ["We fought Hazzard here.", "The Hazzard" + chr(0x2019) + "s men fled."])
+    cands, _mid, _scope = ga.harvest_candidates(str(tmp_path))
+    c = cands["Hazzard"]
+    assert set(c) == {"variant", "source", "raw_forms", "normalized_forms", "settled_target",
+                      "occurrence_count", "episode_count", "contexts"}
+    assert c["source"] == ga.SOURCE_TRANSCRIPT
+    assert c["raw_forms"] == {"Hazzard": 1, "Hazzard" + chr(0x2019) + "s": 1}
+    assert c["normalized_forms"] == ["hazzard", "hazzards"]
+    assert c["occurrence_count"] == 1          # bare lane only, as harvest() has always counted
+
+
+def test_harvest_still_returns_the_same_counts_it_always_did(tmp_path):
+    _write_conf(tmp_path, "Ep01", ["I saw Shirahoshi today.", "Shirahoshi ran away."])
+    counts, mid, n = ga.harvest(str(tmp_path))
+    assert n == 1 and counts["Shirahoshi"] == 2 and "Shirahoshi" in mid
+
+
+def test_anchor_terms_never_include_a_spelling_a_human_rejected():
+    gloss = {"names": ["Kin'emon"], "hard_fixes": {"Syrahose": "Shirahoshi"}, "known": ["Smokey"]}
+    assert ga.anchor_terms(gloss) == {"Kin'emon", "Shirahoshi"}
+
+
+def test_settled_target_anchors_a_near_miss_to_a_settled_term():
+    assert ga.settled_target("Hazzard", "Hazard", {"Hazard"}) == "Hazard"
+    assert ga.settled_target("Kinamon", "Kin'emon", {"Kin'emon"}) == "Kin'emon"
+
+
+def test_settled_target_is_none_when_the_anchor_does_not_corroborate_the_canonical():
+    # The anchor must be the SAME name the wiki proposes. A variant that merely sits near
+    # some unrelated settled term corroborates nothing about the canonical being written.
+    assert ga.settled_target("Zunesha", "Zou Elephant", {"Zunisha"}) is None
+    assert ga.settled_target("Hazzard", "Hazard", set()) is None
+    assert ga.settled_target("Hazard", "Hazard", {"Hazard"}) is None      # it IS the term
+
+
+def test_new_transcript_term_never_auto_applies_at_any_tier():
+    props = [_apply_prop(settled_target=None),
+             _apply_prop(settled_target=None, reason="dominant", canonical_count=56, bound=0.9),
+             _apply_prop(settled_target=None, reason="context-merged")]   # tier C, high confidence
+    out = ga.source_gate(props)
+    assert [p["verdict"] for p in out] == ["flag"] * 3
+    assert {p["reason"] for p in out} == {"transcript-new-term"}
+
+
+def test_near_miss_of_a_settled_term_may_auto_apply():
+    out = ga.source_gate([_apply_prop()])
+    assert out[0]["verdict"] == "apply" and out[0]["reason"] == "canonical-unseen"
+
+
+def test_source_gate_leaves_a_fansub_candidate_to_the_existing_policy():
+    out = ga.source_gate([_apply_prop(source=ga.SOURCE_FANSUB, settled_target=None)])
+    assert out[0]["verdict"] == "apply"
+
+
+def test_source_gate_defaults_to_the_safe_branch_when_provenance_is_missing():
+    p = _apply_prop(); p.pop("source"); p["settled_target"] = None
+    assert ga.source_gate([p])[0]["verdict"] == "flag"
+
+
+def test_candidate_growth_over_two_chars_goes_to_review():
+    over = ga.source_gate([_apply_prop(variant="Zunesha", canonical="Zou Elephant",
+                                       settled_target="Zou Elephant")])
+    assert over[0]["verdict"] == "flag" and over[0]["reason"] == "growth-over-cap"
+    at_cap = ga.source_gate([_apply_prop()])                 # Syrahose -> Shirahoshi is exactly +2
+    assert at_cap[0]["verdict"] == "apply"
+
+
+def test_split_floors():
+    # D4: >= 2 for a near-miss of a settled term, >= 3 for a brand-new one.
+    titles = ["Hazard", "Vergo"]
+    near = ga.propose({"Hazzard": 2}, {"Hazzard"}, titles, anchors={"Hazard"})
+    assert near[0]["reason"] != "below-floor"
+    new_at_two = ga.propose({"Vurgo": 2}, {"Vurgo"}, titles, anchors=set())
+    assert new_at_two[0]["reason"] == "below-floor"
+    new_at_three = ga.propose({"Vurgo": 3}, {"Vurgo"}, titles, anchors=set())
+    assert new_at_three[0]["reason"] != "below-floor"
+
+
+def test_propose_attaches_the_candidate_provenance_to_every_proposal():
+    cands = {"Hazzard": {"variant": "Hazzard", "source": ga.SOURCE_TRANSCRIPT,
+                         "raw_forms": {"Hazzard": 4}, "normalized_forms": ["hazzard"],
+                         "settled_target": None, "occurrence_count": 4, "episode_count": 3,
+                         "contexts": []}}
+    p = ga.propose({"Hazzard": 4}, {"Hazzard"}, ["Hazard"], candidates=cands, anchors={"Hazard"})[0]
+    assert p["source"] == ga.SOURCE_TRANSCRIPT and p["settled_target"] == "Hazard"
+    assert p["episode_count"] == 3 and p["occurrence_count"] == 4
+
+
+def test_acquire_sends_a_new_transcript_term_to_review_with_its_evidence(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    gp.write_text(json.dumps({"show": "One Pace", "names": ["Vergo"]}))
+    _write_conf(tmp_path, "Ep01", ["We met Whitestrom there.", "Then Whitestrom left.",
+                                   "Nobody trusts Whitestrom."])
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Whitestorm"])
+    rep = ga.acquire(str(gp), str(tmp_path), apply=True)
+    assert rep["applied"] == 0
+    g = json.loads(gp.read_text())
+    assert g["flagged"]["Whitestrom"]["reason"] == "transcript-new-term"
+    assert g["flagged"]["Whitestrom"]["canonical"] == "Whitestorm"
+    assert g["flagged"]["Whitestrom"]["source"] == ga.SOURCE_TRANSCRIPT
+    assert g["flagged"]["Whitestrom"]["episode_count"] == 1 and g["flagged"]["Whitestrom"]["scope"] == 1
+    assert g["flagged"]["Whitestrom"]["context"]          # I4: evidence survives the new gate
+    assert "Whitestrom" not in g.get("hard_fixes", {})
+
+
+def test_acquire_auto_applies_a_near_miss_of_a_name_from_an_independent_source(tmp_path, monkeypatch):
+    gp = tmp_path / "One Pace.json"
+    gp.write_text(json.dumps({"show": "One Pace", "names": ["Hazard"]}))
+    _write_conf(tmp_path, "Ep01", ["We reached Hazzard at dawn.", "Then Hazzard burned."])
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Hazard"])
+    rep = ga.acquire(str(gp), str(tmp_path), apply=True)
+    assert rep["applied"] == 1 and rep["scope"] == 1
+    g = json.loads(gp.read_text())
+    assert g["hard_fixes"]["Hazzard"] == "Hazard"
+    assert g["acquired"]["Hazzard"]["settled_target"] == "Hazard"
+    assert g["acquired"]["Hazzard"]["scope"] == 1
+
+
+def test_review_items_carries_the_possessive_crossing_evidence():
+    # Task 12 carry-over: a queue entry that arrives without the counts it escalated on
+    # cannot be reviewed. Every layer records WHY it escalated.
+    gloss = {"flagged": {"Traffy": {"reason": "possessive_floor_crossing", "bare": 2, "possessive": 3}}}
+    item = ga.review_items(gloss)[0]
+    assert item["bare"] == 2 and item["possessive"] == 3
+    assert item["reason"] == "possessive_floor_crossing"
+
+
+def test_review_items_still_normalises_a_legacy_string_entry():
+    item = ga.review_items({"flagged": {"Yuji": "no-match"}})[0]
+    assert item["reason"] == "no-match" and item["context"] == [] and item["canonical"] == ""
