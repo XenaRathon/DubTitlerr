@@ -130,12 +130,28 @@ Feeding that state into a same-delta shift reproduces the overlap. The shift mus
 absorb any pre-existing deficit as well:
 
 ```python
-required_shift = max(
-    extension_delta,                                  # what the runt needs
-    card.end + MIN_GAP - successor.start,             # pre-existing gap deficit
-    0.0,
-)
+required_shift = (card.start + MIN_DUR) + MIN_GAP - successor.start
 ```
+
+**v5 CORRECTION -- this was `max(extension_delta, deficit, 0.0)` and that is WRONG.**
+Found during implementation, verified against the `'Huh.'` pair: extension_delta 0.747,
+pre-existing deficit 0.116, `max()` yields 0.747, the successor lands at 0.797 while the
+card now ends at 0.830 -- **gap -0.033, still overlapping**, failing the very invariant
+the rule exists to establish.
+
+The two quantities are shortfalls measured from DIFFERENT reference points: the
+extension is measured from the card's start, the deficit from its OLD end. Taking the
+larger satisfies one and abandons the other. They compose ADDITIVELY, and the sum
+telescopes to the single expression above -- which is also correct when the deficit is
+negative, so it needs no `max(..., 0)` guard.
+
+`preexisting_gap_deficit` is still recorded separately in the QC event so the two
+causes stay distinguishable.
+
+This formula was introduced in v3 to fix the same-delta rule the round-2 review
+correctly rejected, and then survived round 3 unchallenged. A rule shaped like a safety
+maximum reads as conservative; it was caught only by running the fixture through the
+asserted invariant.
 
 The cascade consumes `required_shift`, not `extension_delta`. The QC event records
 both plus `preexisting_gap_deficit`, so the two causes stay distinguishable.
