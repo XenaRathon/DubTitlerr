@@ -484,10 +484,30 @@ The +2 cap is RETAINED but demoted to what it actually is: a candidate-admission
 throttle on D auto-applies, guarding against large wiki expansions like the rejected
 `Zunesha -> "Zou Elephant (Zunisha)"` (+16). It is not a safety proof.
 
-**A D-acquired term that creates a layout exception may not auto-apply** -- it goes to
-review. Otherwise the deterministic glossary layer silently overrides the deterministic
-layout layer with no human in the loop: a ladder violation, and the one place this
-increment could introduce a defect invisibly.
+**A D-acquired term that creates a layout exception SHOULD not auto-apply -- and as
+shipped, it does. NOT IMPLEMENTED; corrected here rather than left as a false claim.**
+
+The intent stands: a term that breaks the layout profile ought to reach a human, because
+otherwise the deterministic glossary layer silently overrides the deterministic layout
+layer with no human in the loop -- a ladder violation, and the one place this increment
+can introduce a defect invisibly.
+
+What the code actually does: `glossary_acquire.source_gate()` enforces only the +2
+`GROWTH_MAX` length cap. There is no layout check at admission -- the single mention of
+layout in that module is the comment noting the growth cap "is NOT a layout-safety
+proof". So a length-neutral or shortening auto-apply that redistributes word boundaries
+still applies. C7's re-validate pass DETECTS it at generation time and emits a priority
+`layout_exception` event with `caused_by_correction=True`, and the correction is KEPT
+(the right name beats the layout profile). A human learns of it only by reading
+`qc.json`.
+
+Detected and recorded, then, but not prevented. **ROADMAP:** implement the admission
+check. It is genuinely implementable -- `glossary_acquire` already reads `conf.json`
+rows carrying `start`/`end`/`text`, so a candidate replacement can be applied to the
+cards containing the variant and run through `reflow.layout_faults` before admission.
+Risk while deferred is low (transcript auto-applies are near-misses of settled terms,
+overwhelmingly single-token respellings) but it is LOW-VISIBILITY rather than
+low-severity: the remedy is named in the spec and skipped in the code.
 
 This closes a real hole: `LEN_RATIO_MAX` is 1.5, so a repair may grow a line by 50%
 while nothing re-checks readability. A 40-char card at 3.0s (13 cps) rewritten to 58
