@@ -257,6 +257,58 @@ def _record_qc(rec, rows):
             rec.count("violations")
 
 
+def _write_qc(rec, stem):
+    """Build and write the sidecar. Observability only: a write failure is logged, never
+    fatal (see qc.write's docstring), so this is safe on the failure path too."""
+    show = os.environ.get("SHOW_NAME", "") or GLOSS.get("show", "") or "unknown_show"
+    doc = rec.build(show=show, episode=os.path.basename(stem), stem=stem,
+                    glossary_sha=_glossary_version(), pipeline_version=_model_version())
+    qcp = out_for(stem + QC_SUFFIX)
+    if not qc.write(qcp, doc):
+        log(f"  qc sidecar write failed for {qcp}")
+
+
+def _record_cascades(rec, cards, cascades):
+    """Fold time_cards()'s per-cascade records into the recorder. The records are
+    positional over the PRE-filter card list -- reflow() emits exactly one card per group
+    -- so a displaced/shortened index there addresses cards[i] here. Counters count CARDS
+    (B1), so overlapping cascades (one can reach into the next one's span) are unioned
+    rather than summed; cascade_depth is per CASCADE, one observation each."""
+    displaced, shortened = set(), set()
+    for r in cascades:
+        if r["unfixable"]:                      # the tail clamp: nothing left to steal from
+            rec.count("unfixable_runts"); continue
+        rec.count("stolen")                     # the runt at r["index"] took the time
+        rec.observe("cascade_depth", r["hops"])
+        displaced.update(r["displaced"]); shortened.update(r["shortened"])
+    rec.count("displaced", len(displaced))
+    rec.count("shortened_by_neighbour", len(shortened))
+    for i in sorted(displaced):
+        if i < len(cards):
+            rec.observe("displacement", cards[i]["start"] - cards[i]["source_start"])
+
+
+def _cascade_infeasible(stem, fail, exc):
+    """A2b (strict): the card list cannot satisfy the A5 temporal invariants, so the
+    episode is structurally unfixable. No srt/conf/ass is written and nothing is muxed.
+    The poison marker goes back down -- process() already cleared the in-flight one after
+    transcription -- so the skip-prior-crash path retires this episode instead of letting
+    every sweep re-fail it; main() must never see the exception, because its
+    non-RuntimeError branch REMOVES the marker and schedules exactly that retry loop.
+    The QC sidecar is still written: a failed episode is when the evidence matters most."""
+    try: open(fail, "w").close()
+    except OSError: pass
+    rec = qc.Recorder()
+    rec.count("cascade_infeasible")
+    rec.event(reason="cascade_infeasible", card_index=exc.index,
+              requested_shift=exc.requested, applied_shift=exc.applied,
+              residual_shift=exc.residual, audio_duration=exc.audio_duration)
+    _write_qc(rec, stem)
+    log(f"  cascade infeasible at card {exc.index}: {exc.residual:.3f}s of a {exc.requested:.3f}s "
+        f"steal will not fit before {exc.audio_duration}s -- no subtitle written, episode poisoned")
+    return "cascade-infeasible"
+
+
 def process(video):
     stem = os.path.splitext(video)[0]
     # The version-aware stamp (common.stamp_valid) is the ONLY "already muxed" guard.
@@ -320,8 +372,12 @@ def process(video):
     except OSError: pass
     # A1: reflow whisper's words into clean, well-timed cards. C1: name-correct each card.
     # B1: drop near-certain hallucinations, flag the suspect, collapse runaway repeat runs.
-    merge_log = []
-    cards = reflow.reflow(words, segments, merge_log=merge_log, audio_duration=audio_duration)
+    merge_log, cascade_log = [], []
+    try:
+        cards = reflow.reflow(words, segments, merge_log=merge_log, audio_duration=audio_duration,
+                              cascade_log=cascade_log)
+    except reflow.CascadeInfeasible as e:
+        return _cascade_infeasible(stem, fail, e)
     kept, fixes, dropped = [], 0, 0
     for c in cards:
         if hallucination.drop_reason(c):          # blocklist / repetition / music -> drop
@@ -371,12 +427,8 @@ def process(video):
     # one). merged_backward comes from merge_runts()'s own records, not re-derived.
     rec.count("orphan_candidates", sum(1 for c in cards if c.get("orphan")))
     rec.count("merged_backward", len(merge_log))
-    show = os.environ.get("SHOW_NAME", "") or GLOSS.get("show", "") or "unknown_show"
-    doc = rec.build(show=show, episode=os.path.basename(stem), stem=stem,
-                     glossary_sha=_glossary_version(), pipeline_version=_model_version())
-    qcp = out_for(stem + QC_SUFFIX)
-    if not qc.write(qcp, doc):
-        log(f"  qc sidecar write failed for {qcp}")
+    _record_cascades(rec, cards, cascade_log)
+    _write_qc(rec, stem)
     low = sum(1 for c in conf if c["avg_logprob"] < -0.8 or c["no_speech_prob"] > 0.6)
     max_dur = max((b - a for a, b, _ in rows), default=0.0)
     over_cps = sum(1 for a, b, t in rows

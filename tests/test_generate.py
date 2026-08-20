@@ -666,3 +666,79 @@ def test_media_duration_failure_never_fails_the_episode(monkeypatch, tmp_path):
     monkeypatch.setattr(generate, "WMODEL", _displaced_pair_model())
 
     assert generate.process(str(v)) == "ok"
+
+
+# --- QC: cascade telemetry, and the A2b infeasible-cascade contract ----------
+
+def test_qc_counts_what_the_timing_cascade_did(monkeypatch, tmp_path):
+    """time_cards()'s cascade records were dropped on the floor, so the sidecar could
+    never say what the timing pass actually did. A runt stealing from a surplus
+    successor is one steal, one displaced card, one shortened card, depth 1."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setattr(generate, "media_duration", lambda path: None)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+    monkeypatch.setattr(generate, "WMODEL", _displaced_pair_model())
+
+    assert generate.process(str(v)) == "ok"
+    doc = json.loads((tmp_path / "ep.dubtitles.qc.json").read_text())
+    c = doc["counters"]
+    assert c["stolen"] == 1
+    assert c["displaced"] == 1
+    assert c["shortened_by_neighbour"] == 1
+    assert c["unfixable_runts"] == 0
+    assert c["cascade_infeasible"] == 0
+    assert doc["quantiles"]["cascade_depth"]["max"] == 1.0
+    assert doc["quantiles"]["displacement"]["max"] > 0.0
+
+
+def _infeasible_setup(monkeypatch, tmp_path):
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setattr(generate, "media_duration", lambda path: 0.5)   # shorter than the steal needs
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+    monkeypatch.setattr(generate, "WMODEL", _displaced_pair_model())
+    return v
+
+
+def test_cascade_infeasible_writes_no_subtitle_and_poisons_the_episode(monkeypatch, tmp_path):
+    """A2b, strict: a card list that cannot satisfy the temporal invariants is
+    structurally unfixable. Nothing is written for muxing, and the .dubtitles.fail
+    poison marker retires the episode instead of letting every sweep re-fail it."""
+    v = _infeasible_setup(monkeypatch, tmp_path)
+    assert generate.process(str(v)) == "cascade-infeasible"
+    assert (tmp_path / "ep.dubtitles.fail").exists()
+    assert not (tmp_path / "ep.eng.dubtitles.srt").exists()
+    assert not (tmp_path / "ep.dubtitles.conf.json").exists()
+    assert not (tmp_path / "ep.eng.dubtitles.ass").exists()
+    assert generate.process(str(v)) == "skip-prior-crash"    # the next sweep moves on
+
+
+def test_cascade_infeasible_never_reaches_main_and_never_clears_the_marker(monkeypatch, tmp_path):
+    """main() treats a non-RuntimeError as "not the episode's fault" and REMOVES the
+    marker, so a leaked CascadeInfeasible would re-fail forever. process() must swallow it."""
+    v = _infeasible_setup(monkeypatch, tmp_path)
+    seen = []
+    monkeypatch.setattr(generate, "log", lambda *a: seen.append(" ".join(str(x) for x in a)))
+    generate.process(str(v))
+    assert (tmp_path / "ep.dubtitles.fail").exists()
+    assert not (tmp_path / "ep.dubtitles.crash.json").exists()
+    assert any("cascade" in m.lower() for m in seen)
+
+
+def test_cascade_infeasible_still_writes_the_qc_sidecar(monkeypatch, tmp_path):
+    """A failed episode is exactly when the evidence matters most: the sidecar records
+    the counter plus the shift accounting, with requested == applied + residual."""
+    v = _infeasible_setup(monkeypatch, tmp_path)
+    generate.process(str(v))
+    doc = json.loads((tmp_path / "ep.dubtitles.qc.json").read_text())
+    assert doc["counters"]["cascade_infeasible"] == 1
+    ev = [e for e in doc["events"] if e.get("reason") == "cascade_infeasible"]
+    assert len(ev) == 1
+    e = ev[0]
+    assert e["residual_shift"] > 0
+    assert e["requested_shift"] == pytest.approx(e["applied_shift"] + e["residual_shift"], abs=reflow.EPS)
