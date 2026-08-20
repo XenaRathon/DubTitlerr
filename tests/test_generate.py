@@ -525,3 +525,52 @@ def test_qc_sidecar_is_written_next_to_conf(monkeypatch, tmp_path):
     doc = json.loads(qc_path.read_text())
     assert doc["counters"]["cards_after"] == 1
     assert doc["stem"] == str(tmp_path / "ep")
+
+
+# --- QC: orphan_candidates / merged_backward (deferred scope from Task 5) ----
+
+def test_qc_counts_orphan_candidates_but_never_marks_them_fixed(monkeypatch, tmp_path):
+    """reflow.reflow() flags a stranded fragment as "orphan"; process() must count it
+    into orphan_candidates. Quarantining an orphan is not a fix -- orphan_candidates_fixed
+    must stay 0 here, since nothing in this pipeline claims to have fixed it."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+
+    # seg0: "Hello there." (finished sentence) then a stray "Wait" -- an orphan:
+    # its true utterance "for me." starts in seg1 after a real (>GAP_MAX) pause.
+    seg0_words = [_FakeWord(" Hello", 0.0, 0.3, 0.95), _FakeWord(" there.", 0.4, 0.7, 0.95),
+                  _FakeWord(" Wait", 0.8, 1.0, 0.95)]
+    seg1_words = [_FakeWord(" for", 1.6, 1.9, 0.95), _FakeWord(" me.", 2.0, 2.3, 0.95)]
+    seg0 = _FakeSegment(0.0, 1.0, 0.05, seg0_words)
+    seg1 = _FakeSegment(1.6, 2.3, 0.05, seg1_words)
+    monkeypatch.setattr(generate, "WMODEL", _FakeModel([seg0, seg1]))
+
+    assert generate.process(str(v)) == "ok"
+    doc = json.loads((tmp_path / "ep.dubtitles.qc.json").read_text())
+    c = doc["counters"]
+    assert c["orphan_candidates"] == 1
+    assert c["orphan_candidates_fixed"] == 0
+    assert c["merged_backward"] == 0
+
+
+def test_qc_counts_a_genuine_backward_merge(monkeypatch, tmp_path):
+    """A sentence tail split into its own too-short card ("Monster.") merges backward
+    into its predecessor -- process() must count that absorption into merged_backward."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+
+    words = [_FakeWord(" Fine.", 0.0, 1.0, 0.95), _FakeWord(" Monster.", 1.08, 1.38, 0.95)]
+    seg = _FakeSegment(0.0, 1.38, 0.05, words)
+    monkeypatch.setattr(generate, "WMODEL", _FakeModel([seg]))
+
+    assert generate.process(str(v)) == "ok"
+    doc = json.loads((tmp_path / "ep.dubtitles.qc.json").read_text())
+    c = doc["counters"]
+    assert c["merged_backward"] == 1
+    assert c["cards_after"] == 1
