@@ -23,12 +23,17 @@ while :; do
     echo "#### MINE $show $(date)"
     GLOSSARY_DIR="$GLOSS_DIR" python3 /app/mine_glossary.py "$ANIME/$show" </dev/null 2>&1 || echo "  mine failed (continuing)"
     # Acquire names the miner cannot reach: releases with no embedded fansub track leave the
-    # glossary empty for that stretch of the show. Wiki-owned canonicals only; dry-run unless
-    # ACQUIRE_APPLY=1, and failure-swallowed so it can never stall a sweep.
-    if [ -n "${ACQUIRE_APPLY:-}" ] && [ -f "$GLOSS_DIR/$show.json" ]; then
+    # glossary empty for that stretch of the show. Wiki-owned canonicals only. Two separate
+    # gates: ACQUIRE enables the step at all (default on, dry-run: it only logs proposals);
+    # ACQUIRE_APPLY additionally authorises writing them. Default production behaviour is
+    # dry-run-and-log until the Punk Hazard verification run has passed. Failure-swallowed
+    # so it can never stall a sweep either way.
+    if [ "${ACQUIRE:-1}" != "0" ] && [ -f "$GLOSS_DIR/$show.json" ]; then
         echo "#### ACQUIRE $show $(date)"
+        ACQ_FLAGS=""
+        [ -n "${ACQUIRE_APPLY:-}" ] && ACQ_FLAGS="--apply"
         timeout 600 python3 /app/glossary_acquire.py "$GLOSS_DIR/$show.json" "$ANIME/$show" \
-            --apply </dev/null 2>&1 || echo "  acquire skipped (continuing)"
+            $ACQ_FLAGS </dev/null 2>&1 || echo "  acquire skipped (continuing)"
     fi
     GLOSS="$GLOSS_DIR/$show.json"; [ -f "$GLOSS" ] || GLOSS=""
     # wiki-verify the (mined/updated) glossary: canonical, dub-preferred spellings. Incremental +
