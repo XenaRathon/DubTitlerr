@@ -708,3 +708,30 @@ def test_reflow_without_an_audio_duration_stays_unbounded():
     segs = [{"start": 0.0, "end": 3.0, "no_speech_prob": 0.1}]
     cards = reflow.reflow(words, segs)          # audio_duration defaults to None
     assert [c["start"] for c in cards] == [0.0, pytest.approx(0.913, abs=reflow.EPS)]
+
+
+def test_cascade_log_collects_cascade_records_from_reflow():
+    """generate.py needs time_cards()'s per-cascade records for the QC sidecar
+    (stolen / displaced / cascade_depth). Like merge_log, cascade_log is an optional
+    out-param, so the public return type stays a plain list of cards."""
+    words = sentence(["Oh."], t0=0.0, dur=0.10, seg=0) + \
+        sentence(["A much longer line here."], t0=0.15, dur=2.85, seg=0)
+    segs = [{"no_speech_prob": 0.1}]
+    log: list[dict] = []
+    cards = reflow.reflow(words, segs, cascade_log=log)
+    assert len(cards) == 2
+    assert len(log) == 1
+    assert log[0]["reason"] == "forward_steal"
+    assert log[0]["hops"] == 1
+    assert log[0]["displaced"] == [1]        # the successor's start moved
+    assert log[0]["shortened"] == [1]        # ...while its end did not
+
+
+def test_cascade_record_separates_a_displaced_card_from_a_shortened_one():
+    """A zero-surplus chain displaces every hop, but a card whose end has to move with
+    its start is not "shortened by a neighbour" -- the two counters must not conflate."""
+    _times, records = reflow.time_cards(_runt_then_tight_chain(3))
+    r = records[0]
+    assert r["hops"] > 1
+    assert r["displaced"] == list(range(1, 1 + r["hops"]))
+    assert set(r["shortened"]) <= set(r["displaced"])
