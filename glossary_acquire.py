@@ -243,11 +243,12 @@ def harvest(show_dir: str) -> tuple[dict, set, int]:
     conf.json is preferred; the SRT is the fallback for episodes whose conf is gone (104 of
     696 stamped episodes at time of writing). One source per episode stem, never both."""
     counter: dict = {}
-    mid: set = set()
+    poss: dict = {}          # D5/task 12: possessive lane, discarded here -- this path's
+    mid: set = set()         # admission policy is task 13's subject, not task 12's
     files = 0
     for _stem, text in _iter_episode_texts(show_dir):
         files += 1
-        mine_glossary.mine_text(text, counter, mid)
+        mine_glossary.mine_text(text, counter, poss, mid)
     return counter, mid, files
 
 
