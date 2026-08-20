@@ -765,7 +765,11 @@ def _card(text, start=0.0, end=6.0, before=None):
 
 
 def _layout_events(rec):
-    return [e for e in rec.events if e.get("reason") == "layout_exception"]
+    """Read through build() rather than rec.events: correction-introduced exceptions are
+    recorded as PRIORITY events so a flood of pre-existing ones cannot evict them, and
+    build() is what merges the two lists into the sidecar's single `events` array."""
+    doc = rec.build(show="S", episode="E", stem="x")
+    return [e for e in doc["events"] if e.get("reason") == "layout_exception"]
 
 
 def test_length_neutral_correction_that_breaks_wrapping_is_detected():

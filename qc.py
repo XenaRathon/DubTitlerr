@@ -36,6 +36,7 @@ class Recorder:
         self.counters = dict.fromkeys(COUNTERS, 0)
         self.metrics = {m: [] for m in METRICS}
         self.events = []
+        self.priority_events = []
         self.event_count_total = 0
 
     def count(self, name, n=1):
@@ -44,9 +45,18 @@ class Recorder:
     def observe(self, metric, value):
         self.metrics.setdefault(metric, []).append(float(value))
 
-    def event(self, **fields):
+    def event(self, priority=False, **fields):
+        """Record one event. ``priority=True`` events are never evicted by ordinary ones.
+
+        The cap keeps the sidecar bounded, but it keeps the FIRST MAX_EVENTS -- so a
+        common event class can crowd out a rare one that no counter can reconstruct.
+        Measured: a real episode emits ~130 over_cps events (already counted losslessly
+        by _record_qc and described by the cps quantiles) against a handful of
+        correction-introduced layout exceptions, which exist nowhere else."""
         self.event_count_total += 1
-        if len(self.events) < MAX_EVENTS:
+        if priority:
+            self.priority_events.append(fields)
+        elif len(self.events) < MAX_EVENTS:
             self.events.append(fields)
 
     def build(self, show, episode, stem, **meta):
@@ -63,9 +73,9 @@ class Recorder:
                               "p99": _q(v, .99), "max": max(v) if v else 0.0}
                           for m, v in self.metrics.items()},
             "event_count_total": self.event_count_total,
-            "events_retained": len(self.events),
-            "events_truncated": self.event_count_total > len(self.events),
-            "events": self.events,
+            "events_retained": len(self.priority_events) + len(self.events),
+            "events_truncated": self.event_count_total > len(self.priority_events) + len(self.events),
+            "events": self.priority_events + self.events,
         }
 
 

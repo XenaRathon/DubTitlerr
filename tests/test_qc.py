@@ -34,3 +34,25 @@ def test_counters_default_to_zero_and_increment():
 
 def test_write_returns_false_on_failure_and_never_raises():
     assert qc.write("/nonexistent-dir/x.json", {"a": 1}) is False
+
+
+def test_priority_events_are_never_evicted_by_ordinary_ones():
+    """A common event class must not crowd out a rare one that no counter can
+    reconstruct -- measured: ~130 over_cps events per episode against a handful of
+    correction-introduced layout exceptions."""
+    r = qc.Recorder()
+    for i in range(qc.MAX_EVENTS + 200):
+        r.event(card_id=f"noise{i}", effects=["displaced"])
+    r.event(priority=True, card_id="rare", reason="layout_exception")
+    doc = r.build(show="S", episode="E1", stem="/x/E1")
+    kinds = [e.get("reason") for e in doc["events"]]
+    assert "layout_exception" in kinds
+    assert doc["events_truncated"] is True
+    assert doc["event_count_total"] == qc.MAX_EVENTS + 201
+
+
+def test_priority_flag_is_not_stored_as_an_event_field():
+    r = qc.Recorder()
+    r.event(priority=True, card_id="c0", reason="layout_exception")
+    assert r.build(show="S", episode="E", stem="x")["events"][0] == {
+        "card_id": "c0", "reason": "layout_exception"}
