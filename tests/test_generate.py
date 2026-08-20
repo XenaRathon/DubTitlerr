@@ -539,20 +539,50 @@ def test_needs_work_false_for_a_poison_marked_stale_file(monkeypatch, tmp_path):
 
 # --- QC: MIN_DUR floor in the violation counter, and the sidecar write -------
 
+def _qc_card(start, end, text, **kw):
+    d = {"start": start, "end": end, "text": text}
+    d.update(kw)
+    return d
+
+
 def test_violation_counter_now_has_a_min_dur_floor(tmp_path):
-    rows = [(0.0, 0.02, "Cool!")]                 # 0.02s, 294 cps
     rec = qc.Recorder()
-    generate._record_qc(rec, rows)
+    generate._record_qc(rec, [_qc_card(0.0, 0.02, "Cool!")])          # 0.02s, 294 cps
     c = rec.build(show="S", episode="E", stem="x")["counters"]
     assert c["ordinary_under_min_dur_after"] == 1
     assert c["violations"] == 1                   # floor breach IS a violation
 
 
 def test_exact_min_dur_card_is_not_a_violation():
-    rows = [(11.51, round(11.51 + reflow.MIN_DUR, 3), "ok")]
     rec = qc.Recorder()
-    generate._record_qc(rec, rows)
+    generate._record_qc(rec, [_qc_card(11.51, round(11.51 + reflow.MIN_DUR, 3), "ok")])
     assert rec.build(show="S", episode="E", stem="x")["counters"]["violations"] == 0
+
+
+def test_a_quarantined_orphan_is_not_counted_as_an_ordinary_short_card():
+    """B1/v4: the split exists so a quarantined orphan cannot break the acceptance
+    assertion it was exempted from. _record_qc saw (start, end, text) tuples with the
+    orphan flag already discarded, so EVERY short card landed in the ordinary counter
+    and orphan_under_min_dur_after could never be non-zero."""
+    rec = qc.Recorder()
+    generate._record_qc(rec, [_qc_card(0.0, 0.40, "Huh.", orphan=True)])
+    c = rec.build(show="S", episode="E", stem="x")["counters"]
+    assert c["orphan_under_min_dur_after"] == 1
+    assert c["ordinary_under_min_dur_after"] == 0   # must stay 0 at acceptance
+    assert c["violations"] == 1                     # still a violation, just an exempt one
+    assert c["orphan_candidates_fixed"] == 0        # quarantine is not a fix
+
+
+def test_required_extension_is_observed_per_card():
+    """B1: `chars / MAX_CPS - duration` -- the quantity the deferred cps-stealing
+    decision consumes, and which a bare over_cps COUNT cannot supply. Negative on a
+    card with reading slack, so the quantiles describe the whole population."""
+    rec = qc.Recorder()
+    generate._record_qc(rec, [_qc_card(0.0, 1.0, "a" * 34), _qc_card(2.0, 4.0, "ok"),
+                              _qc_card(5.0, 7.0, "fine"), _qc_card(8.0, 10.0, "also fine")])
+    q = rec.build(show="S", episode="E", stem="x")["quantiles"]["required_extension"]
+    assert q["max"] == pytest.approx(34 / reflow.MAX_CPS - 1.0)      # 1.0s short
+    assert q["p50"] < 0                                              # the cards with slack
 
 
 def test_card_faults_is_the_single_profile_definition():
@@ -606,9 +636,8 @@ def test_over_chars_is_counted_not_only_evented():
     layout_exception event whose reason no counter could answer for -- and, being
     pre-existing rather than correction-introduced, it goes in the evictable ordinary
     event list. It was the one fault class that could be lost entirely."""
-    rows = [(0.0, 6.0, "a" * 42 + "\n" + "b" * 42)]
     rec = qc.Recorder()
-    generate._record_qc(rec, rows)
+    generate._record_qc(rec, [_qc_card(0.0, 6.0, "a" * 42 + "\n" + "b" * 42)])
     c = rec.build(show="S", episode="E", stem="x")["counters"]
     assert c["over_chars"] == 1
     assert c["violations"] == 1
@@ -635,6 +664,49 @@ def test_qc_sidecar_is_written_next_to_conf(monkeypatch, tmp_path):
     doc = json.loads(qc_path.read_text())
     assert doc["counters"]["cards_after"] == 1
     assert doc["stem"] == str(tmp_path / "ep")
+
+
+def test_qc_records_the_before_half_of_the_pair(monkeypatch, tmp_path):
+    """cards_before and ordinary_under_min_dur_before were declared and never written,
+    so "before vs after" was unanswerable and a retired episode's sidecar was
+    indistinguishable from a flawless one on every counter but cascade_infeasible.
+    The fixture is one runt ("Monster.") absorbed backward into its predecessor."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+    words = [_FakeWord(" Fine.", 0.0, 1.0, 0.95), _FakeWord(" Monster.", 1.08, 1.38, 0.95)]
+    monkeypatch.setattr(generate, "WMODEL", _FakeModel([_FakeSegment(0.0, 1.38, 0.05, words)]))
+
+    assert generate.process(str(v)) == "ok"
+    c = json.loads((tmp_path / "ep.dubtitles.qc.json").read_text())["counters"]
+    assert c["cards_before"] == 2                      # the timing layer saw two groups
+    assert c["cards_after"] == 1
+    assert c["ordinary_under_min_dur_before"] == 1     # one runt arrived...
+    assert c["ordinary_under_min_dur_after"] == 0      # ...and none shipped
+
+
+def test_qc_counts_flagged_and_low_conf(monkeypatch, tmp_path, capsys):
+    """flagged and low_conf were computed in process() and thrown away -- the log line
+    reported them, the persisted sidecar always said 0."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 1)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setattr(generate, "media_duration", lambda path: None)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+    words = [_FakeWord(" Huh.", 10.0, 10.05, 0.9), _FakeWord(" Hello", 10.2, 10.25, 0.9),
+             _FakeWord(" there", 10.3, 10.35, 0.9), _FakeWord(" friend,", 10.36, 10.42, 0.05),
+             _FakeWord(" okay?", 10.43, 10.5, 0.9)]
+    monkeypatch.setattr(generate, "WMODEL", _FakeModel([_FakeSegment(10.0, 10.5, 0.05, words)]))
+
+    assert generate.process(str(v)) == "ok"
+    c = json.loads((tmp_path / "ep.dubtitles.qc.json").read_text())["counters"]
+    line = [ln for ln in capsys.readouterr().out.splitlines() if " cards=" in ln][0]
+    assert c["low_conf"] > 0
+    assert f"low-conf={c['low_conf']} " in line          # sidecar and log agree
+    assert f"flagged={c['flagged']} " in line
 
 
 # --- QC: orphan_candidates / merged_backward (deferred scope from Task 5) ----

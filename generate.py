@@ -265,14 +265,49 @@ def _card_faults(text, dur):
     return faults
 
 
-def _record_qc(rec, rows):
-    """Fold the finished (start, end, text) rows into the QC recorder. Validates
-    every FLOOR as well as every ceiling -- the omission that hid 730 short cards."""
-    for a, b, t in rows:
+def _record_before(rec, cards, merges):
+    """The "before" half of the sidecar's before/after pairs, measured on reflow's
+    output plus its merge log -- i.e. on the state the timing passes were handed.
+
+    ``cards_before`` is the GROUP count the timing layer saw: every merge record absorbs
+    exactly one group, so len(cards) + len(merges) reconstructs it. ``cards_after``
+    counts what shipped, so the pair spans every pass that can change the card count --
+    and a retired episode's sidecar is no longer indistinguishable from a flawless one.
+
+    ``ordinary_under_min_dur_before`` counts the runts the timing layer had to fix:
+    every merge absorbed a group that was short BY DEFINITION (_merge_fits gates on
+    is_short, and an orphan never merges backward), plus every card whose SOURCE span --
+    the spoken duration, which no display-timing pass moves -- is still short. That is
+    exactly the population against which ordinary_under_min_dur_after == 0 is the
+    acceptance assertion."""
+    rec.count("cards_before", len(cards) + len(merges))
+    rec.count("ordinary_under_min_dur_before", len(merges) + sum(
+        1 for c in cards
+        if not c.get("orphan") and reflow.is_short(c["source_end"] - c["source_start"])))
+
+
+def _record_qc(rec, cards):
+    """Fold the finished cards into the QC recorder. Validates every FLOOR as well as
+    every ceiling -- the omission that hid 730 short cards.
+
+    Takes the CARDS, not (start, end, text) rows: the rows discard the orphan flag, and
+    a quarantined orphan that stays short must land in its own counter rather than
+    breaking the ordinary_under_min_dur_after == 0 acceptance assertion it is exempt
+    from. Muxing a short orphan is an explicit decision; muxing a short ordinary card
+    is the defect."""
+    for c in cards:
+        a, b, t = c["start"], c["end"], c["text"]
         dur = b - a
         rec.observe("cps", reflow.card_cps(t, dur))
+        # required_extension = how much longer this card would have to be displayed to
+        # read at MAX_CPS. Signed and observed for EVERY card, so the quantiles describe
+        # the whole population (negative == reading slack): this is the quantity the
+        # deferred cps-stealing decision consumes, and a bare over_cps count cannot
+        # supply it. Zero would be indistinguishable from "no card needed extension".
+        rec.observe("required_extension", len(t.replace("\n", " ")) / reflow.MAX_CPS - dur)
         faults = _card_faults(t, dur)
-        if "under_min_dur" in faults: rec.count("ordinary_under_min_dur_after")
+        if "under_min_dur" in faults:
+            rec.count("orphan_under_min_dur_after" if c.get("orphan") else "ordinary_under_min_dur_after")
         if "over_cps" in faults: rec.count("over_cps")
         if "over_line_len" in faults: rec.count("over_line_len")
         # over_chars: two LEGAL 42-char lines can still exceed MAX_CHARS, so this fault
@@ -505,22 +540,24 @@ def process(video):
         except OSError as e: log(f"chown failed for {p}: {e}")
     # QC sidecar: observability only -- a write failure is logged, never fatal, since the
     # episode already generated correctly (see qc.write's docstring).
-    _record_qc(rec, rows)
+    _record_qc(rec, collapsed)
     rec.count("cards_after", len(rows))
+    _record_before(rec, cards, merge_log)
     # Deferred from Task 5: orphan candidates are quarantined, not fixed -- count them
     # separately from merges, and never bump orphan_candidates_fixed (nothing here fixes
     # one). merged_backward comes from merge_runts()'s own records, not re-derived.
     rec.count("orphan_candidates", sum(1 for c in cards if c.get("orphan")))
     rec.count("merged_backward", len(merge_log))
     _record_cascades(rec, cards, cascade_log)
-    _write_qc(rec, stem)
     low = sum(1 for c in conf if c["avg_logprob"] < -0.8 or c["no_speech_prob"] > 0.6)
+    flagged = sum(1 for c in conf if c.get("flag"))
+    rec.count("low_conf", low); rec.count("flagged", flagged)   # both were logged and
+    _write_qc(rec, stem)                                        # then thrown away
     max_dur = max((b - a for a, b, _ in rows), default=0.0)
     faults = [_card_faults(t, b - a) for a, b, t in rows]   # B2: the SAME predicate the
     over_cps = sum(1 for f in faults if "over_cps" in f)     # sidecar counts, so the number
     bad = sum(1 for f in faults if f)                        # an operator reads cannot differ
     collapsed_n = len(kept) - len(collapsed)
-    flagged = sum(1 for c in conf if c.get("flag"))
     log(f"  cards={len(rows)} name-fixes={fixes} dropped-hallucination={dropped} "
         f"collapsed={collapsed_n} flagged={flagged} low-conf={low} "
         f"max_dur={max_dur:.1f}s over_cps={over_cps} violations={bad} "
