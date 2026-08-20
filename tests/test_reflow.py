@@ -289,13 +289,14 @@ def test_reflow_no_tiny_fragment_from_small_intra_segment_gap():
 # --- T7: epsilon and duration helpers ----------------------------------------
 
 def test_eps_absorbs_json_round_trip_error():
-    """A card set to exactly start+MIN_DUR, round-tripped through 3-decimal JSON,
-    must NOT count as short. This is the bug that inflated the runt count by 56%."""
-    # A duration slightly below MIN_DUR due to floating-point rounding.
-    # With EPS=1e-6, this is caught at >= MIN_DUR - EPS, not < MIN_DUR
-    dur = 0.8299995  # less than MIN_DUR, but >= MIN_DUR - EPS
-    assert dur < reflow.MIN_DUR                  # the float artifact is real
-    assert not reflow.is_short(dur)              # ...and is_short must ignore it
+    """A card the timer set to exactly start+MIN_DUR, re-derived from conf.json's
+    3-decimal values, must NOT count as short. Real card from One Pace S30 -- 410 of
+    the 1140 cards a naive `< MIN_DUR` flagged are this artifact, not a defect."""
+    start, end = 257.42, 258.25                  # verbatim from a shipped conf.json
+    dur = end - start
+    assert dur == 0.8299999999999841             # the artifact is real, not synthetic
+    assert dur < reflow.MIN_DUR                  # ...a naive comparison calls it short
+    assert not reflow.is_short(dur)              # ...and is_short must not
 
 
 def test_is_short_still_catches_a_real_runt():
