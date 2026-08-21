@@ -39,6 +39,18 @@ GAP_MAX = 0.5            # hard span break: never glue words across a pause this
 DEJITTER_GAP = GAP_MAX
 SENT_END = ".!?…"
 CLAUSE = ",;:"
+SPLIT_PAUSE_MIN = 0.2    # seconds: the absolute floor for "that was a pause, not
+                         # alignment noise". In continuous speech EVERY inter-word gap is
+                         # a few hundredths of a second, and ~0.2 s is about where a
+                         # listener stops hearing a word boundary and starts hearing a
+                         # break. Kept below GAP_MAX (0.5), above which the span is cut
+                         # outright and this tier never sees the gap at all.
+SPLIT_PAUSE_K = 3.0      # ...AND the gap must stand out from THIS piece's own gap
+                         # distribution: >= 3x its median gap. A fixed floor alone
+                         # misjudges both ends -- fast dialogue never reaches it, slow
+                         # dialogue clears it at every single word, which is the same
+                         # arbitrary cut in different clothes. Median, not mean, so one
+                         # long gap cannot inflate the threshold it has to clear.
 PROB_FLOOR = 1e-4        # clamp before ln() so prob==0 doesn't give -inf
 
 
@@ -121,16 +133,30 @@ def _split_sentences(span: list[dict]) -> list[list[dict]]:
     return pieces
 
 
+def _median(vals: list[float]) -> float:
+    s = sorted(vals)
+    n = len(s)
+    if not n: return 0.0
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+
 def _best_split_index(piece: list[dict]) -> int:
     """Interior index (1..n-1) at which to cut an overflowing piece, honoring
-    the tier order: largest pause -> clause delimiter -> char midpoint."""
+    the tier order: largest pause -> clause delimiter -> char midpoint.
+
+    Tier 1 wins only on a gap that is genuinely a PAUSE. A `gap > 0` gate fires on
+    essentially every piece -- word timestamps always leave a few hundredths between
+    words -- so it cut at the largest of a set of indistinguishable noise values, i.e.
+    arbitrarily, mid-phrase and across speaker changes. It also made tier 2 unreachable:
+    the clause tier needed EVERY gap to be exactly 0.0, which real timestamps never are,
+    while 22% of cards with no sentence punctuation carry a comma it could have used."""
     n = len(piece)
     mid = n / 2
     # tier 1: largest inter-word pause (tie -> nearest the midpoint)
-    gap, _, idx = max(
-        (piece[i]["start"] - piece[i - 1]["end"], -abs(i - mid), i) for i in range(1, n)
-    )
-    if gap > 0:
+    gaps = [piece[i]["start"] - piece[i - 1]["end"] for i in range(1, n)]
+    pause = max(SPLIT_PAUSE_MIN, SPLIT_PAUSE_K * _median(gaps))
+    gap, _, idx = max((g, -abs(i - mid), i) for i, g in enumerate(gaps, 1))
+    if gap >= pause - EPS:
         return idx
     # tier 2: clause delimiter, nearest the midpoint
     clause = [i for i in range(1, n) if piece[i - 1]["text"].rstrip().endswith(tuple(CLAUSE))]
