@@ -1,5 +1,5 @@
 """Unit tests for common.py's dialogue-selection helpers (T1 hoist from repair.py):
-is_dialogue_event(), dialogue_density_score(), dialogue_event_count(), and
+is_dialogue_event(), dialogue_density_score(), and
 dialogue_intervals(). The predicate/regexes are byte-identical to repair.py's
 pre-refactor dialogue_intervals() -- these tests pin that selection logic with
 synthetic pysubs2 fixtures (no media, no ffmpeg) plus a hermetic extraction-pipeline
@@ -109,22 +109,6 @@ def _fake_extract_from(subfile):
         subfile.save(out_path)
         return True
     return fake_extract
-
-
-def test_dialogue_event_count_counts_only_dialogue(monkeypatch):
-    sub = pysubs2.SSAFile()
-    sub.events = [
-        ev(text="Real line one.", style="Default"),
-        ev(text="Real line two.", style="Default"),
-        ev(text=r"{\pos(1,1)}sign", style="Text"),
-    ]
-    monkeypatch.setattr(common, "extract_sub", _fake_extract_from(sub))
-    assert common.dialogue_event_count("fake-video.mkv", 0) == 2
-
-
-def test_dialogue_event_count_extraction_failure_returns_zero(monkeypatch):
-    monkeypatch.setattr(common, "extract_sub", lambda video, idx, out: False)
-    assert common.dialogue_event_count("fake-video.mkv", 0) == 0
 
 
 def test_dialogue_intervals_explicit_stream_indices_filters_and_sorts(monkeypatch):

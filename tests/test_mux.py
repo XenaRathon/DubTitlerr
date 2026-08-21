@@ -23,7 +23,6 @@ GB = 1 << 30
 
 def test_constants_and_defaults():
     assert mux.STAMP_SUFFIX == ".dubtitles.done"
-    assert mux.DELETE_BROKEN is False          # never delete seeding partners by default
     assert mux.MIN_FREE_GB >= 0
     assert mux.SIGNS_RE.search("Signs & Songs")
 
@@ -165,26 +164,6 @@ def test_verify_warns_on_generic_font_mime_but_still_ok(monkeypatch, capsys):
 
 
 # --- T6: sub_source selection ------------------------------------------------
-
-# --- C3: partners() inode cache -----------------------------------------------
-
-def test_partners_cached_by_inode(tmp_path):
-    a = tmp_path / "a.mkv"; a.write_bytes(b"x" * 10)
-    b = tmp_path / "b.mkv"
-    os.link(str(a), str(b))
-    mux._partners_cache.clear()
-    orig_hl_roots = mux.HL_ROOTS
-    mux.HL_ROOTS = [str(tmp_path)]
-    try:
-        first = mux.partners(str(a))
-        assert str(b) in first
-        mux.HL_ROOTS = ["/nonexistent-root-xyz"]      # a fresh (uncached) walk would find nothing here
-        second = mux.partners(str(a))
-        assert second == first                        # cache hit: HL_ROOTS change had no effect
-        assert (os.stat(str(a)).st_ino, os.stat(str(a)).st_dev) in mux._partners_cache
-    finally:
-        mux.HL_ROOTS = orig_hl_roots
-
 
 def test_sub_source_prefers_ass_then_srt(tmp_path):
     stem = str(tmp_path / "ep")
@@ -375,3 +354,20 @@ def test_verify_still_catches_a_genuinely_truncated_remux(monkeypatch):
     monkeypatch.setattr(mux, "identify", lambda p: _ok_info())
     monkeypatch.setattr(mux, "video_duration", lambda p: 1434.8 if p == "orig.mkv" else 900.0)
     assert mux.verify("orig.mkv", "out.mkv") == "duration-mismatch"
+
+
+# --- 2026-08-22: dead destructive knob, removed ---------------------------------------
+
+def test_delete_broken_hardlinks_is_not_a_silent_noop():
+    """DELETE_BROKEN_HARDLINKS was read into mux.DELETE_BROKEN at import and never consumed:
+    partners() had no caller either. An operator could set DELETE_BROKEN_HARDLINKS=1, get no
+    error, and believe broken seeding hardlinks were being reaped -- a destructive safety
+    control that did nothing. Both removed 2026-08-22 (adversarial review).
+
+    This test pins the removal. If the feature is ever wanted, it must be WIRED into
+    process() with an integration test proving the setting changes the filesystem result --
+    not merely read back into a module global."""
+    assert not hasattr(mux, "DELETE_BROKEN"), \
+        "dead destructive knob reintroduced without being wired to anything"
+    assert not hasattr(mux, "partners"), \
+        "partners() reintroduced; it had no caller -- wire it or leave it out"

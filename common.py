@@ -20,6 +20,22 @@ import pysubs2
 MEDIA_UID = int(os.environ.get("MEDIA_UID", "1000"))
 MEDIA_GID = int(os.environ.get("MEDIA_GID", "100"))
 
+# Sidecars must be GROUP-WRITABLE. 2026-08-21: every sidecar shipped 0644, so only the
+# creating uid could ever overwrite one. That is invisible while the container runs as root
+# (root bypasses the check) and breaks the moment any other member of the media group writes
+# -- the 3200g node reaches the library over CIFS as r520smb (uid 1001, gid 100 users), hit
+# "Permission denied" re-writing an existing .dubtitles.done, and re-muxed the same episode
+# on every sweep because the stamp could never land. 8,701 sidecars library-wide were 0644.
+#
+# umask 002 covers the plain open(path, "w") sites (write_stamp, the .fail marker,
+# crash/lastrun json, repair's srt + summary, mux.log). It is set at import because every
+# pipeline module imports common, so there is exactly one place to get this right. Sites that
+# chmod EXPLICITLY override umask and must use SIDECAR_MODE instead -- see _atomic_write in
+# generate.py and qc.write (qc.py is deliberately standalone and hardcodes the same value;
+# test_qc_mode_matches_common pins the two together).
+SIDECAR_MODE = 0o664
+os.umask(0o002)
+
 # OUTPUT_ROOT: write sidecars/output files to this branch path instead of next to the
 # source media, so writes land on a disk with space (mergerfs unifies branches, so the
 # file still shows next to the source in the pool view). READS still use MEDIA_ROOT.
@@ -288,7 +304,7 @@ def is_dialogue_event(ev: "pysubs2.SSAEvent", txt: str | None = None) -> bool:
     positioned/animated sign, not karaoke, and not on an excluded (sign/song/karaoke/etc.)
     style -- and has non-empty rendered text. This is the exact predicate T1 hoisted out of
     repair.py's pre-refactor dialogue_intervals(); reused by dialogue_intervals(),
-    dialogue_event_count(), and the pure dialogue_density_score() scorer below.
+    and the pure dialogue_density_score() scorer below.
 
     ``txt``, if given, is the caller's already-computed ``ev.plaintext.strip()`` -- lets a
     caller that also needs the stripped text (dialogue_intervals) avoid recomputing it here.
@@ -336,11 +352,6 @@ def dialogue_intervals(video, stream_indices=None):
                 ivals.append((ev.start / 1000.0, ev.end / 1000.0, txt))
     ivals.sort()
     return ivals
-
-
-def dialogue_event_count(video, stream_index: int) -> int:
-    """Count of plain-dialogue cues on a single subtitle stream (see is_dialogue_event)."""
-    return sum(1 for ev in _load_stream_events(video, stream_index) if is_dialogue_event(ev))
 
 
 def dialogue_density_score(events: list) -> tuple:
