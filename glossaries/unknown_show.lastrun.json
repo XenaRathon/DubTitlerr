@@ -1,0 +1,13 @@
+{
+  "show": "unknown_show",
+  "elapsed_s": 737.7,
+  "episodes_total": 4,
+  "episodes_transcribed": 4,
+  "cards_written": 1398,
+  "dropped_hallucination": 4,
+  "collapsed_runs": 16,
+  "flagged": 316,
+  "model": "large-v3",
+  "model_version": "1.2.1",
+  "glossary_version": "none"
+}

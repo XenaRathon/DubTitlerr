@@ -2,17 +2,38 @@
   "show": "Darker than Black",
   "initial_prompt": "This is Darker than Black. Spell names correctly: Hei, Yin, Mao, Huang, Misaki Kirihara, Contractor, Hell's Gate, BK-201, the Syndicate.",
   "names": [
-    "Yin",
-    "Mao",
-    "Huang",
-    "Misaki",
-    "Kirihara",
-    "Contractor",
-    "Syndicate",
-    "Pandora",
     "Amber",
-    "November"
+    "Contractor",
+    "Contractors",
+    "Huang",
+    "Kirihara",
+    "Mao",
+    "Misaki",
+    "November",
+    "PANDORA",
+    "Pandora",
+    "Syndicate",
+    "Yin"
   ],
   "hard_fixes": {},
-  "_curated": true
+  "_curated": true,
+  "phrases": [
+    "November 11"
+  ],
+  "verified": [
+    "Amber",
+    "Contractor",
+    "Contractors",
+    "Huang",
+    "Kirihara",
+    "Mao",
+    "Misaki",
+    "November",
+    "November 11",
+    "PANDORA",
+    "Pandora",
+    "Syndicate",
+    "Yin"
+  ],
+  "wiki": "https://darkerthanblack.fandom.com/api.php"
 }
