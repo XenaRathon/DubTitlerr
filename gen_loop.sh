@@ -12,6 +12,18 @@ ANIME="${ANIME_ROOT:-/media/Anime Library}"
 GLOSS_DIR="${GLOSSARY_DIR:-/config/glossaries}"
 
 while :; do
+  # Watch-gated queue: rewrite $ORDER from what is actually being watched, unioning
+  # WatchState (household/Jellyfin) with Plex history across ALL accounts. Neither source
+  # is a superset of the other. watch_queue.py exits non-zero and leaves $ORDER untouched
+  # if either is unreachable, so a `||` fallthrough is correct here -- last sweep's queue is
+  # a safe answer, an empty one is not. Disabled by leaving WATCH_QUEUE_WINDOW_DAYS unset.
+  if [ -n "${WATCH_QUEUE_WINDOW_DAYS:-}" ]; then
+    echo "#### WATCH QUEUE $(date)"
+    ANIME_ROOT="$ANIME" python3 /app/watch_queue.py \
+      --window-days "$WATCH_QUEUE_WINDOW_DAYS" --out "$ORDER" \
+      ${WATCH_QUEUE_PIN:+--pin "$WATCH_QUEUE_PIN"} </dev/null \
+      || echo "  watch_queue declined to write (keeping the existing order file)"
+  fi
   if [ ! -f "$ORDER" ]; then echo "gen_loop: no order file $ORDER — idle 300s"; sleep 300; continue; fi
   echo "==== GENERATE SWEEP $(date) ===="
   while IFS= read -r show; do
