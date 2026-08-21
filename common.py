@@ -79,7 +79,17 @@ TRACK_NAME = "Dubtitles"
 # black; and it lifted signs from every English track at once, rendering them two or
 # three times over. Both are fixed, and only a regeneration puts the corrected signs into
 # the files.
-PIPELINE_VERSION = 2
+# v3 (2026-08-20): three changes that alter the OUTPUT, so only a regeneration puts them
+# into the files. (a) Cards below MIN_DUR are fixed -- 1,542 of them in one 22-episode
+# season -- by merging a runt back into the sentence it was split from, or stealing time
+# forward; 9 overlapping card pairs are repaired at the same time. (b) repair.py rewrites
+# the srt from conf.json, which stores text FLATTENED, and never re-wrapped it: ZERO
+# multi-line cues existed anywhere in the library and 25-32% of cues ran past 42
+# characters. (c) Sentence punctuation is restored before cards are split -- Whisper
+# decodes each segment cold (condition_on_previous_text=False, forced by both segment
+# collapse and VRAM), so 27% of cards arrived with no terminal punctuation and
+# _split_sentences had nothing to split on.
+PIPELINE_VERSION = 3
 # GRANDFATHER_VERSION: fixed constant, never changes. The version assumed for a stamp
 # written before versioning existed (no "version" key). At introduction it equals
 # PIPELINE_VERSION, so the rollout regenerates nothing.
