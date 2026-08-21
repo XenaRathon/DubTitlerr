@@ -24,7 +24,7 @@ signs/songs, else ``.eng.dubtitles.srt`` for an mp4 dialogue-only episode):
 
 DRY-RUN by default (prints the plan); pass --apply to do it. Run as root.
 Env: MUX_ROOTS (colon list), KEEP_LANGS, MIN_FREE_GB (skip threshold, default 5),
-DUR_TOL (seconds, default 2), MEDIA_UID/GID, DELETE_BROKEN_HARDLINKS (default 0 = off).
+DUR_TOL (seconds, default 2), MEDIA_UID/GID.
 Requires mkvtoolnix (mkvmerge) + ffprobe.  Built with help of Claude (Anthropic).
 """
 import argparse
@@ -45,9 +45,6 @@ ROOTS = os.environ.get("MUX_ROOTS", "/data/Media/Anime Library").split(":")
 KEEP_LANGS = set(os.environ.get("KEEP_LANGS", "eng,en,dut,nld,nl,und,").split(","))
 _val = os.environ.get("HARDLINK_ROOTS")
 HL_ROOTS = _val.split(":") if _val else ROOTS
-# D1: default OFF — never delete a seeding download hardlink; the orphan-reaper owns that
-# (seed-until-orphan policy). Muxing only replaces the library's own file.
-DELETE_BROKEN = os.environ.get("DELETE_BROKEN_HARDLINKS", "0") == "1"
 DUR_TOL = float(os.environ.get("DUR_TOL", "2"))
 MIN_FREE_GB = float(os.environ.get("MIN_FREE_GB", "5"))   # skip a remux if the pool is this low
 SIZE_FACTOR = 1.1                                         # temp ~ source size (+headroom)
@@ -166,35 +163,6 @@ def video_duration(path):
 
 
 _partners_cache: dict[tuple[int, int], list[str]] = {}
-
-
-def partners(orig):
-    """Other paths hardlinked to orig (same inode), searched within HL_ROOTS. Cached by
-    (st_ino, st_dev) for the process lifetime (one mux sweep) -- a full HL_ROOTS walk
-    per file is expensive and hardlink partners don't change mid-sweep."""
-    st = os.stat(orig)
-    if st.st_nlink <= 1:
-        return []
-    key = (st.st_ino, st.st_dev)
-    if key in _partners_cache:
-        return _partners_cache[key]
-    found = []
-    for root in HL_ROOTS:
-        if not os.path.isdir(root):
-            continue
-        for dp, _, files in os.walk(root):
-            for f in files:
-                p = os.path.join(dp, f)
-                if p == orig:
-                    continue
-                try:
-                    s2 = os.stat(p)
-                except OSError:
-                    continue
-                if s2.st_ino == st.st_ino and s2.st_dev == st.st_dev and s2.st_size == st.st_size:
-                    found.append(p)
-    _partners_cache[key] = found
-    return found
 
 
 def original_langs(info):
