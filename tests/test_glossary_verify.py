@@ -31,14 +31,47 @@ def test_candidates_topk_and_cutoff():
 
 # --- T3: apply_results -------------------------------------------------------
 
-def test_apply_high_confidence_corrects_name_and_marks_verified():
+def test_apply_never_deletes_the_original_term():
+    """The 2026-08-21 bug: `lst[i] = canon` replaced in place, deleting 17 names and 6
+    phrases from the live One Pace glossary into `verified`, which nothing reads."""
     g = gl(names=["Spandom", "Luffy"])
     res = {"Spandom": {"canonical": "Spandam", "confidence": "high", "dub_note": ""},
            "Luffy": {"canonical": "Luffy", "confidence": "high", "dub_note": ""}}
     out = gv.apply_results(g, res)
-    assert "Spandam" in out["names"] and "Spandom" not in out["names"]
+    assert "Spandom" in out["names"]                      # <- the whole point
     assert set(out["verified"]) >= {"Spandom", "Luffy"}
     assert out["initial_prompt"] == "P"                   # curated prompt preserved
+
+
+def test_apply_adds_an_expansion_alongside_routed_by_shape():
+    """`Doflamingo` -> `Donquixote Doflamingo` is the same entity written longer: additive,
+    and multi-word so it belongs in `phrases` -- `names` feeds a per-TOKEN matcher."""
+    g = gl(names=["Doflamingo"])
+    out = gv.apply_results(g, {"Doflamingo": {"canonical": "Donquixote Doflamingo",
+                                              "confidence": "high", "dub_note": ""}})
+    assert out["names"] == ["Doflamingo"]
+    assert out["phrases"] == ["Donquixote Doflamingo"]
+
+
+def test_apply_flags_a_respelling_instead_of_applying_it():
+    """The dangerous class. Measured on One Pace, every wrong high-confidence canonical was
+    a respelling: Raftel->Ratel, Jabra->Jabari, Alabasta->Arabasta, Kaido->Kaidou."""
+    g = gl(names=["Raftel", "Jabra"])
+    out = gv.apply_results(g, {"Raftel": {"canonical": "Ratel", "confidence": "high"},
+                               "Jabra": {"canonical": "Jabari", "confidence": "high"}})
+    assert out["names"] == ["Raftel", "Jabra"]            # neither applied
+    assert "Ratel" not in out["names"] and "Jabari" not in out["names"]
+    assert out["flagged"]["Raftel"] == {"reason": "respelling-needs-review",
+                                        "canonical": "Ratel"}
+
+
+def test_apply_is_idempotent_on_a_second_run():
+    g = gl(names=["Doflamingo"])
+    res = {"Doflamingo": {"canonical": "Donquixote Doflamingo", "confidence": "high"}}
+    once = gv.apply_results(g, res)
+    twice = gv.apply_results(once, res)
+    assert twice["phrases"] == ["Donquixote Doflamingo"]  # not appended again
+    assert twice["names"] == ["Doflamingo"]
 
 
 def test_apply_flags_low_and_no_match_without_changing():
@@ -50,11 +83,15 @@ def test_apply_flags_low_and_no_match_without_changing():
     assert "Krieg" in out["flagged"] and "Blarg" in out["flagged"]
 
 
-def test_apply_prefers_dub_form():
+def test_apply_routes_a_dub_form_respelling_to_review():
+    """`Water Seven` -> `Water 7` is a respelling, not an expansion, so it is no longer
+    auto-applied. The dub form is still the right answer -- a human confirms it, and the
+    original is never lost in the meantime."""
     g = gl(phrases=["Water Seven"])
     res = {"Water Seven": {"canonical": "Water 7", "confidence": "high", "dub_note": "numeral"}}
     out = gv.apply_results(g, res)
-    assert "Water 7" in out["phrases"] and "Water Seven" not in out["phrases"]
+    assert "Water Seven" in out["phrases"]
+    assert out["flagged"]["Water Seven"]["canonical"] == "Water 7"
 
 
 def test_apply_preserves_unknown_fields():
@@ -172,7 +209,11 @@ def test_verify_preserves_term_result_pairing_despite_completion_order(monkeypat
 
     monkeypatch.setattr(gv, "adjudicate", fake_adjudicate)
     rep = gv.verify(str(gloss_path))
-    assert rep["applied"] == 2
+    # Both are RESPELLINGS, so both escalate rather than apply -- and that tests the
+    # pairing harder than the old assertion did: a swapped result would put Luffy under
+    # Spandom, which the canonical check below catches directly.
+    assert rep["applied"] == 0 and rep["escalated"] == 2
     new = json.load(open(gloss_path))
-    assert "Spandam" in new["names"] and "Luffy" in new["names"]
-    assert "Spandom" not in new["names"] and "Ruffy" not in new["names"]
+    assert "Spandom" in new["names"] and "Ruffy" in new["names"]
+    assert new["flagged"]["Spandom"]["canonical"] == "Spandam"
+    assert new["flagged"]["Ruffy"]["canonical"] == "Luffy"

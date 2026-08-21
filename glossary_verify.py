@@ -121,10 +121,44 @@ def adjudicate(term: str, cands: list[str], show: str) -> dict:
     return parse_adjudication(out)
 
 
+def _shape_list(names: list, phrases: list, term: str) -> list:
+    """Which list a term belongs in BY SHAPE. `names` feeds glossary.correct()'s per-token
+    tiers (`_TOKEN_RE` matches one token), so a multi-word string there can never match; the
+    multi-word path is `phrases`, which feeds repair's term list."""
+    return phrases if " " in term.strip() else names
+
+
 def apply_results(gloss: dict, results: dict) -> dict:
-    """Apply per-term adjudications: write high-confidence canonical (dub-preferred) spellings into
-    names/phrases, flag low/no-match, mark every processed term `verified`. Pure; preserves unknown
-    fields (curated hard_fixes, initial_prompt, wiki, …) by deep-copying the input."""
+    """Apply per-term adjudications. Pure; preserves unknown fields (curated hard_fixes,
+    initial_prompt, wiki, …) by deep-copying the input.
+
+    NEVER REPLACES A TERM IN PLACE. Until 2026-08-21 a high-confidence canonical was written
+    over the existing entry (`lst[i] = canon`). That deleted 17 names and 6 phrases from the
+    live One Pace glossary -- `Doflamingo`, `Hancock`, `Lucci`, `Rayleigh`, `Kaido`,
+    `Trafalgar` and more -- leaving them only in `verified`, which nothing reads at runtime.
+    The short form is what the fuzzy and Metaphone tiers match a mishear against; the long
+    canonical is what the repair LLM needs. They are not alternatives.
+
+    So the original term ALWAYS survives, and the canonical is handled by kind:
+
+      EXPANSION  (`Doflamingo` -> `Donquixote Doflamingo`): the same entity written longer.
+                 Added alongside, routed by shape. Additive and safe -- worst case is one
+                 unused phrase, never a lost correction.
+      RESPELLING (`Raftel` -> `Ratel`, `Jabra` -> `Jabari`): different letters for what may
+                 be a different entity. This is the class that goes wrong, so it is never
+                 auto-applied -- it is flagged for `glossary_acquire.py --review`.
+
+    That split is measured, not assumed. Over the 12 canonicals the 2026-08-21 verify run
+    produced for One Pace, judged against the dub: every one of the four WRONG respellings
+    (`Arabasta`, `Ratel`, `Jabari`, and `Kaidou`'s wiki-over-dub form) is a respelling, and
+    six of six correct expansions are expansions. Auto-applying respellings had a measured
+    error rate above half.
+
+    A corpus-corroboration guard was designed and REJECTED for this: scored against the real
+    463-episode transcript corpus it lands 2 of 8, and it fails toward APPLYing wrong names
+    (`Arabasta` outnumbers `Alabasta` 108 to 35 in the transcripts). The corpus is Whisper's
+    own output, so it votes for its own mishearing. See
+    docs/superpowers/specs/2026-08-21-glossary-integrity-design.md."""
     g = json.loads(json.dumps(gloss))
     names, phrases = g.setdefault("names", []), g.setdefault("phrases", [])
     verified = set(g.get("verified", []))
@@ -134,10 +168,17 @@ def apply_results(gloss: dict, results: dict) -> dict:
         canon = (adj or {}).get("canonical") or ""
         conf = (adj or {}).get("confidence", "none")
         if conf == "high" and canon and canon != term:
-            for lst in (names, phrases):
-                for i, x in enumerate(lst):
-                    if x == term:
-                        lst[i] = canon
+            # Imported at call time, NOT at module scope: glossary_acquire imports this
+            # module, so a top-level import is a hard cycle (ImportError on the
+            # acquire-first order only -- verify-first appears to work, which is exactly
+            # how it would reach production unnoticed).
+            from glossary_acquire import is_expansion
+            if is_expansion(term, canon):
+                dest = _shape_list(names, phrases, canon)
+                if canon not in dest:
+                    dest.append(canon)            # ADD -- the term itself is left in place
+            else:
+                flagged[term] = {"reason": "respelling-needs-review", "canonical": canon}
         elif conf != "high" or not canon:
             flagged[term] = "low-confidence" if (conf == "low" and canon) else "no-match"
     g["verified"] = sorted(verified)
@@ -270,10 +311,17 @@ def verify(gloss_path: str, override: str | None = None, force: bool = False) ->
         json.dump(new, open(gloss_path, "w"), indent=2, ensure_ascii=False)
     except OSError as e:
         return {**rep, "wiki": api, "note": f"write-failed: {e}"}
-    applied = sum(1 for t, a in results.items()
-                  if a["confidence"] == "high" and a["canonical"] and a["canonical"] != t)
+    # Count what ACTUALLY happened, not what was proposed. Before 2026-08-21 every
+    # high-confidence changed term was written straight into names/phrases, so "proposed"
+    # and "applied" were the same number. They no longer are: a respelling is escalated,
+    # not applied, and reporting it as applied would hide the escalation entirely.
+    from glossary_acquire import is_expansion
+    changed = [t for t, a in results.items()
+               if a["confidence"] == "high" and a["canonical"] and a["canonical"] != t]
+    applied = sum(1 for t in changed if is_expansion(t, results[t]["canonical"]))
     return {"show": show, "wiki": api, "checked": len(terms),
-            "applied": applied, "flagged": len(new.get("flagged", {}))}
+            "applied": applied, "escalated": len(changed) - applied,
+            "flagged": len(new.get("flagged", {}))}
 
 
 def main():
