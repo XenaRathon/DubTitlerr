@@ -61,6 +61,7 @@ import time
 import urllib.parse
 
 import glossary
+import unresolved
 import reflow
 from common import MEDIA_GID, MEDIA_UID, dialogue_intervals, find_video, out_for, ts_srt
 
@@ -398,6 +399,13 @@ def process(conf_path):
         ref = overlap_ref(ivals, c.get("source_start", c["start"]), c.get("source_end", c["end"]))
         if not ref:
             skipped_no_ref += 1
+            # The counter alone made this indistinguishable from "repair ran and found
+            # nothing wrong". Record the card so a human can see WHICH lines went unrepaired
+            # and judge whether the release simply has no fansub or the anchor logic missed.
+            unresolved.record(stem, "repair", "no_reference", original_text=c["text"],
+                              source_start=c.get("source_start", c["start"]),
+                              source_end=c.get("source_end", c["end"]),
+                              avg_logprob=c.get("avg_logprob"))
             continue        # no fansub anchor -> skip the LLM. The bake-off showed glossary-only
                             # repair hallucinates names (Oimo->Zoro) even on qwen3:8b; without a
                             # reference the deterministic layer (hard_fixes) is the safe ceiling.
@@ -416,6 +424,12 @@ def process(conf_path):
         if not accept_repair(c["text"], new, ref, dur):
             if new and new.lower() != c["text"].lower():
                 rejected += 1          # surfaced in the summary so the guard stays visible
+                # ...but the PROPOSAL was discarded, and it is the whole evidence a human
+                # needs to judge whether the guard was right or overzealous.
+                unresolved.record(stem, "repair", "rejected_guard",
+                                  original_text=c["text"], proposed_text=new,
+                                  reference=ref[:120],
+                                  avg_logprob=c.get("avg_logprob"))
         else:
             # A3: re-verify divergent-looking repairs (esp. name changes) with the secondary
             # model. No-op by default (REPAIR_MODEL_SECONDARY == REPAIR_MODEL).

@@ -618,7 +618,7 @@ def process(video):
     # balance instead -- mid-phrase, across speaker changes). Any failure is a no-op; see
     # punctuation.restore's docstring.
     rec = qc.Recorder()
-    punctuation.restore(words, segments, rec)
+    punctuation.restore(words, segments, rec, stem=stem)
     # A1: reflow whisper's words into clean, well-timed cards. C1: name-correct each card.
     # B1: drop near-certain hallucinations, flag the suspect, collapse runaway repeat runs.
     merge_log, cascade_log = [], []

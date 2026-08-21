@@ -37,6 +37,7 @@ import os
 import string
 
 import reflow
+import unresolved
 from common import llm_chat
 
 # The detector must ask the SAME question reflow asks when it splits, or it would "fix"
@@ -227,12 +228,15 @@ def _apply(run_words: list[dict], new_text: str) -> int:
     return changed
 
 
-def restore(words: list[dict], segments: list[dict], rec=None) -> None:
+def restore(words: list[dict], segments: list[dict], rec=None, stem=None) -> None:
     """Restore sentence punctuation in place, before reflow() sees the words.
 
     Mutates ``word["text"]`` only, and only for runs whose restoration passed the guard.
-    ``rec`` is an optional qc.Recorder. Never raises: an episode that cannot reach the
-    model is an episode that generates exactly as it did before this pass existed."""
+    ``rec`` is an optional qc.Recorder. ``stem`` is optional too; when given, cases the
+    model could not settle are recorded to the unresolved queue for human review -- without
+    it a dead endpoint is indistinguishable from "nothing needed changing". Never raises: an
+    episode that cannot reach the model is an episode that generates exactly as it did
+    before this pass existed."""
     def count(name, n=1):
         if rec is not None and n: rec.count(name, n)
 
@@ -254,9 +258,19 @@ def restore(words: list[dict], segments: list[dict], rec=None) -> None:
         count("restore_runs_sent")
         new = _ask(build_prompt(texts[a:b]), n_words)
         if not new:
-            count("restore_empty"); continue
+            count("restore_empty")
+            # llm_chat() returns "" on EVERY transport failure, so a dead endpoint looks
+            # exactly like "no change needed". This is what tells the two apart.
+            if stem:
+                unresolved.record(stem, "punctuation", "llm_empty", original_text=orig[:300],
+                                  segments=[a, b], words=n_words)
+            continue
         if not accept_restoration(orig, new):
             count("restore_rejected_guard")
+            if stem:
+                unresolved.record(stem, "punctuation", "rejected_guard",
+                                  original_text=orig[:300], proposed_text=new[:300],
+                                  segments=[a, b], words=n_words)
             if rec is not None and rejected_events < MAX_REJECT_EVENTS:
                 rejected_events += 1
                 rec.event(reason="restore_rejected", segments=[a, b], words=n_words,
