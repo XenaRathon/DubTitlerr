@@ -49,6 +49,7 @@ from faster_whisper import WhisperModel
 import glossary
 import hallucination
 import ordering
+import punctuation
 import qc
 import reflow
 from common import STAMP_SUFFIX, VIDEO_EXTS, load_extras, out_for, read_stamp, stale_version_stamp, stamp_valid, ts_srt
@@ -583,8 +584,9 @@ def process(video):
         # beam_size=1 or large-v3-turbo, both of which cost accuracy elsewhere.
         # Consequence: Whisper decodes each segment cold, so segments that begin mid-sentence
         # come back lowercase and unpunctuated -- 73% punctuated / 14% lowercase-start at the
-        # segment level on S30E06. Restoring that is the REPAIR pass's job, which sees the
-        # whole transcript in both directions (more context than this flag would have given).
+        # segment level on S30E06. punctuation.restore() puts that back BEFORE reflow splits
+        # the words (it sees the whole run in both directions -- more context than this flag
+        # would have given whisper); repair.py is too late, the cards are cut by then.
         # condition_on_previous_text=False: with True, hard/music-masked stretches collapse into
         # one mega-segment (e.g. a 139s "segment" over the 18-20min mark of One Pace S19E16) that
         # reflow then renders as a long gap — real dialogue lost. False keeps segments discrete and
@@ -607,6 +609,14 @@ def process(video):
                               "prob": min(1.0, math.exp(s.avg_logprob)), "seg": si})
     try: os.remove(fail)                          # transcription finished -> clear in-flight mark
     except OSError: pass
+    # A0: restore sentence punctuation to the WORD LIST before anything splits it. This has
+    # to happen here and not in repair.py: repair edits card text, but by then the cards are
+    # already split and timed, so the text would read better while the boundaries stayed
+    # wrong (reflow has nothing to split on in an unpunctuated run and cuts on character
+    # balance instead -- mid-phrase, across speaker changes). Any failure is a no-op; see
+    # punctuation.restore's docstring.
+    rec = qc.Recorder()
+    punctuation.restore(words, segments, rec)
     # A1: reflow whisper's words into clean, well-timed cards. C1: name-correct each card.
     # B1: drop near-certain hallucinations, flag the suspect, collapse runaway repeat runs.
     merge_log, cascade_log = [], []
@@ -630,8 +640,8 @@ def process(video):
         kept.append(kc)
     collapsed = hallucination.collapse_runs(kept)
     # C7: layout was decided before the glossary rewrote the text -- re-wrap and
-    # re-validate the corrected cards before anything is written.
-    rec = qc.Recorder()
+    # re-validate the corrected cards before anything is written. (`rec` was opened before
+    # the restoration pass so its counters land in this same sidecar.)
     _revalidate_after_correction(rec, collapsed)
     rows = [(c["start"], c["end"], c["text"]) for c in collapsed]
     conf = []
