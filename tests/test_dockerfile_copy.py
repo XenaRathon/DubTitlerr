@@ -10,7 +10,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # modules gen_loop.sh / container_run.sh actually run inside the container
 ENTRYPOINTS = ["generate.py", "repair.py", "mux.py", "mine_glossary.py",
                "glossary_verify.py", "glossary_acquire.py", "recreate_srt.py",
-               "dub_signs_merge.py", "plex_refresh.py"]
+               "dub_signs_merge.py", "plex_refresh.py", "watch_queue.py"]
 
 
 def _copied():
