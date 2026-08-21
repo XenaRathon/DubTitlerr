@@ -58,10 +58,36 @@ def test_priority_flag_is_not_stored_as_an_event_field():
         "card_id": "c0", "reason": "layout_exception"}
 
 
-def test_sidecar_is_written_world_readable(tmp_path):
+def test_sidecar_is_written_world_readable_and_group_writable(tmp_path):
     """mkstemp gives 0600. This sidecar exists to be read library-wide by an aggregator
-    that is not root, so 0600 would make it unreadable over the share."""
+    that is not root, so 0600 would make it unreadable over the share -- and it must be
+    GROUP-WRITABLE too, because the uid that regenerates the episode is not always the uid
+    that created the sidecar. 0644 shipped for months and broke every non-root writer."""
     import stat
     p = tmp_path / "e.dubtitles.qc.json"
     assert qc.write(str(p), {"a": 1}) is True
-    assert stat.S_IMODE(p.stat().st_mode) == 0o644
+    assert stat.S_IMODE(p.stat().st_mode) == 0o664
+
+
+def test_qc_mode_matches_common(tmp_path):
+    """qc.py is standalone by design and hardcodes its mode rather than importing common.
+    This is the guard that stops the two drifting -- referenced by name in both files."""
+    import stat
+
+    import common
+    p = tmp_path / "e.dubtitles.qc.json"
+    assert qc.write(str(p), {"a": 1}) is True
+    assert stat.S_IMODE(p.stat().st_mode) == common.SIDECAR_MODE
+
+
+def test_plain_open_sidecars_are_group_writable(tmp_path):
+    """common sets umask 002 at import so the sites that use a bare open(path, "w") --
+    write_stamp, the .fail marker, crash/lastrun json, repair's outputs, mux.log -- come out
+    group-writable without each one needing its own chmod."""
+    import stat
+
+    import common  # noqa: F401  (import applies the umask)
+    p = tmp_path / "plain.json"
+    with open(p, "w") as f:
+        f.write("{}")
+    assert stat.S_IMODE(p.stat().st_mode) & 0o060 == 0o060, "group rw expected under umask 002"

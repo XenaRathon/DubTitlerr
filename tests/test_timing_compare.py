@@ -574,21 +574,27 @@ def test_covered_cue_count_in_gap_cards_contribute_nothing():
 # ============================================================================
 
 def test_bucket_nsp_boundaries():
-    assert tc.bucket_nsp(0.0) == "clean_le_0.5"
-    assert tc.bucket_nsp(0.5) == "clean_le_0.5"                      # <=0.5 inclusive
-    assert tc.bucket_nsp(0.500001) == "flag_gt_0.5_le_0.95"
-    assert tc.bucket_nsp(0.95) == "flag_gt_0.5_le_0.95"              # <=0.95 inclusive
-    assert tc.bucket_nsp(0.950001) == "drop_gt_0.95"
-    assert tc.bucket_nsp(1.0) == "drop_gt_0.95"
+    """Boundaries are derived from hallucination.py, not pinned to literals -- the labels
+    themselves used to be literals and went stale when NSP_DROP moved (2026-08-21)."""
+    import hallucination as h
+    f, d = h.NSP_FLAG, h.NSP_DROP
+    assert tc.bucket_nsp(0.0) == f"clean_le_{f:g}"
+    assert tc.bucket_nsp(f) == f"clean_le_{f:g}"                     # <=NSP_FLAG inclusive
+    assert tc.bucket_nsp(f + 1e-6) == f"flag_gt_{f:g}_le_{d:g}"
+    assert tc.bucket_nsp(d) == f"flag_gt_{f:g}_le_{d:g}"             # <=NSP_DROP inclusive
+    assert tc.bucket_nsp(d + 1e-6) == f"drop_gt_{d:g}"
+    assert tc.bucket_nsp(1.0) == f"drop_gt_{d:g}"
 
 
 def test_bucket_lp_boundaries():
-    assert tc.bucket_lp(0.0) == "clean_ge_-0.6"
-    assert tc.bucket_lp(-0.6) == "clean_ge_-0.6"                     # >=-0.6 inclusive
-    assert tc.bucket_lp(-0.600001) == "flag_lt_-0.6_ge_-2.0"
-    assert tc.bucket_lp(-2.0) == "flag_lt_-0.6_ge_-2.0"              # >=-2.0 inclusive
-    assert tc.bucket_lp(-2.000001) == "drop_lt_-2.0"
-    assert tc.bucket_lp(-10.0) == "drop_lt_-2.0"
+    import hallucination as h
+    f, d = h.LP_FLAG, h.LP_DROP
+    assert tc.bucket_lp(0.0) == f"clean_ge_{f:g}"
+    assert tc.bucket_lp(f) == f"clean_ge_{f:g}"                      # >=LP_FLAG inclusive
+    assert tc.bucket_lp(f - 1e-6) == f"flag_lt_{f:g}_ge_{d:g}"
+    assert tc.bucket_lp(d) == f"flag_lt_{f:g}_ge_{d:g}"              # >=LP_DROP inclusive
+    assert tc.bucket_lp(d - 1e-6) == f"drop_lt_{d:g}"
+    assert tc.bucket_lp(-10.0) == f"drop_lt_{d:g}"
 
 
 def test_bucket_cutpoints_match_hallucination_constants():
@@ -652,8 +658,11 @@ def test_build_episode_report_kept_in_gap_and_bucket_crosstabs():
     assert kig["in_gap_silent"] == 5
     assert kig["in_gap_speech"] == 2
     assert kig["in_gap_vad_error"] == 1                    # counted separately, T10
-    assert kig["by_nsp"] == {"clean_le_0.5": 6, "flag_gt_0.5_le_0.95": 0, "drop_gt_0.95": 2}
-    assert kig["by_lp"] == {"clean_ge_-0.6": 6, "flag_lt_-0.6_ge_-2.0": 0, "drop_lt_-2.0": 2}
+    # keys derived, counts asserted -- pinning the key STRINGS here is what let the
+    # production labels go stale unnoticed when NSP_DROP moved.
+    nl, ll = tc.nsp_bucket_labels(), tc.lp_bucket_labels()
+    assert kig["by_nsp"] == dict(zip(nl, (6, 0, 2)))
+    assert kig["by_lp"] == dict(zip(ll, (6, 0, 2)))
     assert kig["by_flag"] == {"maybe_silence": 5, "low_conf": 0, "none": 3}
 
     assert rep["false_in_gap_rate"] == pytest.approx(2 / 13)   # in_gap_speech / total kept cards
@@ -670,8 +679,8 @@ def test_build_episode_report_empty_conf_null_coverage_not_a_crash():
     assert rep["false_in_gap_rate"] == 0.0                 # vacuously zero, well-defined
     assert rep["kept_in_gap"] == {"total": 0, "in_gap_silent": 0, "in_gap_speech": 0,
                                    "in_gap_vad_error": 0,
-                                   "by_nsp": {"clean_le_0.5": 0, "flag_gt_0.5_le_0.95": 0, "drop_gt_0.95": 0},
-                                   "by_lp": {"clean_ge_-0.6": 0, "flag_lt_-0.6_ge_-2.0": 0, "drop_lt_-2.0": 0},
+                                   "by_nsp": dict.fromkeys(tc.nsp_bucket_labels(), 0),
+                                   "by_lp": dict.fromkeys(tc.lp_bucket_labels(), 0),
                                    "by_flag": {"maybe_silence": 0, "low_conf": 0, "none": 0}}
 
 

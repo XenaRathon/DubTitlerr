@@ -630,21 +630,41 @@ def process_episode(video: str, lang: set, tolerance: float, pair_radius_s: floa
 def bucket_nsp(nsp: float) -> str:
     """Bucket a kept card's no_speech_prob against hallucination.py's NSP_FLAG/NSP_DROP,
     STRICT per spec-v3.md: <=0.5 clean, >0.5 and <=0.95 flag, >0.95 drop."""
-    if nsp <= hallucination.NSP_FLAG:            # <= 0.5
-        return "clean_le_0.5"
-    if nsp <= hallucination.NSP_DROP:             # 0.5 < nsp <= 0.95
-        return "flag_gt_0.5_le_0.95"
-    return "drop_gt_0.95"                         # > 0.95
+    # The LABELS are built from the constants too. They used to be literals ("drop_gt_0.95")
+    # while the comparisons read hallucination.py -- so when NSP_DROP moved 0.95 -> 0.90
+    # (2026-08-21) the logic followed but every label kept claiming 0.95, i.e. the exact
+    # hardcoded-copy drift test_bucket_cutpoints_match_hallucination_constants guards against.
+    f, d = hallucination.NSP_FLAG, hallucination.NSP_DROP
+    if nsp <= f:
+        return f"clean_le_{f:g}"
+    if nsp <= d:
+        return f"flag_gt_{f:g}_le_{d:g}"
+    return f"drop_gt_{d:g}"
 
 
 def bucket_lp(lp: float) -> str:
     """Bucket a kept card's avg_logprob against hallucination.py's LP_FLAG/LP_DROP, STRICT
     per spec-v3.md: >=-0.6 clean, <-0.6 and >=-2.0 flag, <-2.0 drop."""
-    if lp >= hallucination.LP_FLAG:               # >= -0.6
-        return "clean_ge_-0.6"
-    if lp >= hallucination.LP_DROP:               # -2.0 <= lp < -0.6
-        return "flag_lt_-0.6_ge_-2.0"
-    return "drop_lt_-2.0"                         # < -2.0
+    f, d = hallucination.LP_FLAG, hallucination.LP_DROP   # labels derived, see bucket_nsp
+    if lp >= f:
+        return f"clean_ge_{f:g}"
+    if lp >= d:
+        return f"flag_lt_{f:g}_ge_{d:g}"
+    return f"drop_lt_{d:g}"
+
+
+def nsp_bucket_labels() -> list[str]:
+    """The three bucket_nsp labels, in order. Callers must seed counters from THIS, never
+    from literals -- a hand-written {"drop_gt_0.95": 0} silently KeyErrors (or worse, counts
+    into a stale key) the moment a threshold moves."""
+    f, d = hallucination.NSP_FLAG, hallucination.NSP_DROP
+    return [f"clean_le_{f:g}", f"flag_gt_{f:g}_le_{d:g}", f"drop_gt_{d:g}"]
+
+
+def lp_bucket_labels() -> list[str]:
+    """The three bucket_lp labels, in order. See nsp_bucket_labels()."""
+    f, d = hallucination.LP_FLAG, hallucination.LP_DROP
+    return [f"clean_ge_{f:g}", f"flag_lt_{f:g}_ge_{d:g}", f"drop_lt_{d:g}"]
 
 
 def build_episode_report(res: dict) -> dict:
@@ -677,8 +697,8 @@ def build_episode_report(res: dict) -> dict:
     cues_covered = res.get("cues_covered", 0)
     pct_cues_covered = (cues_covered / cue_count) if (total and cue_count) else None
 
-    by_nsp = {"clean_le_0.5": 0, "flag_gt_0.5_le_0.95": 0, "drop_gt_0.95": 0}
-    by_lp = {"clean_ge_-0.6": 0, "flag_lt_-0.6_ge_-2.0": 0, "drop_lt_-2.0": 0}
+    by_nsp = dict.fromkeys(nsp_bucket_labels(), 0)
+    by_lp = dict.fromkeys(lp_bucket_labels(), 0)
     by_flag = {"maybe_silence": 0, "low_conf": 0, "none": 0}
     in_gap_silent = in_gap_speech = in_gap_vad_error = 0
     for c in in_gap:
