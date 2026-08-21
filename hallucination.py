@@ -17,6 +17,32 @@ from collections import Counter
 # DROP thresholds (the music/silence combo — both must hold). Deliberately strict so B1 does
 # NOT cull music-masked REAL dialogue (e.g. a "Buster Call" line under loud action is nsp~0.86);
 # VAD already blocks pure-music/silence, so only near-certain garbage is dropped here.
+# NSP_DROP 0.95 IS DELIBERATE AND MEASURED. Do not "fix" it for being unreachable.
+#
+# It is unreachable: across 859 episodes with a live nsp signal (353,879 cards), 0.95 AND -2.0
+# caught exactly ZERO. That looks like a bug, and on 2026-08-21 it was loosened to 0.90 on
+# exactly that reasoning -- then reverted the same day once a LABELLED set existed to judge it.
+#
+# The labels: 207 certain hallucinations (blocklist-matching cards) vs 57,572 real cards from
+# the same 136 episodes. nsp separates them well (0.796 vs 0.330, |AUC-0.5|+0.5 = 0.929), and
+# avg_logprob too (-0.613 vs -0.164, 0.913) -- but the CONJUNCTION never yields usable
+# precision at any operating point:
+#
+#     nsp>0.70 lp<-0.3 -> recall 82.6%, precision 18.5%, 5.54 false drops per episode
+#     nsp>0.80 lp<-0.3 -> recall 54.6%, precision 19.8%, 3.37
+#     nsp>0.90 lp<-2.0 -> recall  2.9%, precision 19.4%, 0.18   <- the 2026-08-21 setting
+#     nsp>0.95 lp<-2.0 -> recall  0.0%, precision  0.0%, 0.00   <- this one
+#
+# Precision peaks near 20%: four of every five drops would be real dialogue. At 0.90 the rule
+# deletes 25 real cards to catch 6 hallucinations across 136 episodes. Per 0ee667e, "a caption
+# that never covers its line is lost content. That is the worse failure" -- so an inert rule is
+# strictly better than any reachable setting measured so far. Raising recall requires a signal
+# with better precision, not a lower threshold.
+#
+# Separately: this rule cannot fire AT ALL on large-v3-turbo, whose no_speech_prob is collapsed
+# to ~1e-10 (identical across two independent CT2 conversions, so it is the distilled decoder,
+# not the packaging). On turbo the BLOCKLIST and is_repetition are the only live defences.
+# See docs/superpowers/specs/2026-08-21-vad-hang-trim-design.md sections 4 and 5.
 NSP_DROP = 0.95          # no_speech_prob above this AND...
 LP_DROP = -2.0           # ...avg_logprob below this => invented text over music/silence
 # FLAG thresholds (a single weaker signal -> keep but mark suspect)
@@ -36,7 +62,7 @@ _BLOCKLIST_PATTERN_FALLBACK = (
     r"amara\.org|thank you for watching|thanks for watching|thanks for your support|"
     r"please subscribe|subscribe to (the|our|my) channel|like and subscribe|"
     r"see you (in the )?next (video|time)|subtitles by|captions? by|transcri(bed|ption) by|"
-    r"translated by|copyright|www\.|http"
+    r"translated by|copyright|www\.|http|to be continued|we.?ll be right back"
 )
 
 

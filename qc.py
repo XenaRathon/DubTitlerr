@@ -98,8 +98,14 @@ def write(path, doc):
         fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
         with os.fdopen(fd, "w") as f:
             json.dump(doc, f, indent=1)
-        os.chmod(tmp, 0o644)          # mkstemp gives 0600; this sidecar exists to be READ
-        os.replace(tmp, path)         # later, library-wide, by whoever aggregates it
+        # 0664, NOT 0644: mkstemp gives 0600, and this sidecar exists to be READ later,
+        # library-wide, by whoever aggregates it -- and REWRITTEN by whoever regenerates
+        # the episode, who may not be the uid that created it. Hardcoded rather than
+        # imported because qc.py is deliberately standalone (observability must not take
+        # a dependency on the pipeline); test_qc_mode_matches_common pins it to
+        # common.SIDECAR_MODE so the two cannot drift.
+        os.chmod(tmp, 0o664)
+        os.replace(tmp, path)
         return True
     except Exception:
         if tmp is not None:

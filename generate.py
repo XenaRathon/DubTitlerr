@@ -52,7 +52,7 @@ import ordering
 import punctuation
 import qc
 import reflow
-from common import STAMP_SUFFIX, VIDEO_EXTS, load_extras, out_for, read_stamp, stale_version_stamp, stamp_valid, ts_srt
+from common import SIDECAR_MODE, STAMP_SUFFIX, VIDEO_EXTS, load_extras, out_for, read_stamp, stale_version_stamp, stamp_valid, ts_srt
 
 EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_extras)
 # V2 C1: where per-show run summaries (<show>.lastrun.json) live -- same GLOSSARY_DIR
@@ -409,7 +409,7 @@ def _revalidate_after_correction(rec, cards):
                   visible_chars=len(flat), cps=round(reflow.card_cps(text, dur), 2))
 
 
-def _atomic_write(path, render, mode=0o644):
+def _atomic_write(path, render, mode=SIDECAR_MODE):
     """Write ``path`` through a temp file in the same directory plus os.replace -- the
     discipline qc.write and glossary_acquire._write_json already follow.
 
@@ -424,8 +424,10 @@ def _atomic_write(path, render, mode=0o644):
     The exception is deliberately NOT swallowed (unlike qc.write's): the srt and conf are
     the episode's product, not observability, and a run that lost them must not report ok.
 
-    ``mode`` restores what the old open() produced under the container's umask; mkstemp
-    creates 0600, which would strip group/other read from every file we ship."""
+    ``mode`` defaults to common.SIDECAR_MODE (0664); mkstemp creates 0600, which would strip
+    group/other read from every file we ship. It must stay GROUP-WRITABLE -- 0644 meant only
+    the creating uid could ever overwrite a sidecar, which broke every non-root writer (see
+    the SIDECAR_MODE comment in common.py)."""
     d = os.path.dirname(path) or "."
     tmp = None
     try:

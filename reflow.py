@@ -108,7 +108,36 @@ def split_spans(words: list[dict]) -> list[list[dict]]:
 
 
 def _text(words: list[dict]) -> str:
-    return " ".join(w["text"].strip() for w in words)
+    """Join word records back into a line.
+
+    A plain " ".join is wrong here. whisper's word_timestamps splits a hyphenated word
+    into two word records -- "Gum-gum" arrives as (" Gum", "-gum") -- so joining on spaces
+    welds them back as "Gum -gum", a space that was never in the audio. Measured on One
+    Pace S30E09: 5 occurrences per episode ("Gas -Gas", "Gum -gum", "Com -com",
+    "grown -ups", "no -no") against 0 for the same model/audio decoded with
+    word_timestamps=False, so the artefact is ours, not whisper's.
+
+    It is not cosmetic. glossary.correct() matches phrase fixes with
+    re.compile(r"\\b" + re.escape(key) + r"\\b"), so a "gas gas" -> "Gas-Gas" fix cannot
+    match "Gas -Gas" and the canon correction silently no-ops on exactly the terms most
+    likely to need it (Gas-Gas Fruit, Gum-Gum).
+
+    A token that is ONLY dashes ("-", "--", em-dash) is a real separator -- punctuation.py
+    emits those deliberately -- and keeps its spaces.
+    """
+    out: list[str] = []
+    for w in words:
+        t = w["text"].strip()
+        if not t:
+            continue
+        # "-gum" continues the previous token; "-" on its own separates two of them.
+        if out and t.startswith("-") and t.strip("-—–"):
+            out[-1] += t
+        elif out and out[-1].endswith("-") and out[-1].strip("-—–"):
+            out[-1] += t                      # the split landed the other way ("Gum-", "gum")
+        else:
+            out.append(t)
+    return " ".join(out)
 
 
 def _dur(words: list[dict]) -> float:
