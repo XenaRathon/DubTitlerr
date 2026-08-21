@@ -120,6 +120,64 @@ def test_segment_span_single_unsplittable_word_returned_as_is():
     assert len(reflow.segment_span(span)) == 1
 
 
+# --- T3b: the pause tier must fire on a PAUSE, not on the largest noise gap ---
+#
+# Every inter-word gap in continuous speech is a few hundredths of a second. A gate of
+# `gap > 0` therefore fires on essentially every piece, picking the largest of a set of
+# indistinguishable noise values -- an arbitrary cut, and one that made the clause tier
+# unreachable (it needed EVERY gap to be exactly 0.0). Measured: 22% of cards with no
+# sentence punctuation still carry a comma the code could never consult.
+
+def test_split_pause_floor_is_a_module_constant():
+    assert reflow.SPLIT_PAUSE_MIN > 0
+    assert reflow.SPLIT_PAUSE_MIN < reflow.GAP_MAX      # or the tier could never fire
+
+
+def test_segment_span_splits_at_a_real_pause_among_noise_gaps():
+    # 12 x 7-char words = 95 chars (>84). Jittery noise everywhere, one true pause.
+    gaps = [0.02, 0.05, 0.03, 0.04, 0.02, 0.30, 0.03, 0.05, 0.02, 0.04, 0.03]
+    groups = reflow.segment_span(lay(["alphaaa"] * 12, gaps=gaps))
+    assert len(groups) == 2
+    assert len(groups[0]) == 6                          # the 0.30 s pause, not a noise peak
+
+
+def test_segment_span_all_noise_gaps_falls_through_to_the_clause():
+    """No gap here is a pause -- the largest (0.07) is noise. The comma must decide."""
+    texts = ["alphaaa"] * 12
+    texts[5] = "alphaa,"
+    gaps = [0.03, 0.05, 0.02, 0.04, 0.06, 0.02, 0.03, 0.07, 0.02, 0.05, 0.04]
+    groups = reflow.segment_span(lay(texts, gaps=gaps))
+    assert len(groups) == 2
+    assert len(groups[0]) == 6                          # the comma, not the 0.07 gap at 8
+
+
+def test_segment_span_all_noise_gaps_no_clause_falls_through_to_the_midpoint():
+    gaps = [0.03, 0.05, 0.02, 0.04, 0.06, 0.02, 0.03, 0.07, 0.02, 0.05, 0.04]
+    groups = reflow.segment_span(lay(["alphaaa"] * 12, gaps=gaps))
+    assert len(groups) == 2
+    assert abs(len(groups[0]) - len(groups[1])) <= 1     # character midpoint, tier 3
+
+
+def test_segment_span_equal_pauses_tie_break_prefers_the_midpoint():
+    # binary fractions only: the tie-break is an exact float comparison, so 0.02/0.3
+    # laid out by accumulation would differ in the last bits and never actually tie.
+    gaps = [0.03125] * 11
+    gaps[2] = gaps[5] = 0.25            # two qualifying, exactly equal pauses: 3 and 6
+    groups = reflow.segment_span(lay(["alphaaa"] * 12, dur=0.25, gaps=gaps))
+    assert len(groups[0]) == 6          # 6 is nearer the midpoint (6.0) than 3
+
+
+def test_segment_span_uniformly_slow_speech_has_no_standout_pause():
+    """A fixed floor alone misjudges slow dialogue: every gap clears 0.2 s here, so none
+    of them is a pause RELATIVE TO THIS PIECE. The comma decides instead."""
+    texts = ["alphaaa"] * 12
+    texts[5] = "alphaa,"
+    gaps = [0.3] * 11
+    gaps[7] = 0.35                      # the largest gap, but not a pause RELATIVE to 0.3
+    groups = reflow.segment_span(lay(texts, gaps=gaps))
+    assert len(groups[0]) == 6          # the comma, not the 0.35 gap at index 8
+
+
 # --- T4: wrap_balance --------------------------------------------------------
 
 def test_wrap_balance_short_text_stays_one_line():
