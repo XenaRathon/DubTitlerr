@@ -1,0 +1,13 @@
+{
+  "show": "One Pace",
+  "elapsed_s": 6673.8,
+  "episodes_total": 444,
+  "episodes_transcribed": 10,
+  "cards_written": 5267,
+  "dropped_hallucination": 8,
+  "collapsed_runs": 3,
+  "flagged": 1900,
+  "model": "large-v3",
+  "model_version": "1.2.1",
+  "glossary_version": "01e571465982"
+}
