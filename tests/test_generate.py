@@ -1291,3 +1291,13 @@ def test_cascade_events_are_capped_at_the_worst_offenders():
     assert rec.priority_events == []            # that tier is reserved for layout exceptions
     assert rec.counters["displaced"] == n - 1   # counters and quantiles stay complete
     assert doc["quantiles"]["displacement"]["max"] == pytest.approx((n - 1) * 0.01, abs=1e-6)
+
+
+def test_punctuation_is_restored_before_reflow_splits_the_words():
+    """The load-bearing ordering of the punctuation pass (spec 2026-08-20). Restoring
+    after reflow() -- repair.py's natural home for it -- would leave every boundary
+    exactly as wrong as before, so the call site, not just the code, is the feature."""
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "generate.py")).read()
+    assert "punctuation.restore(words, segments" in src
+    assert src.index("punctuation.restore(") < src.index("reflow.reflow(")

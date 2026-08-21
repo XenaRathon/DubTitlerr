@@ -12,7 +12,9 @@ import json
 import os
 import tempfile
 
-SCHEMA_VERSION = 2   # v2: over_chars counter added; cards_before,
+SCHEMA_VERSION = 3   # v3: the restore_* counters added (punctuation restoration). Zero
+                     # in a v2 sidecar means "not counted", not "no run was restored".
+                     # v2: over_chars counter added; cards_before,
                      # ordinary_under_min_dur_before, flagged and low_conf went from
                      # permanently-zero to populated. An aggregator must not compare a
                      # v1 sidecar to a v2 one and read the difference as a change in the
@@ -24,7 +26,10 @@ COUNTERS = ("cards_before", "cards_after", "ordinary_under_min_dur_before",
             "orphan_candidates", "orphan_candidates_fixed",
             "over_cps", "over_line_len", "over_chars", "violations", "merged_backward", "stolen",
             "shortened_by_neighbour", "displaced", "unfixable_runts",
-            "cascade_infeasible", "layout_exceptions", "flagged", "low_conf")
+            "cascade_infeasible", "layout_exceptions", "flagged", "low_conf",
+            # punctuation restoration (runs on the words, before reflow -- see punctuation.py)
+            "restore_runs_seen", "restore_runs_sent", "restore_accepted",
+            "restore_rejected_guard", "restore_empty", "restore_words_repunctuated")
 
 METRICS = ("cps", "required_extension", "displacement", "cascade_depth")
 
