@@ -461,9 +461,7 @@ MAX_CASCADE_EVENTS = 25   # per episode: the worst displacements, not one per mo
 
 
 def _record_cascades(rec, cards, cascades):
-    """Fold time_cards()'s per-cascade records into the recorder. Hang trims ride the same
-    log and are counted separately -- they displace nobody, so folding them into `stolen`
-    would inflate the one counter the runt-acceptance assertion reads. The records are
+    """Fold time_cards()'s per-cascade records into the recorder. The records are
     positional over the PRE-filter card list -- reflow() emits exactly one card per group
     -- so a displaced/shortened index there addresses cards[i] here. Counters count CARDS
     (B1), so overlapping cascades (one can reach into the next one's span) are unioned
@@ -478,8 +476,6 @@ def _record_cascades(rec, cards, cascades):
     displaced, shortened = set(), set()
     hops, dur_before = {}, {}
     for r in cascades:
-        if r.get("reason") == "hang_trim":      # same log, different event: nothing was
-            rec.count("hang_trimmed"); continue  # stolen and no neighbour was displaced
         if r["unfixable"]:                      # the tail clamp: nothing left to steal from
             rec.count("unfixable_runts"); continue
         rec.count("stolen")                     # the runt at r["index"] took the time

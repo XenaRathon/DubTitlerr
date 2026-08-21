@@ -248,65 +248,6 @@ def test_time_cards_never_overlaps_next_card():
     assert times[0][1] <= times[1][0] - reflow.MIN_GAP + 1e-9
 
 
-# --- T5b: max hang time -- a card must not linger long after its speech ------
-#
-# Measured across a season: 74 cards (0.8%) run over 2.5s at under 5 cps, median 5.91s
-# on screen for text needing under a second; the worst are single function words pinned
-# at the MAX_DUR ceiling. Not stranded words (intra-segment word gaps over 2s: zero) --
-# individual words whose OWN start->end span is implausible, so the card START is too
-# early. Trim from the FRONT, keeping the end: bounds the hang AND fixes the early
-# appearance, and a start that moves later is always permitted.
-
-def test_hang_gate_constants_are_module_constants():
-    assert reflow.HANG_MIN_DUR > reflow.MIN_DUR
-    assert reflow.HANG_FACTOR > 1.0
-
-
-def test_time_cards_trims_a_card_whose_word_span_is_implausible():
-    groups = [[mkword("am", 10.0, 17.0)]]          # 2 chars over 7.00s == 0.3 cps
-    ((start, end),), _ = reflow.time_cards(groups)
-    assert end == pytest.approx(17.0)                        # the END is kept
-    assert end - start == pytest.approx(reflow.MIN_DUR)      # shrunk from the FRONT
-
-
-def test_time_cards_leaves_a_normal_card_untouched():
-    groups = [[mkword("a" * 40, 10.0, 13.0)]]      # 40 chars over 3.0s == 13.3 cps
-    ((start, end),), _ = reflow.time_cards(groups)
-    assert start == 10.0 and end == pytest.approx(13.0)
-
-
-def test_hang_trim_only_ever_moves_a_start_later():
-    groups = [[mkword("am", 10.0, 17.0)], [mkword("I was right!", 20.0, 26.26)]]
-    times, _ = reflow.time_cards(groups)
-    for (start, _end), g in zip(times, groups):
-        assert start >= g[0]["start"] - reflow.EPS
-
-
-def test_hang_trim_keeps_min_gap_with_the_predecessor():
-    groups = [[mkword("hi", 0.0, 1.0)], [mkword("to", 2.0, 9.0)]]
-    times, _ = reflow.time_cards(groups)
-    assert times[1][0] > 2.0                                 # really trimmed
-    assert times[1][0] - times[0][1] >= reflow.MIN_GAP - reflow.EPS
-
-
-def test_hang_trim_is_recorded_once_per_trimmed_card():
-    groups = [[mkword("am", 10.0, 17.0)],
-              [mkword("a" * 40, 20.0, 23.0)],                # normal: untouched
-              [mkword("to", 30.0, 37.0)]]
-    _times, records = reflow.time_cards(groups)
-    assert [r["index"] for r in records if r["reason"] == "hang_trim"] == [0, 2]
-
-
-def test_reflow_reports_hang_trims_on_the_cascade_log():
-    words = [mkword("am", 10.0, 17.0)]
-    segs = [{"start": 10.0, "end": 17.0, "no_speech_prob": 0.0}]
-    log = []
-    cards = reflow.reflow(words, segs, cascade_log=log)
-    assert [r["reason"] for r in log] == ["hang_trim"]
-    assert cards[0]["end"] - cards[0]["start"] == pytest.approx(reflow.MIN_DUR)
-    assert cards[0]["source_start"] == 10.0      # the spoken window never moves
-
-
 # --- T6: card_confidence + reflow() + edges ----------------------------------
 
 def test_card_confidence_avg_logprob_is_mean_word_logprob():
