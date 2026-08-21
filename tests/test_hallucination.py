@@ -124,3 +124,43 @@ def test_blocklist_data_file_comments_and_blanks_are_skipped(tmp_path):
     assert bl.search("has a foo-pattern in it")
     assert bl.search("has a bar-pattern in it")
     assert not bl.search("neither pattern here")
+
+
+# --- liveness counters (2026-08-22) -------------------------------------------------
+
+def test_drop_reason_records_evaluated_and_activated():
+    """A rule that never fires must be distinguishable from a rule never reached.
+    hallucination.music fired 0 times across 353,879 cards and nothing noticed, because
+    a successful episode with zero drops looks identical to one where the rule is dead."""
+    import qc
+    rec = qc.Recorder()
+    speech = {"text": "Hello there.", "no_speech_prob": 0.1, "avg_logprob": -0.2}
+    assert h.drop_reason(speech, rec=rec) is None
+    assert rec.counters["rule_blocklist_evaluated"] == 1
+    assert rec.counters["rule_blocklist_activated"] == 0
+    assert rec.counters["rule_music_evaluated"] == 1
+    assert rec.counters["rule_music_activated"] == 0
+
+    assert h.drop_reason({"text": "To be continued...", "no_speech_prob": 0.1,
+                          "avg_logprob": -0.2}, rec=rec) == "blocklist"
+    assert rec.counters["rule_blocklist_activated"] == 1
+    # short-circuit: later rules are NOT evaluated once one fires
+    assert rec.counters["rule_music_evaluated"] == 1
+
+
+def test_flag_reason_records_liveness():
+    import qc
+    rec = qc.Recorder()
+    h.flag_reason({"avg_logprob": -0.2, "no_speech_prob": 0.1}, rec=rec)
+    assert rec.counters["rule_low_conf_evaluated"] == 1
+    assert rec.counters["rule_low_conf_activated"] == 0
+    assert rec.counters["rule_maybe_silence_evaluated"] == 1
+    h.flag_reason({"avg_logprob": -9.0, "no_speech_prob": 0.1}, rec=rec)
+    assert rec.counters["rule_low_conf_activated"] == 1
+
+
+def test_rec_is_optional_and_behaviour_is_unchanged():
+    """tools/ and existing callers invoke these bare; the signature must stay compatible."""
+    assert h.drop_reason({"text": "To be continued...", "no_speech_prob": 0.1,
+                          "avg_logprob": -0.2}) == "blocklist"
+    assert h.flag_reason({"avg_logprob": -9.0, "no_speech_prob": 0.1}) == "low_conf"
