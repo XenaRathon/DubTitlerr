@@ -26,35 +26,45 @@ re-derived each sweep, not a static list.
     ORDER="${ANIME_ORDER:-/config/anime_order.txt}"   # one show directory name per line
     SEASON_PRIORITY_FILE=/config/season_priority.txt  # within-show season order (ordering.py)
 
-Live `anime_order.txt` is currently a single line, `One Pace` — hand-narrowed. The loop reads
-it top to bottom every sweep and re-reads it each pass, so **regenerating the file between
-sweeps is enough**; no change to `gen_loop.sh`'s control flow is required.
+Live `anime_order.txt` is currently a single line, `One Pace` — hand-narrowed. The loop
+re-reads the file on every sweep, so **regenerating it between sweeps is enough**; no change
+to `gen_loop.sh`'s control flow is required.
 
-## 3. The two history sources, and why one is not enough
+## 3. The source of truth is WatchState, not the media servers
 
-Both media servers hold view state, and they disagree.
+The homelab already runs **WatchState** (`ghcr.io/arabcoders/watchstate`) on fasc — up 4 days,
+healthy, bidirectionally importing and exporting between both backends. It holds the unified
+record this feature needs, and it is authoritative in a way neither server is alone.
 
-**Plex** — credentials already in the container, verified working today:
+    state table: id, type, updated, watched, via, title, year, season, episode,
+                 parent, guids, metadata, extra, created_at, updated_at
+    19,521 episodes + 641 movies, `via` naming the backend that reported each row
 
-    PLEX_URL=http://192.168.1.196:32400   PLEX_SECTION=7 ("Anime")   PLEX_TOKEN set
+**Querying Plex directly would give the wrong answer, and would look right doing it.** Measured
+today:
 
-    GET /library/sections/7/all?type=2&sort=lastViewedAt:desc
+| source | One Pace last activity |
+|---|---|
+| Plex `lastViewedAt` on the show | 2026-07-11 22:09 |
+| WatchState `max(updated)`, `via=jellyfin` | **2026-08-20 22:50** |
 
-returns per show: `title`, `viewCount`, `lastViewedAt` (unix). Probed live — it works and is
-already sorted. No new dependency: `plex_refresh.py` uses the same three env vars.
+Exactly **40.0 days** apart. Playback happens on Jellyfin; WatchState syncs the *watched flag*
+into Plex without bumping Plex's display `lastViewedAt`. A 30-day Plex-only gate would have
+dropped One Pace — the one show the v4 regeneration exists for — while returning a confident,
+correctly-sorted list of everything else.
 
-**Jellyfin** — found at `http://192.168.1.209:8096` ("XenFlix", 10.11.11). **No API key is
-present in the container.** `GET /Users/{id}/Items?SortBy=DatePlayed&SortOrder=Descending`
-with an `X-Emby-Token` header gives the equivalent.
+This is the recurring shape in this project: a fallback that is correct in its own terms and
+that nothing reports taking. Plex is not broken and does not error; it answers a slightly
+different question than the one being asked.
 
-The disagreement matters and is not hypothetical. Plex reports One Pace last viewed
-**2026-07-11**, six weeks ago, while One Pace is the show actively being worked and watched.
-Plex's view state is stale because playback happens elsewhere. A gate built on Plex alone
-would return a confident, plausible list that omits the one show that matters — the same
-shape as a fallback nobody reports taking.
+**Access, verified today:** WatchState exposes an HTTP API on `192.168.1.209:8080`, reachable
+from the dubtitle host, keyed by `WS_API_KEY` from its `config/.env`.
 
-**So the gate must union both sources, and must fail loudly if one is unreachable rather than
-silently returning the other's answer.**
+    GET /v1/api/history   ->  200, 20,162 items, paginated (12/page, 1681 pages)
+    GET /v1/api/backends  ->  200
+
+No Jellyfin API key needs minting and no second HTTP client is needed: one source already
+unions both backends, per episode, with provenance.
 
 ## 4. Design
 
@@ -62,47 +72,55 @@ A small module, `watch_queue.py`, run once per sweep before the loop re-reads th
 
     watch_queue.py --window-days 30 --out /config/anime_order.txt [--dry-run]
 
-1. Query Plex (section 7) and Jellyfin (anime library) for per-show last-played time.
-2. **Tri-state per source**, following `tools/vad.py`: reachable-with-data / reachable-empty /
+1. Query the WatchState API for episode history newer than the window; group by show title,
+   taking `max(updated)`.
+2. **Tri-state**, following `tools/vad.py`: reachable-with-data / reachable-empty /
    unreachable. Unreachable is not zero.
-3. If **either** source is unreachable, leave `anime_order.txt` untouched and log why. A stale
-   queue is safe; a queue silently narrowed by an outage is not.
-4. Union the two by show, taking the **most recent** timestamp per title.
-5. Match a Plex/Jellyfin title to a library directory name. Exact match first, then the
-   `_clean_title()` normalisation `glossary_verify.py:147` already uses to strip
-   `(YYYY)` and `{tvdb-NNNN}`. Titles that match no directory are **reported, never dropped
-   silently** — a rename would otherwise shrink the queue invisibly.
+3. If WatchState is unreachable **or returns an empty history**, leave `anime_order.txt`
+   untouched and exit non-zero with the reason logged. A stale queue is safe; a queue silently
+   emptied by an outage is not.
+4. Restrict to shows that exist as directories under `ANIME_ROOT` — WatchState covers the whole
+   library, most of which is not anime.
+5. Match a WatchState title to a library directory name: exact first, then the `_clean_title()`
+   normalisation `glossary_verify.py:147` already uses to strip `(YYYY)` and `{tvdb-NNNN}`.
+   Titles matching no directory are **reported, never dropped silently** — a rename would
+   otherwise shrink the queue invisibly.
 6. Write the matched directory names, most-recently-watched first.
 7. Always retain shows listed in a `--pin` file, so a deliberate target (One Pace during v4)
    cannot fall out of the queue by going a month unwatched.
 
 ## 5. Open questions for review
 
-1. **Jellyfin API key** — needs to be minted in the admin UI and added to the container env.
-   Until then the gate cannot run, by rule 3. Is a read-only key acceptable, and should it be
-   scoped to one user or the server?
-2. **Window length.** 30 days is a guess. Plex's section-7 data shows a natural gap: 13 shows
-   viewed within ~100 days, the rest much older. Worth choosing from the union, not from Plex.
-3. **Per-show or per-season.** `season_priority.txt` already orders seasons within a show.
-   Should the gate also drop *seasons* nobody has touched, or is show-level granularity enough?
-   Show-level is simpler and probably sufficient.
-4. **Interaction with `PIPELINE_VERSION`.** A show entering the queue after a version bump
+1. **Window length.** 30 days is a guess. In WatchState's 60-day window, 20 shows have
+   activity, but most are not anime; the anime-only count is what matters and should be
+   measured before choosing.
+2. **API vs direct DB read.** The API is reachable cross-host and needs no new mount; reading
+   `watchstate_v02.db` (924 MB, on fasc's local disk) would need one and risks locking. API
+   preferred — is there a reason to disagree?
+3. **Pagination cost.** 12 items/page over 1,681 pages is a lot of round trips if the endpoint
+   cannot be filtered by date or type. If it cannot, this becomes a `db:query` over the
+   container's console instead. Needs confirming at implementation.
+4. **Per-show or per-season.** `season_priority.txt` already orders seasons within a show.
+   Should the gate also drop *seasons* nobody has touched, or is show-level enough? Show-level
+   is simpler and probably sufficient.
+5. **Interaction with `PIPELINE_VERSION`.** A show entering the queue after a version bump
    regenerates its whole back catalogue. Acceptable, or cap per sweep?
 
 ## 6. Out of scope
 
 - Changing `gen_loop.sh`'s control flow — regenerating the file it already re-reads is enough.
 - Watch history as a *quality* signal (e.g. prioritising episodes rewatched often).
-- The 14 other shows' glossaries; see the glossary-integrity spec.
+- Movies. WatchState tracks 641; the dubtitle pipeline is show-oriented.
 
 ## 7. Testing
 
 | test | asserts |
 |---|---|
-| union takes the newer timestamp | a show newer in Jellyfin than Plex sorts by the Jellyfin time |
-| one source unreachable -> no write | `anime_order.txt` byte-identical, non-zero exit, reason logged |
-| both reachable but empty -> no write | distinguishes "nothing watched" from "could not tell" |
+| unreachable source -> no write | `anime_order.txt` byte-identical, non-zero exit, reason logged |
+| reachable but empty -> no write | distinguishes "nothing watched" from "could not tell" |
+| non-anime shows excluded | a WatchState title with no `ANIME_ROOT` directory is not queued |
 | title -> directory matching | `{tvdb-...}` and `(YYYY)` suffixes resolve |
 | unmatched title is reported | appears in output, does not vanish |
+| ordering | most-recently-watched first |
 | pinned show always present | even with a last-played far outside the window |
 | dry-run writes nothing | — |
