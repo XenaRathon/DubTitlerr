@@ -132,14 +132,28 @@ def ts_srt(t):
     return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
 
 
-def write_stamp(path: str, video: str) -> None:
+def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
     """Write the .dubtitles.done idempotency stamp recording the muxed file's size+mtime
     and the PIPELINE_VERSION that produced it (stamp_valid rejects an older version, so a
-    version bump marks every prior-version file stale)."""
+    version bump marks every prior-version file stale).
+
+    ``stages`` optionally records WHICH stages actually ran, e.g.
+    ``{"repair": False, "signs_merge": True, "punctuation": True}``. The stamp used to say
+    an episode was done without saying what "done" meant: merge_pass.sh has no ``set -e``
+    and checks no exit status, so a stage that died still reached mux and still stamped, and
+    "repair never ran" was indistinguishable from "repair ran and found nothing".
+
+    ADDITIVE AND OPTIONAL, and stamp_valid ignores it. That is the whole constraint: if an
+    older stamp stopped validating, every episode in the library would read as unprocessed
+    and be fully re-transcribed -- roughly 12 GPU-hours to add a bookkeeping field. Omitted
+    entirely when the caller does not know, rather than guessed."""
     st = os.stat(video)
+    doc = {"size": st.st_size, "mtime": st.st_mtime, "muxed": True,
+           "version": PIPELINE_VERSION}
+    if stages:
+        doc["stages"] = stages
     with open(path, "w") as f:
-        json.dump({"size": st.st_size, "mtime": st.st_mtime, "muxed": True,
-                   "version": PIPELINE_VERSION}, f)
+        json.dump(doc, f)
 
 
 def read_stamp(path: str) -> dict | None:
