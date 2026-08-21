@@ -512,3 +512,41 @@ def test_llm_chat_can_return_the_full_multi_line_reply(monkeypatch):
     _capture_post(monkeypatch, {"choices": [{"message": {"content": '{\n "a": 1\n}'}}]})
     out = common.llm_chat("P", backend="llamacpp", llamacpp_url="http://h", first_line=False)
     assert out == '{\n "a": 1\n}'
+
+
+# --- stage-execution record in the stamp (2026-08-22) ---------------------------------
+
+def test_old_stamp_without_stages_is_still_valid(tmp_path):
+    """THE constraint on this change. A stamp written before `stages` existed must stay
+    valid: if stamp_valid rejected it, every episode in the library would read as unprocessed
+    and be fully re-transcribed -- ~12 GPU-hours to add a bookkeeping field."""
+    v = tmp_path / "ep.mkv"; v.write_bytes(b"x" * 10)
+    st = os.stat(v)
+    old = {"size": st.st_size, "mtime": st.st_mtime, "muxed": True,
+           "version": common.PIPELINE_VERSION}
+    assert common.stamp_valid(old, str(v)) is True
+
+
+def test_stamp_records_which_stages_ran(tmp_path):
+    """`.dubtitles.done` said an episode was done, not what "done" meant. An episode where
+    repair never ran was indistinguishable from one where it ran and found nothing --
+    merge_pass.sh has no `set -e` and checks no exit status, so a stage that died still
+    reached MUX and still stamped."""
+    v = tmp_path / "ep.mkv"; v.write_bytes(b"x" * 10)
+    p = str(tmp_path / "ep.dubtitles.done")
+    common.write_stamp(p, str(v), stages={"repair": False, "signs_merge": True,
+                                          "punctuation": True})
+    d = json.load(open(p))
+    assert d["stages"]["repair"] is False
+    assert d["stages"]["signs_merge"] is True
+    assert d["version"] == common.PIPELINE_VERSION      # everything else unchanged
+
+
+def test_stages_is_optional_and_omitted_when_absent(tmp_path):
+    """Callers that do not know what ran must not claim they do."""
+    v = tmp_path / "ep.mkv"; v.write_bytes(b"x" * 10)
+    p = str(tmp_path / "ep.dubtitles.done")
+    common.write_stamp(p, str(v))
+    d = json.load(open(p))
+    assert "stages" not in d
+    assert common.stamp_valid(d, str(v)) is True

@@ -297,7 +297,7 @@ def test_process_reports_a_failed_stamp_write_and_keeps_the_sidecar(tmp_path, mo
     monkeypatch.setattr(mux.subprocess, "run",
                         lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(b"muxed"))
 
-    def boom(path, video):
+    def boom(path, video, **_kw):
         raise OSError("read-only file system")
 
     monkeypatch.setattr(mux, "write_stamp", boom)
@@ -371,3 +371,29 @@ def test_delete_broken_hardlinks_is_not_a_silent_noop():
         "dead destructive knob reintroduced without being wired to anything"
     assert not hasattr(mux, "partners"), \
         "partners() reintroduced; it had no caller -- wire it or leave it out"
+
+
+# --- stage-execution record (2026-08-22) ----------------------------------------------
+
+def test_stages_ran_reads_the_sidecars_still_on_disk(tmp_path):
+    """mux stamps AFTER the other stages, while their sidecars are still present. That is
+    the one moment the pipeline can say what actually ran."""
+    stem = str(tmp_path / "ep")
+    open(stem + ".dubtitles.repair-summary.json", "w").write("{}")
+    with open(stem + ".dubtitles.qc.json", "w") as f:
+        f.write('{"counters": {"restore_runs_sent": 12}}')
+    got = mux._stages_ran(stem, stem + ".eng.dubtitles.ass")
+    assert got["repair"] is True
+    assert got["signs_merge"] is True          # muxed from .ass -> signs were merged
+    assert got["punctuation"] is True
+
+
+def test_stages_ran_omits_what_it_cannot_determine(tmp_path):
+    """'did not run' and 'cannot tell' are DIFFERENT claims. With no qc sidecar the
+    punctuation key is omitted, never guessed False -- the tri-state lesson from
+    tools/vad.py, which returns None rather than a confident wrong answer."""
+    stem = str(tmp_path / "ep")
+    got = mux._stages_ran(stem, stem + ".eng.dubtitles.srt")
+    assert got["repair"] is False              # summary absent: repair demonstrably did not run
+    assert got["signs_merge"] is False         # muxed from .srt
+    assert "punctuation" not in got            # unknowable -> omitted

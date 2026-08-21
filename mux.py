@@ -174,6 +174,33 @@ def original_langs(info):
     return {((t.get("properties") or {}).get("language") or "").lower() for t in src} - {""}
 
 
+def _stages_ran(stem: str, src: str) -> dict:
+    """Which pipeline stages demonstrably ran, read from the sidecars still on disk.
+
+    mux stamps AFTER repair / signs-merge / generate and BEFORE their sidecars are removed,
+    so this is the one moment the pipeline can record what "done" actually meant. Without it
+    an episode where repair never ran is indistinguishable from one where it ran and found
+    nothing -- merge_pass.sh has no `set -e` and checks no exit status, so a stage that died
+    still reached here and still stamped.
+
+    A stage whose evidence is UNKNOWABLE is omitted, never reported False. "Did not run" and
+    "cannot tell" are different claims; tools/vad.py makes the same distinction by returning
+    None rather than a confident wrong answer."""
+    st = {
+        # repair writes its summary unconditionally, even when every card was skipped
+        "repair": os.path.exists(stem + ".dubtitles.repair-summary.json"),
+        # an .ass source means the signs/songs track was merged in; a bare .srt means it was not
+        "signs_merge": src.endswith(ASS_SUFFIX),
+    }
+    try:
+        with open(stem + ".dubtitles.qc.json", encoding="utf-8") as f:
+            counters = (json.load(f).get("counters") or {})
+        st["punctuation"] = counters.get("restore_runs_sent", 0) > 0
+    except (OSError, ValueError):
+        pass          # no qc sidecar (pre-QC episode) -> cannot tell, so say nothing
+    return st
+
+
 def build_cmd(info, orig, ass, out):
     """Returns (mkvmerge cmd, [dropped track descriptions]). Keeps eng/dut + the original
     language audio, and eng/orig/mul/signs-songs subs; sets eng audio + Dubtitles default;
@@ -294,7 +321,8 @@ def process(orig, apply):
         if os.path.abspath(orig) != os.path.abspath(final) and os.path.exists(orig):
             os.remove(orig)                         # mp4->mkv: drop the OLD library link (partner survives)
         try:
-            write_stamp(stamp, final)               # stamp BEFORE removing sidecars (crash-safe skip)
+            write_stamp(stamp, final, stages=_stages_ran(stem, src))
+                                                    # stamp BEFORE removing sidecars (crash-safe skip)
         except OSError as e:
             # The remux already landed, but the stamp is now the ONLY record that this
             # file is done (the ffprobe backstop is gone). Without a stamp the next sweep
