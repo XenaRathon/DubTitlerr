@@ -120,7 +120,18 @@ A small module, `watch_queue.py`, run once per sweep before the loop re-reads th
    Plex titles arrive HTML-escaped (`I&#39;m in Love with the Villainess`) — unescape before
    matching. Titles matching no directory are **reported, never dropped silently**.
 6. Write the matched directory names, most-recently-watched first.
-7. Always retain shows listed in a `--pin` file, so a deliberate target (One Pace during v4)
+7. **Selection is per SHOW, and never narrows within one.** Once a show is queued, the whole
+   series regenerates. Regenerating only the episodes already watched helps nobody — the
+   value of a subtitle track is in the episodes about to be watched, and a viewer mid-series
+   needs the ones ahead of them. The watch signal answers "is this show live?", never "which
+   episodes deserve subtitles".
+
+   This is already how the pipeline behaves and must stay that way: `ordering.py.order_files()`
+   reorders a show's files so seasons >= the `season_priority.txt` start season come first,
+   explicitly "without changing which files get processed, only the sequence". So
+   `One Pace:30` means S30 first then S01-29 after, not S30 only.
+
+8. Always retain shows listed in a `--pin` file, so a deliberate target (One Pace during v4)
    cannot fall out of the queue by going a month unwatched.
 
 ## 5. Open questions for review
@@ -136,9 +147,8 @@ A small module, `watch_queue.py`, run once per sweep before the loop re-reads th
 4. **Pagination cost.** 12 items/page over 1,681 pages is a lot of round trips if the endpoint
    cannot be filtered by date or type. If it cannot, this becomes a `db:query` over the
    container's console instead. Needs confirming at implementation.
-5. **Per-show or per-season.** `season_priority.txt` already orders seasons within a show.
-   Should the gate also drop *seasons* nobody has touched, or is show-level enough? Show-level
-   is simpler and probably sufficient.
+5. ~~**Per-show or per-season.**~~ **SETTLED 2026-08-21:** show-level only. The gate never
+   drops seasons or episodes — see design rule 7.
 6. **Interaction with `PIPELINE_VERSION`.** A show entering the queue after a version bump
    regenerates its whole back catalogue. Acceptable, or cap per sweep?
 
@@ -158,6 +168,7 @@ A small module, `watch_queue.py`, run once per sweep before the loop re-reads th
 | title -> directory matching | `{tvdb-...}` and `(YYYY)` suffixes resolve |
 | unmatched title is reported | appears in output, does not vanish |
 | ordering | most-recently-watched first |
+| a queued show is not narrowed | every episode of a queued show remains eligible, watched or not |
 | pinned show always present | even with a last-played far outside the window |
 | union across sources | a show seen only in Plex under another account is queued |
 | Plex date filter is not trusted | rows outside the window are dropped client-side |
