@@ -53,6 +53,23 @@ SPLIT_PAUSE_K = 3.0      # ...AND the gap must stand out from THIS piece's own g
                          # long gap cannot inflate the threshold it has to clear.
 PROB_FLOOR = 1e-4        # clamp before ln() so prob==0 doesn't give -inf
 
+# --- max hang time ----------------------------------------------------------
+# Measured across a season: 74 cards (0.8%) sit on screen over 2.5s at under 5 cps,
+# median 5.91s for text needing under a second; the worst are single function words
+# pinned at the MAX_DUR ceiling ("am", 7.00s, 0.3 cps). The cause is NOT stranded words
+# separated by silence -- intra-segment word gaps over 2s: zero -- but individual words
+# whose own start->end span is implausible, so it is the card's START that is too early.
+HANG_FACTOR = 3.4        # == MAX_CPS / 5.0, so `dur > HANG_FACTOR * (chars / MAX_CPS)`
+                         # is exactly "under 5 cps" -- the measured population's own
+                         # boundary, rather than a fresh guess laid over it.
+HANG_MIN_DUR = 3.0       # seconds. ``needed`` is floored at MIN_DUR (0.83), so for text
+                         # under ~15 chars the ratio gate alone would already fire at
+                         # 2.82s; this makes the short-text threshold an explicit,
+                         # tunable "too long to linger" instead of a by-product of
+                         # MIN_DUR. Both gates bind: the floor below ~15 chars, the
+                         # factor above. Deliberately conservative -- the median of the
+                         # target population is 5.91s, so the floor is not what selects.
+
 
 EPS = 1e-6               # float slack for every threshold comparison. conf.json stores
                          # 3-decimal values, so a duration re-derived from them lands a
@@ -294,8 +311,13 @@ def time_cards(groups: list[list[dict]],
     successor must END UP, ``end + MIN_GAP``, absorbing that pre-existing deficit too.
     Starts only ever move LATER: a caption revealed early spoils its own line.
 
-    Returns the timings plus one record per cascade. Raises :class:`CascadeInfeasible`
-    when a shift would push a start to or past ``audio_duration`` (None == unbounded)."""
+    A card left sitting on screen far longer than its text needs is then shrunk FROM THE
+    FRONT (see HANG_FACTOR/HANG_MIN_DUR): the end is kept, the start moves later, which
+    both bounds the hang and cures the early appearance its implausible word span caused.
+
+    Returns the timings plus one record per cascade (and one per hang trim). Raises
+    :class:`CascadeInfeasible` when a shift would push a start to or past
+    ``audio_duration`` (None == unbounded)."""
     n = len(groups)
     st = [g[0]["start"] for g in groups]
     en: list[float] = []
@@ -337,6 +359,26 @@ def time_cards(groups: list[list[dict]],
                             "residual_shift": short_by, "hops": 0,
                             "displaced": [], "shortened": [], "dur_before": {},
                             "preexisting_gap_deficit": 0.0, "unfixable": True})
+    # --- max hang time: shrink an implausibly long card FROM THE FRONT ---------
+    # Keeping the end bounds the hang AND fixes the early appearance in one move, and a
+    # start that moves LATER is always permitted (a caption may be late, never early).
+    # Runs last, over the settled timings, so it sees what the cascade and the tail clamp
+    # actually produced rather than what time_cards() first wanted.
+    for j in range(n):
+        needed = max(MIN_DUR, len(_text(groups[j])) / MAX_CPS)
+        dur = en[j] - st[j]
+        if dur <= max(HANG_MIN_DUR, HANG_FACTOR * needed) + EPS:
+            continue
+        new_start = en[j] - needed
+        if new_start <= st[j] + EPS:
+            continue                            # already tight; nothing to give back
+        # MIN_GAP against the predecessor holds a fortiori: st[j] already cleared it and
+        # new_start > st[j]. No clamp here -- it could only ever be dead code.
+        records.append({"reason": "hang_trim", "index": j,
+                        "start_before": st[j], "start_after": new_start,
+                        "hang_dur": dur, "needed_dur": needed})
+        st[j] = new_start
+
     return list(zip(st, en)), records
 
 

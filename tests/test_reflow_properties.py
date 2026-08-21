@@ -181,6 +181,12 @@ def test_whole_list_invariants(seed):
         for ln in lines:
             assert len(ln) <= reflow.MAX_LINE or not _splittable(c["text"].replace("\n", " "))
 
+    # --- 2b. bounded hang: no card outlasts what its own text needs ---
+    for c, g in zip(cards, groups):
+        needed = max(reflow.MIN_DUR, len(reflow._text(g)) / reflow.MAX_CPS)
+        assert (c["end"] - c["start"]) <= max(reflow.HANG_MIN_DUR,
+                                              reflow.HANG_FACTOR * needed) + reflow.EPS
+
     # --- 3. conservation ---
     assert _tokens(c["text"].replace("\n", " ") for c in cards) == _tokens(w["text"] for w in words)
 
@@ -245,11 +251,23 @@ def test_bounded_audio_keeps_the_invariants_or_raises_with_full_accounting(seed)
     for (s0, e0), (s1, _e1) in zip(times, times[1:]):
         assert s1 - e0 >= reflow.MIN_GAP - reflow.EPS
         assert s1 > s0
+    # A hang trim rides the same record list but is not a shift: it moves ONE start later
+    # and displaces nobody, so it is accounted for on its own terms. Every record is still
+    # checked by exactly one of the two loops below -- the cascade population, and the
+    # assertions made over it, are unchanged.
+    hangs = [r for r in records if r.get("reason") == "hang_trim"]
+    shifts = [r for r in records if r.get("reason") != "hang_trim"]
+    assert len(hangs) + len(shifts) == len(records)
+    for r in hangs:
+        assert r["start_after"] > r["start_before"] + reflow.EPS      # starts only move LATER
+        assert times[r["index"]][0] == pytest.approx(r["start_after"])
+        assert r["needed_dur"] >= reflow.MIN_DUR - reflow.EPS
+        assert r["hang_dur"] > r["needed_dur"]
     for i, (s, en) in enumerate(times):
         short = reflow.is_short(en - s)
-        assert not short or any(r["index"] == i and r["unfixable"] for r in records)
+        assert not short or any(r["index"] == i and r["unfixable"] for r in shifts)
         assert en - s <= reflow.MAX_DUR + reflow.EPS
-    for r in records:
+    for r in shifts:
         assert r["requested_shift"] > reflow.EPS
         if r["unfixable"]:                       # the tail clamp: NONE of the ask was applied,
             assert r["applied_shift"] == 0.0     # so requested == applied + residual is a real

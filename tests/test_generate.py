@@ -1273,6 +1273,23 @@ def test_a_card_that_is_both_displaced_and_shortened_gets_one_event_not_two():
     assert rec.counters["displaced"] == 3 and rec.counters["shortened_by_neighbour"] == 1
 
 
+def test_hang_trims_are_counted_not_mistaken_for_forward_steals():
+    """A hang trim rides the same cascade log as the forward steals but is a different
+    event: no runt stole anything, no neighbour was displaced. It gets its own counter."""
+    assert "hang_trimmed" in qc.COUNTERS
+    rec = qc.Recorder()
+    cards = _cascade_cards(3, lambda i: 0.0)
+    generate._record_cascades(rec, cards, [
+        {"reason": "hang_trim", "index": 0, "start_before": 10.0, "start_after": 16.17,
+         "hang_dur": 7.0, "needed_dur": 0.83},
+        {"reason": "hang_trim", "index": 2, "start_before": 30.0, "start_after": 36.17,
+         "hang_dur": 7.0, "needed_dur": 0.83},
+    ])
+    assert rec.counters["hang_trimmed"] == 2
+    assert rec.counters["stolen"] == 0 and rec.counters["displaced"] == 0
+    assert rec.counters["unfixable_runts"] == 0
+
+
 def test_cascade_events_are_capped_at_the_worst_offenders():
     """qc.MAX_EVENTS is 500 and Recorder.event() keeps the FIRST N, so one event per
     moved card (431 on a real episode) crowds out the rare classes that exist in no
