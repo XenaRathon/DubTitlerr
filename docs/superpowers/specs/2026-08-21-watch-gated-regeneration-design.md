@@ -128,8 +128,6 @@ A small module, `watch_queue.py`, run once per sweep before the loop re-reads th
 1. **Window length.** 30 days is a guess. At 30 days only One Pace qualifies; the newest
    other-user activity is SPY x FAMILY at 2026-06-09, 73 days back. So the window decides
    whether other users are represented at all. Measure the union before choosing.
-   activity, but most are not anime; the anime-only count is what matters and should be
-   measured before choosing.
 2. **Plex account scope.** Should every account count equally, or should external/guest
    accounts be excluded? `guest` and several `external_user` accounts exist.
 3. **API vs direct DB read.** The API is reachable cross-host and needs no new mount; reading
