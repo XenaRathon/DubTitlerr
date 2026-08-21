@@ -286,3 +286,51 @@ def test_with_restoration_reflow_splits_at_the_restored_sentence_boundary(monkey
     cards = reflow.reflow(words, segments)
     assert cards[0]["text"].replace("\n", " ") == "We have to go somewhere else."
     assert cards[1]["text"].replace("\n", " ").startswith("They all died")
+
+
+# --- dash splitting and the contraction whitelist -----------------------------
+# Both come from a LIVE run against the real model: 3 of 7 rejections were the model
+# writing "tempo<em-dash>you" for "tempo you" -- pure punctuation that normalise() saw
+# as one token instead of two.
+
+def test_em_dash_between_words_is_a_separator_not_a_word_change():
+    em = chr(0x2014)
+    assert punctuation.accept_restoration("the tempo you want",
+                                          f"The tempo{em}you want.")
+
+
+def test_en_dash_too():
+    en = chr(0x2013)
+    assert punctuation.accept_restoration("sunny there is something",
+                                          f"Sunny{en}there is something.")
+
+
+def test_hyphen_is_not_split_because_it_is_word_internal():
+    """Splitting hyphens would break real words, so a hyphen inserted BETWEEN two words
+    is still a rejection -- the conservative side of an ambiguous mark."""
+    assert not punctuation.accept_restoration("district f 16", "District f-16.")
+
+
+def test_contraction_allowed_when_the_bare_form_is_not_a_word(monkeypatch):
+    monkeypatch.setattr(punctuation, "WORDS", frozenset({"we", "go", "well", "its"}))
+    assert punctuation.accept_restoration("dont go", "Don't go.")
+    assert punctuation.accept_restoration("theres smoke", "There's smoke.")
+
+
+def test_contraction_BLOCKED_when_the_bare_form_is_a_real_word(monkeypatch):
+    """well/we'll and its/it's are different sentences. The guard must not let the model
+    choose between them."""
+    monkeypatch.setattr(punctuation, "WORDS", frozenset({"well", "its", "go"}))
+    assert not punctuation.accept_restoration("well go", "We'll go.")
+    assert not punctuation.accept_restoration("its go", "It's go.")
+
+
+def test_removing_an_apostrophe_is_still_a_rejection(monkeypatch):
+    monkeypatch.setattr(punctuation, "WORDS", frozenset())
+    assert not punctuation.accept_restoration("don't go", "Dont go.")
+
+
+def test_missing_wordlist_means_no_contraction_allowance(monkeypatch):
+    """A dev box without wamerican must be STRICTER, never looser."""
+    monkeypatch.setattr(punctuation, "WORDS", frozenset())
+    assert not punctuation.accept_restoration("dont go", "Don't go.")

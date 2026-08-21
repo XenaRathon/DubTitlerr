@@ -75,12 +75,70 @@ def normalise(s: str) -> list[str]:
     return [n for n in (_norm(t) for t in s.split()) if n]
 
 
+# Dashes SEPARATE tokens; hyphens do not. A model restoring punctuation writes
+# "tempo<em-dash>you" for "tempo you" -- pure punctuation, but normalise() splits on
+# whitespace and would see one token where there were two. Measured: 3 of 7 live
+# rejections were exactly this. Hyphen is deliberately NOT here -- it is legitimately
+# word-internal ("curly-eyebrow", "District F-16") and splitting it would break real words.
+_DASHES = "".join(chr(c) for c in (0x2013, 0x2014))
+
+
+def _load_words(path: str = "/usr/share/dict/american-english") -> frozenset:
+    """The English wordlist, for the contraction rule below. Absent (as on a dev box
+    without wamerican) means the rule simply never fires -- strict, never looser."""
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            return frozenset(w.strip().lower() for w in f if w.strip())
+    except OSError:
+        return frozenset()
+
+
+WORDS = _load_words()
+
+
+def _contraction_ok(o: str, n: str) -> bool:
+    """Whether ``n`` is ``o`` with an apostrophe inserted, SAFELY.
+
+    Restoring punctuation naturally also writes don't for dont. Allowing that in general
+    is unsafe: well/we'll, shed/she'd, its/it's, lets/let's all differ in MEANING, and a
+    blanket rule would let the model change the sentence and pass the guard.
+
+    The separating property is exact and needs no curated list: an apostrophe may be
+    inserted only when the bare form is NOT an English word. `dont` is not a word, so
+    don't is the only reading; `well` is, so we'll is a different sentence.
+
+    Verified against the container's 104k wordlist: allows dont/theres/youre/didnt/
+    isnt/wasnt/couldnt/im/ive/thats/hed...; blocks well/shed/hell/ill/were/its/lets/wont."""
+    if not WORDS:
+        return False          # no wordlist -> no allowance. `o not in WORDS` would be
+                              # vacuously TRUE on an empty set, making a dev box without
+                              # wamerican LOOSER than production instead of stricter --
+                              # the same divergence that made a name_suspect test pass
+                              # here and fail in the container.
+    if "'" in o or "'" not in n:
+        return False
+    return n.replace("'", "") == o and o not in WORDS
+
+
+def _split_dashes(toks: list[str]) -> list[str]:
+    out = []
+    for t in toks:
+        for d in _DASHES: t = t.replace(d, " ")
+        out.extend(x for x in t.split() if x)
+    return out
+
+
 def accept_restoration(orig: str, new: str) -> bool:
     """R4. True only when ``new`` says the same words in the same order as ``orig``.
 
     Far stronger than repair's length-ratio band: there is no judgement in it, so an
     accepted restoration cannot have drifted, and a rejected one is simply not applied."""
-    return bool(new.strip()) and normalise(new) == normalise(orig)
+    if not new.strip():
+        return False
+    a, b = _split_dashes(normalise(orig)), _split_dashes(normalise(new))
+    if len(a) != len(b):
+        return False
+    return all(x == y or _contraction_ok(x, y) for x, y in zip(a, b))
 
 
 def is_candidate(text: str) -> bool:
