@@ -16,3 +16,4 @@ htmlcov/
 *.dubtitles.repair.csv
 *.dubtitles.mux.log
 *.muxtmp.mkv
+glossaries/*.lastrun.json
