@@ -575,6 +575,16 @@ def process(video):
             initial_prompt=INITIAL_PROMPT)                       # music-masked dialogue (the 18-20min
         # Buster Call scene) before whisper saw it -> big gaps. VAD off + loose thresholds keep it;
         # B1 + the LLM repair clean the resulting silence/music hallucinations (tuning deferred).
+        # condition_on_previous_text=False is now also FORCED BY VRAM, not only by the
+        # collapse below. Measured 2026-08-20 on this box (1060, 6GB, large-v3, beam 7):
+        # True OOMs -- "CUDA failed with error out of memory" -- in a fresh process with the
+        # GPU otherwise idle at 121MiB. True grows the decoder prompt with the previous
+        # segment's text, and there is no headroom for it here. Fitting it would mean
+        # beam_size=1 or large-v3-turbo, both of which cost accuracy elsewhere.
+        # Consequence: Whisper decodes each segment cold, so segments that begin mid-sentence
+        # come back lowercase and unpunctuated -- 73% punctuated / 14% lowercase-start at the
+        # segment level on S30E06. Restoring that is the REPAIR pass's job, which sees the
+        # whole transcript in both directions (more context than this flag would have given).
         # condition_on_previous_text=False: with True, hard/music-masked stretches collapse into
         # one mega-segment (e.g. a 139s "segment" over the 18-20min mark of One Pace S19E16) that
         # reflow then renders as a long gap — real dialogue lost. False keeps segments discrete and
