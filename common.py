@@ -105,7 +105,16 @@ TRACK_NAME = "Dubtitles"
 # decodes each segment cold (condition_on_previous_text=False, forced by both segment
 # collapse and VRAM), so 27% of cards arrived with no terminal punctuation and
 # _split_sentences had nothing to split on.
-PIPELINE_VERSION = 3
+# v4 (2026-08-21): two output-changing fixes that must be applied universally, plus the
+# observability work that makes a stale rule visible. (a) reflow._text() joined whisper's
+# word tokens with spaces, so every hyphenated word shipped with a space in it -- "Gas -Gas"
+# for Caesar's Devil Fruit, "Gum -gum" for Luffy's attack. Not merely cosmetic: glossary
+# phrase fixes match on \b<escaped>\b, so the mangled form silently failed to correct, and
+# the two bugs compounded into one wrong line. (b) The One Pace glossary gained 9 hard_fixes
+# (Gum-Gum and its mishearings, Gas-Gas, Tashigi, guinea pigs) chosen from a 22-episode scan.
+# The 183 episodes stamped v3 were produced BEFORE both and carry the artefacts, so v3 is not
+# a state worth keeping -- hence a bump rather than a targeted stamp deletion.
+PIPELINE_VERSION = 4
 # GRANDFATHER_VERSION: fixed constant, never changes. The version assumed for a stamp
 # written before versioning existed (no "version" key). At introduction it equals
 # PIPELINE_VERSION, so the rollout regenerates nothing.
