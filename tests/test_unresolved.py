@@ -89,3 +89,16 @@ def test_pending_is_what_review_shows(tmp_path):
     unresolved.record(stem, "punctuation", "llm_empty", original_text="b")
     unresolved.resolve(stem, 0, accept=True)
     assert [e["original_text"] for e in unresolved.pending(stem)] == ["b"]
+
+
+def test_repair_llm_empty_is_a_declared_reason(tmp_path):
+    """A repair call that times out returns "" -- it fails accept_repair, but the
+    `if new and ...` guard is falsy so nothing was incremented and nothing recorded. That
+    is the silent-fallback class this module exists to remove, and it survived inside the
+    fix for it until an end-to-end run against a dead endpoint exposed it."""
+    assert "llm_empty" in unresolved.REASONS["repair"]
+    stem = str(tmp_path / "ep")
+    unresolved.record(stem, "repair", "llm_empty", original_text="garbled line",
+                      reference="the fansub line", avg_logprob=-1.4)
+    e = unresolved.items(stem)[0]
+    assert e["reason"] == "llm_empty" and e["reference"] == "the fansub line"

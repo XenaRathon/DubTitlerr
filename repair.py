@@ -390,6 +390,7 @@ def process(conf_path):
         return "clean"          # nothing to repair (e.g. S15E01)
     ivals = dialogue_intervals(video)
     audit, fixed, skipped_no_ref, rejected = [], 0, 0, 0
+    llm_empty = 0
     rejected_secondary = 0                           # C5: second-pass output refused by the gate
     repaired_lines = []                              # A10: per-line detail for the summary
     for i, c in targets:
@@ -421,6 +422,15 @@ def process(conf_path):
         # (source_start/source_end anchor the EVIDENCE window above; they are not what is
         # on screen.) Timing stays immutable: a repair that does not fit is rejected.
         dur = c["end"] - c["start"]
+        if not new:
+            # llm() returns "" on any transport failure or timeout. The guard below is
+            # `if new and ...`, so an empty result incremented NOTHING and recorded nothing:
+            # a dead endpoint was indistinguishable from a card that needed no repair. With
+            # the backend down this is every targeted card in the episode.
+            llm_empty += 1
+            unresolved.record(stem, "repair", "llm_empty", original_text=c["text"],
+                              reference=ref[:120], avg_logprob=c.get("avg_logprob"))
+            continue
         if not accept_repair(c["text"], new, ref, dur):
             if new and new.lower() != c["text"].lower():
                 rejected += 1          # surfaced in the summary so the guard stays visible
@@ -467,6 +477,7 @@ def process(conf_path):
         "targets": len(targets),
         "repaired": fixed,
         "skipped_no_ref": skipped_no_ref,
+        "llm_empty": llm_empty,
         "rejected_guard": rejected,      # model proposed an edit, accept_repair() refused it
         "rejected_secondary": rejected_secondary,   # C5: second pass refused, first pass kept
         "mean_latency_ms": round(sum(lat_values) / len(lat_values)) if lat_values else 0,
