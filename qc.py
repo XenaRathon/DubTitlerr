@@ -12,7 +12,8 @@ import json
 import os
 import tempfile
 
-SCHEMA_VERSION = 3   # v3: the restore_* counters added (punctuation restoration). Zero
+SCHEMA_VERSION = 4   # v4: rule_*_evaluated / rule_*_activated liveness counters. v3: the
+                     # restore_* counters added (punctuation restoration). Zero
                      # in a v2 sidecar means "not counted", not "no run was restored".
                      # v2: over_chars counter added; cards_before,
                      # ordinary_under_min_dur_before, flagged and low_conf went from

@@ -629,7 +629,7 @@ def process(video):
         return _cascade_infeasible(stem, fail, e)
     kept, fixes, dropped = [], 0, 0
     for c in cards:
-        if hallucination.drop_reason(c):          # blocklist / repetition / music -> drop
+        if hallucination.drop_reason(c, rec=rec):          # blocklist / repetition / music -> drop
             dropped += 1; continue
         lines, n = [], 0
         for ln in c["text"].split("\n"):          # correct per line so the wrap is preserved
@@ -637,7 +637,7 @@ def process(video):
         fixes += n
         kc = dict(c); kc["text"] = "\n".join(lines)
         kc["pre_correction_text"] = c["text"]   # C7 tells a broken layout from an inherited one
-        kc["flag"] = hallucination.flag_reason(c)  # weaker single signal -> kept but marked
+        kc["flag"] = hallucination.flag_reason(c, rec=rec)  # weaker single signal -> kept but marked
         kc["word_probs"] = _card_word_probs(c, words)  # V2 A6: per-word confidence for repair
         kept.append(kc)
     collapsed = hallucination.collapse_runs(kept)

@@ -94,23 +94,55 @@ def is_repetition(text: str) -> bool:
     return False
 
 
-def drop_reason(card: dict) -> str | None:
+def _tick(rec, rule: str, activated: bool) -> None:
+    """Record that ``rule`` was EVALUATED, and separately whether it FIRED.
+
+    `evaluated > 0` with `activated == 0` across a season is the dead-rule signal this
+    codebase did not have: `music` sat inert through 353,879 cards and every episode still
+    reported success, because zero activation is not an error. `rec` is optional so tools/
+    and tests can call these bare.
+
+    Short-circuiting is deliberate and meaningful: a rule that returns early leaves the
+    later rules UN-evaluated, and the counters should say so rather than implying they ran
+    and declined."""
+    if rec is None:
+        return
+    rec.count(f"rule_{rule}_evaluated")
+    # ALWAYS create the activated counter, incrementing by 0 when it did not fire. A missing
+    # key is indistinguishable from "never reached", which is the exact ambiguity this
+    # function exists to remove -- an absent counter would rebuild the invisibility one
+    # level down.
+    rec.count(f"rule_{rule}_activated", 1 if activated else 0)
+
+
+def drop_reason(card: dict, rec=None) -> str | None:
     """'blocklist' | 'repetition' | 'music' | None — near-certain garbage only."""
     text = card.get("text", "")
-    if BLOCKLIST.search(text):
+    hit = bool(BLOCKLIST.search(text))
+    _tick(rec, "blocklist", hit)
+    if hit:
         return "blocklist"
-    if is_repetition(text):
+    hit = is_repetition(text)
+    _tick(rec, "repetition", hit)
+    if hit:
         return "repetition"
-    if card.get("no_speech_prob", 0.0) > NSP_DROP and card.get("avg_logprob", 0.0) < LP_DROP:
+    hit = (card.get("no_speech_prob", 0.0) > NSP_DROP
+           and card.get("avg_logprob", 0.0) < LP_DROP)
+    _tick(rec, "music", hit)
+    if hit:
         return "music"
     return None
 
 
-def flag_reason(card: dict) -> str | None:
+def flag_reason(card: dict, rec=None) -> str | None:
     """A weaker single-signal suspicion for a KEPT card ('low_conf' | 'maybe_silence' | None)."""
-    if card.get("avg_logprob", 0.0) < LP_FLAG:
+    hit = card.get("avg_logprob", 0.0) < LP_FLAG
+    _tick(rec, "low_conf", hit)
+    if hit:
         return "low_conf"
-    if card.get("no_speech_prob", 0.0) > NSP_FLAG:
+    hit = card.get("no_speech_prob", 0.0) > NSP_FLAG
+    _tick(rec, "maybe_silence", hit)
+    if hit:
         return "maybe_silence"
     return None
 
