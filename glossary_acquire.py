@@ -823,8 +823,15 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     # the pipeline actually reached, including the post-escalate outcome, which is the LLM
     # cost this cache exists to stop repaying. Never fatal: a cache that cannot be written
     # is a slow next run, not a failed this one.
-    if apply:
-        acquire_cache.save(gloss_path, acquire_cache.remember(cache, proposals, counts))
+    #
+    # DELIBERATELY NOT gated on `apply`. The cache is a memo of computed verdicts, not a
+    # glossary mutation -- the dry-run safety convention does not apply to it, and gating it
+    # was a real bug: gen_loop.sh only passes --apply when ACQUIRE_APPLY is set, which it is
+    # not, so acquire runs dry every sweep. The cache would therefore never have been written
+    # at all, and the 25-minute run that finally completed on 2026-08-21 banked nothing.
+    # A dry run computes the same verdicts; `apply` only controls whether apply_proposals
+    # writes them into the glossary.
+    acquire_cache.save(gloss_path, acquire_cache.remember(cache, proposals, counts))
     # I4: attach real transcript evidence to every flagged proposal so the review queue
     # (and --review's CLI) has something to show a human, instead of an empty context: [].
     flag_terms = sorted({p["variant"] for p in proposals if p["verdict"] == "flag"})
