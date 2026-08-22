@@ -44,7 +44,9 @@ while :; do
         echo "#### ACQUIRE $show $(date)"
         ACQ_FLAGS=""
         [ -n "${ACQUIRE_APPLY:-}" ] && ACQ_FLAGS="--apply"
-        timeout 600 python3 /app/glossary_acquire.py "$GLOSS_DIR/$show.json" "$ANIME/$show" \
+        # 600s was also an incremental-era number; a first full acquisition pass over 463
+        # episodes exceeded it and was killed mid-harvest on 2026-08-21.
+        timeout "${ACQUIRE_TIMEOUT:-1800}" python3 /app/glossary_acquire.py "$GLOSS_DIR/$show.json" "$ANIME/$show" \
             $ACQ_FLAGS </dev/null 2>&1 || echo "  acquire skipped (continuing)"
     fi
     GLOSS="$GLOSS_DIR/$show.json"; [ -f "$GLOSS" ] || GLOSS=""
@@ -52,7 +54,17 @@ while :; do
     # cached, and timeout-bounded + failure-swallowed so a slow/down wiki never stalls the sweep.
     if [ -n "$GLOSS" ]; then
         echo "#### VERIFY $show $(date)"
-        timeout 300 python3 /app/glossary_verify.py "$GLOSS" </dev/null 2>&1 || echo "  verify skipped (continuing)"
+        # 300s was sized for INCREMENTAL verification -- pending_terms() skips anything
+        # already in `verified`, so a steady-state run adjudicates a handful of terms. A
+        # full re-adjudication (after `verified` is cleared, as on 2026-08-21) is 121 terms
+        # for One Pace and hit the wall at exactly 300s. `timeout` returns 124; anything
+        # else is a real failure, and collapsing the two into one "skipped" line is how a
+        # stage that never once completed still looked like a normal sweep.
+        timeout "${VERIFY_TIMEOUT:-1200}" python3 /app/glossary_verify.py "$GLOSS" </dev/null 2>&1
+        rc=$?
+        [ $rc -eq 0 ]   || { [ $rc -eq 124 ] \
+            && echo "  verify TIMED OUT after ${VERIFY_TIMEOUT:-1200}s (continuing; terms stay unverified)" \
+            || echo "  verify failed rc=$rc (continuing)"; }
     fi
     echo "#### GENERATE $show $(date)"
     # crash-resume: re-run until clean exit or no progress (poison files get a .fail marker)
