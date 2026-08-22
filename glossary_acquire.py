@@ -22,6 +22,7 @@ import re
 
 import jellyfish
 
+import acquire_cache
 import glossary
 import glossary_verify
 import mine_glossary
@@ -794,8 +795,22 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     # harvested token against the wiki exactly once and hand the same result to propose()
     # and unmatched(), instead of each independently re-running it (was ~1.5x the work).
     resolved = _resolve_tokens(counts, titles)
+    anchors = anchor_terms(gloss)
+    # Per-token decision cache. `settled` alone was 107 terms against 8,199 harvested, so
+    # ~99% of the work -- including 371 LLM calls in escalate, 71% of this stage's runtime --
+    # was re-derived every sweep, and the stage exceeded its timeout three sweeps running
+    # without ever completing. A cached verdict folds into the same skip `settled` uses, so
+    # nothing downstream needs to know the cache exists.
+    #
+    # ACQUIRE_NO_CACHE=1 forces a full run without editing the file, for the case where an
+    # operator wants to re-derive everything after changing a threshold.
+    cache = {} if os.environ.get("ACQUIRE_NO_CACHE") else acquire_cache.load(gloss_path)
+    cached = acquire_cache.skippable(
+        cache, counts, lambda t: settled_target(t, resolved.get(t, ("", 0))[0], anchors),
+        norm_titles, normalize_title) if cache else set()
+    settled = settled | cached
     proposals = propose(counts, mid, titles, settled, resolved=resolved,
-                        candidates=cands, anchors=anchor_terms(gloss))
+                        candidates=cands, anchors=anchors)
     close = [p for p in proposals if p.get("reason") == "share-too-close"]
     if close:
         toks = sorted({p["variant"] for p in close} | {p["canonical"] for p in close})
@@ -804,6 +819,12 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     # logic and after escalate(), which can otherwise promote a confident context
     # adjudication for a brand-new transcript term straight into the glossary.
     proposals = source_gate(proposals)
+    # Remember what this run decided, AFTER source_gate -- what gets stored is the verdict
+    # the pipeline actually reached, including the post-escalate outcome, which is the LLM
+    # cost this cache exists to stop repaying. Never fatal: a cache that cannot be written
+    # is a slow next run, not a failed this one.
+    if apply:
+        acquire_cache.save(gloss_path, acquire_cache.remember(cache, proposals, counts))
     # I4: attach real transcript evidence to every flagged proposal so the review queue
     # (and --review's CLI) has something to show a human, instead of an empty context: [].
     flag_terms = sorted({p["variant"] for p in proposals if p["verdict"] == "flag"})
