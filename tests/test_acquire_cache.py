@@ -123,3 +123,18 @@ def test_a_malformed_entry_costs_that_token_not_the_run():
 
 def test_save_never_raises_on_an_unwritable_path():
     assert ac.save("/nonexistent/dir/Show.json", {"a": {"verdict": "junk"}}) is False
+
+
+def test_the_cache_is_written_on_a_DRY_run(tmp_path, monkeypatch):
+    """gen_loop.sh only passes --apply when ACQUIRE_APPLY is set, and it is not -- so acquire
+    runs dry every sweep. Gating the cache write on `apply` meant the 25-minute run that
+    finally completed on 2026-08-21 banked nothing. The cache is a memo of computed verdicts,
+    not a glossary mutation."""
+    import inspect
+
+    import glossary_acquire as ga
+    src = inspect.getsource(ga.acquire)
+    i_save = src.index("acquire_cache.save")
+    # the save must not sit under an `if apply:` guard
+    preceding = src[:i_save].rstrip().splitlines()[-1]
+    assert "if apply" not in preceding, f"cache write is gated by: {preceding!r}"
