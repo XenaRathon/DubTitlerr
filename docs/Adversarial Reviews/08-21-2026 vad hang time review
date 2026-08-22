@@ -1,0 +1,425 @@
+**Considering speech timing**
+
+I'm thinking about the speech duration and how it could overlap with timing if the end is extended. It might still be too short, even if the minimum duration is accepted. If the Voice Activity Detection (VAD) misses parts of the speech, we may need to cover less than before. I'll need to consider the actual word timings, as the card display could be shifted. Trimming could help improve this situation.**Resolving timing contradictions**
+
+I’m grappling with the idea that DUR is owned by cascade, yet when trimming results under MIN_DUR due to collisions, cascade stops acknowledging it. This creates a significant contradiction. At step 5, even if there's no cap, it implies extending the end, requiring MIN_DUR. It raises the question of whether I need to run trim before initiating cascade, as trimmed cards might create significant gaps with predecessors. I really need to think through how these interactions overlap!**Analyzing VAD intervals**
+
+I’m considering that the VAD interval might begin before the card's start time. The source window could be broader than the display, and trimming to the first speech might shift the start earlier than where it currently is. There's a possibility that the source window could encompass previous speech, creating an overlap. Step 4 doesn’t require a gap with predecessors and only caps against successors, which seems to suggest conflicts. I need to clarify the timing mechanisms involved!**Exploring card collisions**
+
+I'm noticing that there's only mention of extension collisions without considering start collisions with the previous card. If the trimmed start moves earlier, it could overlap the previous card. Ideally, I should have a range between the previous end and the next start. However, I'm unclear about trimming concerning speech.
+
+Also, with the global VAD run, if the source start and end reflect the word timings pre-reflow and the source window only encompasses word starts, I need to ensure that the intervals correspond properly. If there’s no speech detected, it's a no-op, which could affect visibility.**Evaluating rejected approaches**
+
+I’m examining a rejected approach involving the VAD drop gate with a threshold of 0.35, which marked a 19.8% deletion rate. But it raises questions: is this threshold tied to VAD coverage? That percentage could signal a significant issue if applied broadly. I need to clarify whether the rejection was due to unrepresentative testing or the combination of no text/confidence. The specifics of the VAD's performance also matter, especially regarding its specificity and the implications of a low base rate on precision.**Assessing evaluation metrics**
+
+I’m considering that saying something is "barely better than counting characters" doesn’t necessarily mean it’s useless; it might indicate a high positive predictive value (PPV). I need precise measurements here, focusing on the PR-AUC and precision-recall at a fixed number of false positives per episode, rather than relying solely on ROC AUC. It’s crucial to evaluate how thresholds perform on held-out broad labels to get a clearer picture of effectiveness.**Clarifying interval clipping**
+
+I’m thinking about whether I need to clip each interval to fit within the source window. If I only take the interval endpoints, I could adjust the current card’s start and end for the source. The spec mentions taking intervals that overlap the window, but it doesn’t specifically say to clip them. This seems like a crucial interaction, especially if a VAD interval spans the card boundary, which could bring in adjacent speech.**Generating predictions**
+
+I’m thinking I need to generate VAD intervals and leave a tempfile as a list, which will then get passed into reflow through calls. It's important to set up explicit parameters and not rely on wav paths outside of that tempfile. 
+
+Next, I need to check the alignment between the source window and audio track, which could involve extracting audio, possibly using ffmpeg with `-vn` and `-ac 1`. I have to ensure there's no offset in predictions.
+
+Finally, I'll consider the placement after the tail clamp, reviewing how the existing order works with `time_cards`, ensuring monotonicity and tail clamping are correct.**Analyzing card behavior**
+
+I'm considering how the `merged_backward` and `stolen` counts could relate to card text generation. It seems that merging might involve dealing with cards shorter than the minimum duration by either merging backwards or stealing time. If a card's time is "stolen," it could be extended to meet the minimum duration. The gate threshold shows that if the needed duration is large, it won't be categorized as a runt. I'm trying to piece all of this together!**Exploring non-speech sound effects**
+
+I'm thinking about non-speech silence and sound effects, not just sung music. If there's a musical sting, it might not trigger voice activity detection (VAD) since it's instrumental. If there is singing, VAD could register it as speech. But VAD also struggles to distinguish between sung vocals and dialogue. I’m curious about how trimming could help, especially if there are overlong cards. It’s a matter of understanding the relationship between hallucinations and music, and how they interact with VAD.**Assessing dialogue versus hallucination**
+
+I'm considering the difference between genuine dialogue in transcripts and hallucinations. If a gated card represents a hallucination, just trimming it won't fix the underlying semantic issues. Additionally, a VAD interval could mistakenly identify a music vocalist as producing speech, potentially creating misleading hallucinations. I need to clarify my success metrics for evaluating this. The consistency claims regarding gate rates seem flawed due to different datasets and sample sizes, making direct comparisons difficult. I should also look at core rankings for better clarity.**Analyzing card trimming discrepancies**
+
+I'm noticing a contradiction regarding the card trimming: it mentions that front trimming is incorrect for about half of the 69 cards it activates, but then there's the mention of 74 cards over some duration. I’m trying to understand how 30 out of 5,296 compares to 74, and I’m thinking that the reliability of these figures is questionable. Also, out of the 30 cards, it seems only 19 were actually trimmed. So, I need to clarify which cards contain actual speech versus those that don’t.**Analyzing VAD predictions**
+
+I'm exploring several predictions regarding the `generate.py` script. It seems that VAD is stored in `TemporaryDirectory` after the `extract_wav` function completes, and only lists of floats are passed to `reflow/time_cards`. I’ll look into `extract_wav`, `TemporaryDirectory`, and `time_cards`, confirming there’s no VAD subprocess under the temp block.
+
+Next, the wav file and timeline for transcription have to match. I’ll check if VAD is called on the path given by `extract_wav`, watching out for any adjustments made.
+
+Finally, `time_cards` should keep `source_start` and `source_end`, tracking those through all the transforms. I’ll verify that VAD intervals are only incorporated when the gate activates.**Clarifying selection requirements**
+
+In this context, the selection process needs to clip overlapping intervals to fit the source window and sort them accordingly. It’s important to note that this is a clear requirement rather than a mere prediction for the design. I might phrase it like, "For this design to work, implementation must..." Since it needs to be true, I expect that it could likely fail unless the author incorporates these adjustments.
+
+**Considering VAD selection nuances**
+
+If the Voice Activity Detection (VAD) selection misses the end, it switches to first-last and extends the end, but it might still not capture late words. The VAD interval around speech could split, leading to issues. When there's no VAD interval, things stay the same. There’s a tail clamp issue, and the successor cap can result in negative duration. I see that overlapping source windows can cause complications, especially during rapid dialogue or card segmentation. It’s a bit complex!**Exploring VAD interval issues**
+
+Even if the Voice Activity Detection (VAD) starts and ends perfectly with non-overlapping source windows, a single interval that crosses boundaries can be problematic. I need to map intervals to source windows to avoid situations where one card covers another's speech, leading to more significant issues than just front trimming. Adding a 100ms speech pad can increase crossings. Clipping intersections is essential, but if a continuous VAD interval spans the full source window, it may not effectively locate speech, especially if the source window is long. There might be an issue with relying solely on silence boundaries.**Considering design failures**
+
+I’m thinking about how design accepts known failure. There’s evidence suggesting a blocklist class and unlabeled negatives need cross-labeling without holding any back. I notice that precision never exceeds 20 under tested conjunction and labels. We can’t just conclude that “no drop rule ships” universally. This supports not shipping at specific thresholds on specific datasets due to loss. It's essential to state acceptable false positive rates, but if asymmetric loss dictates decisions, broad generalization may not be necessary. The exact blocklist could serve as an inexpensive tool.**Analyzing drop gate rejection**
+
+I believe that §4's broad blanket rejection of VAD as a drop gate is overly inclusive. There may be points, like at a threshold of .35, where examples don't necessarily eliminate VAD as a potential gated drop rule. It seems that the user might be looking for a "no drop" approach. I’m considering how we can balance measurements, looking at the entire held-out set with precision versus recall while factoring in explicit costs.**Considering shipping arguments**
+
+I need to argue the strongest case against shipping something at all. First, I should think about potential environmental impacts like carbon emissions. Then, there could be concerns over product quality during transportation, risks of damage, and cost implications involved. I must also consider market demands — perhaps there's minimal interest in the product. Lastly, I should mention ethical issues related to labor practices in shipping. I'll gather these points to build a solid argument.**Evaluating candidate behavior**
+
+It looks like there are issues with the measured 3.8 seconds, but the main concern is really the candidate count of 19 out of 30. A new pass could worsen exact behavior. At low targets, the expected benefit might not justify the risks involved, like potential data loss if there's a false trim. Instead of making changes that could introduce complexity, it may be more effective to manually review those 19 outputs instead of adding new features. Plus, there could be discrepancies regarding the reference to "§6.2."**Drafting response guidelines**
+
+I need to include proper labels for speculation in my response, such as "Certain from spec" and "Speculation to grep." I'll mark the speculative parts with `[Speculation]`, ensuring clarity. It's important to draft a concise yet detailed response without summarizing. I think I should write my reply before calling any tools, like suggesting follow-ups after sending the final text. This means I'll need to organize my thoughts well. Overall, I'll plan to integrate any tools only after I finalize my commentary.**Constructing user response**
+
+I need to make sure that the user can see my message clearly. I think I'll put the response in a commentary format. Since using a tool for follow-ups might not allow for a final message, I will ensure everything is included in the commentary. It looks like I need to balance using equations without overwhelming the user. I can start drafting my response with specific details, like "Do not implement unchanged. P0..." and continue from there.**Evaluating model estimates**
+
+I’m thinking about the 207 class and how the per-class estimates aren't generalizing well. The threshold tuning and evaluation during the same episodes might be overly optimistic since the precision table isn’t held out. Also, the AUC doesn’t show the presence of a high-precision tail or multivariate combination, suggesting that compression rejection may be incomplete. Finally, the decline cohort in §5.4 doesn’t provide evidence for the current residue because it could be about the class/blocklist and potentially the model or version used.
+
+Do **not** ship the timing mutation as written. The highest-risk flaw is not VAD accuracy by itself; it is that the post-cascade trim is not required to preserve the invariants the cascade just established.
+
+## 1. Highest-consequence interaction failures
+
+### P0 — §3.2 can create a new runt after the runt cascade
+
+There is no oscillation within one pass: step 4 changes both edges, and step 5 only increases `end`. Nothing in those two steps feeds back into the gate.
+
+But the ordering creates a one-way regression:
+
+1. The runt cascade settles a card.
+2. The hang trim moves its start later and/or its end earlier.
+3. The successor cap prevents the readability extension.
+4. The card is now shorter than `MIN_DUR`.
+5. The cascade does not run again.
+
+The sentence “the runt cascade already owns short cards” is false for short cards created by the hang trim. It owned them before step 4, not afterward.
+
+A concrete failure:
+
+```text
+trimmed candidate: [10.00, 10.40]
+needed:             1.20
+next_start:        11.00
+MIN_GAP:             .20
+
+uncapped end:       11.20
+capped end:         10.80
+final duration:       .80
+```
+
+That card is now a newly-created runt. Worse, if `next_start - MIN_GAP <= first_speech_start`, the cap can produce zero or negative duration unless another guard exists.
+
+**Required design change:** make the candidate transactional. Apply it only if the final candidate satisfies:
+
+- positive duration;
+- `duration >= MIN_DUR`, unless an explicitly post-trim repair owns the exception;
+- no overlap with the successor;
+- no overlap with the predecessor;
+- `end <= audio_duration`.
+
+Otherwise, no-op the trim. “Accept a card under `MIN_DUR`” is not safe unless a later pass actually repairs it.
+
+A bounded final invariant pass is another option, but the spec must define which operation wins when repair and hang trim disagree. “Trim last” is not enough.
+
+### P0 — the post-tail-clamp extension can move the last card past EOF
+
+The spec says the trim runs after the existing tail clamp. But step 5 can extend `end` after that clamp.
+
+For the final card:
+
+```text
+speech end:   audio_duration - 0.1
+needed:       1.0
+extended end: audio_duration + 0.9
+```
+
+There is no successor to cap against, so the stated collision rule does not help.
+
+The design needs either:
+
+```text
+end = min(extended_end, audio_duration)
+```
+
+as the final operation, or a post-trim tail clamp. The same finalization must happen after **all** operations that can extend `end`.
+
+### P0 — “overlaps the source window” does not establish interval ownership
+
+This is the most dangerous §3.3 assumption.
+
+Suppose VAD returns one interval spanning continuous voice across two subtitle cards:
+
+```text
+VAD interval:   [20.0, 24.0]
+card A source:  [20.8, 21.4]
+card B source:  [22.0, 23.0]
+```
+
+The interval overlaps both source windows. If step 4 uses the interval’s raw `[20.0, 24.0]` endpoints, both cards can inherit the neighbor’s speech. `source_start/source_end` did not exclude the neighbor; it merely selected an interval that belongs partly to both.
+
+This is particularly plausible with `min_silence_duration_ms=500` and `speech_pad_ms=100`. Fast adjacent dialogue can easily be one VAD interval.
+
+At minimum, selected intervals must be clipped to the card’s source window:
+
+```text
+[max(vad_start, source_start), min(vad_end, source_end)]
+```
+
+Even clipping is not a full ownership solution: if a single continuous interval fills the entire source window, VAD has not located the card’s speech within that window. The safe response may be no-op rather than pretending the interval is precise.
+
+Also, §3.3’s inference that “multiple intervals belong to neighbors” is not demonstrated by “there is no sentence boundary.” A single word can produce multiple VAD intervals because of VAD fragmentation, background noise, a pause, or a false positive. Sentence-boundary absence says nothing about which card owns the audio.
+
+**Needed measurement:** for every one of the 30 gated cards, assign each selected interval to:
+
+- the card’s own word span;
+- the preceding card;
+- the following card;
+- ambiguous/manual review.
+
+Do not infer ownership from card text shape.
+
+### P1 — step 5 can satisfy readability while still losing speech
+
+The `needed` floor guarantees a duration, not coverage of the utterance.
+
+If VAD misses the first 400 ms of a line, step 4 moves `start` later and step 5 extends only `end`. The resulting card is longer, but the beginning of the line is still absent from the caption window.
+
+The same applies to a missed final word: extending `end` adds silence after the detected speech; it does not recover the missed speech.
+
+So this claim is too strong:
+
+> “VAD false negative costs the status quo.”
+
+A complete no-detection false negative costs the status quo. A **partial** false negative can make the card worse by moving its start later or its end earlier.
+
+The safe rule should be “no-op unless the candidate passes boundary-confidence checks,” not merely “no-op if there are zero intervals.”
+
+### P1 — the no-drop decision deliberately leaves the most obvious no-speech failure untouched
+
+This case exists directly in the spec:
+
+1. A card passes the hang gate.
+2. Its text is a hallucinated stock phrase over a sting.
+3. VAD finds no speech in its source window.
+4. Step 3 says no-op.
+5. §5 prohibits adding a drop rule.
+
+The hallucinated card remains on screen for up to 7 seconds. If VAD’s no-speech result is correct, that card is provably wrong, not merely imperfectly timed.
+
+The no-op policy is defensible as a **false-negative safety policy**, but it means this feature does not fix that class of failure. The spec should stop describing the no-op as “never worse”: it is never worse **as a timing mutation**, while knowingly preserving a semantic false caption.
+
+The missing cross-tab is important:
+
+```text
+                 VAD intervals
+                 0       >=1
+hallucination    ?          ?
+dialogue         ?          ?
+```
+
+The current `11 of 30 no speech` number is not enough. We need to know how many of those 11 are hallucinations and how many are real speech missed by VAD.
+
+## 2. §5’s labelled set does not support its broad conclusion
+
+The 207 positives are not “hallucinations” in general. They are one detector-defined subtype:
+
+> blocklisted stock phrases over musical stings
+
+Everything else is treated as negative unless it matches that blocklist. That creates two problems.
+
+### The negative set is exhaustive, but not clean
+
+“Every other card” avoids sampling bias, but it does not make the cards true negatives. It probably contains:
+
+- hallucinations with different wording;
+- repeated fragments not in the blocklist;
+- plausible-looking hallucinations;
+- lyrics or names misrecognized as dialogue;
+- cards whose audio is ambiguous.
+
+If a feature catches those unknown hallucinations, the table counts them as false positives. That can make the measured precision look worse than precision against true labels. Conversely, if a different hallucination class has a different score distribution, the table says nothing about its recall.
+
+Therefore:
+
+> “This threshold catches blocklist positives with ~20% precision on this mixed set”
+
+is supported.
+
+> “No drop rule ships”
+
+is not supported as a general conclusion from that table alone.
+
+It might still be the right product decision because deletion has asymmetric cost, but that decision needs to be stated as a loss-policy decision, not as a universal empirical result.
+
+### The precision table may also be in-sample
+
+The spec does not say that thresholds were chosen before evaluating the 136 episodes, nor that episodes or shows were held out. If the same set was used to select the thresholds and report precision, the table is not an out-of-sample estimate.
+
+For this rare event, random card splits are also weak: cards from one episode share audio conditions and model behavior. The holdout should be by episode, preferably by show.
+
+### AUC does not prove that no useful tail exists
+
+The rejection of `compression_ratio` is too strong:
+
+> “0.635, barely better than counting characters”
+
+AUC measures ranking over the entire score range. A feature with poor overall AUC can still have a useful extreme tail. At a 0.31% prevalence, the relevant question is not “does it beat character count?” It is:
+
+```text
+At the allowed false-deletion rate, what precision and recall does it achieve
+on held-out episodes?
+```
+
+Likewise, individual-feature AUC does not rule out a useful combination of `compression_ratio`, `avg_logprob`, `no_speech_prob`, and text shape.
+
+**Measurement that settles this:** a held-out, manually adjudicated set containing both blocklist and non-blocklist hallucinations, with:
+
+- precision-recall curves;
+- precision at a fixed maximum false-positive rate;
+- false positives per episode;
+- recall by hallucination subtype;
+- results split by show/episode, not random cards.
+
+I would also manually label every gated card, not just a sample. There are only 30 in the reported cohort.
+
+## 3. Falsifiable code predictions
+
+These are implementation conditions, not claims that the unseen code already satisfies them. Each can be checked with `grep` plus a small trace/assertion.
+
+### Prediction 1 — VAD must consume the exact transcription timeline
+
+In `generate.py`, the VAD call must:
+
+- happen after `extract_wav()`;
+- consume that exact extracted WAV;
+- occur before the temporary directory exits;
+- return episode-relative seconds;
+- pass a plain interval list into the reflow path.
+
+Check:
+
+```bash
+grep -nE 'TemporaryDirectory|extract_wav|audio_duration|vad|time_cards' generate.py
+```
+
+If VAD extracts a second audio file, runs after the temp block, or uses a different `-ss`/offset/channel timeline, the source-window comparison is invalid.
+
+### Prediction 2 — `source_start/source_end` must survive every card transformation
+
+In `reflow.py`, every card that reaches the hang trim must still have source coordinates from the original word timings.
+
+After merge, steal, or backward-merge operations, the source bounds must be recomputed as the union:
+
+```text
+source_start = min(child source_start values)
+source_end   = max(child source_end values)
+```
+
+They must not be silently replaced with display `start/end`.
+
+Check:
+
+```bash
+grep -nE 'source_start|source_end|merged_backward|stolen|start|end' reflow.py
+```
+
+If a merge copies the first child’s source range, or if `source_*` is assigned from settled display timings, §3.3’s central premise fails.
+
+### Prediction 3 — interval selection must clip, sort, and validate
+
+The VAD-consuming code must not do only:
+
+```python
+selected = [v for v in vad if overlaps(v, card)]
+trim_start = selected[0][0]
+trim_end = selected[-1][1]
+```
+
+It must sort intervals, intersect each one with the source window, and reject invalid intersections. A grep-level check is:
+
+```bash
+grep -nE 'vad|source_start|source_end|max\\(|min\\(|sort|overlap' reflow.py
+```
+
+If there is no `max(vad_start, source_start)` / `min(vad_end, source_end)` equivalent, the implementation can borrow neighboring speech.
+
+### Prediction 4 — final timing validation must occur after hang trim
+
+The final operation in `time_cards()` must validate all of these after step 5:
+
+```text
+start < end
+end <= audio_duration
+end <= next_start - MIN_GAP
+start >= previous_end + MIN_GAP
+duration >= MIN_DUR
+```
+
+Check:
+
+```bash
+grep -nE 'tail|audio_duration|MIN_GAP|MIN_DUR|cascade|hang_trim|vad' reflow.py
+```
+
+If the only `audio_duration` clamp appears before the VAD loop, the EOF bug is present. If the only short-card logic appears before the VAD loop, the new-runt bug is present.
+
+### Prediction 5 — the hang trim must run after the last text mutation
+
+`needed` uses `len(text)`, so `generate.py` must either:
+
+- perform glossary correction and LLM repair before `time_cards()`, or
+- rerun/recompute the hang gate after those mutations.
+
+Check call order:
+
+```bash
+grep -nE 'reflow|time_cards|glossary|repair|hallucination|text' generate.py
+```
+
+If `hallucination.py` or a repair stage changes displayed text after `time_cards()`, the gate was computed for the wrong caption.
+
+### Prediction 6 — no VAD result may enter `drop_reason`
+
+The no-interval branch must preserve the card and must not call the existing drop machinery. Conversely, `hallucination.py` or `generate.py` must show the deliberate `NSP_DROP = 0.95` action from §5.1:
+
+```bash
+grep -nE 'NSP_DROP|no_speech_prob|avg_logprob|drop_reason|vad' hallucination.py generate.py
+```
+
+If VAD absence causes a drop, the implementation contradicts §3.2 step 3. If `NSP_DROP` remains at `0.90`, §5.1 was not implemented. If cards are dropped after the “last” timing pass, the timing invariants need to be rerun.
+
+### Prediction 7 — the implementation must produce per-card evidence
+
+For each changed card, there should be enough QC data to recover:
+
+```text
+old start/end
+new start/end
+source start/end
+selected VAD intervals
+needed
+successor start
+whether the candidate was rejected for collision or duration
+```
+
+If the sidecar records only `hang_trimmed`, a bad trim cannot be adjudicated without rerunning audio analysis. That is inadequate for a 19-card change set with no end-to-end validation.
+
+## 4. Strongest case against shipping at 0.57%
+
+Assuming “§6.2” means the fire-rate item in §6:
+
+**The strongest argument is that the evidence measures opportunity count, not net benefit.**
+
+The pass runs across every episode, but only 30 of 5,296 cards enter the gate and only about 19 change. None of those 19 changes has yet been checked against a real episode. The mechanism can:
+
+- clip the beginning or end of real dialogue;
+- borrow a neighboring card’s speech;
+- create a runt after the cascade;
+- move the last card beyond EOF;
+- shorten a hallucinated caption without removing it;
+- produce a visually plausible but semantically wrong timing.
+
+The claimed benefit is therefore currently:
+
+```text
+19 unverified mutations
+```
+
+not:
+
+```text
+19 corrected cards
+```
+
+The 3.8-second VAD cost is not the main objection. The main objection is adding a production timing mutation whose failure cost is lost dialogue, while its target is rare and partly overlaps a problem the design explicitly refuses to remove.
+
+The strongest conservative decision is:
+
+1. Add a **read-only/debug VAD pass** that emits candidates and intervals.
+2. Run it on a held-out episode/show set.
+3. Manually adjudicate all gated cards.
+4. Ship mutation only if every changed card preserves the final invariants and the measured false-trim rate is acceptable.
+
+Until that exists, I would reject the change for lack of end-to-end validation, not because 0.57% is automatically too small.
