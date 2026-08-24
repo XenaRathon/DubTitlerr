@@ -15,6 +15,8 @@ from __future__ import annotations
 import re
 from collections import Counter
 
+import reflow
+
 # DROP thresholds (the music/silence combo — both must hold). Deliberately strict so B1 does
 # NOT cull music-masked REAL dialogue (e.g. a "Buster Call" line under loud action is nsp~0.86);
 # VAD already blocks pure-music/silence, so only near-certain garbage is dropped here.
@@ -114,6 +116,40 @@ def _tick(rec, rule: str, activated: bool) -> None:
     # function exists to remove -- an absent counter would rebuild the invisibility one
     # level down.
     rec.count(f"rule_{rule}_activated", 1 if activated else 0)
+
+
+# A card of at most this many words whose SOURCE window is longer than reflow.MAX_DUR
+# carries a word timestamp whisper got wrong. Scoped deliberately: a long span across
+# several words is ordinary dialogue.
+BAD_WINDOW_MAX_WORDS = 2
+
+
+def bad_source_window(card: dict, rec=None) -> bool:
+    """True when this card's ``source_*`` window is a whisper timestamp already proven
+    implausible -- a one- or two-word card whose source span exceeds reflow.MAX_DUR.
+
+    Measured in the VAD hang-trim investigation: single function words pinned at the 7s
+    ceiling ('disobeys', 'it'), and 20 of 401 gated cards carrying MORE word
+    probabilities than they have words, because a 7-second window swallows the
+    neighbours'. The window is not merely a display problem: two stages select evidence
+    with it, and both were trusting a value known to be wrong.
+
+    Returns False when either ``source_*`` key is ABSENT rather than defaulting to the
+    display window. The VAD design records two of its own measurements invalidated by
+    exactly that -- a ``.get(..., card["start"])`` fallback guaranteeing the answer it
+    was asked to test. No window means no evidence that the window is bad.
+
+    This is observability, not recovery: the counters are the point. A caller that finds
+    a bad window should use NOTHING, not a substitute."""
+    ss, se = card.get("source_start"), card.get("source_end")
+    hit = (
+        ss is not None
+        and se is not None
+        and len(card.get("text", "").split()) <= BAD_WINDOW_MAX_WORDS
+        and (se - ss) > reflow.MAX_DUR
+    )
+    _tick(rec, "source_window", hit)
+    return hit
 
 
 def drop_reason(card: dict, rec=None) -> str | None:
