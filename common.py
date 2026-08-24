@@ -173,6 +173,45 @@ def ts_srt(t):
     return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
 
 
+WORDS_SUFFIX = ".dubtitles.words.json"
+WORDS_SCHEMA_VERSION = 1
+
+
+def read_words(stem, rec=None):
+    """The persisted word list, or None when it cannot be used -- never an exception.
+
+    Every unusable state is COUNTED rather than swallowed, because the failure mode this
+    guards is silent: a sidecar that is never found looks exactly like an episode that
+    simply needs transcribing, and would re-transcribe forever while reporting healthy.
+    Read through out_for() to match write_words -- following one convention on write and
+    the other on read is precisely that silent miss."""
+    path = out_for(stem + WORDS_SUFFIX)
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        if rec:
+            rec.count("words_missing")
+        return None
+    try:
+        version = int(doc.get("transcribe_version"))
+    except (TypeError, ValueError):
+        version = None
+    if version is None or version != TRANSCRIBE_VERSION:
+        # A crash between transcription and stamping leaves a sidecar from the previous
+        # transcribe tier. Serving it would replay an older decoder's transcript.
+        if rec:
+            rec.count("words_version_mismatch")
+        return None
+    if not doc.get("words"):
+        if rec:
+            rec.count("words_missing")
+        return None
+    if rec:
+        rec.count("words_reused")
+    return doc
+
+
 def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
     """Write the .dubtitles.done idempotency stamp recording the muxed file's size+mtime
     and the tier versions that produced it (stamp_valid rejects a stamp behind either

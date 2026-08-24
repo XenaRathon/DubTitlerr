@@ -90,6 +90,45 @@ def load(path: str) -> dict:
     return load_dict({})
 
 
+def prompt_for(gloss: dict, show: str = "") -> str:
+    """The exact ``initial_prompt`` this glossary and show hand whisper.
+
+    ONE derivation, used both by generate.load_glossary() when transcribing and by
+    stale_tier() when deciding whether a stored transcript is still current. Two copies
+    would drift, and the drift would read as "the prompt changed" on every episode of
+    every show -- a permanent, silent GPU queue.
+
+    ``show`` (generate's SHOW_NAME) wins over the glossary's own ``show`` key, matching
+    load_glossary()'s precedence."""
+    show = show or gloss.get("show", "")
+    return gloss.get("initial_prompt") or (
+        f"This is {show}, a Japanese anime (English dub). Transcribe the spoken English accurately, with natural punctuation."
+        if show
+        else "Japanese anime, English dub. Transcribe the spoken English accurately, with natural punctuation."
+    )
+
+
+def stale_tier(stored_prompt: str | None, gloss: dict, show: str = "") -> str | None:
+    """``"transcribe"`` if this glossary would now hand whisper a DIFFERENT prompt than
+    the one that produced the stored transcript, else ``None``.
+
+    The glossary reaches the decoder by exactly one route -- ``initial_prompt`` -- so
+    that string is the whole test. Everything else a glossary drives (``names``,
+    ``hard_fixes`` -> token/phrase fixes) is consumed by correct() at card level, long
+    after the words exist, and is therefore CPU work on the text tier.
+
+    This is why the comparison is on the prompt STRING and not on a hash of the glossary
+    file: mine_glossary.py appends hard_fixes on every sweep of a watched show, so a file
+    hash would mark every episode of that show transcription-stale for work that changed
+    nothing about audio -> words -- re-queueing a whole series for the GPU.
+
+    No stored prompt means no evidence the transcript matches this glossary, so it counts
+    as stale: unknown provenance is not evidence of freshness."""
+    if not stored_prompt:
+        return "transcribe"
+    return "transcribe" if stored_prompt != prompt_for(gloss, show) else None
+
+
 def _one_indel(a: str, b: str) -> bool:
     """True if a and b differ by exactly one inserted/deleted char (e.g. along/arlong,
     frank/franky). Such edits are too risky to auto-apply — left for the LLM."""

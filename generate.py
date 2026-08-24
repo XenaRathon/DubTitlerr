@@ -58,6 +58,8 @@ from common import (
     STAMP_SUFFIX,
     TRANSCRIBE_VERSION,
     VIDEO_EXTS,
+    WORDS_SCHEMA_VERSION,
+    WORDS_SUFFIX,
     load_extras,
     out_for,
     read_stamp,
@@ -110,11 +112,10 @@ def load_glossary():
     show = os.environ.get("SHOW_NAME", "")
     GLOSS = glossary.load(os.environ.get("GLOSSARY_FILE", ""))
     show = show or GLOSS.get("show", "")
-    INITIAL_PROMPT = GLOSS["initial_prompt"] or (
-        (f"This is {show}, a Japanese anime (English dub). Transcribe the spoken English accurately, with natural punctuation.")
-        if show
-        else "Japanese anime, English dub. Transcribe the spoken English accurately, with natural punctuation."
-    )
+    # ONE derivation, in glossary.prompt_for: the text tier compares a stored prompt
+    # against it to decide whether a glossary edit needs the GPU. A second copy here
+    # would drift, and the drift would read as "the prompt changed" on every episode.
+    INITIAL_PROMPT = glossary.prompt_for(GLOSS, show)
     print(
         f"glossary: show={show!r} names={len(GLOSS['names'])} "
         f"fixes={len(GLOSS['token_fixes']) + len(GLOSS['phrase_fixes'])} "
@@ -271,12 +272,10 @@ def _card_word_probs(card, words):
 
 QC_SUFFIX = ".dubtitles.qc.json"
 STALE_SUFFIX = ".stale"  # parked, not deleted -- see park_stale_sidecars
-WORDS_SUFFIX = ".dubtitles.words.json"
 # WORDS_SUFFIX is parked with the rest: a words.json left behind by a superseded
 # pipeline would otherwise be READ by the cached text-tier path, replaying an older
 # run's transcript into a current-version episode.
 SIDECAR_SUFFIXES = (".eng.dubtitles.ass", ".eng.dubtitles.srt", ".dubtitles.conf.json", QC_SUFFIX, WORDS_SUFFIX)
-WORDS_SCHEMA_VERSION = 1
 
 
 def write_words(stem, words, segments, audio_duration, initial_prompt=""):
@@ -311,41 +310,6 @@ def write_words(stem, words, segments, audio_duration, initial_prompt=""):
         "words": words,
     }
     _atomic_write(out_for(stem + WORDS_SUFFIX), lambda f: json.dump(doc, f))
-
-
-def read_words(stem, rec=None):
-    """The persisted word list, or None when it cannot be used -- never an exception.
-
-    Every unusable state is COUNTED rather than swallowed, because the failure mode this
-    guards is silent: a sidecar that is never found looks exactly like an episode that
-    simply needs transcribing, and would re-transcribe forever while reporting healthy.
-    Read through out_for() to match write_words -- following one convention on write and
-    the other on read is precisely that silent miss."""
-    path = out_for(stem + WORDS_SUFFIX)
-    try:
-        with open(path) as f:
-            doc = json.load(f)
-    except (OSError, ValueError):
-        if rec:
-            rec.count("words_missing")
-        return None
-    try:
-        version = int(doc.get("transcribe_version"))
-    except (TypeError, ValueError):
-        version = None
-    if version is None or version != TRANSCRIBE_VERSION:
-        # A crash between transcription and stamping leaves a sidecar from the previous
-        # transcribe tier. Serving it would replay an older decoder's transcript.
-        if rec:
-            rec.count("words_version_mismatch")
-        return None
-    if not doc.get("words"):
-        if rec:
-            rec.count("words_missing")
-        return None
-    if rec:
-        rec.count("words_reused")
-    return doc
 
 
 def park_stale_sidecars(stem):

@@ -1401,7 +1401,7 @@ def test_a_replay_from_the_sidecar_reproduces_the_original_cards(tmp_path):
 
     stem = str(tmp_path / "ep")
     generate.write_words(stem, words, segments, audio_duration, initial_prompt="Buster Call")
-    doc = generate.read_words(stem)
+    doc = common.read_words(stem)
     replayed = reflow.reflow(doc["words"], doc["segments"], audio_duration=doc["audio_duration"])
 
     assert [(c["start"], c["end"], c["text"]) for c in replayed] == [(c["start"], c["end"], c["text"]) for c in original]
@@ -1446,7 +1446,7 @@ def test_a_sidecar_from_an_older_transcribe_version_is_treated_as_absent(tmp_pat
         json.dump(doc, f)
 
     rec = qc.Recorder()
-    assert generate.read_words(stem, rec=rec) is None
+    assert common.read_words(stem, rec=rec) is None
     assert rec.counters["words_version_mismatch"] == 1
 
 
@@ -1459,7 +1459,7 @@ def test_a_truncated_sidecar_is_counted_not_raised(tmp_path):
         f.write('{"schema_version": 1, "words": [')
 
     rec = qc.Recorder()
-    assert generate.read_words(stem, rec=rec) is None
+    assert common.read_words(stem, rec=rec) is None
     assert rec.counters["words_missing"] == 1
 
 
@@ -1467,7 +1467,7 @@ def test_an_absent_sidecar_is_counted_not_raised(tmp_path):
     import qc
 
     rec = qc.Recorder()
-    assert generate.read_words(str(tmp_path / "nope"), rec=rec) is None
+    assert common.read_words(str(tmp_path / "nope"), rec=rec) is None
     assert rec.counters["words_missing"] == 1
 
 
@@ -1478,7 +1478,7 @@ def test_a_readable_sidecar_counts_as_reused(tmp_path):
     stem = str(tmp_path / "ep")
     generate.write_words(stem, words, segments, 7.0, initial_prompt="x")
     rec = qc.Recorder()
-    assert generate.read_words(stem, rec=rec) is not None
+    assert common.read_words(stem, rec=rec) is not None
     assert rec.counters["words_reused"] == 1
 
 
@@ -1498,7 +1498,7 @@ def test_words_json_is_written_through_out_for_and_found_again(tmp_path, monkeyp
     generate.write_words(stem, words, segments, 7.0, initial_prompt="x")
 
     assert not os.path.exists(stem + generate.WORDS_SUFFIX), "write did not redirect"
-    assert generate.read_words(stem) is not None, "read did not follow the redirect"
+    assert common.read_words(stem) is not None, "read did not follow the redirect"
 
 
 def test_the_words_suffix_is_parked_with_the_other_sidecars():

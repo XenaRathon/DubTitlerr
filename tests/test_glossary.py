@@ -166,3 +166,61 @@ def test_hard_fix_never_fires_inside_a_longer_token():
     out, n = glossary.correct("Shirahoshi met Hoshi", g)
     assert out == "Shirahoshi met Hoshi"
     assert "ShiraHoshi" not in out
+
+
+# --- prompt derivation and tier classification (spec v5, S-3) -----------------
+
+
+def test_prompt_for_prefers_the_glossarys_own_prompt():
+    g = glossary.load_dict({"show": "One Pace", "initial_prompt": "Luffy, Zoro, Nami"})
+    assert glossary.prompt_for(g) == "Luffy, Zoro, Nami"
+
+
+def test_prompt_for_falls_back_to_a_show_neutral_prompt():
+    g = glossary.load_dict({"show": "One Pace"})
+    p = glossary.prompt_for(g)
+    assert "One Pace" in p and "English dub" in p
+
+
+def test_prompt_for_falls_back_again_with_no_show_at_all():
+    p = glossary.prompt_for(glossary.load_dict({}))
+    assert "Japanese anime" in p and "One Pace" not in p
+
+
+def test_an_explicit_show_overrides_the_glossarys_own():
+    """generate.load_glossary() prefers SHOW_NAME over the glossary's `show` key; the
+    derivation used for comparison has to agree with it or every episode of a show with
+    both set would read as prompt-changed forever."""
+    g = glossary.load_dict({"show": "Wrong Show"})
+    assert "Right Show" in glossary.prompt_for(g, show="Right Show")
+
+
+def test_a_hard_fixes_only_edit_does_not_change_the_prompt():
+    """mine_glossary.py appends hard_fixes on EVERY sweep of a watched show. Those never
+    reach initial_prompt, so they must not mark anything transcription-stale -- hashing
+    the glossary FILE would flag every episode of the show and re-queue it for the GPU."""
+    before = glossary.load_dict({"show": "One Pace", "hard_fixes": {"hockey": "Haki"}})
+    after = glossary.load_dict({"show": "One Pace", "hard_fixes": {"hockey": "Haki", "buster": "Buster"}})
+    assert glossary.prompt_for(before) == glossary.prompt_for(after)
+    assert glossary.stale_tier(glossary.prompt_for(before), after) is None
+
+
+def test_a_prompt_changing_edit_is_transcription_stale():
+    before = glossary.load_dict({"show": "One Pace", "initial_prompt": "Luffy, Zoro"})
+    after = glossary.load_dict({"show": "One Pace", "initial_prompt": "Luffy, Zoro, Nami"})
+    assert glossary.stale_tier(glossary.prompt_for(before), after) == "transcribe"
+
+
+def test_an_unknown_stored_prompt_is_transcription_stale():
+    """No stored prompt means no evidence the transcript matches the current glossary.
+    Unknown provenance is not evidence of freshness."""
+    g = glossary.load_dict({"show": "One Pace"})
+    assert glossary.stale_tier(None, g) == "transcribe"
+    assert glossary.stale_tier("", g) == "transcribe"
+
+
+def test_a_names_only_edit_does_not_change_the_prompt_either():
+    """`names` drives correct(), not the decoder -- only initial_prompt reaches whisper."""
+    before = glossary.load_dict({"show": "One Pace", "names": ["Luffy"]})
+    after = glossary.load_dict({"show": "One Pace", "names": ["Luffy", "Zoro"]})
+    assert glossary.stale_tier(glossary.prompt_for(before), after) is None
