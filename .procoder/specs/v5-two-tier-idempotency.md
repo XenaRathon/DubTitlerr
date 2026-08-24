@@ -86,11 +86,15 @@ library-wide scan existed; this measurement supersedes it.
   **with a reader before it ships**: folded into `lastrun.json`, which
   `generate.py` already writes per show. Drains in `watch_queue.py` order.
 - [S-5] Orphan reclaim (`tools/reclaim_orphans.py`): find stamps whose stem has no
-  video, match candidates by size, then **confirm by content hash** before
-  re-keying — head and tail reads, not the whole file. `--dry-run` (default)
-  prints the verdict for all 46 size-matched candidates, including whether the 15
-  that fail the mtime check are byte-identical. `--apply` re-keys and refuses to
-  run while either loop in `container_run.sh` is live. Never deletes.
+  video and grade each by the evidence that actually exists. A stamp records
+  `size` and `mtime` and **no digest**, so there is nothing for a content hash to
+  compare against — hashing a candidate proves only that it is readable. Verdicts
+  are therefore: `reclaimable` (size and mtime agree — the pairing
+  `_stamp_matches_file` itself would accept), `probable` (size only; consistent
+  with a copy that lost its timestamp and equally with coincidence, so re-keyed
+  only under `--include-probable`), `unrecoverable`, and `ambiguous` when more
+  than one claimant exists in either direction. `--dry-run` is the default.
+  `--apply` refuses while a pipeline process is running. Never deletes.
 - [S-6] Guard the implausible `source_*` window (VAD design §6): on a card of
   ≤2 words where `source_end - source_start > MAX_DUR`, `repair.overlap_ref()`
   returns **no reference** and `generate._card_word_probs()` returns **empty** —
@@ -268,11 +272,12 @@ written sidecar, not assumed.
 - [ ] [S-4] Per-tier stale counts appear in `lastrun.json` and are non-zero after
       a `TEXT_VERSION` bump on a pinned show; a subsequent sweep of that show
       shows `words_reused > 0`. Live observation, not only a fixture.
-- [ ] [S-5] `--dry-run` reports, for all 46 size-matched orphans, whether each is
-      content-identical, and changes nothing. `--apply` re-keys only
-      content-confirmed matches, refuses while the pipeline is live, and leaves
-      ambiguous matches (both directions) untouched. The re-key set is enumerated
-      explicitly and excludes `.fail`, `.stale` and `.muxtmp.mkv`.
+- [ ] [S-5] `--dry-run` grades every orphan and changes nothing. A size+mtime match
+      is `reclaimable`; a size-only match is `probable` and is NOT re-keyed without
+      `--include-probable`; more than one claimant in either direction is
+      `ambiguous` and moves nothing. `--apply` refuses while a pipeline process is
+      running, never deletes, and re-keys an explicitly enumerated suffix set that
+      excludes `.dubtitles.fail`, `.stale` and `.muxtmp.mkv`.
 - [ ] [S-6] On a 2-word card with `source_end - source_start > MAX_DUR`,
       `overlap_ref()` returns no reference and `_card_word_probs()` returns empty;
       both counters move. Unchanged on a 3-word card with the same window, and no
