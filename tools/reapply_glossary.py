@@ -56,23 +56,26 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import glossary  # noqa: E402
-from common import MEDIA_GID, MEDIA_UID, STAMP_SUFFIX, ts_srt  # noqa: E402
+from common import MEDIA_GID, MEDIA_UID, STAMP_SUFFIX, read_words, ts_srt  # noqa: E402
 
 CONF_SUFFIX = ".dubtitles.conf.json"
 SRT_SUFFIX = ".eng.dubtitles.srt"
 GLOSSARY_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
 
 
-def glossary_for(stem: str) -> dict:
-    """Load the glossary for the show that owns `stem`.
+def show_for(stem: str) -> str:
+    """The show directory name owning `stem` (``<show>/<Season NN>/<episode>``).
 
-    Mirrors repair.py's lookup: the show directory is the grandparent of the episode
-    file (``<show>/<Season NN>/<episode>``).
-    """
-    season = os.path.dirname(stem)
-    show = os.path.basename(os.path.dirname(season))
-    path = os.path.join(GLOSSARY_DIR, show + ".json")
-    return glossary.load(path)
+    This is the SAME string gen_loop.sh passes as SHOW_NAME when it runs generate, which
+    is what makes prompt comparison meaningful: derive a different name here and
+    prompt_for() would build a prompt whisper never saw, marking every episode
+    transcription-stale forever."""
+    return os.path.basename(os.path.dirname(os.path.dirname(stem)))
+
+
+def glossary_for(stem: str) -> dict:
+    """Load the glossary for the show that owns `stem`. Mirrors repair.py's lookup."""
+    return glossary.load(os.path.join(GLOSSARY_DIR, show_for(stem) + ".json"))
 
 
 def find_confs(target: str) -> list[str]:
@@ -122,7 +125,19 @@ def process(conf_path: str, apply: bool, samples: list) -> dict:
                 samples.append((os.path.basename(stem)[:38], old, new))
             c["text"] = new
 
-    res = {"stem": stem, "cards": len(cards), "changed": changed_cards, "edits": total_edits}
+    # Which tier this episode's glossary state puts it in. The correction above is
+    # applied either way -- it is CPU-cheap and it improves the output -- but an episode
+    # whose stored initial_prompt no longer matches is ALSO reported as needing the
+    # decoder, so a partial text fix cannot quietly hide an out-of-date transcript.
+    doc = read_words(stem)
+    tier = glossary.stale_tier((doc or {}).get("initial_prompt"), gloss, show_for(stem))
+    res = {
+        "stem": stem,
+        "cards": len(cards),
+        "changed": changed_cards,
+        "edits": total_edits,
+        "tier": tier,
+    }
     if not changed_cards or not apply:
         return res
 
@@ -185,6 +200,8 @@ def main() -> int:
     print(f"  cards changed         : {sum(r['changed'] for r in ok)}")
     print(f"  total edits           : {sum(r['edits'] for r in ok)}")
     print(f"  cards scanned         : {sum(r['cards'] for r in ok)}")
+    stale = [r for r in ok if r.get("tier") == "transcribe"]
+    print(f"  transcription-stale   : {len(stale)}   (initial_prompt changed -> needs the GPU)")
     if args.apply:
         print(f"  stamps dropped        : {sum(1 for r in ok if r.get('stamp_dropped'))}   (merge_pass will re-mux these)")
     for r in errs:
