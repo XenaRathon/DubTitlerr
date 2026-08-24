@@ -103,12 +103,22 @@ library-wide scan existed; this measurement supersedes it.
   window the guard just declared invalid. Both call sites currently apply a
   `.get()` default (`generate.py:266`, `repair.py:410`); the guard must fire
   before the default. Treat [S-6] as observability, not recovery.
-- [S-7] A bake-off measuring `large-v3-turbo` against `large-v3` on the labelled
-  set (207 certain hallucinations, 57,572 real cards), reporting catch rate at
-  matched precision, wall-clock minutes per episode, and peak VRAM. Models load
-  sequentially with a full offload between them. VRAM and throughput are
-  re-derived on VM102 — the card moved hosts on 2026-08-23 and the old figures
-  do not transfer. Sequenced **after** [S-1]–[S-6]; nothing in them depends on it.
+- [S-7] A bake-off measuring `large-v3-turbo` against `large-v3`. **Not** scored
+  against the review's "labelled set" (207 certain hallucinations, 57,572 real
+  cards): that set is not an artifact on disk — its positives are blocklist hits
+  found in existing `conf.json` sidecars, which were produced _by the model
+  currently in production_, so scoring a challenger against them scores it
+  against its rival's output. Instead both models transcribe the SAME episodes
+  through `generate`'s own audio path. The decisive number is the
+  `no_speech_prob` distribution, because §5.3 measured turbo collapsing it to
+  ~1e-10 and thereby making two of the gate's five rules structurally inert;
+  wall-clock and peak VRAM are recorded alongside. Models load sequentially with
+  a full offload between them, with free VRAM recorded before load and after
+  unload so the offload is observed rather than assumed. An OOM is that
+  entrant's result, never retried at a smaller beam — a smaller beam is a
+  different model than the one being judged. Run on VM102: the card moved hosts
+  2026-08-23 and the old figures do not transfer. Sequenced **after**
+  [S-1]–[S-6]; nothing in them depends on it.
 - [S-8] Tick the stale checkboxes in
   `docs/superpowers/plans/2026-08-22-1050ti-to-r520-swap.md`, which still reads
   "planned, not started" for a move completed and verified 2026-08-23.
@@ -282,9 +292,12 @@ written sidecar, not assumed.
       `overlap_ref()` returns no reference and `_card_word_probs()` returns empty;
       both counters move. Unchanged on a 3-word card with the same window, and no
       activation recorded on a card with no `source_*` keys.
-- [ ] [S-7] The bake-off emits catch rate at matched precision, minutes per
-      episode, and peak VRAM per model, measured on VM102; an OOM is recorded as
-      that model's result.
+- [ ] [S-7] Both models transcribe the same episodes on VM102 and the report gives,
+      per model, the `no_speech_prob` distribution (including the fraction above a
+      floor a collapsed decoder can never clear), the `avg_logprob` distribution,
+      blocklist hits by the gate's own rule, minutes per episode, and peak VRAM.
+      Free VRAM after unload is recorded, so the sequential offload is observed.
+      An OOM is recorded as that entrant's result.
 - [ ] [S-8] The swap plan states the move as completed and verified 2026-08-23,
       checkboxes ticked.
 - [ ] [S-9] A sweep whose stale population is text-only completes without loading
