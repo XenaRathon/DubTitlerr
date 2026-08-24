@@ -63,6 +63,7 @@ from common import (
     load_extras,
     out_for,
     read_stamp,
+    stale_tiers,
     stale_version_stamp,
     stamp_valid,
     ts_srt,
@@ -881,6 +882,53 @@ def process(video):
     return "ok"
 
 
+def build_lastrun(show, elapsed_s, episodes_total, transcribed, totals, census):
+    """The per-show run summary written to glossaries/<show>.lastrun.json.
+
+    One builder rather than a dict literal plus a parallel list of field names: the
+    per-tier staleness counts only earn their keep if something actually reports them,
+    and two declarations of "what lastrun contains" would drift until one of them lied.
+    Tests assert against this function, so the file and the assertion cannot disagree."""
+    return {
+        "show": show,
+        "elapsed_s": elapsed_s,
+        "episodes_total": episodes_total,
+        "episodes_transcribed": transcribed,
+        "cards_written": totals["cards_written"],
+        "dropped_hallucination": totals["dropped_hallucination"],
+        "collapsed_runs": totals["collapsed_runs"],
+        "flagged": totals["flagged"],
+        # GPU-hours vs CPU-minutes: reported separately or the split means nothing.
+        "transcribe_stale": census["transcribe_stale"],
+        "text_stale": census["text_stale"],
+        "model": MODEL,
+        "model_version": _model_version(),
+        "glossary_version": _glossary_version(),
+    }
+
+
+def _staleness_census(files):
+    """How many of ``files`` are behind in each tier, counted independently.
+
+    Separate counts because the two costs are not comparable: transcribe-stale is
+    GPU-hours, text-stale is CPU-minutes. A single combined "stale" number would hide
+    exactly the distinction the tier split exists to expose. A transcribe-stale episode
+    is text-stale too (new words invalidate everything derived from them), so text_stale
+    is always >= transcribe_stale.
+
+    Never raises: a corrupt or hand-edited stamp counts as fully stale, because this runs
+    over a whole library and one bad sidecar must not abort the sweep."""
+    census = {"transcribe_stale": 0, "text_stale": 0}
+    for v in files:
+        stem = os.path.splitext(v)[0]
+        stale = stale_tiers(read_stamp(stem + STAMP_SUFFIX), v)
+        if "transcribe" in stale:
+            census["transcribe_stale"] += 1
+        if "text" in stale:
+            census["text_stale"] += 1
+    return census
+
+
 def main():
     args = sys.argv[1:]
     files = []
@@ -917,7 +965,15 @@ def main():
         return True
 
     todo = [v for v in files if needs_work(v)]
-    log(f"model={MODEL} compute={COMPUTE} require_eng={os.environ.get('REQUIRE_ENG', '1')} files={len(files)} todo={len(todo)}")
+    # Counted over EVERY file, not just todo: the question this answers is "how far
+    # behind is the part of the library I am not watching", and that is invisible if it
+    # only counts what is already queued.
+    census = _staleness_census(files)
+    log(
+        f"model={MODEL} compute={COMPUTE} require_eng={os.environ.get('REQUIRE_ENG', '1')} "
+        f"files={len(files)} todo={len(todo)} "
+        f"transcribe_stale={census['transcribe_stale']} text_stale={census['text_stale']}"
+    )
     if not todo:
         log("nothing to transcribe (all done) — skipping model load")
         return
@@ -965,19 +1021,7 @@ def main():
     # V2 C1: per-show run summary (glossaries/<show>.lastrun.json) -- one file per --root
     # invocation, since SHOW_NAME/GLOSSARY_FILE are per-run env (see load_glossary()).
     show = os.environ.get("SHOW_NAME", "") or GLOSS.get("show", "") or "unknown_show"
-    lastrun = {
-        "show": show,
-        "elapsed_s": round(time.monotonic() - t0, 1),
-        "episodes_total": len(todo),
-        "episodes_transcribed": transcribed,
-        "cards_written": totals["cards_written"],
-        "dropped_hallucination": totals["dropped_hallucination"],
-        "collapsed_runs": totals["collapsed_runs"],
-        "flagged": totals["flagged"],
-        "model": MODEL,
-        "model_version": _model_version(),
-        "glossary_version": _glossary_version(),
-    }
+    lastrun = build_lastrun(show, round(time.monotonic() - t0, 1), len(todo), transcribed, totals, census)
     try:
         os.makedirs(GLOSS_DIR, exist_ok=True)
         with open(os.path.join(GLOSS_DIR, show + ".lastrun.json"), "w") as f:

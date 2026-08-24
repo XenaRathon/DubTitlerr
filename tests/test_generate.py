@@ -1516,3 +1516,65 @@ def test_write_words_propagates_so_the_caller_must_handle_it(tmp_path):
     words, segments = _clamped_fixture()
     with pytest.raises(OSError):  # a missing parent directory: FileNotFoundError
         generate.write_words(str(tmp_path / "no" / "such" / "dir" / "ep"), words, segments, 7.0)
+
+
+# --- per-tier staleness census (spec v5-two-tier-idempotency, S-4) -------------
+
+
+def _stamped(tmp_path, name, **stamp_extra):
+    v = tmp_path / name
+    v.write_bytes(b"x" * (100 + len(name)))
+    st = v.stat()
+    if stamp_extra:
+        doc = {"size": st.st_size, "mtime": st.st_mtime, "muxed": True}
+        doc.update(stamp_extra)
+        with open(str(v.with_suffix("")) + common.STAMP_SUFFIX, "w") as f:
+            json.dump(doc, f)
+    return str(v)
+
+
+def test_the_census_counts_each_tier_separately(tmp_path):
+    """The number that did not exist while 236 episodes sat at v2 for weeks with nothing
+    reporting it. transcribe-stale and text-stale are different costs -- GPU-hours versus
+    CPU-minutes -- so one combined 'stale' count would hide the whole point of the split."""
+    v2 = _stamped(tmp_path, "old.mkv", version=2)
+    v4 = _stamped(tmp_path, "mid.mkv", version=4)
+    cur = _stamped(
+        tmp_path,
+        "new.mkv",
+        transcribe_version=common.TRANSCRIBE_VERSION,
+        text_version=common.TEXT_VERSION,
+    )
+
+    census = generate._staleness_census([v2, v4, cur])
+
+    assert census["transcribe_stale"] == 1, "only the v2 needs the decoder"
+    assert census["text_stale"] == 2, "the v2 and the v4 both need text work"
+
+
+def test_an_unstamped_file_counts_as_stale_in_both_tiers(tmp_path):
+    """A never-processed episode is not 'current'; it is the maximum amount of work."""
+    fresh = _stamped(tmp_path, "never.mkv")
+    census = generate._staleness_census([fresh])
+    assert census == {"transcribe_stale": 1, "text_stale": 1}
+
+
+def test_the_census_survives_a_corrupt_stamp(tmp_path):
+    """One hand-edited sidecar must not abort a sweep over hundreds of episodes."""
+    bad = _stamped(tmp_path, "bad.mkv", version="not a number")
+    census = generate._staleness_census([bad])
+    assert census == {"transcribe_stale": 1, "text_stale": 1}
+
+
+def test_the_census_is_reported_per_tier_in_lastrun():
+    """A number with no reader sits unread -- `flag` was decorative for four days, and
+    236 episodes sat two versions behind for weeks. These ride lastrun.json, which
+    generate already writes per show and something already reads, rather than becoming a
+    new artifact nobody opens. Asserted against the builder the writer itself uses, so
+    the file and this test cannot disagree."""
+    totals = {"cards_written": 3, "dropped_hallucination": 0, "collapsed_runs": 0, "flagged": 1}
+    census = {"transcribe_stale": 7, "text_stale": 12}
+    doc = generate.build_lastrun("One Pace", 1.5, 20, 4, totals, census)
+    assert doc["transcribe_stale"] == 7
+    assert doc["text_stale"] == 12
+    assert doc["episodes_transcribed"] == 4
