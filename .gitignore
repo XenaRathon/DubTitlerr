@@ -17,3 +17,8 @@ htmlcov/
 *.dubtitles.mux.log
 *.muxtmp.mkv
 glossaries/*.lastrun.json
+
+# procoder: generated artifacts. config.toml and ask/ are the tracked standard;
+# the code index and session state are rebuilt on demand and never belong in a commit.
+.procoder/index/
+.procoder/state/

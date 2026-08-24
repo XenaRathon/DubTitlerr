@@ -1,15 +1,22 @@
 """Unit tests for glossary.py (C1). Pure functions; wordlist from the bundled fallback."""
+
 import glossary
 
 
 def gloss(names=None, phrases=None, hard_fixes=None, prompt="", show="Test"):
-    return glossary.load_dict({
-        "show": show, "names": names or [], "phrases": phrases or [],
-        "hard_fixes": hard_fixes or {}, "initial_prompt": prompt,
-    })
+    return glossary.load_dict(
+        {
+            "show": show,
+            "names": names or [],
+            "phrases": phrases or [],
+            "hard_fixes": hard_fixes or {},
+            "initial_prompt": prompt,
+        }
+    )
 
 
 # --- T1: scaffold / contracts ------------------------------------------------
+
 
 def test_module_constants_present():
     assert glossary.MIN_FUZZY_LEN == 4
@@ -18,6 +25,7 @@ def test_module_constants_present():
 
 
 # --- T2: is_english gate + load_dict -----------------------------------------
+
 
 def test_is_english_recognizes_common_words_case_insensitively():
     assert glossary.is_english("work")
@@ -33,11 +41,15 @@ def test_is_english_rejects_proper_nouns_and_mishears():
 
 
 def test_load_dict_splits_phrase_and_token_fixes():
-    g = glossary.load_dict({
-        "show": "One Pace", "names": ["Luffy"], "phrases": ["Enies Lobby"],
-        "hard_fixes": {"Spondum": "Spandam", "Eddie's Lobby": "Enies Lobby"},
-        "initial_prompt": "p",
-    })
+    g = glossary.load_dict(
+        {
+            "show": "One Pace",
+            "names": ["Luffy"],
+            "phrases": ["Enies Lobby"],
+            "hard_fixes": {"Spondum": "Spandam", "Eddie's Lobby": "Enies Lobby"},
+            "initial_prompt": "p",
+        }
+    )
     assert g["token_fixes"] == {"spondum": "Spandam"}
     assert g["phrase_fixes"] == {"eddie's lobby": "Enies Lobby"}
     assert g["names"] == ["Luffy"]
@@ -51,6 +63,7 @@ def test_load_blank_path_is_noop_glossary():
 
 
 # --- T3: correct() tiered ----------------------------------------------------
+
 
 def test_correct_does_not_touch_real_english_words():
     g = gloss(names=["Arlong", "Franky", "Spandam", "Alabasta"])
@@ -86,6 +99,7 @@ def test_correct_phrase_runs_before_token_and_noop_without_glossary():
 
 # --- T4: name_suspect --------------------------------------------------------
 
+
 def test_name_suspect_flags_unknown_capitalized_proper_noun():
     assert glossary.name_suspect("I saw Krieg coming", gloss(names=["Luffy"]))
 
@@ -118,6 +132,7 @@ def test_name_suspect_ignores_sentence_initial_english_word():
 
 
 # --- T5: tier-4 phonetic match (V2 A4) ---------------------------------------
+
 
 def test_phonetic_matches_spondum():
     # "spondum"/"Spandam" both Metaphone to "SPNTM", but the letters diverge enough

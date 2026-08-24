@@ -23,31 +23,27 @@ SHAPE
 
 Read-only by default. `--fix` writes, and only then.
 """
+
 from __future__ import annotations
 
 import argparse
 import glob
 import json
 import os
-import sys
 
 
 def _runtime_terms(g: dict) -> set:
     """Everything `glossary.load_dict()` actually puts in front of the pipeline."""
-    return (set(g.get("names") or [])
-            | set(g.get("phrases") or [])
-            | set((g.get("hard_fixes") or {}).values()))
+    return set(g.get("names") or []) | set(g.get("phrases") or []) | set((g.get("hard_fixes") or {}).values())
 
 
 def diagnose(g: dict) -> dict:
     """Findings for one glossary. Pure -- takes a dict, returns a report, touches nothing."""
     live = _runtime_terms(g)
     flagged = set(g.get("flagged") or {})
-    stranded = sorted(t for t in (g.get("verified") or [])
-                      if t not in live and t not in flagged)
+    stranded = sorted(t for t in (g.get("verified") or []) if t not in live and t not in flagged)
     misshaped = sorted(t for t in (g.get("names") or []) if " " in t.strip())
-    return {"stranded": stranded, "misshaped": misshaped,
-            "ok": not stranded and not misshaped}
+    return {"stranded": stranded, "misshaped": misshaped, "ok": not stranded and not misshaped}
 
 
 def repair(g: dict) -> tuple[dict, dict]:
@@ -61,16 +57,16 @@ def repair(g: dict) -> tuple[dict, dict]:
     names = out.setdefault("names", [])
     phrases = out.setdefault("phrases", [])
 
-    for t in rep["stranded"]:                       # restore to the list its SHAPE implies
+    for t in rep["stranded"]:  # restore to the list its SHAPE implies
         dest = phrases if " " in t.strip() else names
         if t not in dest:
             dest.append(t)
 
-    for t in rep["misshaped"]:                      # multi-word in names -> phrases
+    for t in rep["misshaped"]:  # multi-word in names -> phrases
         if t not in phrases:
-            phrases.append(t)                       # ADD first...
+            phrases.append(t)  # ADD first...
         while t in names:
-            names.remove(t)                         # ...only then REMOVE
+            names.remove(t)  # ...only then REMOVE
 
     out["names"] = sorted(set(names))
     out["phrases"] = sorted(set(phrases))
@@ -118,8 +114,7 @@ def main(argv=None):
     ap.add_argument("--fix", action="store_true", help="write repairs (default: report only)")
     a = ap.parse_args(argv)
 
-    paths = ([a.target] if a.target.endswith(".json")
-             else sorted(glob.glob(os.path.join(a.target, "*.json"))))
+    paths = [a.target] if a.target.endswith(".json") else sorted(glob.glob(os.path.join(a.target, "*.json")))
     paths = [p for p in paths if not p.endswith((".lastrun.json", ".bak"))]
     bad = 0
     for p in paths:
@@ -135,19 +130,22 @@ def main(argv=None):
         bad += 1
         print(f"  BAD  {os.path.basename(p)}")
         if rep["stranded"]:
-            print(f"         {len(rep['stranded'])} verified but unreachable: "
-                  f"{', '.join(rep['stranded'][:8])}"
-                  + (" …" if len(rep["stranded"]) > 8 else ""))
+            print(
+                f"         {len(rep['stranded'])} verified but unreachable: "
+                f"{', '.join(rep['stranded'][:8])}" + (" …" if len(rep["stranded"]) > 8 else "")
+            )
         if rep["misshaped"]:
-            print(f"         {len(rep['misshaped'])} multi-word in names: "
-                  f"{', '.join(rep['misshaped'][:5])}"
-                  + (" …" if len(rep["misshaped"]) > 5 else ""))
+            print(
+                f"         {len(rep['misshaped'])} multi-word in names: "
+                f"{', '.join(rep['misshaped'][:5])}" + (" …" if len(rep["misshaped"]) > 5 else "")
+            )
         if a.fix:
             fixed, _ = repair(g)
-            json.dump(fixed, open(p, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(fixed, f, indent=2, ensure_ascii=False)
+                f.write("\n")  # POSIX line: prettier flags a glossary without it
             print("         repaired.")
-    print(f"\n{bad} of {len(paths)} glossaries need repair."
-          if bad else f"\nAll {len(paths)} glossaries hold the invariant.")
+    print(f"\n{bad} of {len(paths)} glossaries need repair." if bad else f"\nAll {len(paths)} glossaries hold the invariant.")
     return 1 if (bad and not a.fix) else 0
 
 

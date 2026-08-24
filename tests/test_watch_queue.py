@@ -1,5 +1,6 @@
 """The watch gate. Its failure mode is not crashing -- it is returning a confident,
 correctly-sorted, incomplete list, which is what each source does on its own."""
+
 import pytest
 
 import watch_queue as wq
@@ -19,16 +20,17 @@ def test_a_plex_only_show_survives(monkeypatch):
     never sees it -- a WatchState-only queue would silently omit it."""
     monkeypatch.setattr(wq, "from_watchstate", lambda s: {"One Pace": 200})
     monkeypatch.setattr(wq, "from_plex", lambda s: {"SPY x FAMILY": 100})
-    monkeypatch.setattr(wq, "library_dirs",
-                        lambda r: ["One Pace", "SPY x FAMILY (2022) {tvdb-405920}"])
+    monkeypatch.setattr(wq, "library_dirs", lambda r: ["One Pace", "SPY x FAMILY (2022) {tvdb-405920}"])
     order, _ = wq.build(0, "/x")
     assert order == ["One Pace", "SPY x FAMILY (2022) {tvdb-405920}"]
 
 
 def test_one_source_unreachable_refuses_to_write(monkeypatch):
     """A stale queue is safe. A queue narrowed by an outage is not."""
+
     def boom(s):
         raise wq.Unreachable("watchstate down")
+
     monkeypatch.setattr(wq, "from_watchstate", boom)
     monkeypatch.setattr(wq, "from_plex", lambda s: {"One Pace": 100})
     with pytest.raises(wq.Unreachable):
@@ -47,12 +49,14 @@ def test_both_reachable_but_empty_also_refuses(monkeypatch):
 def test_unreachable_out_file_is_left_untouched(monkeypatch, tmp_path, capsys):
     out = tmp_path / "anime_order.txt"
     out.write_text("One Pace\n")
+
     def boom(s):
         raise wq.Unreachable("plex down")
+
     monkeypatch.setattr(wq, "from_plex", boom)
     monkeypatch.setattr(wq, "from_watchstate", lambda s: {"One Pace": 100})
     assert wq.main(["--out", str(out)]) == 2
-    assert out.read_text() == "One Pace\n"          # byte-identical
+    assert out.read_text() == "One Pace\n"  # byte-identical
 
 
 def test_title_matches_a_tvdb_suffixed_directory():
@@ -64,6 +68,7 @@ def test_title_matches_a_tvdb_suffixed_directory():
 def test_html_escaped_plex_titles_match():
     """Plex returns `I&#39;m in Love with the Villainess`."""
     import html as _h
+
     dirs = ["I'm in Love with the Villainess (2023) {tvdb-1}"]
     order, misses = wq.match_dirs({_h.unescape("I&#39;m in Love with the Villainess"): 5}, dirs)
     assert order == dirs and misses == []
@@ -111,11 +116,12 @@ def test_a_queued_show_is_never_narrowed(monkeypatch, tmp_path):
 
 def test_case_and_spacing_differences_still_match():
     """All three are real 2026-08-21 cases that exact matching dropped silently."""
-    dirs = ["TRIGUN STAMPEDE (2023) {tvdb-421378}",
-            "I'm in Love With the Villainess (2023) {tvdb-428350}",
-            "MARRIAGETOXIN (2026) {tvdb-468734}"]
-    titles = {"Trigun Stampede": 3, "I'm in Love with the Villainess": 2,
-              "Marriage Toxin": 1}
+    dirs = [
+        "TRIGUN STAMPEDE (2023) {tvdb-421378}",
+        "I'm in Love With the Villainess (2023) {tvdb-428350}",
+        "MARRIAGETOXIN (2026) {tvdb-468734}",
+    ]
+    titles = {"Trigun Stampede": 3, "I'm in Love with the Villainess": 2, "Marriage Toxin": 1}
     order, misses = wq.match_dirs(titles, dirs)
     assert misses == []
     assert order == dirs[:1] + [dirs[1]] + [dirs[2]]
@@ -137,7 +143,9 @@ def test_an_exact_clean_match_beats_an_ambiguous_fold():
 
 
 def test_fold_does_not_collide_distinct_villainess_shows():
-    dirs = ["I'm in Love With the Villainess (2023) {tvdb-428350}",
-            "The Dark History of the Reincarnated Villainess (2025) {tvdb-446238}"]
+    dirs = [
+        "I'm in Love With the Villainess (2023) {tvdb-428350}",
+        "The Dark History of the Reincarnated Villainess (2025) {tvdb-446238}",
+    ]
     order, misses = wq.match_dirs({"I'm in Love with the Villainess": 1}, dirs)
     assert order == [dirs[0]] and misses == []

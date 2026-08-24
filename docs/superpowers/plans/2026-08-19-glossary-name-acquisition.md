@@ -4,7 +4,7 @@
 
 **Goal:** Acquire proper nouns for shows whose releases ship no mineable fansub track, by proposing candidates from the show's own transcripts and letting the show's wiki own every canonical spelling.
 
-**Architecture:** A new top-level module `glossary_acquire.py` harvests capitalised tokens from the show's existing `conf.json`/sidecar output, scores each against the cached Fandom title index, and writes `hard_fixes` only when four gates pass. Similarity is a *recall* device; the expansion guard (R2) and the dominance test (R3) carry all the safety. Every written entry is recorded in an `acquired` provenance map so a run can be reverted and so acquired names can be kept out of Whisper's `initial_prompt`.
+**Architecture:** A new top-level module `glossary_acquire.py` harvests capitalised tokens from the show's existing `conf.json`/sidecar output, scores each against the cached Fandom title index, and writes `hard_fixes` only when four gates pass. Similarity is a _recall_ device; the expansion guard (R2) and the dominance test (R3) carry all the safety. Every written entry is recorded in an `acquired` provenance map so a run can be reverted and so acquired names can be kept out of Whisper's `initial_prompt`.
 
 **Tech Stack:** Python 3.11+, stdlib + `jellyfish` (already a dependency). Reuses `glossary_verify.{resolve_wiki,fetch_titles,adjudicate}` and `mine_glossary.mine_text`. `pytest` + `ruff`. No GPU, no network in tests.
 
@@ -25,14 +25,16 @@
 ### Task 1: Title normalisation and the comparison form
 
 **Files:**
+
 - Create: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Consumes: nothing.
 - Produces: `normalize_title(title: str) -> str`, `reduce_form(s: str) -> str`.
 
-`glossary_verify._clean_title()` already exists but strips `(1999)` years and `{tvdb-…}` from *show* titles. Article titles need different treatment: `Misty (anime)` → `Misty`, `Ash Ketchum/Sun & Moon` → `Ash Ketchum`. Without this the tool would write a `hard_fix` mapping every mention of Misty to the literal string `Misty (anime)`.
+`glossary_verify._clean_title()` already exists but strips `(1999)` years and `{tvdb-…}` from _show_ titles. Article titles need different treatment: `Misty (anime)` → `Misty`, `Ash Ketchum/Sun & Moon` → `Ash Ketchum`. Without this the tool would write a `hard_fix` mapping every mention of Misty to the literal string `Misty (anime)`.
 
 `reduce_form` is the string both sides are compared on: lowercased with spaces, apostrophes and hyphens removed. This is what lets the token `Vanderdecken` match the title `Van der Decken` exactly.
 
@@ -116,10 +118,12 @@ git commit -m "feat(acquire): wiki title normalisation and comparison form"
 ### Task 2: The dominance estimator
 
 **Files:**
+
 - Modify: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Consumes: nothing.
 - Produces: `wilson_lower(k: int, n: int, z: float = 1.96) -> float`.
 
@@ -189,10 +193,12 @@ git commit -m "feat(acquire): Wilson lower bound as the dominance estimator"
 ### Task 3: Harvest token counts from the show's own output
 
 **Files:**
+
 - Modify: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Consumes: `mine_glossary.mine_text(text, counter, midsentence)` — mutates `counter` (dict) and `midsentence` (set) in place.
 - Produces: `harvest(show_dir: str) -> tuple[dict[str, int], set[str], int]` returning `(counts, midsentence, n_files)`.
 
@@ -317,10 +323,12 @@ git commit -m "feat(acquire): harvest token counts from the show's own transcrip
 ### Task 4: R2 — the expansion guard
 
 **Files:**
+
 - Modify: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Consumes: `reduce_form` (Task 1).
 - Produces: `is_expansion(variant: str, canonical: str) -> bool`.
 
@@ -395,24 +403,26 @@ git commit -m "feat(acquire): R2 expansion guard"
 ### Task 5: Scoring a token against the title index
 
 **Files:**
+
 - Modify: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Consumes: `normalize_title`, `reduce_form` (Task 1).
 - Produces: `similarity(a: str, b: str) -> float`, `best_title(token: str, titles: list[str]) -> tuple[str, float]`.
 
 **Read this before setting the threshold.** Measured Jaro-Winkler on every pair the design must match and every near-miss it must refuse:
 
-| pair | JW | required |
-|---|---|---|
-| Syrahose / Shirahoshi | 0.755 | match |
-| Deccan / Decken | 0.844 | match |
-| Vander / Vanderdecken | 0.900 | reject |
-| Smokey / Smoker | 0.933 | reject |
-| Warlords / Warlord | 0.975 | reject |
+| pair                  | JW    | required |
+| --------------------- | ----- | -------- |
+| Syrahose / Shirahoshi | 0.755 | match    |
+| Deccan / Decken       | 0.844 | match    |
+| Vander / Vanderdecken | 0.900 | reject   |
+| Smokey / Smoker       | 0.933 | reject   |
+| Warlords / Warlord    | 0.975 | reject   |
 
-The classes overlap completely — every true pair scores *lower* than every false one. So the threshold is a **recall floor at 0.72**, not a safety gate, and R2/R3 do the rejecting. An earlier draft used 0.88 and would have silently dropped both motivating cases.
+The classes overlap completely — every true pair scores _lower_ than every false one. So the threshold is a **recall floor at 0.72**, not a safety gate, and R2/R3 do the rejecting. An earlier draft used 0.88 and would have silently dropped both motivating cases.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -505,10 +515,12 @@ git commit -m "feat(acquire): title scoring with a measured recall floor"
 ### Task 6: The decision — all four gates
 
 **Files:**
+
 - Modify: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Consumes: `wilson_lower` (Task 2), `is_expansion` (Task 4).
 - Produces: `decide(variant, variant_count, canonical, canonical_count, score, midsentence: bool) -> dict` returning `{"verdict": "apply"|"flag", "reason": str, "bound": float}`.
 
@@ -613,14 +625,16 @@ git commit -m "feat(acquire): the four safety gates"
 ### Task 7: Proposing fixes for a whole show
 
 **Files:**
+
 - Modify: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Consumes: `best_title` (Task 5), `decide` (Task 6).
 - Produces: `propose(counts: dict, midsentence: set, titles: list) -> list[dict]`, each proposal `{"variant","canonical","variant_count","canonical_count","score","verdict","reason","bound"}`.
 
-Clusters are not built up front — they *emerge* as the set of tokens resolving to the same title. The canonical's own count is how often that exact spelling appears in the transcripts, which is the input R3 needs.
+Clusters are not built up front — they _emerge_ as the set of tokens resolving to the same title. The canonical's own count is how often that exact spelling appears in the transcripts, which is the input R3 needs.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -690,10 +704,12 @@ git commit -m "feat(acquire): per-show proposal pass"
 ### Task 8: Applying proposals with provenance
 
 **Files:**
+
 - Modify: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Consumes: `propose` output (Task 7).
 - Produces: `apply_proposals(gloss: dict, proposals: list, run_id: str) -> dict` — pure, deep-copies like `glossary_verify.apply_results` does.
 
@@ -787,10 +803,12 @@ git commit -m "feat(acquire): apply with provenance, excluded from initial_promp
 ### Task 9: Revert
 
 **Files:**
+
 - Modify: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Consumes: the `acquired` map written by Task 8.
 - Produces: `revert(gloss: dict, run_id: str | None = None) -> dict`.
 
@@ -864,14 +882,16 @@ git commit -m "feat(acquire): --revert path via acquired provenance"
 ### Task 10: Orchestration, tier B, and the CLI
 
 **Files:**
+
 - Modify: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Consumes: `glossary_verify.resolve_wiki(title, override) -> str | None`, `glossary_verify.fetch_titles(wiki_api, show_key) -> list[str]`, `glossary_verify.adjudicate(term, cands, show) -> {"canonical","confidence","dub_note"}`, `glossary.load(path) -> dict`, and Tasks 3/7/8.
 - Produces: `acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str | None = None) -> dict`, and `main()`.
 
-**Tier B is not an appeal court.** The LLM fallback runs only for a frequent token that matched *no* title. A token that matched a title and then failed R2 or R3 is flagged — escalating it would make a model the override for the only two rules carrying the design's safety.
+**Tier B is not an appeal court.** The LLM fallback runs only for a frequent token that matched _no_ title. A token that matched a title and then failed R2 or R3 is flagged — escalating it would make a model the override for the only two rules carrying the design's safety.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -984,7 +1004,7 @@ if __name__ == "__main__":
     main()
 ```
 
-Tier B is intentionally *not* wired in this task — `propose()` drops no-title tokens, and `acquire()` reports them only via `proposed` counts. Wiring the `list=search` fallback is Task 11.
+Tier B is intentionally _not_ wired in this task — `propose()` drops no-title tokens, and `acquire()` reports them only via `proposed` counts. Wiring the `list=search` fallback is Task 11.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -1003,14 +1023,16 @@ git commit -m "feat(acquire): orchestration + CLI, dry-run by default"
 ### Task 11: Tier B — the unmatched-cluster queue
 
 **Files:**
+
 - Modify: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Consumes: `glossary_verify.adjudicate` (signature above), `glossary_verify.candidates(term, titles, k) -> list[str]`.
 - Produces: `unmatched(counts: dict, midsentence: set, titles: list) -> list[str]`, and `acquire()` gains a `tier_b` report key.
 
-A frequent token matching no title is the dub-only-name case (`Ash` on a romaji-titled wiki). It goes to the LLM *and* into `flagged` as `no-wiki-match` regardless of outcome, so a human still sees it.
+A frequent token matching no title is the dub-only-name case (`Ash` on a romaji-titled wiki). It goes to the LLM _and_ into `flagged` as `no-wiki-match` regardless of outcome, so a human still sees it.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1088,9 +1110,11 @@ git commit -m "feat(acquire): tier-B queue for tokens matching no wiki title"
 ### Task 12: Pin the substitution semantics this design depends on
 
 **Files:**
+
 - Modify: `tests/test_glossary.py`
 
 **Interfaces:**
+
 - Consumes: `glossary.correct(text, gloss) -> tuple[str, int]`, `glossary.load_dict(cfg) -> dict`.
 - Produces: nothing — a regression guard.
 
@@ -1127,10 +1151,12 @@ git commit -m "test(glossary): pin token-boundary substitution acquire relies on
 ### Task 13: Tier 0 — an expansion match is a KNOWN short form, not a failure
 
 **Files:**
+
 - Modify: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Consumes: `decide` (Task 6), `apply_proposals` (Task 8).
 - Produces: `decide` gains verdict `"known"`; `apply_proposals` writes a `known` list.
 
@@ -1207,10 +1233,12 @@ git commit -m "feat(acquire): tier 0 - expansion matches are known short forms"
 ### Task 14: Sample real context lines
 
 **Files:**
+
 - Modify: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Consumes: `harvest`'s file walk (Task 3).
 - Produces: `context_lines(show_dir: str, tokens: list, limit: int = CONTEXT_LINES) -> dict[str, list[str]]`.
 
@@ -1296,10 +1324,12 @@ git commit -m "feat(acquire): sample real context lines per token"
 ### Task 15: Tier C — contextual adjudication
 
 **Files:**
+
 - Modify: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Consumes: `context_lines` (Task 14), `common.llm_chat` (same kwargs `glossary_verify.adjudicate` uses).
 - Produces: `build_merge_prompt(variant, canonical, ctx_v, ctx_c, show) -> str`, `adjudicate_merge(...) -> dict` returning `{"same_entity": bool, "confidence": "high"|"low"|"none"}`.
 
@@ -1444,10 +1474,12 @@ git commit -m "feat(acquire): tier C - contextual merge adjudication"
 ### Task 16: `--review` — the human tier
 
 **Files:**
+
 - Modify: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Consumes: `context_lines` (Task 14), the `flagged` object form.
 - Produces: `review_items(gloss: dict) -> list[dict]`, `record_decision(gloss, term, accept: bool) -> dict`, and a `--review` branch in `main()`.
 
@@ -1582,11 +1614,13 @@ git commit -m "feat(acquire): --review, and flagged entries that carry their evi
 ### Task 17: Ship it — lint, image, and the pipeline hook
 
 **Files:**
+
 - Modify: `Dockerfile.builder` (the `COPY` list)
 - Modify: `gen_loop.sh:24-31`
 - Modify: `pyproject.toml` if `glossary_acquire.py` is not already in ruff's scope
 
 **Interfaces:**
+
 - Consumes: `glossary_acquire.main()` (Task 10).
 - Produces: nothing downstream.
 
@@ -1643,14 +1677,14 @@ python3 glossary_acquire.py "glossaries/One Pace.json" "/path/to/One Pace/Season
 
 Acceptance — from the spec's verification plan:
 
-| Cluster | Counts | Required |
-|---|---|---|
-| `Kinemon` | 12, canonical unseen | `apply`, reason `canonical-unseen` |
-| `Brooke` | 9, canonical unseen | `apply`, reason `canonical-unseen` |
-| `Smokey` / `Smoker` | 16 / 21 | escalates to tier C; expected `known`/`context-distinct` (it is a nickname) |
-| `Deccan` / `Decken` | 21 / 8 | escalates to tier C; `apply`/`context-merged` if the model merges them, else stays flagged |
-| `Warlords` | 10 | `known`, reason `short-form` (tier 0) |
-| `Surrender`, `Maybe`, `Hurry`, `Listen` | 10–22 | absent from proposals entirely |
+| Cluster                                 | Counts               | Required                                                                                   |
+| --------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------ |
+| `Kinemon`                               | 12, canonical unseen | `apply`, reason `canonical-unseen`                                                         |
+| `Brooke`                                | 9, canonical unseen  | `apply`, reason `canonical-unseen`                                                         |
+| `Smokey` / `Smoker`                     | 16 / 21              | escalates to tier C; expected `known`/`context-distinct` (it is a nickname)                |
+| `Deccan` / `Decken`                     | 21 / 8               | escalates to tier C; `apply`/`context-merged` if the model merges them, else stays flagged |
+| `Warlords`                              | 10                   | `known`, reason `short-form` (tier 0)                                                      |
+| `Surrender`, `Maybe`, `Hurry`, `Listen` | 10–22                | absent from proposals entirely                                                             |
 
 If `Kinemon` or `Brooke` come back `flag`, the escape clause in `decide()` is wrong — that is
 the failure mode this plan most expects, because both score a Wilson bound of 0.000.

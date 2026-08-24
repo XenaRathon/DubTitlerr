@@ -9,6 +9,7 @@ monkeypatching select_reference_track (same pattern tests/test_common.py uses fo
 extract_sub). The T9-T11 report builder (build_episode_report/aggregate_episodes/
 build_report) is fed entirely synthetic process_episode()-shaped `res` dicts -- no media, no
 GPU, no webrtcvad; the real-show run (T12) is a separate, deferred integration step."""
+
 import json
 
 import pytest
@@ -18,6 +19,7 @@ import tools.timing_compare as tc
 # ============================================================================
 # T2 -- CLI scaffold + walking
 # ============================================================================
+
 
 def test_build_arg_parser_defaults():
     a = tc.build_arg_parser().parse_args(["/some/show"])
@@ -127,6 +129,7 @@ def test_find_episodes_skips_nonexistent_path(tmp_path, capsys):
 # T3 -- conf.json load + hardening
 # ============================================================================
 
+
 def test_load_conf_missing_file_is_no_conf(tmp_path):
     status, rows = tc.load_conf(str(tmp_path / "missing.dubtitles.conf.json"))
     assert (status, rows) == ("no-conf", [])
@@ -180,6 +183,7 @@ def test_load_conf_empty_list_is_ok_zero_rows(tmp_path):
 # T5 -- nearest_onset_pairs (pure)
 # ============================================================================
 
+
 def test_nearest_onset_pairs_basic():
     card_starts = [0.0, 10.0, 20.0]
     cue_starts = [0.2, 10.3, 25.0]
@@ -192,7 +196,7 @@ def test_nearest_onset_pairs_excludes_beyond_radius():
     card_starts = [0.0, 100.0]
     cue_starts = [0.1]
     pairs = tc.nearest_onset_pairs(card_starts, cue_starts, max_radius_s=5.0)
-    assert pairs == [(0, 0, 0.1)]      # card 1 has no cue within radius -> omitted
+    assert pairs == [(0, 0, 0.1)]  # card 1 has no cue within radius -> omitted
 
 
 def test_nearest_onset_pairs_tie_break_prefers_earlier_cue():
@@ -205,9 +209,9 @@ def test_nearest_onset_pairs_tie_break_prefers_earlier_cue():
 
 def test_nearest_onset_pairs_tie_break_lower_index_on_duplicate_cue_time():
     card_starts = [10.0]
-    cue_starts = [9.0, 10.0, 10.0, 11.0]   # two cues share the same start time
+    cue_starts = [9.0, 10.0, 10.0, 11.0]  # two cues share the same start time
     pairs = tc.nearest_onset_pairs(card_starts, cue_starts, max_radius_s=5.0)
-    assert pairs == [(0, 1, 0.0)]           # exact match -> lower of the tied indices
+    assert pairs == [(0, 1, 0.0)]  # exact match -> lower of the tied indices
 
 
 def test_nearest_onset_pairs_empty_inputs():
@@ -225,6 +229,7 @@ def test_resolve_pairs_glue():
 # ============================================================================
 # T5 -- ransac_offset_drift (pure, synthetic)
 # ============================================================================
+
 
 def _pairs_from_model(card_starts, a, b, noise=None):
     """Build (card_start, cue_start) pairs implied by offset(t)=a+b*t, i.e.
@@ -251,25 +256,33 @@ def test_ransac_offset_drift_constant_offset_no_drift():
 
 
 def test_ransac_offset_drift_pure_drift_recovers_slope():
-    card_starts = [float(i * 20) for i in range(50)]   # 0..980
-    pairs = _pairs_from_model(card_starts, a=0.2, b=0.004)   # slope over LOOK_FOR_DRIFT_SLOPE
+    card_starts = [float(i * 20) for i in range(50)]  # 0..980
+    pairs = _pairs_from_model(card_starts, a=0.2, b=0.004)  # slope over LOOK_FOR_DRIFT_SLOPE
     fit = tc.ransac_offset_drift(pairs)
     assert fit["inlier_count"] == 50
     assert fit["offset_a_s"] == pytest.approx(0.2, abs=1e-6)
     assert fit["drift_b"] == pytest.approx(0.004, abs=1e-6)
-    assert fit["look_for_drift"] is True     # |drift_b| > 0.002
+    assert fit["look_for_drift"] is True  # |drift_b| > 0.002
 
 
 def test_ransac_offset_drift_rejects_outliers_and_recovers_true_line():
     card_starts = [float(i * 10) for i in range(30)]
     good = _pairs_from_model(card_starts, a=0.3, b=0.001)
     # outliers: cue_starts wildly off the true line (5s+ off), well outside the 0.30s band
-    outliers = [(305.0, 250.0), (315.0, 400.0), (325.0, 260.0), (335.0, 410.0),
-                (345.0, 270.0), (355.0, 420.0), (365.0, 280.0), (375.0, 430.0)]
+    outliers = [
+        (305.0, 250.0),
+        (315.0, 400.0),
+        (325.0, 260.0),
+        (335.0, 410.0),
+        (345.0, 270.0),
+        (355.0, 420.0),
+        (365.0, 280.0),
+        (375.0, 430.0),
+    ]
     pairs = good + outliers
     fit = tc.ransac_offset_drift(pairs)
     assert fit["matched_pairs_count"] == 38
-    assert fit["inlier_count"] == 30                 # exactly the good points, outliers rejected
+    assert fit["inlier_count"] == 30  # exactly the good points, outliers rejected
     assert fit["offset_a_s"] == pytest.approx(0.3, abs=1e-6)
     assert fit["drift_b"] == pytest.approx(0.001, abs=1e-6)
 
@@ -288,10 +301,16 @@ def test_ransac_offset_drift_null_guard_offset_below_min_inliers():
 
 
 def test_ransac_offset_drift_null_guard_residual_below_min_n():
-    fit = tc.ransac_offset_drift([(0.0, -0.4)])   # a single pair: matched=1 < 2
-    assert fit == {"offset_a_s": None, "drift_b": None, "matched_pairs_count": 1,
-                    "inlier_count": 0, "residual_median_s": None, "residual_iqr_s": None,
-                    "look_for_drift": False}
+    fit = tc.ransac_offset_drift([(0.0, -0.4)])  # a single pair: matched=1 < 2
+    assert fit == {
+        "offset_a_s": None,
+        "drift_b": None,
+        "matched_pairs_count": 1,
+        "inlier_count": 0,
+        "residual_median_s": None,
+        "residual_iqr_s": None,
+        "look_for_drift": False,
+    }
 
 
 def test_ransac_offset_drift_empty_pairs():
@@ -315,11 +334,11 @@ def test_ransac_offset_drift_look_for_drift_via_residual_iqr():
 
 
 def test_ransac_offset_drift_large_n_random_sampling_is_deterministic():
-    card_starts = [float(i * 5) for i in range(200)]   # > RANSAC_EXHAUSTIVE_CAP
+    card_starts = [float(i * 5) for i in range(200)]  # > RANSAC_EXHAUSTIVE_CAP
     pairs = _pairs_from_model(card_starts, a=0.15, b=0.0015)
     fit1 = tc.ransac_offset_drift(pairs)
     fit2 = tc.ransac_offset_drift(pairs)
-    assert fit1 == fit2                                 # fixed seed -> reproducible
+    assert fit1 == fit2  # fixed seed -> reproducible
     assert fit1["offset_a_s"] == pytest.approx(0.15, abs=0.05)
     assert fit1["drift_b"] == pytest.approx(0.0015, abs=0.001)
 
@@ -327,6 +346,7 @@ def test_ransac_offset_drift_large_n_random_sampling_is_deterministic():
 # ============================================================================
 # T6 -- classify_overlap / align_card / classify_card (pure)
 # ============================================================================
+
 
 def test_classify_overlap_touching_boundary_is_not_overlap():
     # card ends exactly at the tolerance-loosened cue start -> intersection length 0
@@ -378,7 +398,7 @@ def test_classify_card_on_cue_and_in_gap():
     cues = [(1.0, 2.0, "a"), (10.0, 11.0, "b")]
     assert tc.classify_card(1.5, 1.9, cues, tolerance=0.0) == "on-cue"
     assert tc.classify_card(5.0, 5.5, cues, tolerance=0.0) == "in-gap"
-    assert tc.classify_card(4.8, 5.0, cues, tolerance=0.3) == "in-gap"   # 0.2s short of bridging
+    assert tc.classify_card(4.8, 5.0, cues, tolerance=0.3) == "in-gap"  # 0.2s short of bridging
 
 
 # ============================================================================
@@ -386,6 +406,7 @@ def test_classify_card_on_cue_and_in_gap():
 # same hermetic pattern as tests/test_common.py. Real ffmpeg/ffprobe calls (select_
 # reference_track's/_sub_codec_map's internals) are PENDING manual verification.
 # ============================================================================
+
 
 def test_process_episode_no_conf(tmp_path):
     video = tmp_path / "ep.mkv"
@@ -405,8 +426,9 @@ def test_process_episode_bad_conf(tmp_path):
 def test_process_episode_no_reference(tmp_path, monkeypatch):
     video = tmp_path / "ep.mkv"
     video.write_bytes(b"")
-    (tmp_path / "ep.dubtitles.conf.json").write_text(json.dumps(
-        [{"start": 1.0, "end": 2.0, "avg_logprob": -0.1, "no_speech_prob": 0.05, "text": "hi"}]))
+    (tmp_path / "ep.dubtitles.conf.json").write_text(
+        json.dumps([{"start": 1.0, "end": 2.0, "avg_logprob": -0.1, "no_speech_prob": 0.05, "text": "hi"}])
+    )
     monkeypatch.setattr(tc, "select_reference_track", lambda video, lang: None)
     res = tc.process_episode(str(video), {"eng"}, tolerance=0.3)
     assert res == {"video": str(video), "status": "no-reference"}
@@ -428,8 +450,10 @@ def test_process_episode_empty_conf_is_analyzed_zero_cards(tmp_path, monkeypatch
 def test_process_episode_analyzed_classifies_and_aligns_cards(tmp_path, monkeypatch):
     video = tmp_path / "ep.mkv"
     video.write_bytes(b"")
-    rows = [{"start": 10.5, "end": 11.5, "avg_logprob": -0.1, "no_speech_prob": 0.05, "text": "on cue"},
-            {"start": 50.0, "end": 51.0, "avg_logprob": -0.1, "no_speech_prob": 0.05, "text": "in gap"}]
+    rows = [
+        {"start": 10.5, "end": 11.5, "avg_logprob": -0.1, "no_speech_prob": 0.05, "text": "on cue"},
+        {"start": 50.0, "end": 51.0, "avg_logprob": -0.1, "no_speech_prob": 0.05, "text": "in gap"},
+    ]
     (tmp_path / "ep.dubtitles.conf.json").write_text(json.dumps(rows))
     # cue at 10.5 (matches card 1 exactly); nothing near 50.0 -> card 2 stays in-gap
     ref_track = {"stream_index": 3, "codec": "ass", "cue_count": 1, "density_score": 1.0}
@@ -469,21 +493,21 @@ def test_process_episode_analyzed_classifies_and_aligns_cards(tmp_path, monkeypa
 # select_reference_track/_sub_codec_map; monkeypatched here exactly like those.
 # ============================================================================
 
+
 def test_classify_in_gap_cards_no_in_gap_cards_is_noop(monkeypatch):
     called = []
     monkeypatch.setattr(tc, "select_audio_stream", lambda video: called.append(video) or 0)
     cards = [{"classification": "on-cue", "start": 1.0, "end": 2.0}]
     tc.classify_in_gap_cards("ep.mkv", cards)
     assert cards == [{"classification": "on-cue", "start": 1.0, "end": 2.0}]
-    assert called == []          # no in-gap cards -> select_audio_stream never even called
+    assert called == []  # no in-gap cards -> select_audio_stream never even called
 
 
 def test_classify_in_gap_cards_no_audio_stream_all_error_no_extract_attempted(monkeypatch):
     monkeypatch.setattr(tc, "select_audio_stream", lambda video: None)
     extract_called = []
     monkeypatch.setattr(tc, "extract_audio_window", lambda *a: extract_called.append(a) or True)
-    cards = [{"classification": "in-gap", "start": 1.0, "end": 2.0},
-             {"classification": "in-gap", "start": 3.0, "end": 4.0}]
+    cards = [{"classification": "in-gap", "start": 1.0, "end": 2.0}, {"classification": "in-gap", "start": 3.0, "end": 4.0}]
     tc.classify_in_gap_cards("ep.mkv", cards)
     assert all(c["in_gap_vad_verdict"] == "in_gap_vad_error" for c in cards)
     assert extract_called == []
@@ -497,14 +521,17 @@ def test_classify_in_gap_cards_extract_failure_is_vad_error_and_skips_probe(monk
     cards = [{"classification": "in-gap", "start": 1.0, "end": 2.0}]
     tc.classify_in_gap_cards("ep.mkv", cards)
     assert cards[0]["in_gap_vad_verdict"] == "in_gap_vad_error"
-    assert probe_called == []    # extraction failed -> never call vad_probe on a missing window
+    assert probe_called == []  # extraction failed -> never call vad_probe on a missing window
 
 
-@pytest.mark.parametrize("verdict,expected", [
-    (True, "in_gap_speech"),
-    (False, "in_gap_silent"),
-    (None, "in_gap_vad_error"),
-])
+@pytest.mark.parametrize(
+    "verdict,expected",
+    [
+        (True, "in_gap_speech"),
+        (False, "in_gap_silent"),
+        (None, "in_gap_vad_error"),
+    ],
+)
 def test_classify_in_gap_cards_verdict_mapping(monkeypatch, verdict, expected):
     monkeypatch.setattr(tc, "select_audio_stream", lambda video: 2)
     monkeypatch.setattr(tc, "extract_audio_window", lambda video, idx, s, e, out: True)
@@ -538,8 +565,7 @@ def test_classify_in_gap_cards_passes_original_unaligned_window(monkeypatch):
 
     monkeypatch.setattr(tc, "extract_audio_window", fake_extract)
     monkeypatch.setattr(tc.vad, "vad_probe", lambda *a, **kw: False)
-    cards = [{"classification": "in-gap", "start": 12.34, "end": 13.5,
-              "aligned_start": 99.0, "aligned_end": 100.0}]
+    cards = [{"classification": "in-gap", "start": 12.34, "end": 13.5, "aligned_start": 99.0, "aligned_end": 100.0}]
     tc.classify_in_gap_cards("ep.mkv", cards)
     assert seen == [(12.34, 13.5)]
 
@@ -548,11 +574,14 @@ def test_classify_in_gap_cards_passes_original_unaligned_window(monkeypatch):
 # T6/T9 -- covered_cue_count (pure)
 # ============================================================================
 
+
 def test_covered_cue_count_counts_distinct_cues_hit():
     cues = [(1.0, 2.0, "a"), (10.0, 11.0, "b"), (20.0, 21.0, "c")]
-    cards = [{"aligned_start": 1.2, "aligned_end": 1.8},   # hits cue "a"
-             {"aligned_start": 10.1, "aligned_end": 10.9},  # hits cue "b"
-             {"aligned_start": 10.2, "aligned_end": 10.8}]  # also hits cue "b" (no double count)
+    cards = [
+        {"aligned_start": 1.2, "aligned_end": 1.8},  # hits cue "a"
+        {"aligned_start": 10.1, "aligned_end": 10.9},  # hits cue "b"
+        {"aligned_start": 10.2, "aligned_end": 10.8},
+    ]  # also hits cue "b" (no double count)
     assert tc.covered_cue_count(cards, cues, tolerance=0.0) == 2
 
 
@@ -573,26 +602,29 @@ def test_covered_cue_count_in_gap_cards_contribute_nothing():
 # T9 -- bucket_nsp / bucket_lp (pure, boundaries per hallucination.py's B1 thresholds)
 # ============================================================================
 
+
 def test_bucket_nsp_boundaries():
     """Boundaries are derived from hallucination.py, not pinned to literals -- the labels
     themselves used to be literals and went stale when NSP_DROP moved (2026-08-21)."""
     import hallucination as h
+
     f, d = h.NSP_FLAG, h.NSP_DROP
     assert tc.bucket_nsp(0.0) == f"clean_le_{f:g}"
-    assert tc.bucket_nsp(f) == f"clean_le_{f:g}"                     # <=NSP_FLAG inclusive
+    assert tc.bucket_nsp(f) == f"clean_le_{f:g}"  # <=NSP_FLAG inclusive
     assert tc.bucket_nsp(f + 1e-6) == f"flag_gt_{f:g}_le_{d:g}"
-    assert tc.bucket_nsp(d) == f"flag_gt_{f:g}_le_{d:g}"             # <=NSP_DROP inclusive
+    assert tc.bucket_nsp(d) == f"flag_gt_{f:g}_le_{d:g}"  # <=NSP_DROP inclusive
     assert tc.bucket_nsp(d + 1e-6) == f"drop_gt_{d:g}"
     assert tc.bucket_nsp(1.0) == f"drop_gt_{d:g}"
 
 
 def test_bucket_lp_boundaries():
     import hallucination as h
+
     f, d = h.LP_FLAG, h.LP_DROP
     assert tc.bucket_lp(0.0) == f"clean_ge_{f:g}"
-    assert tc.bucket_lp(f) == f"clean_ge_{f:g}"                      # >=LP_FLAG inclusive
+    assert tc.bucket_lp(f) == f"clean_ge_{f:g}"  # >=LP_FLAG inclusive
     assert tc.bucket_lp(f - 1e-6) == f"flag_lt_{f:g}_ge_{d:g}"
-    assert tc.bucket_lp(d) == f"flag_lt_{f:g}_ge_{d:g}"              # >=LP_DROP inclusive
+    assert tc.bucket_lp(d) == f"flag_lt_{f:g}_ge_{d:g}"  # >=LP_DROP inclusive
     assert tc.bucket_lp(d - 1e-6) == f"drop_lt_{d:g}"
     assert tc.bucket_lp(-10.0) == f"drop_lt_{d:g}"
 
@@ -601,6 +633,7 @@ def test_bucket_cutpoints_match_hallucination_constants():
     """Regression guard: the bucket cutpoints must track hallucination.py's actual B1
     thresholds, not a hardcoded copy that could drift."""
     import hallucination
+
     assert hallucination.NSP_FLAG == 0.5
     assert hallucination.NSP_DROP == 0.95
     assert hallucination.LP_FLAG == -0.6
@@ -611,14 +644,24 @@ def test_bucket_cutpoints_match_hallucination_constants():
 # T9/T10 -- build_episode_report (pure, synthetic per-episode `res` dicts)
 # ============================================================================
 
+
 def _analyzed_res(**overrides):
     base = {
         "video": "/media/Show A/ShowA - 01.mkv",
         "status": "analyzed",
         "reference_track": {"stream_index": 2, "codec": "ass", "cue_count": 10, "density_score": 0.83},
-        "fit": {"offset_a_s": 0.42, "drift_b": 0.0003, "matched_pairs_count": 15, "inlier_count": 15,
-                "residual_median_s": 0.05, "residual_iqr_s": 0.14, "look_for_drift": False},
-        "cue_count": 10, "cues_covered": 8, "cards": [],
+        "fit": {
+            "offset_a_s": 0.42,
+            "drift_b": 0.0003,
+            "matched_pairs_count": 15,
+            "inlier_count": 15,
+            "residual_median_s": 0.05,
+            "residual_iqr_s": 0.14,
+            "look_for_drift": False,
+        },
+        "cue_count": 10,
+        "cues_covered": 8,
+        "cards": [],
     }
     base.update(overrides)
     return base
@@ -632,12 +675,18 @@ def test_build_episode_report_non_analyzed_status_is_bare(status):
 def test_build_episode_report_kept_in_gap_and_bucket_crosstabs():
     cards = (
         [{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 5
-        + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2,
-            "in_gap_vad_verdict": "in_gap_silent", "flag": "maybe_silence"}] * 5
-        + [{"classification": "in-gap", "avg_logprob": -2.5, "no_speech_prob": 0.99,
-            "in_gap_vad_verdict": "in_gap_speech"}] * 2
-        + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.1,
-            "in_gap_vad_verdict": "in_gap_vad_error"}]
+        + [
+            {
+                "classification": "in-gap",
+                "avg_logprob": -0.1,
+                "no_speech_prob": 0.2,
+                "in_gap_vad_verdict": "in_gap_silent",
+                "flag": "maybe_silence",
+            }
+        ]
+        * 5
+        + [{"classification": "in-gap", "avg_logprob": -2.5, "no_speech_prob": 0.99, "in_gap_vad_verdict": "in_gap_speech"}] * 2
+        + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.1, "in_gap_vad_verdict": "in_gap_vad_error"}]
     )
     res = _analyzed_res(cards=cards)
     rep = tc.build_episode_report(res)
@@ -657,7 +706,7 @@ def test_build_episode_report_kept_in_gap_and_bucket_crosstabs():
     assert kig["total"] == 8
     assert kig["in_gap_silent"] == 5
     assert kig["in_gap_speech"] == 2
-    assert kig["in_gap_vad_error"] == 1                    # counted separately, T10
+    assert kig["in_gap_vad_error"] == 1  # counted separately, T10
     # keys derived, counts asserted -- pinning the key STRINGS here is what let the
     # production labels go stale unnoticed when NSP_DROP moved.
     nl, ll = tc.nsp_bucket_labels(), tc.lp_bucket_labels()
@@ -665,7 +714,7 @@ def test_build_episode_report_kept_in_gap_and_bucket_crosstabs():
     assert kig["by_lp"] == dict(zip(ll, (6, 0, 2)))
     assert kig["by_flag"] == {"maybe_silence": 5, "low_conf": 0, "none": 3}
 
-    assert rep["false_in_gap_rate"] == pytest.approx(2 / 13)   # in_gap_speech / total kept cards
+    assert rep["false_in_gap_rate"] == pytest.approx(2 / 13)  # in_gap_speech / total kept cards
     assert rep["flag_validation"] == {"maybe_silence_in_gap": 5, "maybe_silence_on_cue": 0}
 
 
@@ -676,17 +725,22 @@ def test_build_episode_report_empty_conf_null_coverage_not_a_crash():
     assert rep["status"] == "analyzed"
     assert rep["pct_cards_on_cue"] is None
     assert rep["pct_cues_covered"] is None
-    assert rep["false_in_gap_rate"] == 0.0                 # vacuously zero, well-defined
-    assert rep["kept_in_gap"] == {"total": 0, "in_gap_silent": 0, "in_gap_speech": 0,
-                                   "in_gap_vad_error": 0,
-                                   "by_nsp": dict.fromkeys(tc.nsp_bucket_labels(), 0),
-                                   "by_lp": dict.fromkeys(tc.lp_bucket_labels(), 0),
-                                   "by_flag": {"maybe_silence": 0, "low_conf": 0, "none": 0}}
+    assert rep["false_in_gap_rate"] == 0.0  # vacuously zero, well-defined
+    assert rep["kept_in_gap"] == {
+        "total": 0,
+        "in_gap_silent": 0,
+        "in_gap_speech": 0,
+        "in_gap_vad_error": 0,
+        "by_nsp": dict.fromkeys(tc.nsp_bucket_labels(), 0),
+        "by_lp": dict.fromkeys(tc.lp_bucket_labels(), 0),
+        "by_flag": {"maybe_silence": 0, "low_conf": 0, "none": 0},
+    }
 
 
 def test_build_episode_report_zero_cues_pct_cues_covered_is_null():
-    res = _analyzed_res(cue_count=0, cues_covered=0,
-                         cards=[{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}])
+    res = _analyzed_res(
+        cue_count=0, cues_covered=0, cards=[{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}]
+    )
     rep = tc.build_episode_report(res)
     assert rep["pct_cards_on_cue"] == 1.0
     assert rep["pct_cues_covered"] is None
@@ -695,8 +749,10 @@ def test_build_episode_report_zero_cues_pct_cues_covered_is_null():
 def test_build_episode_report_all_vad_error_false_in_gap_rate_is_null():
     """T10 edge case: both VAD backends fail/unavailable for every in-gap card in the
     episode -- false_in_gap_rate must be null (unmeasured), not misleadingly 0.0."""
-    cards = [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.1,
-              "in_gap_vad_verdict": "in_gap_vad_error"} for _ in range(3)]
+    cards = [
+        {"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.1, "in_gap_vad_verdict": "in_gap_vad_error"}
+        for _ in range(3)
+    ]
     rep = tc.build_episode_report(_analyzed_res(cards=cards))
     assert rep["kept_in_gap"]["in_gap_vad_error"] == 3
     assert rep["false_in_gap_rate"] is None
@@ -713,9 +769,9 @@ def test_build_episode_report_no_in_gap_cards_false_in_gap_rate_is_zero():
 # T10 -- aggregate_episodes (pure, synthetic `res` lists)
 # ============================================================================
 
+
 def test_aggregate_episodes_status_counts_always_numeric():
-    results = [{"status": "no-conf"}, {"status": "no-conf"}, {"status": "bad-conf"},
-               {"status": "no-reference"}]
+    results = [{"status": "no-conf"}, {"status": "no-conf"}, {"status": "bad-conf"}, {"status": "no-reference"}]
     agg = tc.aggregate_episodes(results)
     assert agg["no_conf"] == 2 and agg["bad_conf"] == 1 and agg["no_reference"] == 1
     assert agg["analyzed"] == 0
@@ -730,7 +786,7 @@ def test_aggregate_episodes_all_no_reference_show_nulls_ratio_fields():
     assert agg["pct_cards_on_cue"] is None
     assert agg["false_in_gap_rate"] is None
     assert agg["kept_in_gap"] == 0 and agg["in_gap_speech"] == 0
-    assert agg["applicability_ratio"] == 0.0                # 0 analyzed / (0 + 3 no-reference)
+    assert agg["applicability_ratio"] == 0.0  # 0 analyzed / (0 + 3 no-reference)
 
 
 def test_aggregate_episodes_zero_analyzed_and_zero_no_reference_applicability_is_null():
@@ -752,14 +808,22 @@ def test_aggregate_episodes_analyzed_but_all_empty_conf_nulls_coverage():
 
 
 def test_aggregate_episodes_pools_cards_across_episodes():
-    ep1 = _analyzed_res(video="a.mkv", cards=(
-        [{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 8
-        + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2,
-            "in_gap_vad_verdict": "in_gap_speech"}] * 2))
-    ep2 = _analyzed_res(video="b.mkv", cards=(
-        [{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 18
-        + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2,
-            "in_gap_vad_verdict": "in_gap_silent"}] * 2))
+    ep1 = _analyzed_res(
+        video="a.mkv",
+        cards=(
+            [{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 8
+            + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2, "in_gap_vad_verdict": "in_gap_speech"}]
+            * 2
+        ),
+    )
+    ep2 = _analyzed_res(
+        video="b.mkv",
+        cards=(
+            [{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 18
+            + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2, "in_gap_vad_verdict": "in_gap_silent"}]
+            * 2
+        ),
+    )
     agg = tc.aggregate_episodes([ep1, ep2])
     # pooled, not averaged: (8+18) on-cue / (10+20) total = 26/30
     assert agg["pct_cards_on_cue"] == pytest.approx(26 / 30)
@@ -770,10 +834,19 @@ def test_aggregate_episodes_pools_cards_across_episodes():
 
 def test_aggregate_episodes_empty_results_list():
     agg = tc.aggregate_episodes([])
-    assert agg == {"no_conf": 0, "no_reference": 0, "bad_conf": 0, "analyzed": 0,
-                    "applicability_ratio": None, "pct_cards_on_cue": None,
-                    "kept_in_gap": 0, "in_gap_speech": 0, "in_gap_silent": 0,
-                    "in_gap_vad_error": 0, "false_in_gap_rate": None}
+    assert agg == {
+        "no_conf": 0,
+        "no_reference": 0,
+        "bad_conf": 0,
+        "analyzed": 0,
+        "applicability_ratio": None,
+        "pct_cards_on_cue": None,
+        "kept_in_gap": 0,
+        "in_gap_speech": 0,
+        "in_gap_silent": 0,
+        "in_gap_vad_error": 0,
+        "false_in_gap_rate": None,
+    }
 
 
 def test_aggregate_episodes_all_vad_error_false_in_gap_rate_is_null():
@@ -782,14 +855,22 @@ def test_aggregate_episodes_all_vad_error_false_in_gap_rate_is_null():
     webrtcvad missing), false_in_gap_rate must be null (unmeasured) -- not misleadingly
     0.0. This is the exact case spec-v3's Edge-cases table requires; before the fix
     aggregate_episodes computed in_gap_speech_total / total_cards == 0.0 here instead."""
-    ep1 = _analyzed_res(video="a.mkv", cards=(
-        [{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 5
-        + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2,
-            "in_gap_vad_verdict": "in_gap_vad_error"}] * 2))
-    ep2 = _analyzed_res(video="b.mkv", cards=(
-        [{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 3
-        + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2,
-            "in_gap_vad_verdict": "in_gap_vad_error"}] * 1))
+    ep1 = _analyzed_res(
+        video="a.mkv",
+        cards=(
+            [{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 5
+            + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2, "in_gap_vad_verdict": "in_gap_vad_error"}]
+            * 2
+        ),
+    )
+    ep2 = _analyzed_res(
+        video="b.mkv",
+        cards=(
+            [{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 3
+            + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2, "in_gap_vad_verdict": "in_gap_vad_error"}]
+            * 1
+        ),
+    )
     agg = tc.aggregate_episodes([ep1, ep2])
     assert agg["kept_in_gap"] == 3
     assert agg["in_gap_speech"] == 0
@@ -802,14 +883,18 @@ def test_aggregate_episodes_mixed_verdicts_still_computes_ratio():
     """A normal mix (some vad_error present, but also real speech/silent verdicts measured)
     must still compute the pooled ratio, not go null -- null is reserved for the
     all-vad_error case."""
-    ep1 = _analyzed_res(video="a.mkv", cards=(
-        [{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 6
-        + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2,
-            "in_gap_vad_verdict": "in_gap_speech"}] * 1
-        + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2,
-            "in_gap_vad_verdict": "in_gap_silent"}] * 2
-        + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2,
-            "in_gap_vad_verdict": "in_gap_vad_error"}] * 1))
+    ep1 = _analyzed_res(
+        video="a.mkv",
+        cards=(
+            [{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 6
+            + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2, "in_gap_vad_verdict": "in_gap_speech"}]
+            * 1
+            + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2, "in_gap_vad_verdict": "in_gap_silent"}]
+            * 2
+            + [{"classification": "in-gap", "avg_logprob": -0.1, "no_speech_prob": 0.2, "in_gap_vad_verdict": "in_gap_vad_error"}]
+            * 1
+        ),
+    )
     agg = tc.aggregate_episodes([ep1])
     assert agg["kept_in_gap"] == 4
     assert agg["in_gap_speech"] == 1
@@ -822,12 +907,20 @@ def test_aggregate_episodes_mixed_verdicts_still_computes_ratio():
 # T9 -- build_report (pure, {show_name: [res, ...]} -> full schema_version-2 report)
 # ============================================================================
 
+
 def test_build_report_shape_and_show_grouping():
-    ep = _analyzed_res(video="/media/Show A/ep1.mkv",
-                        cards=[{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}])
+    ep = _analyzed_res(
+        video="/media/Show A/ep1.mkv", cards=[{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}]
+    )
     show_results = {"Show A": [ep, {"video": "/media/Show A/ep2.mkv", "status": "no-conf"}]}
-    config = {"tolerance_s": 0.3, "min_cues": 50, "min_plain_share": 0.7,
-              "pair_radius_s": 5.0, "vad_backend": "webrtcvad", "vad_aggressiveness": 2}
+    config = {
+        "tolerance_s": 0.3,
+        "min_cues": 50,
+        "min_plain_share": 0.7,
+        "pair_radius_s": 5.0,
+        "vad_backend": "webrtcvad",
+        "vad_aggressiveness": 2,
+    }
     report = tc.build_report(show_results, config)
 
     assert report["schema_version"] == 2
@@ -843,12 +936,19 @@ def test_build_report_shape_and_show_grouping():
 
 def test_build_report_multi_show_overall_pools_across_shows():
     show_results = {
-        "Show A": [_analyzed_res(video="a.mkv", cards=[
-            {"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 4)],
+        "Show A": [
+            _analyzed_res(video="a.mkv", cards=[{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}] * 4)
+        ],
         "Show B": [{"video": "b.mkv", "status": "no-reference"}],
     }
-    config = {"tolerance_s": 0.3, "min_cues": 50, "min_plain_share": 0.7,
-              "pair_radius_s": 5.0, "vad_backend": "webrtcvad", "vad_aggressiveness": 2}
+    config = {
+        "tolerance_s": 0.3,
+        "min_cues": 50,
+        "min_plain_share": 0.7,
+        "pair_radius_s": 5.0,
+        "vad_backend": "webrtcvad",
+        "vad_aggressiveness": 2,
+    }
     report = tc.build_report(show_results, config)
     assert report["aggregate"]["analyzed"] == 1
     assert report["aggregate"]["no_reference"] == 1
@@ -858,6 +958,7 @@ def test_build_report_multi_show_overall_pools_across_shows():
 # ============================================================================
 # T10 -- write_report_atomic
 # ============================================================================
+
 
 def test_write_report_atomic_writes_valid_json(tmp_path):
     out = tmp_path / "timing-compare.report.json"
@@ -885,11 +986,12 @@ def test_write_report_atomic_overwrites_existing_file(tmp_path):
 # T9 -- show_name_for_root
 # ============================================================================
 
+
 def test_show_name_for_root_directory(tmp_path):
     show = tmp_path / "Show A"
     show.mkdir()
     assert tc.show_name_for_root(str(show)) == "Show A"
-    assert tc.show_name_for_root(str(show) + "/") == "Show A"      # trailing slash stripped
+    assert tc.show_name_for_root(str(show) + "/") == "Show A"  # trailing slash stripped
 
 
 def test_show_name_for_root_single_video_file_uses_parent_dir(tmp_path):
@@ -904,6 +1006,7 @@ def test_show_name_for_root_single_video_file_uses_parent_dir(tmp_path):
 # T9/T10 -- main() end-to-end report write (process_episode monkeypatched, no real I/O)
 # ============================================================================
 
+
 def test_main_writes_report_and_groups_by_show_dir_root(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "Show A" / "S01").mkdir(parents=True)
@@ -913,8 +1016,7 @@ def test_main_writes_report_and_groups_by_show_dir_root(tmp_path, monkeypatch, c
 
     def fake_process_episode(video, lang, tolerance, **kw):
         if "Show A" in video:
-            return _analyzed_res(video=video, cards=[
-                {"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}])
+            return _analyzed_res(video=video, cards=[{"classification": "on-cue", "avg_logprob": -0.1, "no_speech_prob": 0.1}])
         return {"video": video, "status": "no-reference"}
 
     monkeypatch.setattr(tc, "process_episode", fake_process_episode)
@@ -939,8 +1041,7 @@ def test_main_tolerance_clamp_prints_warning(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "Show" / "S01").mkdir(parents=True)
     (tmp_path / "Show" / "S01" / "ep.mkv").write_bytes(b"")
-    monkeypatch.setattr(tc, "process_episode",
-                         lambda video, lang, tolerance, **kw: {"video": video, "status": "no-conf"})
+    monkeypatch.setattr(tc, "process_episode", lambda video, lang, tolerance, **kw: {"video": video, "status": "no-conf"})
     tc.main(["Show", "--tolerance", "99"])
     out = capsys.readouterr().out
     assert "clamped to 2.0" in out
@@ -950,8 +1051,7 @@ def test_main_no_warning_when_tolerance_in_range(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "Show" / "S01").mkdir(parents=True)
     (tmp_path / "Show" / "S01" / "ep.mkv").write_bytes(b"")
-    monkeypatch.setattr(tc, "process_episode",
-                         lambda video, lang, tolerance, **kw: {"video": video, "status": "no-conf"})
+    monkeypatch.setattr(tc, "process_episode", lambda video, lang, tolerance, **kw: {"video": video, "status": "no-conf"})
     tc.main(["Show", "--tolerance", "0.5"])
     out = capsys.readouterr().out
     assert "clamped" not in out
@@ -967,6 +1067,7 @@ def test_main_no_warning_when_tolerance_in_range(tmp_path, monkeypatch, capsys):
 # select_reference_track used by the process_episode() tests above -- otherwise nothing
 # would actually pin the inheritance. Without it, a regenerated episode would be aligned
 # against the previous version's timing instead of the human fansub's.
+
 
 def _stub_ffprobe(monkeypatch, streams):
     import types
@@ -988,17 +1089,18 @@ def _ass(index, title=None, lang="eng"):
 
 def test_select_reference_track_ignores_our_own_dubtitles_track(monkeypatch):
     import common
+
     scored = []
     _stub_ffprobe(monkeypatch, [_ass(2, title="English (Fansub)"), _ass(3, title="Dubtitles")])
     monkeypatch.setattr(common, "extract_sub", lambda v, idx, out: scored.append(idx) or False)
     tc.select_reference_track("fake.mkv", {"eng"})
-    assert scored == [2]              # our old track is never even extracted for scoring
+    assert scored == [2]  # our old track is never even extracted for scoring
 
 
 def test_select_reference_track_reports_no_reference_when_only_sub_is_our_dubtitle(monkeypatch):
     """No fallback: the episode is compared reference-free rather than against itself."""
     import common
+
     _stub_ffprobe(monkeypatch, [_ass(3, title="Dubtitles")])
-    monkeypatch.setattr(common, "extract_sub",
-                        lambda v, idx, out: pytest.fail("extracted our own dubtitle"))
+    monkeypatch.setattr(common, "extract_sub", lambda v, idx, out: pytest.fail("extracted our own dubtitle"))
     assert tc.select_reference_track("fake.mkv", {"eng"}) is None

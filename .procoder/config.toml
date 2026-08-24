@@ -1,0 +1,33 @@
+# procoder configuration for DubTitlerr — quality chain enabled.
+# Reference: https://procoder.azrty.com (docs/configuration.md in the plugin source)
+
+[git]
+# Direct commits to the default branch are noted, not blocked — day-to-day
+# work already happens on feature branches, so this stays a nudge.
+default_branch_policy = "report"
+# The commit interception: a blocking gate finding stops the commit.
+commit_gate = "block"
+
+[lint]
+# ruff findings stop the commit, not just get logged.
+policy = "block"
+
+[test]
+# todo close, backlog story close, and the commit gate all refuse while
+# the suite is red.
+policy = "block"
+
+[docs]
+# A public-surface change with no documentation update must be answered,
+# not skipped.
+policy = "block"
+
+[ask]
+# Pending questions in .procoder/ask/QA.md block the commit until a human
+# answers them.
+policy = "block"
+
+[release]
+# DubTitlerr's version lives in pyproject.toml, not README.md/docs/index.md
+# (procoder's defaults) — this repo has no docs/index.md at all.
+files = ["pyproject.toml"]

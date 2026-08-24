@@ -7,17 +7,17 @@
 # Idempotent + restart-safe: done episodes are skipped instantly, so a restart just resumes.
 set -u
 export APP_DIR=/app
-: "${MERGE_INTERVAL:=600}"        # seconds between merge sweeps
-: "${RESCAN_INTERVAL:=21600}"     # seconds to idle after a full generate sweep (default 6h)
+: "${MERGE_INTERVAL:=600}"    # seconds between merge sweeps
+: "${RESCAN_INTERVAL:=21600}" # seconds to idle after a full generate sweep (default 6h)
 
 echo "==== dubtitle-builder up $(date) — merge_interval=${MERGE_INTERVAL}s rescan=${RESCAN_INTERVAL}s ===="
 
 # merge loop in the background
 (
-  while :; do
-    sh /app/merge_pass.sh || echo "merge_pass error (continuing)"
-    sleep "$MERGE_INTERVAL"
-  done
+	while :; do
+		sh /app/merge_pass.sh || echo "merge_pass error (continuing)"
+		sleep "$MERGE_INTERVAL"
+	done
 ) &
 
 # generate loop in the foreground keeps the container alive

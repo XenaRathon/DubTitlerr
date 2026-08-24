@@ -27,6 +27,7 @@ Usage:
 
 Requires ffprobe.  Built with help of Claude (Anthropic).
 """
+
 import argparse
 import json
 import os
@@ -58,17 +59,21 @@ def has_dubtitles_track(video: str) -> bool | None:
     migration, not a skip guard: the pipeline deliberately no longer decides "done" from
     the presence of the track (see the module docstring)."""
     try:
-        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "s",
-                            "-show_entries", "stream_tags=title", "-of", "json", video],
-                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "s", "-show_entries", "stream_tags=title", "-of", "json", video],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
     except (OSError, subprocess.SubprocessError):
-        return None                               # couldn't run it / timed out
+        return None  # couldn't run it / timed out
     if r.returncode != 0:
-        return None                               # unreadable/truncated file
+        return None  # unreadable/truncated file
     try:
         streams = json.loads(r.stdout).get("streams", [])
     except ValueError:
-        return None                               # ffprobe said OK but emitted junk
+        return None  # ffprobe said OK but emitted junk
     return any(is_our_track(stream_title(st)) for st in streams)
 
 
@@ -77,21 +82,20 @@ def write_v1_stamp(path: str, video: str) -> None:
     by the pre-versioning pipeline, so that is the version to record."""
     st = os.stat(video)
     with open(path, "w") as f:
-        json.dump({"size": st.st_size, "mtime": st.st_mtime, "muxed": True,
-                   "version": GRANDFATHER_VERSION}, f)
+        json.dump({"size": st.st_size, "mtime": st.st_mtime, "muxed": True, "version": GRANDFATHER_VERSION}, f)
 
 
 def process(video: str, apply: bool) -> str:
     """-> "has-stamp" | "no-dubtitles" | "probe-failed" | "plan" | "stamped" | "error"."""
     stamp = os.path.splitext(video)[0] + STAMP_SUFFIX
     if read_stamp(stamp) is not None:
-        return "has-stamp"                      # never overwrite (incl. a deliberate stale one)
+        return "has-stamp"  # never overwrite (incl. a deliberate stale one)
     has_track = has_dubtitles_track(video)
     if has_track is None:
         log("  probe failed (unreadable?):", os.path.basename(video))
-        return "probe-failed"                   # counted apart from no-dubtitles, never stamped
+        return "probe-failed"  # counted apart from no-dubtitles, never stamped
     if not has_track:
-        return "no-dubtitles"                   # not muxed yet — the normal pipeline owns it
+        return "no-dubtitles"  # not muxed yet — the normal pipeline owns it
     if not apply:
         log("  PLAN stamp", os.path.basename(video))
         return "plan"
@@ -130,8 +134,10 @@ def main():
     if not a.apply and counts.get("plan"):
         log(f"{counts['plan']} file(s) would be stamped — re-run with --apply")
     if counts.get("probe-failed"):
-        log(f"WARNING: {counts['probe-failed']} file(s) could not be probed — they are NOT "
-            f"counted as 'no-dubtitles' and were NOT stamped; check them by hand")
+        log(
+            f"WARNING: {counts['probe-failed']} file(s) could not be probed — they are NOT "
+            f"counted as 'no-dubtitles' and were NOT stamped; check them by hand"
+        )
 
 
 if __name__ == "__main__":

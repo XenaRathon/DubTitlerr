@@ -58,74 +58,74 @@ and `mux.py`.
 
 ### Phase A — Models & Accuracy
 
-| Layer | File | Change |
-|---|---|---|
-| Transcription | `generate.py` | Add `word_probs` to conf.json; add `WHISPER_AUDIO_FILTER` to ffmpeg extract_wav; default `WHISPER_MODEL` test |
-| Repair | `repair.py` | Refactor `llm()` → dispatch; add `llm_ollama()`, `llm_llamacpp()`; add two-pass logic; add `REPAIR_TIMEOUT_*`; add latency to CSV; add `repair-summary.json` writer |
-| Glossary | `glossary.py` | Add tier 4 phonetic matching via `jellyfish.metaphone()` |
-| Config | `pyproject.toml` | Add `jellyfish` to dependencies |
-| Docker | `Dockerfile.builder` | Add `pip install jellyfish` |
+| Layer         | File                 | Change                                                                                                                                                              |
+| ------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Transcription | `generate.py`        | Add `word_probs` to conf.json; add `WHISPER_AUDIO_FILTER` to ffmpeg extract_wav; default `WHISPER_MODEL` test                                                       |
+| Repair        | `repair.py`          | Refactor `llm()` → dispatch; add `llm_ollama()`, `llm_llamacpp()`; add two-pass logic; add `REPAIR_TIMEOUT_*`; add latency to CSV; add `repair-summary.json` writer |
+| Glossary      | `glossary.py`        | Add tier 4 phonetic matching via `jellyfish.metaphone()`                                                                                                            |
+| Config        | `pyproject.toml`     | Add `jellyfish` to dependencies                                                                                                                                     |
+| Docker        | `Dockerfile.builder` | Add `pip install jellyfish`                                                                                                                                         |
 
 ### Phase B — Shell & Ops Cleanup
 
-| Layer | File | Change |
-|---|---|---|
-| Orchestration | `anime_library.sh` | Add deprecation comment header |
-| Orchestration | `all_seasons.sh` | Add deprecation comment header |
-| Orchestration | `merge_watcher.sh` | Fix image reference or deprecate |
-| Docker | `Dockerfile` | Add deprecation comment header |
-| Docs | `README.md` | Update "Quick start" to reference `Dockerfile.builder` |
-| Orchestration | `gen_loop.sh` | Add `set -e` + `\|\| true` on fallthroughs |
-| Orchestration | `merge_pass.sh` | Remove self-healing apt-get blocks |
-| New | `data/extras.txt` | One directory name per line, `#` comments |
-| New | `shell/lib.sh` | `extras_grep_pattern()` function |
-| Python | `common.py` | Add `load_extras(path="data/extras.txt")` with inline fallback |
-| Python | `generate.py` | Use `load_extras()` instead of inline `EXTRA_DIRS` |
-| Python | `mine_glossary.py` | Use `load_extras()` instead of inline `EXTRA_DIRS` |
-| Shell | `merge_pass.sh` | Use `extras_grep_pattern` instead of inline regex |
-| Shell | `post_show.sh` | Use `extras_grep_pattern` instead of inline regex |
-| Config | `.gitignore` | Add 8 pipeline artefact patterns |
-| Python | `plex_refresh.py` | `os.environ.get()` + clear error messages |
+| Layer         | File               | Change                                                         |
+| ------------- | ------------------ | -------------------------------------------------------------- |
+| Orchestration | `anime_library.sh` | Add deprecation comment header                                 |
+| Orchestration | `all_seasons.sh`   | Add deprecation comment header                                 |
+| Orchestration | `merge_watcher.sh` | Fix image reference or deprecate                               |
+| Docker        | `Dockerfile`       | Add deprecation comment header                                 |
+| Docs          | `README.md`        | Update "Quick start" to reference `Dockerfile.builder`         |
+| Orchestration | `gen_loop.sh`      | Add `set -e` + `\|\| true` on fallthroughs                     |
+| Orchestration | `merge_pass.sh`    | Remove self-healing apt-get blocks                             |
+| New           | `data/extras.txt`  | One directory name per line, `#` comments                      |
+| New           | `shell/lib.sh`     | `extras_grep_pattern()` function                               |
+| Python        | `common.py`        | Add `load_extras(path="data/extras.txt")` with inline fallback |
+| Python        | `generate.py`      | Use `load_extras()` instead of inline `EXTRA_DIRS`             |
+| Python        | `mine_glossary.py` | Use `load_extras()` instead of inline `EXTRA_DIRS`             |
+| Shell         | `merge_pass.sh`    | Use `extras_grep_pattern` instead of inline regex              |
+| Shell         | `post_show.sh`     | Use `extras_grep_pattern` instead of inline regex              |
+| Config        | `.gitignore`       | Add 8 pipeline artefact patterns                               |
+| Python        | `plex_refresh.py`  | `os.environ.get()` + clear error messages                      |
 
 ### Phase C — Python Polish
 
-| Layer | File | Change |
-|---|---|---|
-| Transcription | `generate.py` | Write `glossaries/<show>.lastrun.json` after processing |
-| Repair | `repair.py` | Write `repair-summary.json`; `REPAIR_TIMEOUT_*` env vars |
-| Glossary verify | `glossary_verify.py` | `ThreadPoolExecutor` for `adjudicate()` |
-| Mux | `mux.py` | Cache `identify()`; fix `HL_ROOTS` default; drop redundant `samefile()`; pass cached identify through `process()` |
-| Ordering | `ordering.py` | Default path `None`; resolve from env; warn on non-integer |
-| Reflow | `reflow.py` | `wrap_balance()` readability: separate `best_max_len` variable |
-| Orchestration | `anime_library.sh` | Add `--dry-run` flag support |
-| Data | `data/common_proper_noun_deny.txt` | Extract from `mine_glossary.py:COMMON` |
-| Data | `data/hallucination_blocklist.txt` | Extract from `hallucination.py:BLOCKLIST` |
-| Mining | `mine_glossary.py` | Load COMMON from data file, fall back to inline |
-| Hallucination | `hallucination.py` | Load BLOCKLIST from data file, fall back to inline |
-| Transcription | `generate.py` | Fix CUDA error gating: gate on exception type not substring; persist retry log (#2) |
-| Mux | `mux.py` | Remove half-size heuristic from `verify()` (#5) |
-| Repair | `repair.py` | Wrap sub ref in XML tags (prompt injection guard) |
-| All Python | All `.py` files | `os.chown(...) except OSError: pass` → log the path |
-| Specs | `specs/*/spec.md` | Populate Authorization sections |
-| Repair | `repair.py` | `_glossary_terms()` truncate on whole-term boundary |
+| Layer           | File                               | Change                                                                                                            |
+| --------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Transcription   | `generate.py`                      | Write `glossaries/<show>.lastrun.json` after processing                                                           |
+| Repair          | `repair.py`                        | Write `repair-summary.json`; `REPAIR_TIMEOUT_*` env vars                                                          |
+| Glossary verify | `glossary_verify.py`               | `ThreadPoolExecutor` for `adjudicate()`                                                                           |
+| Mux             | `mux.py`                           | Cache `identify()`; fix `HL_ROOTS` default; drop redundant `samefile()`; pass cached identify through `process()` |
+| Ordering        | `ordering.py`                      | Default path `None`; resolve from env; warn on non-integer                                                        |
+| Reflow          | `reflow.py`                        | `wrap_balance()` readability: separate `best_max_len` variable                                                    |
+| Orchestration   | `anime_library.sh`                 | Add `--dry-run` flag support                                                                                      |
+| Data            | `data/common_proper_noun_deny.txt` | Extract from `mine_glossary.py:COMMON`                                                                            |
+| Data            | `data/hallucination_blocklist.txt` | Extract from `hallucination.py:BLOCKLIST`                                                                         |
+| Mining          | `mine_glossary.py`                 | Load COMMON from data file, fall back to inline                                                                   |
+| Hallucination   | `hallucination.py`                 | Load BLOCKLIST from data file, fall back to inline                                                                |
+| Transcription   | `generate.py`                      | Fix CUDA error gating: gate on exception type not substring; persist retry log (#2)                               |
+| Mux             | `mux.py`                           | Remove half-size heuristic from `verify()` (#5)                                                                   |
+| Repair          | `repair.py`                        | Wrap sub ref in XML tags (prompt injection guard)                                                                 |
+| All Python      | All `.py` files                    | `os.chown(...) except OSError: pass` → log the path                                                               |
+| Specs           | `specs/*/spec.md`                  | Populate Authorization sections                                                                                   |
+| Repair          | `repair.py`                        | `_glossary_terms()` truncate on whole-term boundary                                                               |
 
 ### Phase D — Signs/Songs Low-Priority
 
-| Layer | File | Change |
-|---|---|---|
+| Layer       | File                 | Change                                                                                                                         |
+| ----------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | Signs merge | `dub_signs_merge.py` | Style collision logging in `build()`; WrapStyle check + warning; force `ScaledBorderAndShadow: yes`; resolution mismatch check |
-| Mux | `mux.py` | Font attachment count + MIME type check in `verify()` |
+| Mux         | `mux.py`             | Font attachment count + MIME type check in `verify()`                                                                          |
 
 ## Risks and mitigation
 
-| Risk | Mitigation |
-|---|---|
-| V1 not merged when V2 starts | V2 branch is based on `main` AFTER V1 merge. If V1 is in review, V2 waits. Spec is explicit about this dependency. |
-| `jellyfish` import fails in subgen image | `Dockerfile.builder` adds `pip install jellyfish`. `glossary.py` has try/except ImportError → phonetic tier skipped gracefully. |
-| llama.cpp API changes between now and deployment | The adapter (`llm_llamacpp()`) is a single function ~30 lines. Easy to update. |
-| `data/` files not copied into Docker image | `Dockerfile.builder` COPY line updated to include `data/` directory. |
-| EXTRA_DIRS grep regex escaping edge cases | The shell function `extras_grep_pattern` joins with `|` and uses `grep -iE`. Directory names with regex-special chars are escaped. |
-| `set -e` breaks gen_loop crash-resume | Every command that CAN fail intentionally (mine, verify, generate) already has `|| echo` or `|| { ... }`. `set -e` only catches UNEXPECTED failures (oops). |
+| Risk                                             | Mitigation                                                                                                                      |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| V1 not merged when V2 starts                     | V2 branch is based on `main` AFTER V1 merge. If V1 is in review, V2 waits. Spec is explicit about this dependency.              |
+| `jellyfish` import fails in subgen image         | `Dockerfile.builder` adds `pip install jellyfish`. `glossary.py` has try/except ImportError → phonetic tier skipped gracefully. |
+| llama.cpp API changes between now and deployment | The adapter (`llm_llamacpp()`) is a single function ~30 lines. Easy to update.                                                  |
+| `data/` files not copied into Docker image       | `Dockerfile.builder` COPY line updated to include `data/` directory.                                                            |
+| EXTRA_DIRS grep regex escaping edge cases        | The shell function `extras_grep_pattern` joins with `                                                                           | `and uses`grep -iE`. Directory names with regex-special chars are escaped. |
+| `set -e` breaks gen_loop crash-resume            | Every command that CAN fail intentionally (mine, verify, generate) already has `                                                |                                                                            | echo`or` |     | { ... }`. `set -e` only catches UNEXPECTED failures (oops). |
 
 ## Rollback and reversibility
 
@@ -155,7 +155,7 @@ and `mux.py`.
 - **Phase A:** Phonetic matching adds ~1ms per token (Metaphone is fast).
   Two-pass repair adds ~3–5s (35B MoE) for every line that hits the secondary
   model. Because the "contains a glossary name not in the original" trigger
-  fires on essentially every name-changing repair, budget for *most* repaired
+  fires on essentially every name-changing repair, budget for _most_ repaired
   name-lines going through the second pass, not a small "ambiguous" fraction.
   `repair-summary.json` makes the real second-pass hit rate visible; watch it
   after rollout and tighten the trigger if per-episode latency exceeds budget.

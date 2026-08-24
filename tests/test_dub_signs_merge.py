@@ -1,4 +1,5 @@
 """Unit tests for dub_signs_merge.py: keep_event() classifier + build() layer ordering."""
+
 import pysubs2
 
 import common
@@ -10,6 +11,7 @@ def ev(text="hello", style="Default"):
 
 
 # --- keep_event() matrix -----------------------------------------------------
+
 
 def test_keep_event_drops_plain_dialogue():
     assert not dsm.keep_event(ev(text="Just talking.", style="Main"))
@@ -48,6 +50,7 @@ def test_keep_event_drops_translation_style_despite_karaoke():
 
 
 # --- layer ordering in build() -----------------------------------------------
+
 
 def test_layer_ordering_dub_below_signs(tmp_path, monkeypatch):
     base = pysubs2.SSAFile()
@@ -97,6 +100,7 @@ def test_layer_ordering_dub_below_signs(tmp_path, monkeypatch):
 
 # --- V2 C10: chown failures are logged, not silently swallowed -------------------------
 
+
 def test_process_one_logs_chown_failure_instead_of_swallowing(tmp_path, monkeypatch, capsys):
     srt = str(tmp_path / ("ep" + dsm.SUFFIX))
     open(srt, "w").close()
@@ -105,6 +109,7 @@ def test_process_one_logs_chown_failure_instead_of_swallowing(tmp_path, monkeypa
 
     def _boom(*a, **kw):
         raise OSError("Operation not permitted")
+
     monkeypatch.setattr(dsm.os, "chown", _boom)
 
     assert dsm.process_one(srt) == "merged"  # chown failure must not abort the episode
@@ -112,6 +117,7 @@ def test_process_one_logs_chown_failure_instead_of_swallowing(tmp_path, monkeypa
 
 
 # --- V2 Phase D: diagnostic logging (D1/D3/D4/D5) ----------------------------
+
 
 def _two_track_build(tmp_path, monkeypatch, track0, track1):
     """Common scaffold: two fake source tracks (SSAFile objects), one dub line."""
@@ -140,10 +146,11 @@ def _two_track_build(tmp_path, monkeypatch, track0, track1):
 
 def _sign_track(style_name="Sign", fontname="Arial", fontsize=40.0, text="a sign"):
     t = pysubs2.SSAFile()
-    st = pysubs2.SSAStyle(); st.fontname = fontname; st.fontsize = fontsize
+    st = pysubs2.SSAStyle()
+    st.fontname = fontname
+    st.fontsize = fontsize
     t.styles[style_name] = st
-    t.events = [pysubs2.SSAEvent(start=0, end=1000, style=style_name,
-                                  text=r"{\pos(100,200)}" + text)]
+    t.events = [pysubs2.SSAEvent(start=0, end=1000, style=style_name, text=r"{\pos(100,200)}" + text)]
     return t
 
 
@@ -176,7 +183,7 @@ def test_style_conflict_keeps_first_definition(tmp_path, monkeypatch):
 
     assert status == "ok"
     result = pysubs2.load(out_ass)
-    assert result.styles["Sign"].fontname == "Arial"     # first definition wins (unchanged)
+    assert result.styles["Sign"].fontname == "Arial"  # first definition wins (unchanged)
     assert result.styles["Sign"].fontsize == 40.0
 
 
@@ -206,7 +213,7 @@ def test_wrapstyle_no_log_when_same(tmp_path, monkeypatch, capsys):
 
 def test_scaled_border_and_shadow_forced_yes(tmp_path, monkeypatch):
     track0 = _sign_track(text="first")
-    track0.info["ScaledBorderAndShadow"] = "no"       # source disagrees; must be overridden
+    track0.info["ScaledBorderAndShadow"] = "no"  # source disagrees; must be overridden
     track1 = _sign_track(text="second")
 
     status, _signs, _dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
@@ -218,24 +225,28 @@ def test_scaled_border_and_shadow_forced_yes(tmp_path, monkeypatch):
 
 def test_resolution_mismatch_warns_without_dropping_events(tmp_path, monkeypatch, capsys):
     track0 = _sign_track(text="first")
-    track0.info["PlayResX"] = "1280"; track0.info["PlayResY"] = "720"
+    track0.info["PlayResX"] = "1280"
+    track0.info["PlayResY"] = "720"
     track1 = _sign_track(text="second")
-    track1.info["PlayResX"] = "1920"; track1.info["PlayResY"] = "1080"
+    track1.info["PlayResX"] = "1920"
+    track1.info["PlayResY"] = "1080"
 
     status, signs, _dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
 
     assert status == "ok"
     assert "WARNING: resolution mismatch between subtitle tracks" in capsys.readouterr().out
-    assert signs == 2   # WARN ONLY -- both tracks' events still kept, no coordinate transform (V3)
+    assert signs == 2  # WARN ONLY -- both tracks' events still kept, no coordinate transform (V3)
     result = pysubs2.load(out_ass)
     assert {e.plaintext.strip() for e in result.events if e.style == "Sign"} == {"first", "second"}
 
 
 def test_resolution_no_mismatch_no_warning(tmp_path, monkeypatch, capsys):
     track0 = _sign_track(text="first")
-    track0.info["PlayResX"] = "1280"; track0.info["PlayResY"] = "720"
+    track0.info["PlayResX"] = "1280"
+    track0.info["PlayResY"] = "720"
     track1 = _sign_track(text="second")
-    track1.info["PlayResX"] = "1280"; track1.info["PlayResY"] = "720"
+    track1.info["PlayResX"] = "1280"
+    track1.info["PlayResY"] = "720"
 
     status, *_ = _two_track_build(tmp_path, monkeypatch, track0, track1)
 
@@ -249,6 +260,7 @@ def test_resolution_no_mismatch_no_warning(tmp_path, monkeypatch, capsys):
 # exclusion with no code of its own. These two cases pin that inheritance end-to-end
 # (real common.signs_sub_streams, ffprobe stubbed) rather than through a monkeypatched
 # signs_sub_streams, which would only ever test the stub.
+
 
 def _ffprobe_streams(monkeypatch, streams):
     import json as _json
@@ -269,11 +281,10 @@ def _ass_stream(index, title=None, lang="eng"):
 
 def test_build_reads_the_fansub_and_never_our_old_dubtitles_track(monkeypatch, tmp_path):
     extracted = []
-    _ffprobe_streams(monkeypatch, [_ass_stream(2, title="English (Fansub)"),
-                                   _ass_stream(3, title=common.TRACK_NAME)])
+    _ffprobe_streams(monkeypatch, [_ass_stream(2, title="English (Fansub)"), _ass_stream(3, title=common.TRACK_NAME)])
     monkeypatch.setattr(dsm, "extract", lambda video, idx, out: extracted.append(idx) or False)
     dsm.build("fake-video.mkv", str(tmp_path / "dub.srt"), str(tmp_path / "out.ass"))
-    assert extracted == [2]           # signs are lifted from the fansub only
+    assert extracted == [2]  # signs are lifted from the fansub only
 
 
 def test_build_finds_no_signs_when_the_only_sub_is_our_dubtitle(monkeypatch, tmp_path):
@@ -282,8 +293,7 @@ def test_build_finds_no_signs_when_the_only_sub_is_our_dubtitle(monkeypatch, tmp
     extracted = []
     _ffprobe_streams(monkeypatch, [_ass_stream(3, title=common.TRACK_NAME)])
     monkeypatch.setattr(dsm, "extract", lambda video, idx, out: extracted.append(idx) or False)
-    status, signs, added = dsm.build("fake-video.mkv", str(tmp_path / "dub.srt"),
-                                     str(tmp_path / "out.ass"))
+    status, signs, added = dsm.build("fake-video.mkv", str(tmp_path / "dub.srt"), str(tmp_path / "out.ass"))
     assert status == "no-signs"
     assert extracted == []
 
@@ -301,15 +311,22 @@ def test_build_finds_no_signs_when_the_only_sub_is_our_dubtitle(monkeypatch, tmp
 # caption rendered as solid black text instead of white-with-black-stroke, and
 # the counts halved (Credits-207+ 32 source events -> 16 merged).
 
+
 def _layered_track(style_name="Credits"):
     """One track holding a real two-layer composition (black backing + white top)."""
     t = pysubs2.SSAFile()
     t.styles[style_name] = pysubs2.SSAStyle()
     t.events = [
-        pysubs2.SSAEvent(start=10, end=3490, style=style_name, layer=0,
-                         text=r"{\pos(100,922)\bord3\c&H000000&\1a&H00&}Video Editing"),
-        pysubs2.SSAEvent(start=10, end=3490, style=style_name, layer=1,
-                         text=r"{\pos(100,922)\bord0\c&H000000&\t(0,1001,1,\c&HFFFFFF&)}Video Editing"),
+        pysubs2.SSAEvent(
+            start=10, end=3490, style=style_name, layer=0, text=r"{\pos(100,922)\bord3\c&H000000&\1a&H00&}Video Editing"
+        ),
+        pysubs2.SSAEvent(
+            start=10,
+            end=3490,
+            style=style_name,
+            layer=1,
+            text=r"{\pos(100,922)\bord0\c&H000000&\t(0,1001,1,\c&HFFFFFF&)}Video Editing",
+        ),
     ]
     return t
 
@@ -317,8 +334,7 @@ def _layered_track(style_name="Credits"):
 def test_build_keeps_both_layers_of_a_stacked_sign(tmp_path, monkeypatch):
     """The white top layer must not be discarded as a duplicate of the black backing."""
     track = _layered_track()
-    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch,
-                                                   track, pysubs2.SSAFile())
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track, pysubs2.SSAFile())
     assert status == "ok"
     result = pysubs2.load(out_ass)
     kept = [e for e in result.events if e.style == "Credits"]
@@ -329,8 +345,7 @@ def test_build_keeps_both_layers_of_a_stacked_sign(tmp_path, monkeypatch):
 def test_build_still_dedups_the_same_sign_carried_by_two_tracks(tmp_path, monkeypatch):
     """Releases ship the same sign in both the full track and the signs/songs track.
     Byte-identical events must still collapse to one, or every sign renders twice."""
-    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch,
-                                                   _layered_track(), _layered_track())
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, _layered_track(), _layered_track())
     assert status == "ok"
     result = pysubs2.load(out_ass)
     assert len([e for e in result.events if e.style == "Credits"]) == 2

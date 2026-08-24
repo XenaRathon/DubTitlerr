@@ -27,6 +27,10 @@ addopts = "-q"
 [tool.ruff]
 line-length = 130
 target-version = "py39"
+# Design docs hand-align the comments in their illustrative Python blocks; ruff
+# formats code inside Markdown fences by default and collapses that alignment.
+# The real .py files are still formatted -- only prose documents are exempt.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]

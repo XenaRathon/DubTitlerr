@@ -9,6 +9,7 @@ runs. Conservative by design: a single weak signal only flags — it never delet
 Pure stdlib, deterministic, runs in the subgen image. Card dicts are
 {start, end, text, avg_logprob, no_speech_prob}.  Built with help of Claude (Anthropic).
 """
+
 from __future__ import annotations
 
 import re
@@ -43,15 +44,15 @@ from collections import Counter
 # to ~1e-10 (identical across two independent CT2 conversions, so it is the distilled decoder,
 # not the packaging). On turbo the BLOCKLIST and is_repetition are the only live defences.
 # See docs/superpowers/specs/2026-08-21-vad-hang-trim-design.md sections 4 and 5.
-NSP_DROP = 0.95          # no_speech_prob above this AND...
-LP_DROP = -2.0           # ...avg_logprob below this => invented text over music/silence
+NSP_DROP = 0.95  # no_speech_prob above this AND...
+LP_DROP = -2.0  # ...avg_logprob below this => invented text over music/silence
 # FLAG thresholds (a single weaker signal -> keep but mark suspect)
 NSP_FLAG = 0.5
 LP_FLAG = -0.6
 # repetition
-REPEAT_MIN_TOKENS = 6    # below this a card is too short to call a loop (protects emphasis)
-REPEAT_COVERAGE = 0.6    # a repeated word/1-3-gram covering >= this fraction of the card
-RUN_COLLAPSE = 4         # collapse a run of >= this many near-identical consecutive cards
+REPEAT_MIN_TOKENS = 6  # below this a card is too short to call a loop (protects emphasis)
+REPEAT_COVERAGE = 0.6  # a repeated word/1-3-gram covering >= this fraction of the card
+RUN_COLLAPSE = 4  # collapse a run of >= this many near-identical consecutive cards
 
 # Known whisper hallucination phrases (music/credits/UGC boilerplate). Conservative —
 # only phrases that are never real dub dialogue. V2 C8: sourced from
@@ -84,10 +85,10 @@ def is_repetition(text: str) -> bool:
     n = len(toks)
     if n < REPEAT_MIN_TOKENS:
         return False
-    if Counter(toks).most_common(1)[0][1] / n >= REPEAT_COVERAGE:   # one word dominates
+    if Counter(toks).most_common(1)[0][1] / n >= REPEAT_COVERAGE:  # one word dominates
         return True
-    for k in (3, 2):                                                # a 2-3-gram loops
-        grams = [tuple(toks[i:i + k]) for i in range(n - k + 1)]
+    for k in (3, 2):  # a 2-3-gram loops
+        grams = [tuple(toks[i : i + k]) for i in range(n - k + 1)]
         top = Counter(grams).most_common(1)[0][1]
         if top >= 3 and top * k / n >= REPEAT_COVERAGE:
             return True
@@ -126,8 +127,7 @@ def drop_reason(card: dict, rec=None) -> str | None:
     _tick(rec, "repetition", hit)
     if hit:
         return "repetition"
-    hit = (card.get("no_speech_prob", 0.0) > NSP_DROP
-           and card.get("avg_logprob", 0.0) < LP_DROP)
+    hit = card.get("no_speech_prob", 0.0) > NSP_DROP and card.get("avg_logprob", 0.0) < LP_DROP
     _tick(rec, "music", hit)
     if hit:
         return "music"

@@ -3,17 +3,17 @@
 **Status:** draft amendments to `2026-08-21-acquire-decision-cache-design.md`
 **Raised:** 2026-08-21, after the Round 3 adversarial review
 (`GLM-2026-08-21-glossary-and-watchgate.md`, §Round 3 + §Self-rebuttal)
-**Scope:** only the gaps that *survived* the self-rebuttal. The refuted/overstated
+**Scope:** only the gaps that _survived_ the self-rebuttal. The refuted/overstated
 findings (the title-set hash, the `len(anchors)` recycle trigger, the `context_lines` #2
 "not addressed" claim, the mtime-staleness-under-`cache=none` claim) are deliberately
 absent — they were wrong and the spec should not absorb them.
 
 The guiding constraint, restated from the spec's own §2.1: **no global fingerprint, no TTL,
-no versioned key to maintain by hand.** Every fix below is *per-token* and *per-entry* —
+no versioned key to maintain by hand.** Every fix below is _per-token_ and _per-entry_ —
 the cache entry stores the denominator its verdict was conditional on, and a cache hit
 re-checks exactly that denominator, never the whole cache. This is the spec's
-"absence is the cache miss" principle applied to the *payload* (canonical, floor), which
-the original spec covered only for the *label*.
+"absence is the cache miss" principle applied to the _payload_ (canonical, floor), which
+the original spec covered only for the _label_.
 
 ---
 
@@ -22,14 +22,14 @@ the original spec covered only for the *label*.
 ### The gap (after rebuttal)
 
 The cache stores `canonical` verbatim (spec §2.1). `fetch_titles` has a 30-day TTL
-(`glossary_verify.py:52`) and *will* return a different title list. A wiki rename that
-changes a title's *normalised* form (rare — disambiguator-only renames are already absorbed
+(`glossary_verify.py:52`) and _will_ return a different title list. A wiki rename that
+changes a title's _normalised_ form (rare — disambiguator-only renames are already absorbed
 by `normalize_title()`, glossary_acquire.py:33–39) leaves the cached canonical pointing at a
 title the wiki no longer ships. `apply_proposals` (glossary_acquire.py:438–470) then writes
 that stale canonical into `hard_fixes` on the next `apply` verdict for that token.
 
 Frequency is low (once per show per decade, and a human usually wants to re-litigate it
-anyway). Blast radius is one token per renamed title. But the cache has *no* detection path
+anyway). Blast radius is one token per renamed title. But the cache has _no_ detection path
 at all, so the wrong canonical persists across sweeps until a human notices.
 
 ### The fix (per-token membership check)
@@ -52,14 +52,14 @@ if entry is not None:
 ```
 
 **Why this and not a title-set hash:** a global hash (my original Attack 1 proposal) bumps
-on *any* rename across *any* page and re-runs the entire 71% `escalate` cost for one show
+on _any_ rename across _any_ page and re-runs the entire 71% `escalate` cost for one show
 — the exact "silently invalidating everything" failure the spec §2.1 rejects. The
-membership check is O(1) per cached token, invalidates *only* entries whose canonical
+membership check is O(1) per cached token, invalidates _only_ entries whose canonical
 actually disappeared, and costs nothing on the common case (no renames).
 
-**What it does NOT catch:** a rename that changes a title's normalised form *to a different
-valid title that the token should now resolve to instead*. The membership check only detects
-*disappearance*, not *re-resolution*. This is acceptable: the token's own count and the
+**What it does NOT catch:** a rename that changes a title's normalised form _to a different
+valid title that the token should now resolve to instead_. The membership check only detects
+_disappearance_, not _re-resolution_. This is acceptable: the token's own count and the
 `settled_target`/`source_gate` gates still run on a cache miss, and a genuine canonical
 correction (Raftel → Laugh Tale) is the case a human wants to re-litigate. If full
 re-resolution is wanted later, store the resolved-score on the entry and re-resolve only
@@ -81,8 +81,8 @@ Add to §2.1, after the "No invalidation logic, deliberately" paragraph:
 
 Add to §4 (Testing):
 
-| test | asserts |
-|---|---|
+| test                                                         | asserts                                                                                                                                   |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | a renamed wiki canonical invalidates only the affected entry | remove one title from `fetch_titles`'s output; only cache entries whose `canonical` normalised to that title miss; all others stay cached |
 
 ---
@@ -100,7 +100,7 @@ apply-eligible (floor 2) — but the cached `below-floor` verdict is served verb
 floor change is never observed.
 
 The spec's §2.2 recycle rule (`count > cached_count * 3`) does not catch this: the token's
-*own* count didn't change; the *anchor set* did. After rebuttal this is a **recall gap**
+_own_ count didn't change; the _anchor set_ did. After rebuttal this is a **recall gap**
 (missed acquires of rare long-tail names), not a correctness gap — the re-evaluation would
 mostly produce another `flag`, not an `apply`, because count-2 tokens are in the noise band
 the floor was split to be cautious about (D4 comment, glossary_acquire.py). But it is still
@@ -109,7 +109,7 @@ a gap: the cache freezes the floor at its pre-anchor value.
 ### The fix (per-token anchor tracking)
 
 Store the specific anchor (if any) the floor was conditional on, on the cache entry. On a
-cache hit, re-check whether that anchor — or a *new* near-miss anchor — is now present:
+cache hit, re-check whether that anchor — or a _new_ near-miss anchor — is now present:
 
 ```python
 # Cache entry shape (extends spec §2.1):
@@ -129,10 +129,10 @@ if entry["verdict"] == "junk" and entry["reason"] in FREQUENCY_REASONS:
 where `FREQUENCY_REASONS` is the set from Fix C below.
 
 **Why this and not `len(anchors)` growth:** `len(anchors)` grows on every `apply`, so a
-global anchor-count trigger would invalidate *every* `below-floor` junk entry on every
+global anchor-count trigger would invalidate _every_ `below-floor` junk entry on every
 `apply` verdict — the same "silently invalidating everything" over-invalidation the spec
-rejects. The per-token check invalidates only entries whose *specific* near-miss anchor
-landscape changed, which is the only change that could flip *this* token's floor.
+rejects. The per-token check invalidates only entries whose _specific_ near-miss anchor
+landscape changed, which is the only change that could flip _this_ token's floor.
 
 **What it does NOT catch:** the case where a token had no anchor near it at decision time
 (`floor_anchor = None`) and still has none — that entry stays cached, correctly, because
@@ -153,8 +153,8 @@ Add to §2.2, after the `count > cached_count * 3` paragraph:
 
 Add to §4 (Testing):
 
-| test | asserts |
-|---|---|
+| test                                                        | asserts                                                                                                                                            |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | a junk entry re-queues when its near-miss becomes an anchor | add a canonical to `hard_fixes` that is a near-miss of a cached `below-floor` token; that token re-runs, an unrelated `below-floor` token does not |
 
 ---
@@ -165,7 +165,7 @@ Add to §4 (Testing):
 
 The spec §2.2 names only `below-floor` as the frequency-derived junk reason that recycles.
 `decide()` (glossary_acquire.py:494–528) and `source_gate` (glossary_acquire.py:438–455)
-emit several `flag`-reasoned verdicts whose verdict *could* flip on a larger corpus:
+emit several `flag`-reasoned verdicts whose verdict _could_ flip on a larger corpus:
 `below-floor`, `unseen-needs-evidence`, `share-too-close` (post-escalate failure),
 `transcript-new-term`, `growth-over-cap`. The spec's `junk` bucket (§2.1 schema:
 `{verdict: "junk", reason: ...}`) would absorb all of these under one `junk` verdict, then
@@ -195,13 +195,13 @@ def _recycles(reason: str) -> bool:
     return reason not in STRUCTURAL_JUNK_REASONS
 ```
 
-Then §2.2's recycle rule becomes: *a `junk` token recycles on count growth OR
-anchor-landscape change IF `_recycles(entry["reason"])`*. The `english-word` exemption the
+Then §2.2's recycle rule becomes: _a `junk` token recycles on count growth OR
+anchor-landscape change IF `_recycles(entry["reason"])`_. The `english-word` exemption the
 spec already names falls out of this for free (`english-word ∈ STRUCTURAL_JUNK_REASONS`).
 
 ### Spec amendment
 
-Replace §2.2's "`junk` for a *structural* reason (`english-word`) never recycles — that
+Replace §2.2's "`junk` for a _structural_ reason (`english-word`) never recycles — that
 fact cannot change. Only frequency-derived verdicts (`below-floor`) do." with:
 
 > A `junk` verdict recycles when its reason is **frequency-derived** — conditional on
@@ -214,10 +214,10 @@ fact cannot change. Only frequency-derived verdicts (`below-floor`) do." with:
 
 Add to §4 (Testing):
 
-| test | asserts |
-|---|---|
-| structural junk never recycles at any count | an `english-word` / `already-canonical` entry stays cached regardless of count growth or anchor changes |
-| a `transcript-new-term` junk entry recycles on count growth | a `transcript-new-term` entry at count 2 re-queues at count 7, where `below-floor` already did |
+| test                                                        | asserts                                                                                                 |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| structural junk never recycles at any count                 | an `english-word` / `already-canonical` entry stays cached regardless of count growth or anchor changes |
+| a `transcript-new-term` junk entry recycles on count growth | a `transcript-new-term` entry at count 2 re-queues at count 7, where `below-floor` already did          |
 
 ---
 
@@ -247,16 +247,16 @@ with:
 > keyed on `(path, size, mtime)` — the same triple `common.stamp_valid()` already uses for
 > the `.dubtitles.done` stamp, so the idiom is established and its failure modes are known.
 > The 3200g worker reaches the library over CIFS
-> (`vers=3.0,...,nobrl,cache=none` — *not* `actimeo=1`, which is an NFS option; an earlier
+> (`vers=3.0,...,nobrl,cache=none` — _not_ `actimeo=1`, which is an NFS option; an earlier
 > draft of this spec conflated the two filesystems). `cache=none` disables client-side
 > attribute caching, so `os.stat` reflects the server's current state at call time. The
 > triple's `size` component is what catches an edited episode in practice (subtitle text
 > edits almost always change byte size); `mtime` is the secondary check. The one residual
 > case — a same-byte-size edit during a CIFS handle-recovery window returning a stale mtime
 > — is [UNVERIFIABLE] without a reproduction and is lower-cost than it sounds (it serves
-> stale *context lines* to a human reviewer, not a wrong canonical to `hard_fixes`).
-> `stamp_valid` uses the same triple to fail-*safe* (regenerate); the harvest cache uses
-> it to fail-*silent* (skip a read), so the harvest cache's cache-miss path must default
+> stale _context lines_ to a human reviewer, not a wrong canonical to `hard_fixes`).
+> `stamp_valid` uses the same triple to fail-_safe_ (regenerate); the harvest cache uses
+> it to fail-_silent_ (skip a read), so the harvest cache's cache-miss path must default
 > to re-reading on any `stat` ambiguity rather than trusting the triple absolutely.
 
 No new test — the existing §4 "an edited episode is re-read; an untouched one is not" test
@@ -278,7 +278,7 @@ rare for subtitle text).
   component already catches edits and the mtime-staleness case is [UNVERIFIABLE]. Fix D
   corrects only the spec's `actimeo=1` typo and adds a fail-safe-default note, no hash.
 - **Anything for `context_lines` #2.** My Round 3 Attack 6.4 claimed the decision cache
-  doesn't shrink it; the self-rebuttal refuted that (a cached `flag` is *absent* from the
+  doesn't shrink it; the self-rebuttal refuted that (a cached `flag` is _absent_ from the
   next sweep's flagged set). No fix needed.
 
 ---

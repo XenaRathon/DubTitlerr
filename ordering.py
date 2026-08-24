@@ -14,16 +14,18 @@ no priority file is configured. Absent both, read_start() returns 0 and logs tha
 watch-order is disabled; order_files() then does a plain sort — behaviour unchanged.
 
 Pure stdlib, deterministic. Built with help of Claude (Anthropic)."""
+
 from __future__ import annotations
 
 import os
 import re
 
-NO_SEASON = 10**6         # sentinel: files with no SxxExx tag sort after all real seasons
+NO_SEASON = 10**6  # sentinel: files with no SxxExx tag sort after all real seasons
 _SE = re.compile(r"[Ss](\d+)[Ee](\d+)")
 
 
-def log(*a): print(*a, flush=True)
+def log(*a):
+    print(*a, flush=True)
 
 
 def season_ep(path: str) -> tuple[int, int]:
@@ -43,7 +45,7 @@ def order_files(files: list[str], start: int) -> list[str]:
 
     def key(p):
         s, e = season_ep(p)
-        tier = 0 if s != NO_SEASON and s >= start else 1   # forward-watch seasons first
+        tier = 0 if s != NO_SEASON and s >= start else 1  # forward-watch seasons first
         return (tier, s, e, p)
 
     return sorted(files, key=key)

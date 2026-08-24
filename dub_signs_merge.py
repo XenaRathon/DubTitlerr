@@ -26,6 +26,7 @@ Idempotent. Env: MERGE_ROOTS (colon list), DUB_SUFFIX, MEDIA_UID/GID, SUB_LANGS
 (comma list of accepted subtitle languages, default eng,und).
 Requires ffmpeg/ffprobe + pysubs2.  Built with help of Claude (Anthropic).
 """
+
 import os
 import re
 import sys
@@ -58,26 +59,26 @@ def keep_event(ev):
     if not ev.plaintext.strip():
         return False
     style = ev.style or ""
-    if DROP_STYLE.search(style):          # dialogue / warning / song-translation -> drop FIRST
-        return False                      # (checked before positioning so Translation drops too)
+    if DROP_STYLE.search(style):  # dialogue / warning / song-translation -> drop FIRST
+        return False  # (checked before positioning so Translation drops too)
     t = ev.text
-    if KARAOKE.search(t):                  # Japanese romaji karaoke (top) -> keep
+    if KARAOKE.search(t):  # Japanese romaji karaoke (top) -> keep
         return True
-    if HAS_DRAWING.search(t):             # vector-drawn sign (\p/\clip/\iclip) -> keep
+    if HAS_DRAWING.search(t):  # vector-drawn sign (\p/\clip/\iclip) -> keep
         return True
-    if POSITIONED.search(t) or ANIMATED.search(t):   # positioned/animated sign -> keep
-        return True                                  # (ANIMATED's \move overlaps POSITIONED; merged into one check)
+    if POSITIONED.search(t) or ANIMATED.search(t):  # positioned/animated sign -> keep
+        return True  # (ANIMATED's \move overlaps POSITIONED; merged into one check)
     if KEEP_STYLE.search(style):
         return True
     return False  # unknown plain event -> assume dialogue, Whisper has it
 
 
 def build(video, dub_srt, out_ass):
-    base = None         # the merged ScriptInfo/styles canvas
-    kept = []           # (event, source_style_name)
+    base = None  # the merged ScriptInfo/styles canvas
+    kept = []  # (event, source_style_name)
     seen = set()
-    base_ws = None       # D3: base track's WrapStyle, for cross-track comparison
-    resolutions = []     # D5: (PlayResX, PlayResY) per source track, for mismatch warning
+    base_ws = None  # D3: base track's WrapStyle, for cross-track comparison
+    resolutions = []  # D5: (PlayResX, PlayResY) per source track, for mismatch warning
     for _n, idx in enumerate(signs_sub_streams(video, SUB_LANGS)):
         with tempfile.TemporaryDirectory() as td:
             ex = os.path.join(td, "s.ass")
@@ -86,21 +87,22 @@ def build(video, dub_srt, out_ass):
             try:
                 subs = pysubs2.load(ex)
             except Exception as e:
-                log("  load fail", idx, e); continue
-        src_events = list(subs.events)   # snapshot BEFORE any clearing (base may alias subs)
-        resolutions.append((subs.info.get("PlayResX"), subs.info.get("PlayResY")))   # D5
+                log("  load fail", idx, e)
+                continue
+        src_events = list(subs.events)  # snapshot BEFORE any clearing (base may alias subs)
+        resolutions.append((subs.info.get("PlayResX"), subs.info.get("PlayResY")))  # D5
         if base is None:
             base = subs
             base.events = []
-            base.info["ScaledBorderAndShadow"] = "yes"   # D4: consistent cross-player rendering
-            base_ws = base.info.get("WrapStyle")          # D3
+            base.info["ScaledBorderAndShadow"] = "yes"  # D4: consistent cross-player rendering
+            base_ws = base.info.get("WrapStyle")  # D3
         else:
-            track_ws = subs.info.get("WrapStyle")         # D3
+            track_ws = subs.info.get("WrapStyle")  # D3
             if track_ws != base_ws:
                 log(f"WrapStyle differs: base={base_ws} track={track_ws} — using base")
-            for sname, sty in subs.styles.items():   # carry styles from later tracks
+            for sname, sty in subs.styles.items():  # carry styles from later tracks
                 if sname in base.styles:
-                    existing = base.styles[sname]     # D1: flag conflicting redefinitions
+                    existing = base.styles[sname]  # D1: flag conflicting redefinitions
                     if existing.fontname != sty.fontname or existing.fontsize != sty.fontsize:
                         log(f"  style conflict: '{sname}' — font/size differ, using first definition")
                 else:
@@ -118,30 +120,40 @@ def build(video, dub_srt, out_ass):
             key = (int(ev.start), int(ev.end), ev.style, ev.layer, ev.text)
             if key in seen:
                 continue
-            seen.add(key); base.events.append(ev)
+            seen.add(key)
+            base.events.append(ev)
             kept.append(ev)
     if base is None:
         return "no-signs", 0, 0
-    if len(set(resolutions)) > 1:   # D5: warn only — no coordinate transform (deferred to V3)
+    if len(set(resolutions)) > 1:  # D5: warn only — no coordinate transform (deferred to V3)
         log("WARNING: resolution mismatch between subtitle tracks — signs may be mispositioned")
     # bottom dub dialogue style
     play_y = 0
-    try: play_y = int(base.info.get("PlayResY") or 0)
-    except Exception: pass
+    try:
+        play_y = int(base.info.get("PlayResY") or 0)
+    except Exception:
+        pass
     play_y = play_y or 720
     fs = max(32, round(play_y / 17))
     st = pysubs2.SSAStyle()
-    st.fontname = "Arial"; st.fontsize = fs; st.bold = True
-    st.primarycolor = pysubs2.Color(255, 255, 255); st.outlinecolor = pysubs2.Color(0, 0, 0)
-    st.outline = max(1.5, fs / 22); st.shadow = 1.0
-    st.alignment = pysubs2.Alignment.BOTTOM_CENTER; st.marginv = max(10, round(play_y / 22))
+    st.fontname = "Arial"
+    st.fontsize = fs
+    st.bold = True
+    st.primarycolor = pysubs2.Color(255, 255, 255)
+    st.outlinecolor = pysubs2.Color(0, 0, 0)
+    st.outline = max(1.5, fs / 22)
+    st.shadow = 1.0
+    st.alignment = pysubs2.Alignment.BOTTOM_CENTER
+    st.marginv = max(10, round(play_y / 22))
     base.styles["Dubtitles"] = st
     dub = pysubs2.load(dub_srt)
     added = 0
     for ev in dub:
         if ev.is_comment:
             continue
-        ev.style = "Dubtitles"; base.events.append(ev); added += 1
+        ev.style = "Dubtitles"
+        base.events.append(ev)
+        added += 1
     # Dubtitles dialogue on the floor (layer 0); every sign/song event bumped one
     # layer up so it renders on top. Shift (not zero) keeps the relative z-order
     # among multi-layer sign compositions.
@@ -157,7 +169,7 @@ def build(video, dub_srt, out_ass):
 
 
 def process_one(srt):
-    stem = srt[:-len(SUFFIX)]
+    stem = srt[: -len(SUFFIX)]
     out_ass = out_for(stem + ".eng.dubtitles.ass")
     video = find_video(stem)
     if not video:
@@ -165,20 +177,25 @@ def process_one(srt):
     try:
         res, signs, dub = build(video, srt, out_ass)
     except Exception as e:
-        log("build error:", srt, e); return "build-error"
+        log("build error:", srt, e)
+        return "build-error"
     if res != "ok" or dub == 0:
         return res if res != "ok" else "empty"
-    try: os.chown(out_ass, MEDIA_UID, MEDIA_GID)
-    except OSError as e: log(f"chown failed for {out_ass}: {e}")
-    try: os.remove(srt)
-    except OSError: pass
+    try:
+        os.chown(out_ass, MEDIA_UID, MEDIA_GID)
+    except OSError as e:
+        log(f"chown failed for {out_ass}: {e}")
+    try:
+        os.remove(srt)
+    except OSError:
+        pass
     log(f"  signs/songs/credits kept={signs}  dub lines={dub}")
     return "merged"
 
 
 def main():
     args = sys.argv[1:]
-    srts = list(args) if args else []      # explicit .srt paths, else walk roots
+    srts = list(args) if args else []  # explicit .srt paths, else walk roots
     if not srts:
         for root in ROOTS:
             if not os.path.isdir(root):

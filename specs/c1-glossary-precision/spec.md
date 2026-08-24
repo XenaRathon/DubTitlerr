@@ -79,24 +79,24 @@ One Pace episodes (no embedded subs), so for One Pace the curated glossary is th
 
 ## Edge cases and failure modes
 
-| Case | Expected behavior |
-|---|---|
+| Case                                                                           | Expected behavior                                                                                                                                                                         |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Token is a real English word that's also a name (e.g. "Robin", "Law", "Brook") | hard_fixes/exact-name still allowed; guarded fuzzy refuses (exact match needs no fuzz). Names that are English words are corrected only via exact glossary/hard_fixes, never fuzzed onto. |
-| mp4 episode (no embedded fansub) | LLM repair runs with glossary-only context; deterministic layer still applies. |
-| LLM unreachable / Ollama down | Repair leaves the deterministic text untouched (graceful); logged. |
-| LLM returns verbatim fansub or wildly different length | Rejected by the existing length-ratio guard; keep ASR text. |
-| Phrase hard_fix overlaps a token hard_fix | Apply phrases first, then tokens, so "Enies Lobby" wins over a stray "lobby". |
-| Show with no glossary file | Deterministic layer is a no-op (as today); LLM uses generic prompt. |
+| mp4 episode (no embedded fansub)                                               | LLM repair runs with glossary-only context; deterministic layer still applies.                                                                                                            |
+| LLM unreachable / Ollama down                                                  | Repair leaves the deterministic text untouched (graceful); logged.                                                                                                                        |
+| LLM returns verbatim fansub or wildly different length                         | Rejected by the existing length-ratio guard; keep ASR text.                                                                                                                               |
+| Phrase hard_fix overlaps a token hard_fix                                      | Apply phrases first, then tokens, so "Enies Lobby" wins over a stray "lobby".                                                                                                             |
+| Show with no glossary file                                                     | Deterministic layer is a no-op (as today); LLM uses generic prompt.                                                                                                                       |
 
 ## Decisions taken
 
-| Decision | Rejected | Why |
-|---|---|---|
-| Hybrid: hard_fixes + very guarded fuzzy + heavy LLM lean | Curated-only; fuzzy-only | Max accuracy for the definitive goal; guards kill false positives; LLM covers recall. |
-| LLM on mid-confidence-and-lower + name-suspect lines | All lines; low-only | Most of the accuracy gain without LLM-ing every clean line; still broad. |
-| A/B/C bake-off (qwen3:8b / qwen3.5:4b / qwen2.5:7b) then lock | Pick one blind | Definitive answer on the user's actual 2070/Ollama. |
-| Fansub anchor when present, glossary-only fallback | Glossary-only everywhere | Fansub is the strongest available name/spelling signal on mkv. |
-| Glossary show-before-apply | Auto-curate | User is the One Piece authority; catch canon errors pre-commit. |
+| Decision                                                      | Rejected                 | Why                                                                                   |
+| ------------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------- |
+| Hybrid: hard_fixes + very guarded fuzzy + heavy LLM lean      | Curated-only; fuzzy-only | Max accuracy for the definitive goal; guards kill false positives; LLM covers recall. |
+| LLM on mid-confidence-and-lower + name-suspect lines          | All lines; low-only      | Most of the accuracy gain without LLM-ing every clean line; still broad.              |
+| A/B/C bake-off (qwen3:8b / qwen3.5:4b / qwen2.5:7b) then lock | Pick one blind           | Definitive answer on the user's actual 2070/Ollama.                                   |
+| Fansub anchor when present, glossary-only fallback            | Glossary-only everywhere | Fansub is the strongest available name/spelling signal on mkv.                        |
+| Glossary show-before-apply                                    | Auto-curate              | User is the One Piece authority; catch canon errors pre-commit.                       |
 
 ## Constraints
 

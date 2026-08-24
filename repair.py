@@ -51,6 +51,7 @@ Env:
   MEDIA_UID/GID default 1000/100
 Requires ffmpeg/ffprobe + pysubs2.  Built with help of Claude (Anthropic).
 """
+
 import csv
 import http.client
 import json
@@ -61,26 +62,27 @@ import time
 import urllib.parse
 
 import glossary
-import unresolved
 import reflow
+import unresolved
 from common import MEDIA_GID, MEDIA_UID, dialogue_intervals, find_video, out_for, ts_srt
 
 OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
 MODEL = os.environ.get("REPAIR_MODEL", "qwen3:8b")
 REPAIR_BACKEND = os.environ.get("REPAIR_BACKEND", "ollama")
-LLAMACPP_URL = os.environ.get("REPAIR_LLAMACPP_URL",
-                              "http://192.168.1.232:8080/v1/chat/completions")
+LLAMACPP_URL = os.environ.get("REPAIR_LLAMACPP_URL", "http://192.168.1.232:8080/v1/chat/completions")
 MODEL_SECONDARY = os.environ.get("REPAIR_MODEL_SECONDARY", MODEL)
 TIMEOUT_CONNECT = float(os.environ.get("REPAIR_TIMEOUT_CONNECT", "10"))
 TIMEOUT_READ = float(os.environ.get("REPAIR_TIMEOUT_READ", "120"))
-LOGPROB_MIN = float(os.environ.get("LOGPROB_MIN", "-0.4"))   # mid-confidence-and-lower (C1)
+LOGPROB_MIN = float(os.environ.get("LOGPROB_MIN", "-0.4"))  # mid-confidence-and-lower (C1)
 NSP_MAX = float(os.environ.get("NSP_MAX", "0.5"))
 GLOSSARY_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
 ROOTS = os.environ.get("MERGE_ROOTS", "/data/Media/Anime Library").split(":")
 CONF_SUFFIX = ".dubtitles.conf.json"
 SRT_SUFFIX = ".eng.dubtitles.srt"
 
-def log(*a): print(*a, flush=True)
+
+def log(*a):
+    print(*a, flush=True)
 
 
 def glossary_for(path, gloss_dir=GLOSSARY_DIR):
@@ -95,7 +97,7 @@ def glossary_for(path, gloss_dir=GLOSSARY_DIR):
     return glossary.load("")
 
 
-LOW_WORD_PROB = 0.25   # V2 A7: a single word this unconfident marks the whole card a target
+LOW_WORD_PROB = 0.25  # V2 A7: a single word this unconfident marks the whole card a target
 
 
 def has_low_prob_word(c):
@@ -112,17 +114,17 @@ def is_target(c, gloss):
     mid-confidence-or-lower, name-suspect, OR containing a very-low-confidence word."""
     if c.get("no_speech_prob", 1.0) > NSP_MAX:
         return False
-    return (c.get("avg_logprob", 0.0) < LOGPROB_MIN or has_low_prob_word(c)
-            or glossary.name_suspect(c.get("text", ""), gloss))
+    return c.get("avg_logprob", 0.0) < LOGPROB_MIN or has_low_prob_word(c) or glossary.name_suspect(c.get("text", ""), gloss)
 
 
 def _glossary_terms(gloss):
     terms = list(gloss["names"]) + list(gloss["phrases"])
     terms += list(gloss["token_fixes"].values()) + list(gloss["phrase_fixes"].values())
     seen, out = set(), []
-    for t in terms:                       # de-dup, preserve order
+    for t in terms:  # de-dup, preserve order
         if t not in seen:
-            seen.add(t); out.append(t)
+            seen.add(t)
+            out.append(t)
     # C12: cap the prompt size on WHOLE-TERM boundaries -- a raw [:1000] slice can cut a
     # name in half mid-word, which would feed the model a garbled "canonical spelling".
     result = ""
@@ -161,10 +163,15 @@ def build_prompt(asr, sub, gloss, prev_text="", next_text=""):
     prev_text/next_text are extra context only -- never part of what gets corrected."""
     names = _glossary_terms(gloss)
     head = "You fix speech-recognition errors in one English-dub subtitle line.\n"
-    name_line = (f"Reference spellings (VERIFICATION ONLY - this is NOT a list of names to "
-                 f"insert): {names}.\n") if names else ""
-    ref_intro = ("A DIFFERENT translation of this moment is quoted below; use it only to "
-                 "resolve garbled words and confirm names, never to copy its wording.\n") if sub else ""
+    name_line = (f"Reference spellings (VERIFICATION ONLY - this is NOT a list of names to insert): {names}.\n") if names else ""
+    ref_intro = (
+        (
+            "A DIFFERENT translation of this moment is quoted below; use it only to "
+            "resolve garbled words and confirm names, never to copy its wording.\n"
+        )
+        if sub
+        else ""
+    )
     rules = (
         "Rules:\n"
         "- You MUST fix: run-together sentences with missing punctuation, missing "
@@ -173,23 +180,22 @@ def build_prompt(asr, sub, gloss, prev_text="", next_text=""):
         "misspelling of a reference spelling above.\n"
         "- Never insert a name that is not already in the line.\n"
         "- Do NOT turn ordinary words into names. Keep the wording and length almost identical.\n\n"
-        'Example -> ASR line: it worked Now we run\n'
-        'Corrected line: It worked. Now we run.\n'
-        '(Two sentences were run together with no punctuation. That IS damage - fix it.)\n\n'
-        "Return ONLY the corrected line - no quotes, no notes, no rule text.\n\n")
+        "Example -> ASR line: it worked Now we run\n"
+        "Corrected line: It worked. Now we run.\n"
+        "(Two sentences were run together with no punctuation. That IS damage - fix it.)\n\n"
+        "Return ONLY the corrected line - no quotes, no notes, no rule text.\n\n"
+    )
     # C9: the fansub reference is untrusted third-party text -- keep it wrapped in an XML
     # tag so it reads as quoted DATA, not instructions (prompt-injection guard). Context
     # and reference come BEFORE the ASR line: anything trailing it gets echoed into output.
     prev_line = f'Previous line (for context): "{prev_text}"\n' if prev_text else ""
     next_line = f'Next line (for context): "{next_text}"\n' if next_text else ""
     ref_line = f"<official_subtitle_reference>{sub}</official_subtitle_reference>\n" if sub else ""
-    return (f"{head}{name_line}{ref_intro}{rules}"
-            f"{prev_line}{next_line}{ref_line}"
-            f"ASR line: {asr}\nCorrected line:")
+    return f"{head}{name_line}{ref_intro}{rules}{prev_line}{next_line}{ref_line}ASR line: {asr}\nCorrected line:"
 
 
 def overlap_ref(ivals, a, b):
-    hits = [t for (s, e, t) in ivals if e > a and s < b]   # any time overlap
+    hits = [t for (s, e, t) in ivals if e > a and s < b]  # any time overlap
     return " ".join(hits)[:300]
 
 
@@ -208,8 +214,7 @@ def _post_json(url, body):
         path = parsed.path or "/"
         if parsed.query:
             path += "?" + parsed.query
-        conn.request("POST", path, body=json.dumps(body).encode(),
-                     headers={"Content-Type": "application/json"})
+        conn.request("POST", path, body=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
         resp = conn.getresponse()
         data = resp.read()
         if resp.status >= 400:
@@ -289,12 +294,12 @@ def accept_repair(orig, new, ref, dur):
     if not new:
         return False
     if new.lower() == (orig or "").lower():
-        return False                                   # nothing changed
+        return False  # nothing changed
     ratio = len(new) / max(1, len(orig))
     if not (LEN_RATIO_MIN <= ratio <= LEN_RATIO_MAX):
-        return False                                   # added or dropped a clause
+        return False  # added or dropped a clause
     if not fits_card(new, dur, orig):
-        return False                                   # unreadable/undisplayable on THIS card
+        return False  # unreadable/undisplayable on THIS card
     return len(borrowed_from_ref(orig, new, ref)) < MAX_REF_BORROW
 
 
@@ -302,13 +307,13 @@ def llm_ollama(prompt, model=None):
     """Ollama /api/generate backend (the original/default path — byte-for-byte the same
     request shape and response parsing as before A1's dispatch refactor)."""
     # think=False keeps qwen3/qwen3.5 from emitting <think> blocks (ignored by qwen2.5)
-    body = {"model": model or MODEL, "prompt": prompt, "stream": False, "think": False,
-            "options": {"temperature": 0}}
+    body = {"model": model or MODEL, "prompt": prompt, "stream": False, "think": False, "options": {"temperature": 0}}
     try:
         out = _post_json(OLLAMA, body).get("response", "").strip()
         return out.splitlines()[0].strip().strip('"').strip() if out else ""
     except Exception as e:
-        log("  llm fail:", e); return ""
+        log("  llm fail:", e)
+        return ""
 
 
 def llm_llamacpp(prompt, model):
@@ -329,14 +334,19 @@ def llm_llamacpp(prompt, model):
 
     No "model" selector is sent (the server has exactly one model loaded); ``model`` is
     accepted for signature parity with llm_ollama and the two-pass dispatch."""
-    body = {"messages": [{"role": "user", "content": prompt}], "temperature": 0,
-            "max_tokens": 80, "chat_template_kwargs": {"enable_thinking": False}}
+    body = {
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "max_tokens": 80,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
     try:
         msg = _post_json(LLAMACPP_URL, body)["choices"][0]["message"]
         out = (msg.get("content") or "").strip()
         return out.splitlines()[0].strip().strip('"').strip() if out else ""
     except Exception as e:
-        log("  llm fail:", e); return ""
+        log("  llm fail:", e)
+        return ""
 
 
 def llm(prompt, model=None):
@@ -374,7 +384,7 @@ def _p95(values):
 
 
 def process(conf_path):
-    stem = conf_path[:-len(CONF_SUFFIX)]
+    stem = conf_path[: -len(CONF_SUFFIX)]
     srt = stem + SRT_SUFFIX
     video = find_video(stem)
     # No conf.json is a normal state, not an error: tools/recover_dub_srt.py rebuilds the
@@ -387,12 +397,12 @@ def process(conf_path):
     gloss = glossary_for(video)
     targets = [(i, c) for i, c in enumerate(conf) if is_target(c, gloss)]
     if not targets:
-        return "clean"          # nothing to repair (e.g. S15E01)
+        return "clean"  # nothing to repair (e.g. S15E01)
     ivals = dialogue_intervals(video)
     audit, fixed, skipped_no_ref, rejected = [], 0, 0, 0
     llm_empty = 0
-    rejected_secondary = 0                           # C5: second-pass output refused by the gate
-    repaired_lines = []                              # A10: per-line detail for the summary
+    rejected_secondary = 0  # C5: second-pass output refused by the gate
+    repaired_lines = []  # A10: per-line detail for the summary
     for i, c in targets:
         # C6: select the reference on the SOURCE window -- where the audio actually was --
         # not the display window, which the timing layer may have stolen forward onto the
@@ -403,21 +413,26 @@ def process(conf_path):
             # The counter alone made this indistinguishable from "repair ran and found
             # nothing wrong". Record the card so a human can see WHICH lines went unrepaired
             # and judge whether the release simply has no fansub or the anchor logic missed.
-            unresolved.record(stem, "repair", "no_reference", original_text=c["text"],
-                              source_start=c.get("source_start", c["start"]),
-                              source_end=c.get("source_end", c["end"]),
-                              avg_logprob=c.get("avg_logprob"))
-            continue        # no fansub anchor -> skip the LLM. The bake-off showed glossary-only
-                            # repair hallucinates names (Oimo->Zoro) even on qwen3:8b; without a
-                            # reference the deterministic layer (hard_fixes) is the safe ceiling.
+            unresolved.record(
+                stem,
+                "repair",
+                "no_reference",
+                original_text=c["text"],
+                source_start=c.get("source_start", c["start"]),
+                source_end=c.get("source_end", c["end"]),
+                avg_logprob=c.get("avg_logprob"),
+            )
+            continue  # no fansub anchor -> skip the LLM. The bake-off showed glossary-only
+            # repair hallucinates names (Oimo->Zoro) even on qwen3:8b; without a
+            # reference the deterministic layer (hard_fixes) is the safe ceiling.
         prev_text = conf[i - 1]["text"] if i > 0 else ""
         next_text = conf[i + 1]["text"] if i + 1 < len(conf) else ""
         prompt = build_prompt(c["text"], ref, gloss, prev_text, next_text)
-        t0 = time.monotonic()                              # V2 A2: per-call latency
+        t0 = time.monotonic()  # V2 A2: per-call latency
         new = llm(prompt)
         latency_ms = round((time.monotonic() - t0) * 1000)
         if new:
-            new = glossary.correct(new, gloss)[0]         # enforce canonical spelling on output
+            new = glossary.correct(new, gloss)[0]  # enforce canonical spelling on output
         # C2: the card's DISPLAY duration -- how long the viewer actually has to read it.
         # (source_start/source_end anchor the EVIDENCE window above; they are not what is
         # on screen.) Timing stays immutable: a repair that does not fit is rejected.
@@ -428,18 +443,24 @@ def process(conf_path):
             # a dead endpoint was indistinguishable from a card that needed no repair. With
             # the backend down this is every targeted card in the episode.
             llm_empty += 1
-            unresolved.record(stem, "repair", "llm_empty", original_text=c["text"],
-                              reference=ref[:120], avg_logprob=c.get("avg_logprob"))
+            unresolved.record(
+                stem, "repair", "llm_empty", original_text=c["text"], reference=ref[:120], avg_logprob=c.get("avg_logprob")
+            )
             continue
         if not accept_repair(c["text"], new, ref, dur):
             if new and new.lower() != c["text"].lower():
-                rejected += 1          # surfaced in the summary so the guard stays visible
+                rejected += 1  # surfaced in the summary so the guard stays visible
                 # ...but the PROPOSAL was discarded, and it is the whole evidence a human
                 # needs to judge whether the guard was right or overzealous.
-                unresolved.record(stem, "repair", "rejected_guard",
-                                  original_text=c["text"], proposed_text=new,
-                                  reference=ref[:120],
-                                  avg_logprob=c.get("avg_logprob"))
+                unresolved.record(
+                    stem,
+                    "repair",
+                    "rejected_guard",
+                    original_text=c["text"],
+                    proposed_text=new,
+                    reference=ref[:120],
+                    avg_logprob=c.get("avg_logprob"),
+                )
         else:
             # A3: re-verify divergent-looking repairs (esp. name changes) with the secondary
             # model. No-op by default (REPAIR_MODEL_SECONDARY == REPAIR_MODEL).
@@ -459,18 +480,21 @@ def process(conf_path):
                         rejected_secondary += 1
             audit.append((c["text"], new, ref[:80], latency_ms))
             repaired_lines.append({"orig": c["text"], "repaired": new, "ref": ref[:80], "latency_ms": latency_ms})
-            c["text"] = new; fixed += 1
+            c["text"] = new
+            fixed += 1
     # rewrite srt from (possibly repaired) conf rows. conf.json stores text FLATTENED
     # (generate.py replaces '\n' with ' '), so re-wrap here or every episode that
     # passes through repair ships as unwrapped single lines -- which is exactly what
     # the library did until this fix.
-    srt_out = out_for(srt); rep_out = out_for(stem + ".dubtitles.repair.csv")
+    srt_out = out_for(srt)
+    rep_out = out_for(stem + ".dubtitles.repair.csv")
     with open(srt_out, "w") as f:
         for i, c in enumerate(conf, 1):
-            f.write(f"{i}\n{ts_srt(c['start'])} --> {ts_srt(c['end'])}\n"
-                    f"{reflow.wrap_balance(c['text'])}\n\n")
+            f.write(f"{i}\n{ts_srt(c['start'])} --> {ts_srt(c['end'])}\n{reflow.wrap_balance(c['text'])}\n\n")
     with open(rep_out, "w", newline="") as f:
-        w = csv.writer(f); w.writerow(["orig", "repaired", "ref", "latency_ms"]); w.writerows(audit)
+        w = csv.writer(f)
+        w.writerow(["orig", "repaired", "ref", "latency_ms"])
+        w.writerows(audit)
     # A10: per-show repair summary, written alongside the srt/csv
     lat_values = [r["latency_ms"] for r in repaired_lines]
     summary = {
@@ -478,8 +502,8 @@ def process(conf_path):
         "repaired": fixed,
         "skipped_no_ref": skipped_no_ref,
         "llm_empty": llm_empty,
-        "rejected_guard": rejected,      # model proposed an edit, accept_repair() refused it
-        "rejected_secondary": rejected_secondary,   # C5: second pass refused, first pass kept
+        "rejected_guard": rejected,  # model proposed an edit, accept_repair() refused it
+        "rejected_secondary": rejected_secondary,  # C5: second pass refused, first pass kept
         "mean_latency_ms": round(sum(lat_values) / len(lat_values)) if lat_values else 0,
         "p95_latency_ms": round(_p95(lat_values)) if lat_values else 0,
         "model": MODEL,
@@ -490,15 +514,17 @@ def process(conf_path):
     with open(summary_out, "w") as f:
         json.dump(summary, f, indent=2)
     for p in (srt_out, rep_out, summary_out):
-        try: os.chown(p, MEDIA_UID, MEDIA_GID)
-        except OSError as e: log(f"chown failed for {p}: {e}")
+        try:
+            os.chown(p, MEDIA_UID, MEDIA_GID)
+        except OSError as e:
+            log(f"chown failed for {p}: {e}")
     log(f"  targets={len(targets)} repaired={fixed}")
     return "repaired"
 
 
 def main():
     args = sys.argv[1:]
-    confs = list(args) if args else []     # explicit .conf.json paths, else walk roots
+    confs = list(args) if args else []  # explicit .conf.json paths, else walk roots
     if not confs:
         for root in ROOTS:
             if not os.path.isdir(root):

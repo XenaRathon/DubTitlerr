@@ -123,26 +123,26 @@ visible.
 
 ## Edge cases and failure modes
 
-| Case | Expected behavior |
-|---|---|
-| Consumer imports `common.MEDIA_UID` before env is set | Module reads env at import time (existing pattern); test with `monkeypatch.setenv` |
-| `build_prompt()` called without prev/next (existing callers) | Backward-compatible: `prev_text=""` and `next_text=""` defaults produce the same prompt as today |
-| `keep_event()` receives event with `\p0` (disable drawing) | `\p\d` matches `\p0` — treated as drawing-capable event, kept. Acceptable false positive (dialogue never uses `\p`) |
-| `WHISPER_BEAM_SIZE` unset or non-integer | Default to 7; `ValueError` on non-integer → log warning and fall back to 7 |
-| `needs_work()` test with tmp_path file missing | Test creates its own temp files via `tmp_path`; no live media dependency |
-| CI runner has no `pysubs2` | Declared in `pip install pysubs2 pytest` in the workflow YAML |
-| Stamp helpers moved to `common` but `mux.py` still needs them | `mux.py` imports from `common`; `common` owns the single definition |
+| Case                                                          | Expected behavior                                                                                                   |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Consumer imports `common.MEDIA_UID` before env is set         | Module reads env at import time (existing pattern); test with `monkeypatch.setenv`                                  |
+| `build_prompt()` called without prev/next (existing callers)  | Backward-compatible: `prev_text=""` and `next_text=""` defaults produce the same prompt as today                    |
+| `keep_event()` receives event with `\p0` (disable drawing)    | `\p\d` matches `\p0` — treated as drawing-capable event, kept. Acceptable false positive (dialogue never uses `\p`) |
+| `WHISPER_BEAM_SIZE` unset or non-integer                      | Default to 7; `ValueError` on non-integer → log warning and fall back to 7                                          |
+| `needs_work()` test with tmp_path file missing                | Test creates its own temp files via `tmp_path`; no live media dependency                                            |
+| CI runner has no `pysubs2`                                    | Declared in `pip install pysubs2 pytest` in the workflow YAML                                                       |
+| Stamp helpers moved to `common` but `mux.py` still needs them | `mux.py` imports from `common`; `common` owns the single definition                                                 |
 
 ## Decisions taken
 
-| Decision | Rejected alternative | Why |
-|---|---|---|
-| `common.py` owns stamp helpers, not `mux.py` | Keep stamps in `mux.py`, import from there | `generate.py` needs stamp helpers but shouldn't import all of `mux` (drags in argparse, subprocess, mkvmerge). Single source of truth wins. |
-| `WHISPER_BEAM_SIZE` defaults to 7 | Keep 5, make it env-configurable later | The turbo model (#41, deferred) buys back speed; 7 is a net quality win on `large-v3` at ~15% slower. Configurable so it can be tuned per-GPU. |
-| `keep_event()` adds new regexes as module-level constants | Inline regex in the function | Consistent with existing `KARAOKE`/`POSITIONED`/`KEEP_STYLE`/`DROP_STYLE` pattern. Testable independently. |
-| Layer normalization happens AFTER all events are appended | Set layer on append | Events are appended from multiple tracks; the final pass guarantees correctness regardless of append order. |
-| Phase gating: foundation first, then signs bugs, then accuracy | All at once | The `common.py` extraction touches 6 files; doing it first makes all subsequent changes cleaner. Bug fixes before enhancements. |
-| Defer model/LLM changes to follow-up spec | Bundle everything | Model changes need hardware bake-off (#44) or new library dependencies (#45, needs `jellyfish`). Code-quality fixes shouldn't be blocked on bake-off results. |
+| Decision                                                       | Rejected alternative                       | Why                                                                                                                                                           |
+| -------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `common.py` owns stamp helpers, not `mux.py`                   | Keep stamps in `mux.py`, import from there | `generate.py` needs stamp helpers but shouldn't import all of `mux` (drags in argparse, subprocess, mkvmerge). Single source of truth wins.                   |
+| `WHISPER_BEAM_SIZE` defaults to 7                              | Keep 5, make it env-configurable later     | The turbo model (#41, deferred) buys back speed; 7 is a net quality win on `large-v3` at ~15% slower. Configurable so it can be tuned per-GPU.                |
+| `keep_event()` adds new regexes as module-level constants      | Inline regex in the function               | Consistent with existing `KARAOKE`/`POSITIONED`/`KEEP_STYLE`/`DROP_STYLE` pattern. Testable independently.                                                    |
+| Layer normalization happens AFTER all events are appended      | Set layer on append                        | Events are appended from multiple tracks; the final pass guarantees correctness regardless of append order.                                                   |
+| Phase gating: foundation first, then signs bugs, then accuracy | All at once                                | The `common.py` extraction touches 6 files; doing it first makes all subsequent changes cleaner. Bug fixes before enhancements.                               |
+| Defer model/LLM changes to follow-up spec                      | Bundle everything                          | Model changes need hardware bake-off (#44) or new library dependencies (#45, needs `jellyfish`). Code-quality fixes shouldn't be blocked on bake-off results. |
 
 ## Constraints
 

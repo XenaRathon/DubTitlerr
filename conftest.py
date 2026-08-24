@@ -1,5 +1,6 @@
 """Put the repo root on sys.path so tests can `import reflow`, `import ordering`, etc.
 regardless of pytest's import mode / invocation directory."""
+
 import os
 import sys
 

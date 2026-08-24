@@ -1,4 +1,5 @@
 """Unit tests for hallucination.py (B1). Pure functions; plain card dicts."""
+
 import hallucination as h
 
 
@@ -8,6 +9,7 @@ def card(text, lp=-0.2, nsp=0.1, start=0.0, end=2.0):
 
 # --- T1: scaffold / constants ------------------------------------------------
 
+
 def test_constants_and_blocklist():
     assert h.NSP_DROP == 0.95 and h.LP_DROP == -2.0 and h.RUN_COLLAPSE == 4
     assert h.BLOCKLIST.search("Subtitles by the community")
@@ -16,6 +18,7 @@ def test_constants_and_blocklist():
 
 
 # --- T2: is_repetition + drop_reason -----------------------------------------
+
 
 def test_is_repetition_single_word_loop():
     assert h.is_repetition("go go go go go go")
@@ -27,7 +30,7 @@ def test_is_repetition_ngram_loop():
 
 
 def test_is_repetition_ignores_short_emphatic_and_normal_lines():
-    assert not h.is_repetition("No no no no")          # < 6 tokens, real emphasis
+    assert not h.is_repetition("No no no no")  # < 6 tokens, real emphasis
     assert not h.is_repetition("Don't let your guard down")
     assert not h.is_repetition("the cat sat on the mat today")
 
@@ -42,8 +45,8 @@ def test_drop_reason_repetition():
 
 def test_drop_reason_music_requires_both_signals():
     assert h.drop_reason(card("mmm", lp=-2.5, nsp=0.97)) == "music"
-    assert h.drop_reason(card("a real quiet line", lp=-1.5, nsp=0.5)) is None   # nsp not high
-    assert h.drop_reason(card("a real quiet line", lp=-0.5, nsp=0.9)) is None   # lp not low
+    assert h.drop_reason(card("a real quiet line", lp=-1.5, nsp=0.5)) is None  # nsp not high
+    assert h.drop_reason(card("a real quiet line", lp=-0.5, nsp=0.9)) is None  # lp not low
 
 
 def test_drop_reason_keeps_normal_line():
@@ -51,6 +54,7 @@ def test_drop_reason_keeps_normal_line():
 
 
 # --- T3: flag_reason ---------------------------------------------------------
+
 
 def test_flag_reason_low_confidence():
     assert h.flag_reason(card("mumbled bit", lp=-0.8, nsp=0.2)) == "low_conf"
@@ -65,6 +69,7 @@ def test_flag_reason_none_for_clean_line():
 
 
 # --- T4: collapse_runs -------------------------------------------------------
+
 
 def run(text, n, t0=0.0, step=2.0):
     return [card(text, start=t0 + i * step, end=t0 + i * step + 1.5) for i in range(n)]
@@ -90,7 +95,7 @@ def test_collapse_runs_treats_case_punct_as_near_identical():
 
 def test_collapse_runs_only_consecutive():
     cards = [card("A line here"), card("B line there"), card("A line here")]
-    assert len(h.collapse_runs(cards)) == 3       # duplicates not consecutive
+    assert len(h.collapse_runs(cards)) == 3  # duplicates not consecutive
 
 
 def test_collapse_runs_mixed_sequence():
@@ -100,6 +105,7 @@ def test_collapse_runs_mixed_sequence():
 
 
 # --- V2 C8: BLOCKLIST loaded from data/hallucination_blocklist.txt, inline fallback ----
+
 
 def test_blocklist_loads_from_data_file():
     """The real data/hallucination_blocklist.txt (repo-relative, present in this checkout)
@@ -128,11 +134,13 @@ def test_blocklist_data_file_comments_and_blanks_are_skipped(tmp_path):
 
 # --- liveness counters (2026-08-22) -------------------------------------------------
 
+
 def test_drop_reason_records_evaluated_and_activated():
     """A rule that never fires must be distinguishable from a rule never reached.
     hallucination.music fired 0 times across 353,879 cards and nothing noticed, because
     a successful episode with zero drops looks identical to one where the rule is dead."""
     import qc
+
     rec = qc.Recorder()
     speech = {"text": "Hello there.", "no_speech_prob": 0.1, "avg_logprob": -0.2}
     assert h.drop_reason(speech, rec=rec) is None
@@ -141,8 +149,7 @@ def test_drop_reason_records_evaluated_and_activated():
     assert rec.counters["rule_music_evaluated"] == 1
     assert rec.counters["rule_music_activated"] == 0
 
-    assert h.drop_reason({"text": "To be continued...", "no_speech_prob": 0.1,
-                          "avg_logprob": -0.2}, rec=rec) == "blocklist"
+    assert h.drop_reason({"text": "To be continued...", "no_speech_prob": 0.1, "avg_logprob": -0.2}, rec=rec) == "blocklist"
     assert rec.counters["rule_blocklist_activated"] == 1
     # short-circuit: later rules are NOT evaluated once one fires
     assert rec.counters["rule_music_evaluated"] == 1
@@ -150,6 +157,7 @@ def test_drop_reason_records_evaluated_and_activated():
 
 def test_flag_reason_records_liveness():
     import qc
+
     rec = qc.Recorder()
     h.flag_reason({"avg_logprob": -0.2, "no_speech_prob": 0.1}, rec=rec)
     assert rec.counters["rule_low_conf_evaluated"] == 1
@@ -161,6 +169,5 @@ def test_flag_reason_records_liveness():
 
 def test_rec_is_optional_and_behaviour_is_unchanged():
     """tools/ and existing callers invoke these bare; the signature must stay compatible."""
-    assert h.drop_reason({"text": "To be continued...", "no_speech_prob": 0.1,
-                          "avg_logprob": -0.2}) == "blocklist"
+    assert h.drop_reason({"text": "To be continued...", "no_speech_prob": 0.1, "avg_logprob": -0.2}) == "blocklist"
     assert h.flag_reason({"avg_logprob": -9.0, "no_speech_prob": 0.1}) == "low_conf"

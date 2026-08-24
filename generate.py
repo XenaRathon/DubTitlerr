@@ -34,6 +34,7 @@ Env:
                   same dir mine_glossary.py/repair.py use for the show's glossary itself)
 Built with help of Claude (Anthropic).
 """
+
 import hashlib
 import json
 import math
@@ -52,7 +53,17 @@ import ordering
 import punctuation
 import qc
 import reflow
-from common import SIDECAR_MODE, STAMP_SUFFIX, VIDEO_EXTS, load_extras, out_for, read_stamp, stale_version_stamp, stamp_valid, ts_srt
+from common import (
+    SIDECAR_MODE,
+    STAMP_SUFFIX,
+    VIDEO_EXTS,
+    load_extras,
+    out_for,
+    read_stamp,
+    stale_version_stamp,
+    stamp_valid,
+    ts_srt,
+)
 
 EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_extras)
 # V2 C1: where per-show run summaries (<show>.lastrun.json) live -- same GLOSSARY_DIR
@@ -78,11 +89,12 @@ MODEL_DIR = os.environ.get("MODEL_DIR", "/subgen/models")
 # compand, tuned for noisy/quiet anime dub tracks). Empty string ("") disables it
 # entirely (the old, pre-A8 ffmpeg command) -- set WHISPER_AUDIO_FILTER="" to opt out.
 AUDIO_FILTER = os.environ.get(
-    "WHISPER_AUDIO_FILTER",
-    "highpass=f=80,compand=attacks=0.001:decays=0.2:points=-80/-80|-30/-15|0/-3|20/-3")
-UID = int(os.environ.get("MEDIA_UID", "1000")); GID = int(os.environ.get("MEDIA_GID", "100"))
+    "WHISPER_AUDIO_FILTER", "highpass=f=80,compand=attacks=0.001:decays=0.2:points=-80/-80|-30/-15|0/-3|20/-3"
+)
+UID = int(os.environ.get("MEDIA_UID", "1000"))
+GID = int(os.environ.get("MEDIA_GID", "100"))
 SUFFIX = ".eng.dubtitles.srt"
-WMODEL = None        # the WhisperModel, lazily loaded in main() once there's work to do
+WMODEL = None  # the WhisperModel, lazily loaded in main() once there's work to do
 
 # --- Per-show glossary (optional) ---------------------------------------------------
 # Name correction is OPT-IN per show (GLOSSARY_FILE), so One Piece's spellings can never
@@ -91,18 +103,23 @@ WMODEL = None        # the WhisperModel, lazily loaded in main() once there's wo
 GLOSS = glossary.load("")
 INITIAL_PROMPT = ""
 
+
 def load_glossary():
     global GLOSS, INITIAL_PROMPT
     show = os.environ.get("SHOW_NAME", "")
     GLOSS = glossary.load(os.environ.get("GLOSSARY_FILE", ""))
     show = show or GLOSS.get("show", "")
     INITIAL_PROMPT = GLOSS["initial_prompt"] or (
-        (f"This is {show}, a Japanese anime (English dub). Transcribe the spoken English "
-         f"accurately, with natural punctuation.") if show else
-        "Japanese anime, English dub. Transcribe the spoken English accurately, with natural punctuation.")
-    print(f"glossary: show={show!r} names={len(GLOSS['names'])} "
-          f"fixes={len(GLOSS['token_fixes']) + len(GLOSS['phrase_fixes'])} "
-          f"prompt={'custom' if GLOSS['initial_prompt'] else 'neutral'}", flush=True)
+        (f"This is {show}, a Japanese anime (English dub). Transcribe the spoken English accurately, with natural punctuation.")
+        if show
+        else "Japanese anime, English dub. Transcribe the spoken English accurately, with natural punctuation."
+    )
+    print(
+        f"glossary: show={show!r} names={len(GLOSS['names'])} "
+        f"fixes={len(GLOSS['token_fixes']) + len(GLOSS['phrase_fixes'])} "
+        f"prompt={'custom' if GLOSS['initial_prompt'] else 'neutral'}",
+        flush=True,
+    )
 
 
 # Plex "local extras" subfolders + creditless/scene clips — never real episodes, often
@@ -111,7 +128,8 @@ def load_glossary():
 SKIP_FILE_RE = re.compile(r"\bNCED\b|\bNCOP\b|\bNCBD\b|-\s*scene\b|creditless", re.I)
 
 
-def log(*a): print(*a, flush=True)
+def log(*a):
+    print(*a, flush=True)
 
 
 # V2 C1: per-show run summary. process() updates this in place on its "ok" (success)
@@ -145,13 +163,28 @@ def _glossary_version() -> str:
 
 def eng_audio_index(video):
     try:
-        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
-                            "-show_entries", "stream=index:stream_tags=language",
-                            "-of", "json", video], capture_output=True, text=True, timeout=60,
-                           stdin=subprocess.DEVNULL)
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a",
+                "-show_entries",
+                "stream=index:stream_tags=language",
+                "-of",
+                "json",
+                video,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
         streams = json.loads(r.stdout).get("streams", [])
     except Exception as e:
-        log("ffprobe failed", video, e); return None
+        log("ffprobe failed", video, e)
+        return None
     eng = [s for s in streams if ((s.get("tags") or {}).get("language", "").lower() in ("eng", "en"))]
     if eng:
         return eng[0]["index"]
@@ -171,19 +204,39 @@ def media_duration(path):
     WAV, not the container -- whisper's timestamps live on the wav's timeline, and that
     is the timeline time_cards()'s end-of-audio guard has to compare against."""
     try:
-        r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                            "-of", "json", path], capture_output=True, text=True, timeout=60,
-                           stdin=subprocess.DEVNULL)
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", path],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
         dur = float(json.loads(r.stdout)["format"]["duration"])
     except Exception as e:
-        log("ffprobe duration failed", path, e); return None
+        log("ffprobe duration failed", path, e)
+        return None
     return dur if dur > 0 else None
 
 
 def extract_wav(video, idx, wav):
-    cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}",
-           "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"]
-    if AUDIO_FILTER:                    # V2 A8: empty WHISPER_AUDIO_FILTER = no filter (pre-A8 behavior)
+    cmd = [
+        "ffmpeg",
+        "-nostdin",
+        "-y",
+        "-v",
+        "error",
+        "-i",
+        video,
+        "-map",
+        f"0:{idx}",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "pcm_s16le",
+    ]
+    if AUDIO_FILTER:  # V2 A8: empty WHISPER_AUDIO_FILTER = no filter (pre-A8 behavior)
         cmd += ["-af", AUDIO_FILTER]
     cmd.append(wav)
     subprocess.run(cmd, capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
@@ -210,12 +263,13 @@ def _card_word_probs(card, words):
     source window -- rather than re-querying after the merge widens the window to
     cover the whole repeated run -- keeps the list aligned with the text it
     actually describes."""
-    a = card.get("source_start", card["start"]); b = card.get("source_end", card["end"])
+    a = card.get("source_start", card["start"])
+    b = card.get("source_end", card["end"])
     return [round(w["prob"], 3) for w in words if w["end"] > a and w["start"] < b]
 
 
 QC_SUFFIX = ".dubtitles.qc.json"
-STALE_SUFFIX = ".stale"        # parked, not deleted -- see park_stale_sidecars
+STALE_SUFFIX = ".stale"  # parked, not deleted -- see park_stale_sidecars
 SIDECAR_SUFFIXES = (".eng.dubtitles.ass", ".eng.dubtitles.srt", ".dubtitles.conf.json", QC_SUFFIX)
 
 
@@ -252,12 +306,12 @@ def park_stale_sidecars(stem):
     try:
         stamp_mtime = os.path.getmtime(stem + STAMP_SUFFIX)
     except OSError:
-        return                                    # no stamp -> nothing is attributable to it
+        return  # no stamp -> nothing is attributable to it
     for suff in SIDECAR_SUFFIXES:
         p = stem + suff
         try:
             if os.path.getmtime(p) > stamp_mtime:
-                continue                          # newer than the stamp -> this run's work
+                continue  # newer than the stamp -> this run's work
             os.replace(p, p + STALE_SUFFIX)
             log("  parked stale-version sidecar", os.path.basename(p))
         except OSError:
@@ -266,16 +320,17 @@ def park_stale_sidecars(stem):
 
 def parked_sidecars(stem):
     """Basenames of this episode's parked previous output, sorted. Empty when there is none."""
-    return sorted(os.path.basename(stem + s + STALE_SUFFIX) for s in SIDECAR_SUFFIXES
-                  if os.path.exists(stem + s + STALE_SUFFIX))
+    return sorted(os.path.basename(stem + s + STALE_SUFFIX) for s in SIDECAR_SUFFIXES if os.path.exists(stem + s + STALE_SUFFIX))
 
 
 def drop_parked_sidecars(stem):
     """Called once this run has written its own srt and conf: the parked copies were
     insurance against a failed replacement, and the replacement landed."""
     for suff in SIDECAR_SUFFIXES:
-        try: os.remove(stem + suff + STALE_SUFFIX)
-        except OSError: pass
+        try:
+            os.remove(stem + suff + STALE_SUFFIX)
+        except OSError:
+            pass
 
 
 def _card_faults(text, dur):
@@ -290,8 +345,10 @@ def _card_faults(text, dur):
     here rather than pushed into a profile that repair.py also consumes: repair may not
     change a card's duration, so a duration fault is not something it can be judged on."""
     faults = reflow.layout_faults(text, dur)
-    if reflow.is_short(dur): faults.append("under_min_dur")
-    if dur > reflow.MAX_DUR + reflow.EPS: faults.append("over_max_dur")
+    if reflow.is_short(dur):
+        faults.append("under_min_dur")
+    if dur > reflow.MAX_DUR + reflow.EPS:
+        faults.append("over_max_dur")
     return faults
 
 
@@ -316,10 +373,12 @@ def _record_before(rec, cards, merges):
     # merge_runts() counts the original short non-orphan groups at entry and stamps the
     # total on every record; with no merges nothing moved, so the survivors' SOURCE spans
     # (which no display pass touches) are the same population.
-    rec.count("ordinary_under_min_dur_before",
-              merges[0]["short_groups_before"] if merges else
-              sum(1 for c in cards
-                  if not c.get("orphan") and reflow.is_short(c["source_end"] - c["source_start"])))
+    rec.count(
+        "ordinary_under_min_dur_before",
+        merges[0]["short_groups_before"]
+        if merges
+        else sum(1 for c in cards if not c.get("orphan") and reflow.is_short(c["source_end"] - c["source_start"])),
+    )
 
 
 def _record_qc(rec, cards):
@@ -344,13 +403,17 @@ def _record_qc(rec, cards):
         faults = _card_faults(t, dur)
         if "under_min_dur" in faults:
             rec.count("orphan_under_min_dur_after" if c.get("orphan") else "ordinary_under_min_dur_after")
-        if "over_cps" in faults: rec.count("over_cps")
-        if "over_line_len" in faults: rec.count("over_line_len")
+        if "over_cps" in faults:
+            rec.count("over_cps")
+        if "over_line_len" in faults:
+            rec.count("over_line_len")
         # over_chars: two LEGAL 42-char lines can still exceed MAX_CHARS, so this fault
         # passes every per-line check and had no counter behind its event at all.
-        if "over_chars" in faults: rec.count("over_chars")
+        if "over_chars" in faults:
+            rec.count("over_chars")
 
-        if faults: rec.count("violations")
+        if faults:
+            rec.count("violations")
 
 
 def _layout_faults(text, dur):
@@ -391,22 +454,33 @@ def _revalidate_after_correction(rec, cards):
         dur = c["end"] - c["start"]
         c["text"] = text = reflow.wrap_balance(c["text"].replace("\n", " "))
         reasons = _layout_faults(text, dur)
-        if not reasons: continue
+        if not reasons:
+            continue
         before = c.get("pre_correction_text", text)
         pre = _layout_faults(reflow.wrap_balance(before.replace("\n", " ")), dur)
         caused = bool(set(reasons) - set(pre))
-        if caused: rec.count("layout_exceptions")
+        if caused:
+            rec.count("layout_exceptions")
         lines = text.split("\n")
         flat = text.replace("\n", " ")
         # priority: a correction-introduced fault exists in no counter and cannot be
         # reconstructed, so it must survive the event cap. Pre-existing faults are
         # already counted losslessly by _record_qc and described by the cps quantiles.
-        rec.event(priority=caused,
-                  reason="layout_exception", start=round(c["start"], 3), end=round(c["end"], 3),
-                  text=flat, layout_exception_reason=reasons, pre_existing_reason=pre,
-                  caused_by_correction=caused, line_count=len(lines),
-                  line_lengths=[len(ln) for ln in lines], max_line_length=max(len(ln) for ln in lines),
-                  visible_chars=len(flat), cps=round(reflow.card_cps(text, dur), 2))
+        rec.event(
+            priority=caused,
+            reason="layout_exception",
+            start=round(c["start"], 3),
+            end=round(c["end"], 3),
+            text=flat,
+            layout_exception_reason=reasons,
+            pre_existing_reason=pre,
+            caused_by_correction=caused,
+            line_count=len(lines),
+            line_lengths=[len(ln) for ln in lines],
+            max_line_length=max(len(ln) for ln in lines),
+            visible_chars=len(flat),
+            cps=round(reflow.card_cps(text, dur), 2),
+        )
 
 
 def _atomic_write(path, render, mode=SIDECAR_MODE):
@@ -439,27 +513,32 @@ def _atomic_write(path, render, mode=SIDECAR_MODE):
         tmp = None
     finally:
         if tmp is not None:
-            try: os.unlink(tmp)
-            except OSError: pass
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _write_qc(rec, stem):
     """Build and write the sidecar. Observability only: a write failure is logged, never
     fatal (see qc.write's docstring), so this is safe on the failure path too."""
     show = os.environ.get("SHOW_NAME", "") or GLOSS.get("show", "") or "unknown_show"
-    doc = rec.build(show=show, episode=os.path.basename(stem), stem=stem,
-                    glossary_sha=_glossary_version(), pipeline_version=_model_version())
+    doc = rec.build(
+        show=show, episode=os.path.basename(stem), stem=stem, glossary_sha=_glossary_version(), pipeline_version=_model_version()
+    )
     qcp = out_for(stem + QC_SUFFIX)
     if not qc.write(qcp, doc):
         log(f"  qc sidecar write failed for {qcp}")
         return
     # Match every other sidecar's ownership. This one exists to be read library-wide
     # later; root-owned it is unreadable over the share by whoever aggregates it.
-    try: os.chown(qcp, UID, GID)
-    except OSError: pass
+    try:
+        os.chown(qcp, UID, GID)
+    except OSError:
+        pass
 
 
-MAX_CASCADE_EVENTS = 25   # per episode: the worst displacements, not one per moved card
+MAX_CASCADE_EVENTS = 25  # per episode: the worst displacements, not one per moved card
 
 
 def _record_cascades(rec, cards, cascades):
@@ -478,13 +557,15 @@ def _record_cascades(rec, cards, cascades):
     displaced, shortened = set(), set()
     hops, dur_before = {}, {}
     for r in cascades:
-        if r["unfixable"]:                      # the tail clamp: nothing left to steal from
-            rec.count("unfixable_runts"); continue
-        rec.count("stolen")                     # the runt at r["index"] took the time
+        if r["unfixable"]:  # the tail clamp: nothing left to steal from
+            rec.count("unfixable_runts")
+            continue
+        rec.count("stolen")  # the runt at r["index"] took the time
         rec.observe("cascade_depth", r["hops"])
-        displaced.update(r["displaced"]); shortened.update(r["shortened"])
-        for i in r["displaced"]:                # first cascade to touch a card saw its true
-            dur_before.setdefault(i, r["dur_before"].get(i))    # "before"; cascades run in order
+        displaced.update(r["displaced"])
+        shortened.update(r["shortened"])
+        for i in r["displaced"]:  # first cascade to touch a card saw its true
+            dur_before.setdefault(i, r["dur_before"].get(i))  # "before"; cascades run in order
             hops[i] = max(hops.get(i, 0), r["hops"])
     rec.count("displaced", len(displaced))
     rec.count("shortened_by_neighbour", len(shortened))
@@ -499,16 +580,21 @@ def _record_cascades(rec, cards, cascades):
     # that tier is reserved for correction-introduced layout exceptions.
     for i in sorted(moved, key=lambda i: (-disp[i], i))[:MAX_CASCADE_EVENTS]:
         c, d0 = cards[i], dur_before.get(i)
-        rec.event(reason="cascade_shift", card_index=i,
-                  effects=(["displaced"] if i in displaced else []) +
-                          (["shortened"] if i in shortened else []),
-                  start=round(c["start"], 3), end=round(c["end"], 3),
-                  # the audio window is the durable identity: card_index is positional
-                  # over the pre-filter list, and hallucination dropping renumbers it.
-                  source_start=round(c["source_start"], 3), source_end=round(c["source_end"], 3),
-                  displacement=round(disp[i], 3), hops=hops.get(i, 0),
-                  dur_before=None if d0 is None else round(d0, 3),
-                  dur_after=round(c["end"] - c["start"], 3))
+        rec.event(
+            reason="cascade_shift",
+            card_index=i,
+            effects=(["displaced"] if i in displaced else []) + (["shortened"] if i in shortened else []),
+            start=round(c["start"], 3),
+            end=round(c["end"], 3),
+            # the audio window is the durable identity: card_index is positional
+            # over the pre-filter list, and hallucination dropping renumbers it.
+            source_start=round(c["source_start"], 3),
+            source_end=round(c["source_end"], 3),
+            displacement=round(disp[i], 3),
+            hops=hops.get(i, 0),
+            dur_before=None if d0 is None else round(d0, 3),
+            dur_after=round(c["end"] - c["start"], 3),
+        )
 
 
 def _cascade_infeasible(stem, fail, exc):
@@ -519,21 +605,30 @@ def _cascade_infeasible(stem, fail, exc):
     every sweep re-fail it; main() must never see the exception, because its
     non-RuntimeError branch REMOVES the marker and schedules exactly that retry loop.
     The QC sidecar is still written: a failed episode is when the evidence matters most."""
-    try: open(fail, "w").close()
-    except OSError: pass
+    try:
+        open(fail, "w").close()
+    except OSError:
+        pass
     rec = qc.Recorder()
     rec.count("cascade_infeasible")
     # What survived: on a version bump this episode's previous srt/conf are parked
     # rather than deleted, so "poisoned" is recoverable rather than terminal. Recorded
     # here because the sidecar is the only durable account a retired episode gets.
     parked = parked_sidecars(stem)
-    rec.event(reason="cascade_infeasible", card_index=exc.index,
-              requested_shift=exc.requested, applied_shift=exc.applied,
-              residual_shift=exc.residual, audio_duration=exc.audio_duration,
-              retained_prior_output=parked)
+    rec.event(
+        reason="cascade_infeasible",
+        card_index=exc.index,
+        requested_shift=exc.requested,
+        applied_shift=exc.applied,
+        residual_shift=exc.residual,
+        audio_duration=exc.audio_duration,
+        retained_prior_output=parked,
+    )
     _write_qc(rec, stem)
-    log(f"  cascade infeasible at card {exc.index}: {exc.residual:.3f}s of a {exc.requested:.3f}s "
-        f"steal will not fit before {exc.audio_duration}s -- no subtitle written, episode poisoned")
+    log(
+        f"  cascade infeasible at card {exc.index}: {exc.residual:.3f}s of a {exc.requested:.3f}s "
+        f"steal will not fit before {exc.audio_duration}s -- no subtitle written, episode poisoned"
+    )
     if parked:
         log(f"  previous output kept as {', '.join(parked)} -- drop the .stale suffix to recover it")
     return "cascade-infeasible"
@@ -546,7 +641,7 @@ def process(video):
     # longer means "done", because mux.py now drops-and-replaces that track, so a
     # PIPELINE_VERSION bump must be able to regenerate an already-dubbed episode.
     stamp = read_stamp(stem + STAMP_SUFFIX)
-    if stamp_valid(stamp, video):                       # muxed, current version -> skip
+    if stamp_valid(stamp, video):  # muxed, current version -> skip
         return "already-muxed"
     fail = stem + ".dubtitles.fail"
     # Our own superseded output -> its leftover sidecars are stale too. Skipped for a
@@ -555,27 +650,39 @@ def process(video):
     # cleared by hand).
     if stale_version_stamp(stamp, video) and not os.path.exists(fail):
         park_stale_sidecars(stem)
-    if os.path.exists(stem + ".eng.dubtitles.ass"):     # assembled already -> skip (idempotent)
+    if os.path.exists(stem + ".eng.dubtitles.ass"):  # assembled already -> skip (idempotent)
         return "already-ass"
     if os.environ.get("SKIP_IF_SRT", "1") == "1" and os.path.exists(stem + ".eng.dubtitles.srt"):
-        return "already-srt"                            # generated, awaiting (a retry of) assemble
-    if os.path.exists(fail):                      # a previous attempt hard-crashed on this
-        return "skip-prior-crash"                 # file -> skip it (rm the .fail to retry)
+        return "already-srt"  # generated, awaiting (a retry of) assemble
+    if os.path.exists(fail):  # a previous attempt hard-crashed on this
+        return "skip-prior-crash"  # file -> skip it (rm the .fail to retry)
     idx = eng_audio_index(video)
-    if idx is None: return "no-eng-dub"          # sub-only release (or no audio) -> skip
+    if idx is None:
+        return "no-eng-dub"  # sub-only release (or no audio) -> skip
     with tempfile.TemporaryDirectory() as td:
         wav = os.path.join(td, "a.wav")
-        if not extract_wav(video, idx, wav): return "extract-failed"
-        audio_duration = media_duration(wav)     # measured while the wav still exists
+        if not extract_wav(video, idx, wav):
+            return "extract-failed"
+        audio_duration = media_duration(wav)  # measured while the wav still exists
 
-        try: open(fail, "w").close()             # mark in-flight (a segfault here leaves the
-        except OSError: pass                     # marker, so a resume skips this poison file)
+        try:
+            open(fail, "w").close()  # mark in-flight (a segfault here leaves the
+        except OSError:
+            pass  # marker, so a resume skips this poison file)
         beam_size = int(os.environ.get("WHISPER_BEAM_SIZE", "7"))
         segs, _info = WMODEL.transcribe(
-            wav, language="en", task="transcribe", beam_size=beam_size, best_of=beam_size,
-            word_timestamps=True, vad_filter=False, condition_on_previous_text=False,
-            no_speech_threshold=0.9, log_prob_threshold=-2.0,   # max coverage: VAD was removing
-            initial_prompt=INITIAL_PROMPT)                       # music-masked dialogue (the 18-20min
+            wav,
+            language="en",
+            task="transcribe",
+            beam_size=beam_size,
+            best_of=beam_size,
+            word_timestamps=True,
+            vad_filter=False,
+            condition_on_previous_text=False,
+            no_speech_threshold=0.9,
+            log_prob_threshold=-2.0,  # max coverage: VAD was removing
+            initial_prompt=INITIAL_PROMPT,
+        )  # music-masked dialogue (the 18-20min
         # Buster Call scene) before whisper saw it -> big gaps. VAD off + loose thresholds keep it;
         # B1 + the LLM repair clean the resulting silence/music hallucinations (tuning deferred).
         # condition_on_previous_text=False is now also FORCED BY VRAM, not only by the
@@ -604,13 +711,17 @@ def process(video):
             sw = s.words or []
             if sw:
                 for w in sw:
-                    words.append({"text": w.word, "start": w.start, "end": w.end,
-                                  "prob": getattr(w, "probability", 1.0) or 1.0, "seg": si})
-            else:                                # no word timestamps -> whole segment as one "word"
-                words.append({"text": s.text, "start": s.start, "end": s.end,
-                              "prob": min(1.0, math.exp(s.avg_logprob)), "seg": si})
-    try: os.remove(fail)                          # transcription finished -> clear in-flight mark
-    except OSError: pass
+                    words.append(
+                        {"text": w.word, "start": w.start, "end": w.end, "prob": getattr(w, "probability", 1.0) or 1.0, "seg": si}
+                    )
+            else:  # no word timestamps -> whole segment as one "word"
+                words.append(
+                    {"text": s.text, "start": s.start, "end": s.end, "prob": min(1.0, math.exp(s.avg_logprob)), "seg": si}
+                )
+    try:
+        os.remove(fail)  # transcription finished -> clear in-flight mark
+    except OSError:
+        pass
     # A0: restore sentence punctuation to the WORD LIST before anything splits it. This has
     # to happen here and not in repair.py: repair edits card text, but by then the cards are
     # already split and timed, so the text would read better while the boundaries stayed
@@ -623,20 +734,23 @@ def process(video):
     # B1: drop near-certain hallucinations, flag the suspect, collapse runaway repeat runs.
     merge_log, cascade_log = [], []
     try:
-        cards = reflow.reflow(words, segments, merge_log=merge_log, audio_duration=audio_duration,
-                              cascade_log=cascade_log)
+        cards = reflow.reflow(words, segments, merge_log=merge_log, audio_duration=audio_duration, cascade_log=cascade_log)
     except reflow.CascadeInfeasible as e:
         return _cascade_infeasible(stem, fail, e)
     kept, fixes, dropped = [], 0, 0
     for c in cards:
-        if hallucination.drop_reason(c, rec=rec):          # blocklist / repetition / music -> drop
-            dropped += 1; continue
+        if hallucination.drop_reason(c, rec=rec):  # blocklist / repetition / music -> drop
+            dropped += 1
+            continue
         lines, n = [], 0
-        for ln in c["text"].split("\n"):          # correct per line so the wrap is preserved
-            fixed, k = glossary.correct(ln, GLOSS); lines.append(fixed); n += k
+        for ln in c["text"].split("\n"):  # correct per line so the wrap is preserved
+            fixed, k = glossary.correct(ln, GLOSS)
+            lines.append(fixed)
+            n += k
         fixes += n
-        kc = dict(c); kc["text"] = "\n".join(lines)
-        kc["pre_correction_text"] = c["text"]   # C7 tells a broken layout from an inherited one
+        kc = dict(c)
+        kc["text"] = "\n".join(lines)
+        kc["pre_correction_text"] = c["text"]  # C7 tells a broken layout from an inherited one
         kc["flag"] = hallucination.flag_reason(c, rec=rec)  # weaker single signal -> kept but marked
         kc["word_probs"] = _card_word_probs(c, words)  # V2 A6: per-word confidence for repair
         kept.append(kc)
@@ -648,29 +762,37 @@ def process(video):
     rows = [(c["start"], c["end"], c["text"]) for c in collapsed]
     conf = []
     for c in collapsed:
-        row = {"start": round(c["start"], 3), "end": round(c["end"], 3),
-               # C6: the audio evidence window, kept separate from the display timing a
-               # forward steal may have moved. repair.py selects its fansub reference on
-               # THIS pair; sidecars written before C6 simply lack it and fall back.
-               "source_start": round(c["source_start"], 3),
-               "source_end": round(c["source_end"], 3),
-               "avg_logprob": round(c["avg_logprob"], 3),
-               "no_speech_prob": round(c["no_speech_prob"], 3),
-               "text": c["text"].replace("\n", " ")}
+        row = {
+            "start": round(c["start"], 3),
+            "end": round(c["end"], 3),
+            # C6: the audio evidence window, kept separate from the display timing a
+            # forward steal may have moved. repair.py selects its fansub reference on
+            # THIS pair; sidecars written before C6 simply lack it and fall back.
+            "source_start": round(c["source_start"], 3),
+            "source_end": round(c["source_end"], 3),
+            "avg_logprob": round(c["avg_logprob"], 3),
+            "no_speech_prob": round(c["no_speech_prob"], 3),
+            "text": c["text"].replace("\n", " "),
+        }
         if c.get("flag"):
             row["flag"] = c["flag"]
         if c.get("word_probs"):
             row["word_probs"] = c["word_probs"]  # optional/backward-compat (V2 A6/A7)
         conf.append(row)
-    srt = out_for(stem + SUFFIX); confp = out_for(stem + ".dubtitles.conf.json")
+    srt = out_for(stem + SUFFIX)
+    confp = out_for(stem + ".dubtitles.conf.json")
+
     def _render_srt(f):
         for i, (a, b, t) in enumerate(rows, 1):
             f.write(f"{i}\n{ts_srt(a)} --> {ts_srt(b)}\n{t}\n\n")
-    _atomic_write(srt, _render_srt)                 # both atomic: the in-flight marker is
-    _atomic_write(confp, lambda f: json.dump(conf, f))   # already gone by here (see helper)
-    for p in (srt, confp):            # the qc sidecar is chowned in _write_qc, after it
-        try: os.chown(p, UID, GID)    # exists
-        except OSError as e: log(f"chown failed for {p}: {e}")
+
+    _atomic_write(srt, _render_srt)  # both atomic: the in-flight marker is
+    _atomic_write(confp, lambda f: json.dump(conf, f))  # already gone by here (see helper)
+    for p in (srt, confp):  # the qc sidecar is chowned in _write_qc, after it
+        try:
+            os.chown(p, UID, GID)  # exists
+        except OSError as e:
+            log(f"chown failed for {p}: {e}")
     # QC sidecar: observability only -- a write failure is logged, never fatal, since the
     # episode already generated correctly (see qc.write's docstring).
     _record_qc(rec, collapsed)
@@ -684,24 +806,28 @@ def process(video):
     _record_cascades(rec, cards, cascade_log)
     low = sum(1 for c in conf if c["avg_logprob"] < -0.8 or c["no_speech_prob"] > 0.6)
     flagged = sum(1 for c in conf if c.get("flag"))
-    rec.count("low_conf", low); rec.count("flagged", flagged)   # both were logged and
-    _write_qc(rec, stem)                                        # then thrown away
+    rec.count("low_conf", low)
+    rec.count("flagged", flagged)  # both were logged and
+    _write_qc(rec, stem)  # then thrown away
     # Only now is the replacement COMPLETE -- srt, conf AND sidecar. Dropping the parked
     # copies before the sidecar exists would leave a window where neither generation's
     # qc.json is on disk.
     drop_parked_sidecars(stem)
     max_dur = max((b - a for a, b, _ in rows), default=0.0)
-    faults = [_card_faults(t, b - a) for a, b, t in rows]   # B2: the SAME predicate the
-    over_cps = sum(1 for f in faults if "over_cps" in f)     # sidecar counts, so the number
-    bad = sum(1 for f in faults if f)                        # an operator reads cannot differ
+    faults = [_card_faults(t, b - a) for a, b, t in rows]  # B2: the SAME predicate the
+    over_cps = sum(1 for f in faults if "over_cps" in f)  # sidecar counts, so the number
+    bad = sum(1 for f in faults if f)  # an operator reads cannot differ
     collapsed_n = len(kept) - len(collapsed)
-    log(f"  cards={len(rows)} name-fixes={fixes} dropped-hallucination={dropped} "
+    log(
+        f"  cards={len(rows)} name-fixes={fixes} dropped-hallucination={dropped} "
         f"collapsed={collapsed_n} flagged={flagged} low-conf={low} "
         f"max_dur={max_dur:.1f}s over_cps={over_cps} violations={bad} "
-        f"meanlp={sum(c['avg_logprob'] for c in conf)/max(1,len(conf)):.2f}")
+        f"meanlp={sum(c['avg_logprob'] for c in conf) / max(1, len(conf)):.2f}"
+    )
     _LAST_STATS.clear()  # V2 C1: this episode's contribution to the show's lastrun.json
-    _LAST_STATS.update({"cards_written": len(rows), "dropped_hallucination": dropped,
-                         "collapsed_runs": collapsed_n, "flagged": flagged})
+    _LAST_STATS.update(
+        {"cards_written": len(rows), "dropped_hallucination": dropped, "collapsed_runs": collapsed_n, "flagged": flagged}
+    )
     return "ok"
 
 
@@ -710,7 +836,7 @@ def main():
     files = []
     if args and args[0] == "--root":
         for dp, dns, fs in os.walk(args[1]):
-            dns[:] = [d for d in dns if d.lower() not in EXTRA_DIRS]   # prune extras dirs
+            dns[:] = [d for d in dns if d.lower() not in EXTRA_DIRS]  # prune extras dirs
             for fn in fs:
                 if fn.lower().endswith(VIDEO_EXTS) and not SKIP_FILE_RE.search(fn):
                     files.append(os.path.join(dp, fn))
@@ -720,31 +846,39 @@ def main():
     else:
         files = args
     load_glossary()
+
     # Cheap pre-filter (stat only, no ffprobe/model): drop files already done so a perpetual
     # re-scan doesn't pay the ~40s model load when there's nothing new to transcribe.
     def needs_work(v):
         stem = os.path.splitext(v)[0]
         stamp = read_stamp(stem + STAMP_SUFFIX)
-        if stamp_valid(stamp, v): return False        # muxed at the current version -> done
-        if os.path.exists(stem + ".dubtitles.fail"): return False   # poison marker wins
+        if stamp_valid(stamp, v):
+            return False  # muxed at the current version -> done
+        if os.path.exists(stem + ".dubtitles.fail"):
+            return False  # poison marker wins
         # Superseded output: its leftover sidecars are stale, so the checks below must not
         # read them as "done" -- process() discards them and re-transcribes.
-        if stale_version_stamp(stamp, v): return True
-        if os.path.exists(stem + ".eng.dubtitles.ass"): return False
-        if os.environ.get("SKIP_IF_SRT", "1") == "1" and os.path.exists(stem + ".eng.dubtitles.srt"): return False
+        if stale_version_stamp(stamp, v):
+            return True
+        if os.path.exists(stem + ".eng.dubtitles.ass"):
+            return False
+        if os.environ.get("SKIP_IF_SRT", "1") == "1" and os.path.exists(stem + ".eng.dubtitles.srt"):
+            return False
         return True
+
     todo = [v for v in files if needs_work(v)]
-    log(f"model={MODEL} compute={COMPUTE} require_eng={os.environ.get('REQUIRE_ENG','1')} files={len(files)} todo={len(todo)}")
+    log(f"model={MODEL} compute={COMPUTE} require_eng={os.environ.get('REQUIRE_ENG', '1')} files={len(files)} todo={len(todo)}")
     if not todo:
-        log("nothing to transcribe (all done) — skipping model load"); return
+        log("nothing to transcribe (all done) — skipping model load")
+        return
     globals()["WMODEL"] = WhisperModel(MODEL, device="cuda", compute_type=COMPUTE, download_root=MODEL_DIR)
-    t0 = time.monotonic()                                      # V2 C1: per-show run summary
+    t0 = time.monotonic()  # V2 C1: per-show run summary
     transcribed = 0
     totals = {"cards_written": 0, "dropped_hallucination": 0, "collapsed_runs": 0, "flagged": 0}
     for v in todo:
         log("→", os.path.basename(v))
         try:
-            status = process(v)                 # one bad episode must not abort the show
+            status = process(v)  # one bad episode must not abort the show
             log("  ", status)
             if status == "ok":
                 transcribed += 1
@@ -763,31 +897,36 @@ def main():
                 # fail and get falsely marked. Exit so the loop relauncher restarts with a
                 # fresh context; the OOM'd file keeps its .fail (skipped on resume), the rest
                 # transcribe cleanly. (Usually means another process grabbed the GPU.)
-                log("  CUDA/GPU error (RuntimeError) -> exiting to rebuild a clean GPU context "
-                    "(show resumes on restart)")
+                log("  CUDA/GPU error (RuntimeError) -> exiting to rebuild a clean GPU context (show resumes on restart)")
                 sys.exit(3)
             # Non-RuntimeError: NOT a GPU error -> don't poison the episode. Clear the .fail
             # marker so the next sweep retries it, and persist a small JSON record of what
             # happened (V2 C15's retry log) for later triage.
             stem = os.path.splitext(v)[0]
-            try: os.remove(stem + ".dubtitles.fail")
-            except OSError: pass
+            try:
+                os.remove(stem + ".dubtitles.fail")
+            except OSError:
+                pass
             try:
                 with open(out_for(stem + ".dubtitles.crash.json"), "w") as f:
-                    json.dump({"path": v, "exc_type": type(e).__name__, "msg": str(e),
-                               "time": time.time()}, f)
+                    json.dump({"path": v, "exc_type": type(e).__name__, "msg": str(e), "time": time.time()}, f)
             except OSError:
                 pass
     # V2 C1: per-show run summary (glossaries/<show>.lastrun.json) -- one file per --root
     # invocation, since SHOW_NAME/GLOSSARY_FILE are per-run env (see load_glossary()).
     show = os.environ.get("SHOW_NAME", "") or GLOSS.get("show", "") or "unknown_show"
     lastrun = {
-        "show": show, "elapsed_s": round(time.monotonic() - t0, 1),
-        "episodes_total": len(todo), "episodes_transcribed": transcribed,
+        "show": show,
+        "elapsed_s": round(time.monotonic() - t0, 1),
+        "episodes_total": len(todo),
+        "episodes_transcribed": transcribed,
         "cards_written": totals["cards_written"],
         "dropped_hallucination": totals["dropped_hallucination"],
-        "collapsed_runs": totals["collapsed_runs"], "flagged": totals["flagged"],
-        "model": MODEL, "model_version": _model_version(), "glossary_version": _glossary_version(),
+        "collapsed_runs": totals["collapsed_runs"],
+        "flagged": totals["flagged"],
+        "model": MODEL,
+        "model_version": _model_version(),
+        "glossary_version": _glossary_version(),
     }
     try:
         os.makedirs(GLOSS_DIR, exist_ok=True)

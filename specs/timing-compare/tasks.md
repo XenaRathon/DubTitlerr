@@ -61,10 +61,9 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
       `false_in_gap_rate`). — done when: the user has reviewed the output and accepted it. **This run's
       numbers calibrate the recalibrated Phase-1 trigger (false_in_gap_rate ≤ ~2% across ≥3 shows).**
 
-## Closing (the *close* phase — always keep last)
+## Closing (the _close_ phase — always keep last)
 
-- [ ] **CI / gates:** `ruff check tools/timing_compare.py tools/vad.py tests/test_timing_compare.py`
-      + full `rtk proxy pytest` green. — done when: pipeline green.
+- [ ] **CI / gates:** `ruff check tools/timing_compare.py tools/vad.py tests/test_timing_compare.py` + full `rtk proxy pytest` green. — done when: pipeline green.
 - [ ] **Push the branch:** `git push origin feat/timing-compare`. — done when: on origin.
 - [ ] **Draft the PR:** Summary / Notable Decisions / Test Plan; pause for approval. — done when: user
       approved.

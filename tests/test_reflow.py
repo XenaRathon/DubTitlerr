@@ -1,4 +1,5 @@
 """Unit tests for reflow.py (A1). Pure functions, no whisper/CUDA needed."""
+
 import pytest
 
 import reflow
@@ -30,6 +31,7 @@ def lay(texts, dur=0.3, gaps=0.0, t0=0.0, seg=0, prob=0.9):
 
 # --- T1: scaffold / contracts ------------------------------------------------
 
+
 def test_module_exposes_netflix_profile_constants():
     assert reflow.MAX_LINE == 42
     assert reflow.MAX_LINES == 2
@@ -42,6 +44,7 @@ def test_module_exposes_netflix_profile_constants():
 
 # --- T2: split_spans ---------------------------------------------------------
 
+
 def test_split_spans_keeps_tightly_spaced_words_in_one_span():
     words = sentence(["a", "b", "c"], gap=0.1)
     spans = reflow.split_spans(words)
@@ -52,8 +55,10 @@ def test_split_spans_keeps_tightly_spaced_words_in_one_span():
 def test_split_spans_breaks_on_gap_over_half_second():
     # "a b" then a 0.8s silence then "c d"
     words = [
-        mkword("a", 0.0, 0.3), mkword("b", 0.4, 0.7),
-        mkword("c", 1.5, 1.8), mkword("d", 1.9, 2.2),
+        mkword("a", 0.0, 0.3),
+        mkword("b", 0.4, 0.7),
+        mkword("c", 1.5, 1.8),
+        mkword("d", 1.9, 2.2),
     ]
     spans = reflow.split_spans(words)
     assert [[w["text"] for w in s] for s in spans] == [["a", "b"], ["c", "d"]]
@@ -71,6 +76,7 @@ def test_split_spans_empty_input():
 
 # --- T3: segment_span --------------------------------------------------------
 
+
 def test_segment_span_splits_on_sentence_punctuation():
     span = sentence(["Hi", "there.", "Bye", "now!"])
     groups = reflow.segment_span(span)
@@ -85,7 +91,7 @@ def test_segment_span_keeps_a_fitting_piece_whole():
 def test_segment_span_overflow_cuts_at_largest_pause():
     # 12 identical 7-char words = 95 chars (>84). Bigger gap after word 6.
     gaps = [0.05] * 11
-    gaps[5] = 0.30          # the gap that closes a card (split index 6)
+    gaps[5] = 0.30  # the gap that closes a card (split index 6)
     span = lay(["alphaaa"] * 12, gaps=gaps)
     groups = reflow.segment_span(span)
     assert len(groups) == 2
@@ -116,7 +122,7 @@ def test_segment_span_overflow_by_duration_even_when_text_short():
 
 
 def test_segment_span_single_unsplittable_word_returned_as_is():
-    span = [mkword("x" * 200, 0.0, 12.0)]   # too long AND too long-duration
+    span = [mkword("x" * 200, 0.0, 12.0)]  # too long AND too long-duration
     assert len(reflow.segment_span(span)) == 1
 
 
@@ -128,9 +134,10 @@ def test_segment_span_single_unsplittable_word_returned_as_is():
 # unreachable (it needed EVERY gap to be exactly 0.0). Measured: 22% of cards with no
 # sentence punctuation still carry a comma the code could never consult.
 
+
 def test_split_pause_floor_is_a_module_constant():
     assert reflow.SPLIT_PAUSE_MIN > 0
-    assert reflow.SPLIT_PAUSE_MIN < reflow.GAP_MAX      # or the tier could never fire
+    assert reflow.SPLIT_PAUSE_MIN < reflow.GAP_MAX  # or the tier could never fire
 
 
 def test_segment_span_splits_at_a_real_pause_among_noise_gaps():
@@ -138,7 +145,7 @@ def test_segment_span_splits_at_a_real_pause_among_noise_gaps():
     gaps = [0.02, 0.05, 0.03, 0.04, 0.02, 0.30, 0.03, 0.05, 0.02, 0.04, 0.03]
     groups = reflow.segment_span(lay(["alphaaa"] * 12, gaps=gaps))
     assert len(groups) == 2
-    assert len(groups[0]) == 6                          # the 0.30 s pause, not a noise peak
+    assert len(groups[0]) == 6  # the 0.30 s pause, not a noise peak
 
 
 def test_segment_span_all_noise_gaps_falls_through_to_the_clause():
@@ -148,23 +155,23 @@ def test_segment_span_all_noise_gaps_falls_through_to_the_clause():
     gaps = [0.03, 0.05, 0.02, 0.04, 0.06, 0.02, 0.03, 0.07, 0.02, 0.05, 0.04]
     groups = reflow.segment_span(lay(texts, gaps=gaps))
     assert len(groups) == 2
-    assert len(groups[0]) == 6                          # the comma, not the 0.07 gap at 8
+    assert len(groups[0]) == 6  # the comma, not the 0.07 gap at 8
 
 
 def test_segment_span_all_noise_gaps_no_clause_falls_through_to_the_midpoint():
     gaps = [0.03, 0.05, 0.02, 0.04, 0.06, 0.02, 0.03, 0.07, 0.02, 0.05, 0.04]
     groups = reflow.segment_span(lay(["alphaaa"] * 12, gaps=gaps))
     assert len(groups) == 2
-    assert abs(len(groups[0]) - len(groups[1])) <= 1     # character midpoint, tier 3
+    assert abs(len(groups[0]) - len(groups[1])) <= 1  # character midpoint, tier 3
 
 
 def test_segment_span_equal_pauses_tie_break_prefers_the_midpoint():
     # binary fractions only: the tie-break is an exact float comparison, so 0.02/0.3
     # laid out by accumulation would differ in the last bits and never actually tie.
     gaps = [0.03125] * 11
-    gaps[2] = gaps[5] = 0.25            # two qualifying, exactly equal pauses: 3 and 6
+    gaps[2] = gaps[5] = 0.25  # two qualifying, exactly equal pauses: 3 and 6
     groups = reflow.segment_span(lay(["alphaaa"] * 12, dur=0.25, gaps=gaps))
-    assert len(groups[0]) == 6          # 6 is nearer the midpoint (6.0) than 3
+    assert len(groups[0]) == 6  # 6 is nearer the midpoint (6.0) than 3
 
 
 def test_segment_span_uniformly_slow_speech_has_no_standout_pause():
@@ -173,12 +180,13 @@ def test_segment_span_uniformly_slow_speech_has_no_standout_pause():
     texts = ["alphaaa"] * 12
     texts[5] = "alphaa,"
     gaps = [0.3] * 11
-    gaps[7] = 0.35                      # the largest gap, but not a pause RELATIVE to 0.3
+    gaps[7] = 0.35  # the largest gap, but not a pause RELATIVE to 0.3
     groups = reflow.segment_span(lay(texts, gaps=gaps))
-    assert len(groups[0]) == 6          # the comma, not the 0.35 gap at index 8
+    assert len(groups[0]) == 6  # the comma, not the 0.35 gap at index 8
 
 
 # --- T4: wrap_balance --------------------------------------------------------
+
 
 def test_wrap_balance_short_text_stays_one_line():
     assert reflow.wrap_balance("short enough") == "short enough"
@@ -190,26 +198,27 @@ def test_wrap_balance_text_at_limit_stays_one_line():
 
 
 def test_wrap_balance_long_text_becomes_two_lines_each_within_limit():
-    text = " ".join(["wordy"] * 12)   # 12*5 + 11 = 71 chars > 42
+    text = " ".join(["wordy"] * 12)  # 12*5 + 11 = 71 chars > 42
     out = reflow.wrap_balance(text)
     lines = out.split("\n")
     assert len(lines) == 2
     assert all(len(ln) <= reflow.MAX_LINE for ln in lines)
-    assert out.replace("\n", " ") == text     # content + order preserved
+    assert out.replace("\n", " ") == text  # content + order preserved
 
 
 def test_wrap_balance_splits_evenly():
-    text = " ".join(["abcde"] * 10)    # 59 chars -> balanced 5/5
+    text = " ".join(["abcde"] * 10)  # 59 chars -> balanced 5/5
     a, b = reflow.wrap_balance(text).split("\n")
     assert abs(len(a) - len(b)) <= 5
 
 
 def test_wrap_balance_single_overlong_word_returned_unwrapped():
     word = "z" * 60
-    assert reflow.wrap_balance(word) == word    # nothing to split on, no crash
+    assert reflow.wrap_balance(word) == word  # nothing to split on, no crash
 
 
 # --- T5: time_cards ----------------------------------------------------------
+
 
 def test_time_cards_start_is_pinned_to_first_word_onset():
     groups = [sentence(["Hello", "world."], t0=3.2)]
@@ -218,7 +227,7 @@ def test_time_cards_start_is_pinned_to_first_word_onset():
 
 
 def test_time_cards_extends_short_card_to_minimum_duration():
-    groups = [[mkword("Oh", 0.5, 0.7)]]      # 0.2s spoken, no trailing card
+    groups = [[mkword("Oh", 0.5, 0.7)]]  # 0.2s spoken, no trailing card
     ((start, end),), _ = reflow.time_cards(groups)
     assert end == pytest.approx(start + reflow.MIN_DUR)
 
@@ -239,7 +248,7 @@ def test_time_cards_extension_capped_by_next_card_with_gap():
     groups = [[mkword("a" * 50, 0.0, 0.3)], [mkword("b", 1.5, 1.8)]]
     times, _ = reflow.time_cards(groups)
     end0 = times[0][1]
-    assert end0 == pytest.approx(1.5 - reflow.MIN_GAP)   # held off the next card
+    assert end0 == pytest.approx(1.5 - reflow.MIN_GAP)  # held off the next card
 
 
 def test_time_cards_never_overlaps_next_card():
@@ -250,8 +259,10 @@ def test_time_cards_never_overlaps_next_card():
 
 # --- T6: card_confidence + reflow() + edges ----------------------------------
 
+
 def test_card_confidence_avg_logprob_is_mean_word_logprob():
     import math
+
     words = [mkword("a", 0, 0.3, prob=0.9), mkword("b", 0.4, 0.7, prob=0.9)]
     segs = [{"start": 0, "end": 1, "no_speech_prob": 0.1}]
     avg, _ = reflow.card_confidence(words, segs)
@@ -267,6 +278,7 @@ def test_card_confidence_no_speech_prob_is_max_over_source_segments():
 
 def test_card_confidence_clamps_zero_probability():
     import math
+
     words = [mkword("a", 0, 0.3, prob=0.0)]
     segs = [{"no_speech_prob": 0.1}]
     avg, _ = reflow.card_confidence(words, segs)
@@ -274,8 +286,7 @@ def test_card_confidence_clamps_zero_probability():
 
 
 def test_reflow_end_to_end_two_sentences_across_a_gap():
-    words = sentence(["Hello", "there."], t0=0.0, seg=0) + \
-        sentence(["General", "Kenobi."], t0=2.0, seg=1)
+    words = sentence(["Hello", "there."], t0=0.0, seg=0) + sentence(["General", "Kenobi."], t0=2.0, seg=1)
     segs = [{"no_speech_prob": 0.1}, {"no_speech_prob": 0.2}]
     cards = reflow.reflow(words, segs)
     assert [c["text"] for c in cards] == ["Hello there.", "General Kenobi."]
@@ -287,7 +298,7 @@ def test_reflow_end_to_end_two_sentences_across_a_gap():
 def test_reflow_tolerates_missing_word_timestamps():
     words = [mkword("Hi", None, None, seg=0), mkword("there.", 0.5, 0.8, seg=0)]
     segs = [{"no_speech_prob": 0.1}]
-    cards = reflow.reflow(words, segs)        # must not raise
+    cards = reflow.reflow(words, segs)  # must not raise
     assert len(cards) >= 1
     assert all(isinstance(c["start"], float) and isinstance(c["end"], float) for c in cards)
 
@@ -308,8 +319,8 @@ def test_reflow_clamps_word_timestamps_into_their_segment_bounds():
     ]
     segs = [{"start": 110.5, "end": 111.5, "no_speech_prob": 0.1}]
     cards = reflow.reflow(words, segs)
-    assert len(cards) == 1                 # not an orphaned "I must" at t=5
-    assert cards[0]["start"] >= 110.5      # clamped into the segment, no early reveal
+    assert len(cards) == 1  # not an orphaned "I must" at t=5
+    assert cards[0]["start"] >= 110.5  # clamped into the segment, no early reveal
     assert cards[0]["text"] == "I must admit."
 
 
@@ -326,7 +337,7 @@ def test_reflow_dejitters_large_intra_segment_word_gap():
     cards = reflow.reflow(words, segs)
     assert len(cards) == 1
     assert cards[0]["text"] == "I must admit."
-    assert cards[0]["start"] >= 108        # pulled up to the body, not shown at t=5
+    assert cards[0]["start"] >= 108  # pulled up to the body, not shown at t=5
 
 
 def test_reflow_no_tiny_fragment_from_small_intra_segment_gap():
@@ -341,20 +352,21 @@ def test_reflow_no_tiny_fragment_from_small_intra_segment_gap():
     cards = reflow.reflow(words, segs)
     assert len(cards) == 1
     assert cards[0]["text"] == "I couldn't win."
-    assert cards[0]["start"] >= 122.0     # leading "I" pulled to the body, no early reveal
+    assert cards[0]["start"] >= 122.0  # leading "I" pulled to the body, no early reveal
 
 
 # --- T7: epsilon and duration helpers ----------------------------------------
+
 
 def test_eps_absorbs_json_round_trip_error():
     """A card the timer set to exactly start+MIN_DUR, re-derived from conf.json's
     3-decimal values, must NOT count as short. Real card from One Pace S30 -- 410 of
     the 1140 cards a naive `< MIN_DUR` flagged are this artifact, not a defect."""
-    start, end = 257.42, 258.25                  # verbatim from a shipped conf.json
+    start, end = 257.42, 258.25  # verbatim from a shipped conf.json
     dur = end - start
-    assert dur == 0.8299999999999841             # the artifact is real, not synthetic
-    assert dur < reflow.MIN_DUR                  # ...a naive comparison calls it short
-    assert not reflow.is_short(dur)              # ...and is_short must not
+    assert dur == 0.8299999999999841  # the artifact is real, not synthetic
+    assert dur < reflow.MIN_DUR  # ...a naive comparison calls it short
+    assert not reflow.is_short(dur)  # ...and is_short must not
 
 
 def test_is_short_still_catches_a_real_runt():
@@ -363,42 +375,43 @@ def test_is_short_still_catches_a_real_runt():
 
 
 def test_card_cps_uses_visible_chars():
-    assert reflow.card_cps("ab\ncd", 1.0) == 5.0   # newline counts as one space
+    assert reflow.card_cps("ab\ncd", 1.0) == 5.0  # newline counts as one space
 
 
 # --- T8: is_orphan_group + orphan flag on cards -------------------------------
 
+
 def test_single_word_group_from_a_previous_segment_is_an_orphan():
-    g = [{"text": "Wait", "start": 10.0, "end": 10.2, "prob": .9, "seg": 0}]
-    nxt = [{"text": "for", "start": 12.0, "end": 12.3, "prob": .9, "seg": 1}]
+    g = [{"text": "Wait", "start": 10.0, "end": 10.2, "prob": 0.9, "seg": 0}]
+    nxt = [{"text": "for", "start": 12.0, "end": 12.3, "prob": 0.9, "seg": 1}]
     assert reflow.is_orphan_group(g, nxt) is True
 
 
 def test_a_legitimate_one_word_utterance_is_not_an_orphan():
     """'Yes.' spoken alone, in its own segment, with silence both sides."""
-    g = [{"text": "Yes.", "start": 10.0, "end": 10.6, "prob": .9, "seg": 3}]
-    nxt = [{"text": "I", "start": 14.0, "end": 14.2, "prob": .9, "seg": 4}]
+    g = [{"text": "Yes.", "start": 10.0, "end": 10.6, "prob": 0.9, "seg": 3}]
+    nxt = [{"text": "I", "start": 14.0, "end": 14.2, "prob": 0.9, "seg": 4}]
     assert reflow.is_orphan_group(g, nxt) is False
 
 
 def test_is_orphan_group_false_when_no_next_group():
-    g = [{"text": "Wait", "start": 10.0, "end": 10.2, "prob": .9, "seg": 0}]
+    g = [{"text": "Wait", "start": 10.0, "end": 10.2, "prob": 0.9, "seg": 0}]
     assert reflow.is_orphan_group(g, None) is False
 
 
 def test_is_orphan_group_false_when_next_group_same_segment():
-    g = [{"text": "Wait", "start": 10.0, "end": 10.2, "prob": .9, "seg": 0}]
-    nxt = [{"text": "for", "start": 12.0, "end": 12.3, "prob": .9, "seg": 0}]
+    g = [{"text": "Wait", "start": 10.0, "end": 10.2, "prob": 0.9, "seg": 0}]
+    nxt = [{"text": "for", "start": 12.0, "end": 12.3, "prob": 0.9, "seg": 0}]
     assert reflow.is_orphan_group(g, nxt) is False
 
 
 def test_is_orphan_group_false_when_group_too_long():
     g = [
-        {"text": "Wait", "start": 10.0, "end": 10.2, "prob": .9, "seg": 0},
-        {"text": "right", "start": 10.3, "end": 10.5, "prob": .9, "seg": 0},
-        {"text": "there", "start": 10.6, "end": 10.8, "prob": .9, "seg": 0},
+        {"text": "Wait", "start": 10.0, "end": 10.2, "prob": 0.9, "seg": 0},
+        {"text": "right", "start": 10.3, "end": 10.5, "prob": 0.9, "seg": 0},
+        {"text": "there", "start": 10.6, "end": 10.8, "prob": 0.9, "seg": 0},
     ]
-    nxt = [{"text": "for", "start": 12.0, "end": 12.3, "prob": .9, "seg": 1}]
+    nxt = [{"text": "for", "start": 12.0, "end": 12.3, "prob": 0.9, "seg": 1}]
     assert reflow.is_orphan_group(g, nxt) is False
 
 
@@ -406,11 +419,11 @@ def _orphan_words():
     # seg 0: a complete sentence, then a stray "Wait" tacked on at the segment's
     # tail; seg 1 (after a >GAP_MAX silence) is the utterance "Wait" really belongs to.
     return [
-        {"text": "Hello", "start": 0.0, "end": 0.3, "prob": .9, "seg": 0},
-        {"text": "there.", "start": 0.4, "end": 0.7, "prob": .9, "seg": 0},
-        {"text": "Wait", "start": 0.8, "end": 1.0, "prob": .9, "seg": 0},
-        {"text": "for", "start": 1.6, "end": 1.9, "prob": .9, "seg": 1},
-        {"text": "me.", "start": 2.0, "end": 2.3, "prob": .9, "seg": 1},
+        {"text": "Hello", "start": 0.0, "end": 0.3, "prob": 0.9, "seg": 0},
+        {"text": "there.", "start": 0.4, "end": 0.7, "prob": 0.9, "seg": 0},
+        {"text": "Wait", "start": 0.8, "end": 1.0, "prob": 0.9, "seg": 0},
+        {"text": "for", "start": 1.6, "end": 1.9, "prob": 0.9, "seg": 1},
+        {"text": "me.", "start": 2.0, "end": 2.3, "prob": 0.9, "seg": 1},
     ]
 
 
@@ -429,8 +442,7 @@ def test_orphan_flag_reaches_the_card():
 def test_reflow_end_to_end_two_sentences_across_a_gap_marks_no_orphans():
     # regression: the flag must be additive only -- unrelated existing scenarios
     # (no cross-segment stranded runt) stay unflagged.
-    words = sentence(["Hello", "there."], t0=0.0, seg=0) + \
-        sentence(["General", "Kenobi."], t0=2.0, seg=1)
+    words = sentence(["Hello", "there."], t0=0.0, seg=0) + sentence(["General", "Kenobi."], t0=2.0, seg=1)
     segs = [{"no_speech_prob": 0.1}, {"no_speech_prob": 0.2}]
     cards = reflow.reflow(words, segs)
     assert all(c.get("orphan") is False for c in cards)
@@ -440,32 +452,39 @@ def test_fragment_after_an_unfinished_clause_is_not_an_orphan():
     """A short fragment trailing an UNFINISHED clause may be its continuation, so it
     must stay mergeable. Only timing distinguishes this from the orphan case above --
     which is why the predicate consults the predecessor's punctuation, not just gaps."""
-    prev = [{"text": "I", "start": 0.0, "end": 0.2, "prob": .9, "seg": 0},
-            {"text": "went", "start": 0.3, "end": 0.6, "prob": .9, "seg": 0}]
-    group = [{"text": "home", "start": 0.7, "end": 0.9, "prob": .9, "seg": 0}]
-    nxt = [{"text": "Later", "start": 3.0, "end": 3.4, "prob": .9, "seg": 1}]
+    prev = [
+        {"text": "I", "start": 0.0, "end": 0.2, "prob": 0.9, "seg": 0},
+        {"text": "went", "start": 0.3, "end": 0.6, "prob": 0.9, "seg": 0},
+    ]
+    group = [{"text": "home", "start": 0.7, "end": 0.9, "prob": 0.9, "seg": 0}]
+    nxt = [{"text": "Later", "start": 3.0, "end": 3.4, "prob": 0.9, "seg": 1}]
     assert reflow.is_orphan_group(group, nxt, prev) is False
 
 
 def test_fragment_after_a_finished_sentence_is_an_orphan():
     """Same timing, but the predecessor is complete -- nothing can continue it."""
-    prev = [{"text": "I", "start": 0.0, "end": 0.2, "prob": .9, "seg": 0},
-            {"text": "went.", "start": 0.3, "end": 0.6, "prob": .9, "seg": 0}]
-    group = [{"text": "Wait", "start": 0.7, "end": 0.9, "prob": .9, "seg": 0}]
-    nxt = [{"text": "for", "start": 3.0, "end": 3.4, "prob": .9, "seg": 1}]
+    prev = [
+        {"text": "I", "start": 0.0, "end": 0.2, "prob": 0.9, "seg": 0},
+        {"text": "went.", "start": 0.3, "end": 0.6, "prob": 0.9, "seg": 0},
+    ]
+    group = [{"text": "Wait", "start": 0.7, "end": 0.9, "prob": 0.9, "seg": 0}]
+    nxt = [{"text": "for", "start": 3.0, "end": 3.4, "prob": 0.9, "seg": 1}]
     assert reflow.is_orphan_group(group, nxt, prev) is True
 
 
 def test_fragment_split_from_its_predecessor_by_a_pause_is_an_orphan():
     """Unfinished predecessor, but a real pause separates them -- not a continuation."""
-    prev = [{"text": "I", "start": 0.0, "end": 0.2, "prob": .9, "seg": 0},
-            {"text": "went", "start": 0.3, "end": 0.6, "prob": .9, "seg": 0}]
-    group = [{"text": "Wait", "start": 2.0, "end": 2.2, "prob": .9, "seg": 0}]
-    nxt = [{"text": "for", "start": 5.0, "end": 5.4, "prob": .9, "seg": 1}]
+    prev = [
+        {"text": "I", "start": 0.0, "end": 0.2, "prob": 0.9, "seg": 0},
+        {"text": "went", "start": 0.3, "end": 0.6, "prob": 0.9, "seg": 0},
+    ]
+    group = [{"text": "Wait", "start": 2.0, "end": 2.2, "prob": 0.9, "seg": 0}]
+    nxt = [{"text": "for", "start": 5.0, "end": 5.4, "prob": 0.9, "seg": 1}]
     assert reflow.is_orphan_group(group, nxt, prev) is True
 
 
 # --- T9: merge_runts (backward merge of too-short groups) --------------------
+
 
 def _two_groups(gap, pred_text, runt_text, pd, rd, seg=0):
     """Two single-"word" groups: a predecessor spanning [0, pd] and a runt
@@ -506,18 +525,18 @@ def _orphan_then_utterance():
     return [g0, g1, g2]
 
 
-CASES = [   # (gap, pred_text, runt_text, pred_dur, runt_dur, should_merge, why)
-    (0.08, "It's a", "monster.",  1.0, 0.30, True,  "ordinary sentence tail"),
-    (0.60, "It's a", "monster.",  1.0, 0.30, False, "gap exceeds GAP_MAX"),
+CASES = [  # (gap, pred_text, runt_text, pred_dur, runt_dur, should_merge, why)
+    (0.08, "It's a", "monster.", 1.0, 0.30, True, "ordinary sentence tail"),
+    (0.60, "It's a", "monster.", 1.0, 0.30, False, "gap exceeds GAP_MAX"),
     # NB: this row is 79 chars -- UNDER MAX_CHARS. It is rejected at 57 cps. Kept as a
     # valid rejection, relabelled honestly; the row below is what isolates MAX_CHARS.
-    (0.08, "x" * 70, "monster.",  1.0, 0.30, False, "short+dense: rejected on cps"),
+    (0.08, "x" * 70, "monster.", 1.0, 0.30, False, "short+dense: rejected on cps"),
     # 89 chars (over 84) at 16.5 cps and 5.38s span -- both other gates pass, so only
     # MAX_CHARS can reject it. Without this the MAX_CHARS gate is never exercised.
-    (0.08, "x" * 80, "monster.",  5.0, 0.30, False, "merged text over MAX_CHARS"),
-    (0.08, "It's a", "monster.",  6.9, 0.30, False, "merged span over MAX_DUR"),
-    (0.08, "a" * 30, "b" * 20,    2.0, 0.30, False, "merged cps over MAX_CPS"),
-    (0.08, "Done.",  "Next.",     1.0, 0.30, True,  "sentence-integrity is a PREFERENCE"),
+    (0.08, "x" * 80, "monster.", 5.0, 0.30, False, "merged text over MAX_CHARS"),
+    (0.08, "It's a", "monster.", 6.9, 0.30, False, "merged span over MAX_DUR"),
+    (0.08, "a" * 30, "b" * 20, 2.0, 0.30, False, "merged cps over MAX_CPS"),
+    (0.08, "Done.", "Next.", 1.0, 0.30, True, "sentence-integrity is a PREFERENCE"),
 ]
 
 
@@ -563,8 +582,7 @@ def test_merge_log_collects_merge_records_from_reflow():
     """generate.py needs the per-episode merge count for the QC sidecar
     (merged_backward). reflow() takes an optional out-param so the public
     return type (a plain list of cards) never changes for existing callers."""
-    words = sentence(["Fine."], t0=0.0, dur=1.0, gap=0.08, seg=0) + \
-        sentence(["Monster."], t0=1.08, dur=0.30, seg=0)
+    words = sentence(["Fine."], t0=0.0, dur=1.0, gap=0.08, seg=0) + sentence(["Monster."], t0=1.08, dur=0.30, seg=0)
     segs = [{"no_speech_prob": 0.1}]
     log = []
     cards = reflow.reflow(words, segs, merge_log=log)
@@ -575,22 +593,21 @@ def test_merge_log_collects_merge_records_from_reflow():
 
 # --- T10: time_cards forward steal + cascade ---------------------------------
 
+
 def _overlapping_pair(pred_end=0.083, succ_start=0.050):
     """The shipped defect, in shape: the degenerate branch ends the predecessor at
     start+MIN_GAP without ever consulting the successor, so it ends AFTER the
     successor starts -- 9 such pairs ship today ('Huh.' running -0.083s into
     "Let's be honest."). Shifting by the MIN_DUR extension delta alone preserves the
     overlap; the pre-existing gap deficit has to be absorbed too."""
-    return [[mkword("Huh.", 0.0, pred_end, seg=0)],
-            [mkword("Let's be honest.", succ_start, succ_start + 1.4, seg=1)]]
+    return [[mkword("Huh.", 0.0, pred_end, seg=0)], [mkword("Let's be honest.", succ_start, succ_start + 1.4, seg=1)]]
 
 
 def _runt_then_long(runt_dur=0.10, gap=0.05, succ_dur=2.85):
     """A runt whose successor carries surplus duration: the successor absorbs the
     whole shift by simply getting shorter, so its END must not move."""
     t = runt_dur + gap
-    return [[mkword("Oh", 0.0, runt_dur, seg=0)],
-            [mkword("A much longer line here.", t, t + succ_dur, seg=0)]]
+    return [[mkword("Oh", 0.0, runt_dur, seg=0)], [mkword("A much longer line here.", t, t + succ_dur, seg=0)]]
 
 
 def _runt_then_tight_chain(n=3):
@@ -621,10 +638,12 @@ def _shifted(groups, dt):
 
 
 def _mixed_corpus():
-    return (_overlapping_pair()
-            + _shifted(_runt_then_long(), 10.0)
-            + _shifted(_runt_then_tight_chain(3), 20.0)
-            + [[mkword("The end.", 30.0, 31.5, seg=9)]])
+    return (
+        _overlapping_pair()
+        + _shifted(_runt_then_long(), 10.0)
+        + _shifted(_runt_then_tight_chain(3), 20.0)
+        + [[mkword("The end.", 30.0, 31.5, seg=9)]]
+    )
 
 
 def test_steal_absorbs_a_preexisting_overlap_not_just_the_deficit():
@@ -639,14 +658,14 @@ def test_steal_absorbs_a_preexisting_overlap_not_just_the_deficit():
 
 def test_the_cascade_record_names_the_preexisting_deficit():
     _, records = reflow.time_cards(_overlapping_pair())
-    assert records[0]["preexisting_gap_deficit"] > 0     # the shipped overlap, +MIN_GAP
+    assert records[0]["preexisting_gap_deficit"] > 0  # the shipped overlap, +MIN_GAP
 
 
 def test_surplus_successor_terminates_the_cascade_in_one_hop():
     times, records = reflow.time_cards(_runt_then_long())
     assert records[0]["hops"] == 1
     assert times[1][1] == pytest.approx(_runt_then_long()[1][-1]["end"], abs=1e-6)  # end unmoved
-    assert times[1][0] > _runt_then_long()[1][0]["start"]                           # start moved
+    assert times[1][0] > _runt_then_long()[1][0]["start"]  # start moved
 
 
 def test_zero_surplus_successor_propagates():
@@ -668,7 +687,7 @@ def test_infeasible_cascade_raises_rather_than_emitting_junk():
 
 
 def test_dense_chain_is_feasible_when_the_audio_length_is_unknown():
-    times, _ = reflow.time_cards(_dense_no_slack_chain())        # audio_duration=None
+    times, _ = reflow.time_cards(_dense_no_slack_chain())  # audio_duration=None
     for (_a, b), (c, _d) in zip(times, times[1:]):
         assert c - b >= reflow.MIN_GAP - reflow.EPS
 
@@ -698,14 +717,13 @@ def test_a_cascade_record_carries_the_duration_each_hop_found():
     """B1's event schema names dur_before, and it is unrecoverable from the finished
     timings: a displaced card whose end had to move ends at exactly MIN_DUR whatever it
     was before. The cascade is the only place that still knows."""
-    groups = [[mkword("Oh.", 0.0, 0.10, seg=0)],
-              [mkword("A much longer line here.", 0.15, 3.0, seg=0)]]
+    groups = [[mkword("Oh.", 0.0, 0.10, seg=0)], [mkword("A much longer line here.", 0.15, 3.0, seg=0)]]
     times, records = reflow.time_cards(groups)
     assert len(records) == 1
     r = records[0]
     assert set(r["dur_before"]) == set(r["displaced"])
-    assert r["dur_before"][1] == pytest.approx(2.85, abs=reflow.EPS)   # 3.0 - 0.15, pre-steal
-    assert times[1][1] - times[1][0] < r["dur_before"][1]              # it really lost time
+    assert r["dur_before"][1] == pytest.approx(2.85, abs=reflow.EPS)  # 3.0 - 0.15, pre-steal
+    assert times[1][1] - times[1][0] < r["dur_before"][1]  # it really lost time
 
 
 def test_a_successful_steal_records_only_what_it_can_measure():
@@ -740,11 +758,11 @@ def test_a_stream_that_needs_nothing_records_no_cascades():
 
 # --- T11: source timing vs display timing (C6) -------------------------------
 
+
 def _runt_then_surplus_words():
     """A runt that has to steal time forward, followed by a card with the surplus to
     give it: the successor's DISPLAY start moves later, its spoken onset does not."""
-    return [mkword("Oh.", 0.0, 0.10, seg=0),
-            mkword("A much longer line here.", 0.15, 3.0, seg=0)]
+    return [mkword("Oh.", 0.0, 0.10, seg=0), mkword("A much longer line here.", 0.15, 3.0, seg=0)]
 
 
 def test_reflow_emits_the_spoken_span_as_the_source_window():
@@ -762,8 +780,8 @@ def test_source_start_is_the_onset_even_when_the_display_start_was_stolen_forwar
     words = _runt_then_surplus_words()
     segs = [{"start": 0.0, "end": 3.0, "no_speech_prob": 0.1}]
     cards = reflow.reflow(words, segs)
-    assert cards[1]["start"] > cards[1]["source_start"] + reflow.EPS      # displaced
-    assert cards[1]["source_start"] == 0.15                               # onset unmoved
+    assert cards[1]["start"] > cards[1]["source_start"] + reflow.EPS  # displaced
+    assert cards[1]["source_start"] == 0.15  # onset unmoved
 
 
 def test_source_end_ignores_the_readability_extension():
@@ -779,8 +797,7 @@ def test_source_end_ignores_the_readability_extension():
 def test_merged_card_source_window_is_the_union():
     """merge_runts() concatenates word lists, so the merged card's span runs from the
     FIRST group's onset to the LAST group's final word end."""
-    words = sentence(["Fine."], t0=0.0, dur=1.0, gap=0.08, seg=0) + \
-        sentence(["Monster."], t0=1.08, dur=0.30, seg=0)
+    words = sentence(["Fine."], t0=0.0, dur=1.0, gap=0.08, seg=0) + sentence(["Monster."], t0=1.08, dur=0.30, seg=0)
     segs = [{"no_speech_prob": 0.1}]
     log = []
     (card,) = reflow.reflow(words, segs, merge_log=log)
@@ -801,7 +818,7 @@ def test_reflow_threads_audio_duration_into_the_cascade():
 def test_reflow_without_an_audio_duration_stays_unbounded():
     words = _runt_then_surplus_words()
     segs = [{"start": 0.0, "end": 3.0, "no_speech_prob": 0.1}]
-    cards = reflow.reflow(words, segs)          # audio_duration defaults to None
+    cards = reflow.reflow(words, segs)  # audio_duration defaults to None
     assert [c["start"] for c in cards] == [0.0, pytest.approx(0.913, abs=reflow.EPS)]
 
 
@@ -809,8 +826,7 @@ def test_cascade_log_collects_cascade_records_from_reflow():
     """generate.py needs time_cards()'s per-cascade records for the QC sidecar
     (stolen / displaced / cascade_depth). Like merge_log, cascade_log is an optional
     out-param, so the public return type stays a plain list of cards."""
-    words = sentence(["Oh."], t0=0.0, dur=0.10, seg=0) + \
-        sentence(["A much longer line here."], t0=0.15, dur=2.85, seg=0)
+    words = sentence(["Oh."], t0=0.0, dur=0.10, seg=0) + sentence(["A much longer line here."], t0=0.15, dur=2.85, seg=0)
     segs = [{"no_speech_prob": 0.1}]
     log: list[dict] = []
     cards = reflow.reflow(words, segs, cascade_log=log)
@@ -818,8 +834,8 @@ def test_cascade_log_collects_cascade_records_from_reflow():
     assert len(log) == 1
     assert log[0]["reason"] == "forward_steal"
     assert log[0]["hops"] == 1
-    assert log[0]["displaced"] == [1]        # the successor's start moved
-    assert log[0]["shortened"] == [1]        # ...while its end did not
+    assert log[0]["displaced"] == [1]  # the successor's start moved
+    assert log[0]["shortened"] == [1]  # ...while its end did not
 
 
 def test_cascade_record_separates_a_displaced_card_from_a_shortened_one():
@@ -839,10 +855,10 @@ def test_merge_census_counts_a_short_target_too():
     groups = _two_shorts(0.40, 0.40, gap=0.05)
     out, merges = reflow.merge_runts(groups)
     assert len(merges) == 1
-    assert merges[0]["short_groups_before"] == 2      # BOTH groups were short
+    assert merges[0]["short_groups_before"] == 2  # BOTH groups were short
 
 
 def test_merge_census_excludes_a_long_target():
     groups = _two_groups(0.08, "It's a", "monster.", 2.0, 0.30)
     _out, merges = reflow.merge_runts(groups)
-    assert merges and merges[0]["short_groups_before"] == 1   # only the runt
+    assert merges and merges[0]["short_groups_before"] == 1  # only the runt

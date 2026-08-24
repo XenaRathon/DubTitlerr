@@ -1,6 +1,6 @@
 # Spec — Glossary name acquisition (wiki-first, transcript-filtered)
 
-> Design doc for a new pipeline stage that *acquires* proper nouns, rather than only
+> Design doc for a new pipeline stage that _acquires_ proper nouns, rather than only
 > verifying ones the miner already found. Companion to
 > `specs/glossary-wiki-verify/spec.md`, which built the verification half.
 
@@ -13,7 +13,7 @@ every name in it is left to Whisper's phonetic guessing plus an LLM repair pass 
 no reference spellings to check against.
 
 `glossary_verify.py` cannot close the gap. `verify()` runs over `pending_terms(gloss)` —
-terms *already in* the glossary. It corrects spellings; it has no path to add a name that
+terms _already in_ the glossary. It corrects spellings; it has no path to add a name that
 was never mined. So the glossary records `wiki: https://onepiece.fandom.com/api.php`,
 which knows every character in the series, and never asks it about a name it doesn't
 already have.
@@ -27,15 +27,15 @@ subtitle track** — 0/12 episodes sampled. Seasons 01/15/25 ship full
 
 Across the 45 episodes of those two seasons, the pipeline's own transcripts contain:
 
-| token | count | correct? |
-|---|---|---|
-| Shirahoshi | 56 | yes |
-| Jinbei | 61 | dub-vs-Viz variant |
-| Neptune | 40 | yes |
-| **Deccan** | **21** | **no** |
-| Vanderdecken | 16 | unspaced |
-| **Decken** | **8** | **yes** |
-| Fukaboshi | 6 | yes |
+| token        | count  | correct?           |
+| ------------ | ------ | ------------------ |
+| Shirahoshi   | 56     | yes                |
+| Jinbei       | 61     | dub-vs-Viz variant |
+| Neptune      | 40     | yes                |
+| **Deccan**   | **21** | **no**             |
+| Vanderdecken | 16     | unspaced           |
+| **Decken**   | **8**  | **yes**            |
+| Fukaboshi    | 6      | yes                |
 
 Two facts follow, and they shape the whole design:
 
@@ -43,7 +43,7 @@ Two facts follow, and they shape the whole design:
    scores `avg_logprob -0.065`; the correct `Shirahoshi` scores `-0.173`. No threshold
    can split them.
 2. **Frequency alone does not either.** `Deccan` (wrong) beats `Decken` (right) 21 to 8
-   across the whole arc. Frequency can propose a *cluster*; only the wiki can pick the
+   across the whole arc. Frequency can propose a _cluster_; only the wiki can pick the
    right member of it.
 
 ## Goals
@@ -70,7 +70,7 @@ Two facts follow, and they shape the whole design:
 ## Approach: wiki-first, transcript-filtered
 
 The wiki owns the candidate list and every canonical string. The transcript decides only
-*which* wiki entities are worth asking about. Our own errors can raise a question; they
+_which_ wiki entities are worth asking about. Our own errors can raise a question; they
 can never become an answer.
 
 This inverts the join direction of the obvious design (cluster our transcripts, ask the
@@ -95,7 +95,7 @@ English, and no phonetic distance connects them. Two things handle it:
 2. **Full-text search bridges a romaji-titled wiki.** `list=search` for `Kasumi` returns
    `Misty (anime)`. That is tier B below.
 
-A localised rename that matches nothing produces *no* correction — a miss, never a
+A localised rename that matches nothing produces _no_ correction — a miss, never a
 corruption. That is the correct failure direction.
 
 ## Architecture
@@ -117,19 +117,19 @@ frequency evidence only.
 ### 2. Score against titles (**[v2]** replaces phonetic bucketing)
 
 Every harvested token is scored directly against every normalised wiki title. Clusters are
-not built up front; they *emerge* as the set of tokens that resolve to the same canonical.
+not built up front; they _emerge_ as the set of tokens that resolve to the same canonical.
 
 **[v2] The original design bucketed tokens by exact metaphone key and compared only within
 a bucket. Measurement killed it** — metaphone is built for English phonotactics and splits
 precisely the Japanese romanisation variance this feature exists to fix:
 
-| variant | metaphone | Jaro-Winkler vs canonical |
-|---|---|---|
-| Shirahoshi | `XRHX` | — |
-| Syrahose | `SRHS` | 0.755 |
-| Hirohoshi | `HRHX` | 0.855 |
-| Decken | `TKN` | — |
-| Deccan | `TKKN` | 0.844 |
+| variant    | metaphone | Jaro-Winkler vs canonical |
+| ---------- | --------- | ------------------------- |
+| Shirahoshi | `XRHX`    | —                         |
+| Syrahose   | `SRHS`    | 0.755                     |
+| Hirohoshi  | `HRHX`    | 0.855                     |
+| Decken     | `TKN`     | —                         |
+| Deccan     | `TKKN`    | 0.844                     |
 
 Both motivating cases land in different buckets, so an exact-key gate would discard them
 while still passing the easy cases (`Kinemon`/`Kin'emon`/`Kinnemon` all share `KNMN`;
@@ -137,7 +137,7 @@ while still passing the easy cases (`Kinemon`/`Kin'emon`/`Kinnemon` all share `K
 than as one **signal**.
 
 Scoring instead uses Jaro-Winkler as primary, with a metaphone/soundex agreement as a
-confidence bonus, never a precondition. Comparison is done on a *reduced* form — lowercased,
+confidence bonus, never a precondition. Comparison is done on a _reduced_ form — lowercased,
 apostrophes/hyphens/spaces removed — which is what lets the token `Vanderdecken` match the
 title `Van der Decken` exactly, recovering the correct spacing from the title.
 
@@ -171,14 +171,14 @@ to `flagged` with a reason, never applied.
 Measured Jaro-Winkler on every pair the feature must get right and every near-miss it must
 refuse:
 
-| pair | Jaro | Jaro-Winkler | required |
-|---|---|---|---|
-| Syrahose / Shirahoshi | 0.728 | 0.755 | **match** |
-| Deccan / Decken | 0.778 | 0.844 | **match** |
-| Hirohoshi / Shirahoshi | 0.855 | 0.855 | **match** |
-| Vander / Vanderdecken | 0.833 | 0.900 | reject |
-| Smokey / Smoker | 0.889 | 0.933 | reject |
-| Warlords / Warlord | 0.958 | 0.975 | reject |
+| pair                   | Jaro  | Jaro-Winkler | required  |
+| ---------------------- | ----- | ------------ | --------- |
+| Syrahose / Shirahoshi  | 0.728 | 0.755        | **match** |
+| Deccan / Decken        | 0.778 | 0.844        | **match** |
+| Hirohoshi / Shirahoshi | 0.855 | 0.855        | **match** |
+| Vander / Vanderdecken  | 0.833 | 0.900        | reject    |
+| Smokey / Smoker        | 0.889 | 0.933        | reject    |
+| Warlords / Warlord     | 0.958 | 0.975        | reject    |
 
 **The two classes overlap completely: every pair that must match scores lower than every
 pair that must be refused.** No threshold on Jaro, Jaro-Winkler, Levenshtein ratio or
@@ -202,7 +202,7 @@ the Punk Hazard data, not from caution in the abstract.
 1. **Wiki-sourced canonical.** The canonical string is a normalised wiki title.
 
 2. **No expansion.** Variant and canonical must be within a tight phonetic + edit distance,
-   and a canonical that merely *contains* the variant is not a match. Punk Hazard says
+   and a canonical that merely _contains_ the variant is not a match. Punk Hazard says
    `Warlords` 10 times; the wiki title is `Seven Warlords of the Sea`. Rewriting the word
    into the phrase would corrupt dialogue.
 
@@ -243,12 +243,12 @@ Everything else is `flagged`. Never silently apply an uncertain correction — t
 `glossary-wiki-verify` already commits to.
 
 **[v3] Tier B is not an appeal court.** The LLM fallback exists only for a cluster that
-matched *no* title. A cluster that matched a title and then failed R2 or R3 is flagged,
+matched _no_ title. A cluster that matched a title and then failed R2 or R3 is flagged,
 full stop — it must never be escalated to the LLM, because that would make a model the
 override for the only two rules carrying the design's safety.
 
 **[v3] R1 checks membership, not identity.** A canonical is guaranteed to be a real wiki
-title; it is *not* guaranteed to be the right entity. The residual risk is therefore a
+title; it is _not_ guaranteed to be the right entity. The residual risk is therefore a
 wrong-entity match (a cluster resolving to a real but unrelated article), not an invented
 spelling. R2's distance bound and R4's mid-sentence requirement are what keep that
 improbable; it is not eliminated, and it is the failure mode to look for first if a bad
@@ -260,13 +260,13 @@ fix ever ships.
 no code path has ever read it back. Forty terms are sitting in it across nine live
 glossaries — and inspecting them shows the queue is almost entirely false alarms:
 
-| show | flagged |
-|---|---|
-| JUJUTSU KAISEN | Yuji, Megumi, Nobara, Gojo, Geto, Kento, Toge, Yuta |
-| My Hero Academia | Izuku, Deku, Iida, Asui, Toga, Momo, Mirio, Hawks |
-| SPY x FAMILY | Loid, Anya, Bond, Thorn, Damian, Becky, Franky |
+| show             | flagged                                             |
+| ---------------- | --------------------------------------------------- |
+| JUJUTSU KAISEN   | Yuji, Megumi, Nobara, Gojo, Geto, Kento, Toge, Yuta |
+| My Hero Academia | Izuku, Deku, Iida, Asui, Toga, Momo, Mirio, Hawks   |
+| SPY x FAMILY     | Loid, Anya, Bond, Thorn, Damian, Becky, Franky      |
 
-Every one is spelled correctly. They are `no-match` because the wiki titles them by *full*
+Every one is spelled correctly. They are `no-match` because the wiki titles them by _full_
 name — `Yuji Itadori`, `Izuku Midoriya`, `Loid Forger` — and the verifier's similarity
 cutoff cannot bridge a given name to a full name. A human reviewing all forty would say
 "fine" forty times, which is why a review mechanism alone would not have helped.
@@ -302,7 +302,7 @@ whether to merge.
 
 **[v4] This refines, rather than drops, the tier-B escalation rule.** R2 failures still
 never escalate — expansion is structurally wrong and no evidence can make it right. R3
-failures *may*, because R3 is a statistical proxy for a question the model can answer
+failures _may_, because R3 is a statistical proxy for a question the model can answer
 directly with better evidence. R1 holds throughout: no model output ever becomes a
 canonical spelling.
 
@@ -330,30 +330,31 @@ No schema break; old glossaries load unchanged.
   Bare-string entries written by `glossary_verify` still load.
 - `acquired` — **new**. Not a bare list like `verified` but a provenance map,
   `{variant: {canonical, count, canonical_count, score, wiki_title, run}}`, so re-runs skip
-  settled clusters *and* `--revert` can undo a run. See *The self-read loop, resolved*.
+  settled clusters _and_ `--revert` can undo a run. See _The self-read loop, resolved_.
 
 **Dependency on existing substitution semantics.** `glossary.correct()` applies
 `hard_fixes` per whitespace-split token (`_fix_token`), and phrase fixes under `\b`
-word boundaries — it is *not* a naive substring replace. This design relies on that: a
+word boundaries — it is _not_ a naive substring replace. This design relies on that: a
 fix for `Hoshi` must never fire inside `Shirahoshi`. A regression test pins the behaviour
 so a future refactor of `correct()` cannot silently turn these fixes into substring edits.
+
 - Wiki cache — reuses `/config/wiki_cache/<show>.json` unchanged.
 
 Env: `ACQUIRE_CONTEXT_LINES` (default 4), `ACQUIRE_MIN_COUNT` (default 3),
 `ACQUIRE_MIN_SHARE` (default 0.80),
-`ACQUIRE_MIN_SIM` (Jaro-Winkler floor, default **0.72** — see *Similarity is recall, not
-safety*), `GLOSSARY_DIR` (existing).
+`ACQUIRE_MIN_SIM` (Jaro-Winkler floor, default **0.72** — see _Similarity is recall, not
+safety_), `GLOSSARY_DIR` (existing).
 
 ## Failure modes
 
-| Case | Behaviour |
-|---|---|
-| Wiki unresolvable / down | No-op, nothing applied, logged. Matches `verify()`. |
-| LLM unreachable (tier B) | Tier A results still apply; tier B clusters go to `flagged`. |
-| Cluster matches no title | `flagged` as `no-wiki-match` — the review queue for dub-only names. |
-| Two clusters map to one canonical | Merge; emit fixes for the union of variants. |
-| Show has no `conf.json` or sidecars | Nothing to harvest; no-op. |
-| Canonical equals variant | No-op, not written as a fix. |
+| Case                                | Behaviour                                                           |
+| ----------------------------------- | ------------------------------------------------------------------- |
+| Wiki unresolvable / down            | No-op, nothing applied, logged. Matches `verify()`.                 |
+| LLM unreachable (tier B)            | Tier A results still apply; tier B clusters go to `flagged`.        |
+| Cluster matches no title            | `flagged` as `no-wiki-match` — the review queue for dub-only names. |
+| Two clusters map to one canonical   | Merge; emit fixes for the union of variants.                        |
+| Show has no `conf.json` or sidecars | Nothing to harvest; no-op.                                          |
+| Canonical equals variant            | No-op, not written as a fix.                                        |
 
 ## Testing
 
@@ -390,13 +391,13 @@ at once.
 Acceptance — corrected after the final-fix review reproduced this table against real
 Punk Hazard data and found two rows wrong and two right for the wrong reason:
 
-| Cluster | Counts | Required behaviour |
-|---|---|---|
-| `Kinemon` | 12 | applied → `Kin'emon` (canonical-unseen escape clause, Wilson bound 0.000) |
-| `Brooke` | 9 | **flagged**, reason `english-word` — `is_english("brooke")` is True on both `cracklib-small` and the container's `wamerican` (SCOWL ships given names), so the english-word gate demotes what would otherwise be an apply. Not an acceptance failure: this is the gate working as designed on real data, not the canonical-unseen case it was originally (wrongly) claimed to be. |
-| `Smokey` / `Smoker` | 16 / 21 | reaches tier C (`share-too-close`, bound 0.409, escalated to the LLM merge adjudicator) — outcome depends on the LLM's merge verdict, not on the 0.409 bound alone; a low/none-confidence verdict leaves it flagged, matching the spec's intent either way. |
-| `Warlords` | 10 | **not** applied, but not via tier 0/R2: `similarity("Warlords", "Seven Warlords of the Sea")` is 0.627, below `MIN_SIM` 0.72, so `best_title` returns nothing and R2 is never reached. It falls to `unmatched()` → tier B instead; even if tier B's LLM matched it to that title, C1's tier-B validation re-runs the expansion check and rejects it there. |
-| `Surrender`, `Maybe`, `Hurry`, `Listen` | 10–22 | **not** ignored — each clears the frequency floor and appears mid-sentence, so it reaches either tier A (flagged, e.g. `english-word` or `share-too-close`) or tier B (`unmatched()` → LLM adjudication → flagged `no-wiki-match` if nothing clears high-confidence). `similarity("Maybe", "Mabe")` is 0.967, well above `MIN_SIM`, illustrating how easily an ordinary word can score close enough to a real title to require a human, not a silent drop. |
+| Cluster                                 | Counts  | Required behaviour                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Kinemon`                               | 12      | applied → `Kin'emon` (canonical-unseen escape clause, Wilson bound 0.000)                                                                                                                                                                                                                                                                                                                                                                                  |
+| `Brooke`                                | 9       | **flagged**, reason `english-word` — `is_english("brooke")` is True on both `cracklib-small` and the container's `wamerican` (SCOWL ships given names), so the english-word gate demotes what would otherwise be an apply. Not an acceptance failure: this is the gate working as designed on real data, not the canonical-unseen case it was originally (wrongly) claimed to be.                                                                          |
+| `Smokey` / `Smoker`                     | 16 / 21 | reaches tier C (`share-too-close`, bound 0.409, escalated to the LLM merge adjudicator) — outcome depends on the LLM's merge verdict, not on the 0.409 bound alone; a low/none-confidence verdict leaves it flagged, matching the spec's intent either way.                                                                                                                                                                                                |
+| `Warlords`                              | 10      | **not** applied, but not via tier 0/R2: `similarity("Warlords", "Seven Warlords of the Sea")` is 0.627, below `MIN_SIM` 0.72, so `best_title` returns nothing and R2 is never reached. It falls to `unmatched()` → tier B instead; even if tier B's LLM matched it to that title, C1's tier-B validation re-runs the expansion check and rejects it there.                                                                                                 |
+| `Surrender`, `Maybe`, `Hurry`, `Listen` | 10–22   | **not** ignored — each clears the frequency floor and appears mid-sentence, so it reaches either tier A (flagged, e.g. `english-word` or `share-too-close`) or tier B (`unmatched()` → LLM adjudication → flagged `no-wiki-match` if nothing clears high-confidence). `similarity("Maybe", "Mabe")` is 0.967, well above `MIN_SIM`, illustrating how easily an ordinary word can score close enough to a real title to require a human, not a silent drop. |
 
 Running the acceptance pass requires `WORDLIST_PATH=/usr/share/cracklib/cracklib-small` on
 this laptop (or an equivalent real English wordlist) — without it, `is_english` degrades to
@@ -425,7 +426,7 @@ Neither found it. It is real, and it does not run through the canonical string a
 1. A wrong-entity `hard_fix` is written (improbable, but R1 permits it — see above).
 2. The glossary is **additive and never pruned**, so that entry is now permanent.
 3. The glossary also seeds Whisper's **`initial_prompt`** on every later run.
-4. A biased `initial_prompt` makes Whisper *emit* the wrong spelling more often.
+4. A biased `initial_prompt` makes Whisper _emit_ the wrong spelling more often.
 5. Its count rises, which **strengthens the R3 dominance test that admitted it**.
 6. Go to 2.
 
@@ -454,25 +455,25 @@ two-voice review rather than the usual panel — weight it accordingly.
 
 **Acted on:**
 
-- *"What breaks phonetic clustering for Japanese names transliterated by an English ASR?"*
-  prompted the measurement that killed metaphone bucketing (see **[v2]** in *Score against
-  titles*). This was the single most valuable outcome — the original design would have
+- _"What breaks phonetic clustering for Japanese names transliterated by an English ASR?"_
+  prompted the measurement that killed metaphone bucketing (see **[v2]** in _Score against
+  titles_). This was the single most valuable outcome — the original design would have
   silently failed on both motivating cases.
-- *"With low counts the ratio is heavily influenced by random chance; use a binomial test"*
+- _"With low counts the ratio is heavily influenced by random chance; use a binomial test"_
   → R3 now uses a Wilson score lower bound.
-- *"Substituting inside a larger word would corrupt output"* → checked, not applicable
+- _"Substituting inside a larger word would corrupt output"_ → checked, not applicable
   (`correct()` is token-level), but now recorded as an explicit dependency plus a
   regression test.
 
 **Considered and rejected:**
 
-- *"The wiki itself may contain a fan-created page for the wrong spelling."* Possible in
+- _"The wiki itself may contain a fan-created page for the wrong spelling."_ Possible in
   principle, but a Fandom article titled with an ASR mis-hearing is vanishingly unlikely,
   and R2's distance bound plus R3's dominance test would both have to fail simultaneously.
   Not worth engineering against.
-- *"Add a dedicated NER component."* The wiki title index already *is* the entity list, and
+- _"Add a dedicated NER component."_ The wiki title index already _is_ the entity list, and
   a better one than a general-purpose NER would produce for a fictional universe.
-- *"Add a feedback loop so the pipeline learns from its own errors."* This is precisely the
+- _"Add a feedback loop so the pipeline learns from its own errors."_ This is precisely the
   self-reinforcement the design is built to avoid.
 
 **[v3] Second panel (after fixing the Groq provider).** `openai/gpt-oss-120b` answered
@@ -483,4 +484,5 @@ its structural points were right and are now folded in: R1 checks membership rat
 identity, and the glossary's additive, never-pruned nature has a second-order cost.
 
 ---
+
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -23,11 +23,12 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
       (collapsed/flagged counts). — done when: ruff clean, full pytest green, generate.py parses.
 - [x] **T6 — `Dockerfile.builder` COPY `hallucination.py`.** — done when: grep shows it.
 
-## Closing (the *close* phase — always keep last)
+## Closing (the _close_ phase — always keep last)
 
 - [x] **Integration verify (offline):** gate over real S19E16 cards → 0 real lines dropped.
 - [x] CI: add `hallucination.py` to the ruff scope — done when: pipeline green.
 - [x] Push `feat/b1-hallucination-gate`; merge to `main` (no PR). — done when: merged + pushed.
 
 ## Done
+
 <move [x] tasks here, preserving the done criterion>

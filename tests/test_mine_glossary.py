@@ -9,6 +9,7 @@ applied downstream in main(): `t.lower() not in COMMON` (mine_glossary.py). The 
 below documents mine_text()'s real (unfiltered) behavior for a COMMON word instead of
 asserting the false claim that mine_text() ignores it.
 """
+
 import json
 import sys
 import types
@@ -58,6 +59,7 @@ def test_mine_text():
 
 # --- V2 C8: COMMON loaded from data/common_proper_noun_deny.txt, inline fallback -------
 
+
 def test_common_loads_from_data_file():
     """The real data/common_proper_noun_deny.txt (repo-relative, present in this
     checkout) reproduces the exact same set as the inline fallback."""
@@ -85,6 +87,7 @@ def test_common_data_file_comments_and_blanks_are_skipped(tmp_path):
 # the exclusion below, a regeneration would re-mine last version's spellings out of our
 # own output and reinforce its mistakes into the glossary.
 
+
 def _fake_subprocess(streams, monkeypatch):
     """Stub mine_glossary's subprocess: ffprobe answers with `streams`, ffmpeg writes a
     one-line .ass at the requested output path. Records every argv for assertions."""
@@ -99,8 +102,7 @@ def _fake_subprocess(streams, monkeypatch):
         sub.save(cmd[-1])
         return types.SimpleNamespace(stdout="", returncode=0)
 
-    monkeypatch.setattr(mine_glossary, "subprocess",
-                        types.SimpleNamespace(run=run, DEVNULL=-3))
+    monkeypatch.setattr(mine_glossary, "subprocess", types.SimpleNamespace(run=run, DEVNULL=-3))
     return calls
 
 
@@ -120,11 +122,10 @@ def test_eng_sub_text_ffprobe_query_requests_the_title_tag(monkeypatch):
 
 def test_eng_sub_text_skips_our_own_dubtitles_track(monkeypatch):
     """Two English tracks: the human fansub and our old output. The fansub must win."""
-    calls = _fake_subprocess([_stream(2, title=common.TRACK_NAME),
-                             _stream(3, title="English (Fansub)")], monkeypatch)
+    calls = _fake_subprocess([_stream(2, title=common.TRACK_NAME), _stream(3, title="English (Fansub)")], monkeypatch)
     assert "Luffy" in mine_glossary.eng_sub_text("fake.mkv")
     ffmpeg = [c for c in calls if c[0] == "ffmpeg"][0]
-    assert ffmpeg[ffmpeg.index("-map") + 1] == "0:3"       # extracted the fansub, not ours
+    assert ffmpeg[ffmpeg.index("-map") + 1] == "0:3"  # extracted the fansub, not ours
 
 
 def test_eng_sub_text_mines_nothing_when_only_track_is_our_dubtitle(monkeypatch):
@@ -132,7 +133,7 @@ def test_eng_sub_text_mines_nothing_when_only_track_is_our_dubtitle(monkeypatch)
     no glossary terms at all rather than re-mining itself."""
     calls = _fake_subprocess([_stream(2, title=common.TRACK_NAME)], monkeypatch)
     assert mine_glossary.eng_sub_text("fake.mkv") == ""
-    assert not [c for c in calls if c[0] == "ffmpeg"]      # never even extracted it
+    assert not [c for c in calls if c[0] == "ffmpeg"]  # never even extracted it
 
 
 def test_eng_sub_text_keeps_an_untitled_english_track(monkeypatch):
@@ -151,6 +152,7 @@ def test_eng_sub_text_keeps_an_untitled_english_track(monkeypatch):
 # Crocodile, Buggy, Smoker, Shanks, Marco, Roger, ...), so a gate would make 16% of the
 # cast permanently unmineable.
 
+
 def test_fold_strips_an_ascii_possessive():
     assert mine_glossary._fold("Brownbeard's") == "Brownbeard"
 
@@ -166,7 +168,7 @@ def test_fold_leaves_plain_and_internal_apostrophe_words_alone():
     assert mine_glossary._fold("Brownbeard") == "Brownbeard"
     assert mine_glossary._fold("Kin'emon") == "Kin'emon"
     assert mine_glossary._fold("D'Arby") == "D'Arby"
-    assert mine_glossary._fold("Boss'") == "Boss'"          # bare trailing quote is not an 's fold
+    assert mine_glossary._fold("Boss'") == "Boss'"  # bare trailing quote is not an 's fold
 
 
 def test_internal_apostrophe_names_are_still_ignored_by_the_candidate_regex():
@@ -178,8 +180,9 @@ def test_internal_apostrophe_names_are_still_ignored_by_the_candidate_regex():
 
 def test_mine_text_splits_bare_and_possessive_lanes():
     bare, poss, mid = {}, {}, set()
-    mine_glossary.mine_text("I saw Brownbeard once.\nI saw Brownbeard's crew.\n"
-                            "I saw Brownbeard" + chr(0x2019) + "s ship.", bare, poss, mid)
+    mine_glossary.mine_text(
+        "I saw Brownbeard once.\nI saw Brownbeard's crew.\nI saw Brownbeard" + chr(0x2019) + "s ship.", bare, poss, mid
+    )
     assert bare == {"Brownbeard": 1}
     assert poss == {"Brownbeard": 2}
     assert mid == {"Brownbeard"}
@@ -213,17 +216,20 @@ def test_possessives_reinforce_a_term_that_already_qualifies():
     # puts the token FIRST, so mine_text never marks it mid-sentence and main()'s
     # long-standing `t in mid` gate drops it -- the test could not pass against a correct
     # implementation. Reworded so the token is genuinely mid-sentence; assertion unchanged.
-    text = ("I saw Brownbeard come.\nI saw Brownbeard leave.\nI saw Brownbeard sing.\n"
-            "I saw Brownbeard's crew flee.")
+    text = "I saw Brownbeard come.\nI saw Brownbeard leave.\nI saw Brownbeard sing.\nI saw Brownbeard's crew flee."
     added, queue = mine_glossary.mine(text, min_count=3, common=set(), existing=set())
     assert "Brownbeard" in added
-    assert queue == {}                       # reinforcement, not a second lane entry
+    assert queue == {}  # reinforcement, not a second lane entry
 
 
 def test_reinforcing_possessives_are_counted_but_do_not_change_the_verdict():
     bare, poss, mid = {}, {}, set()
-    mine_glossary.mine_text("I saw Vegapunk go.\nI saw Vegapunk again.\nI saw Vegapunk thrice.\n"
-                            "I saw Vegapunk's lab.\nI saw Vegapunk's crew.", bare, poss, mid)
+    mine_glossary.mine_text(
+        "I saw Vegapunk go.\nI saw Vegapunk again.\nI saw Vegapunk thrice.\nI saw Vegapunk's lab.\nI saw Vegapunk's crew.",
+        bare,
+        poss,
+        mid,
+    )
     assert bare == {"Vegapunk": 3} and poss == {"Vegapunk": 2}
     assert mine_glossary.admit(bare, poss, mid, 3, set(), set()) == (["Vegapunk"], {})
 
@@ -239,8 +245,8 @@ def test_a_dictionary_word_name_is_still_mineable():
 def test_a_folded_contraction_is_still_caught_by_the_common_deny_list():
     bare, poss, mid = {}, {}, set()
     mine_glossary.mine_text("Oh, That's it. He's gone. It's over.", bare, poss, mid)
-    assert bare == {} and poss == {"That": 1}      # He's/It's are too short to be candidates
-    assert "that" in mine_glossary.COMMON          # ...and the fold target is denied downstream
+    assert bare == {} and poss == {"That": 1}  # He's/It's are too short to be candidates
+    assert "that" in mine_glossary.COMMON  # ...and the fold target is denied downstream
 
 
 def test_admit_skips_common_and_already_known_terms():
@@ -249,6 +255,7 @@ def test_admit_skips_common_and_already_known_terms():
 
 
 # --- main(): the crossing lane is persisted, never appended --------------------
+
 
 def _run_main(tmp_path, text, monkeypatch, cfg=None):
     show = tmp_path / "Some Show"
@@ -268,15 +275,17 @@ def _run_main(tmp_path, text, monkeypatch, cfg=None):
 
 
 def test_main_queues_a_crossing_term_for_review_instead_of_appending_it(tmp_path, monkeypatch):
-    out = _run_main(tmp_path, "I told the Boss to wait.\nBoss's men arrived.\nBoss's ship moved.",
-                    monkeypatch)
+    out = _run_main(tmp_path, "I told the Boss to wait.\nBoss's men arrived.\nBoss's ship moved.", monkeypatch)
     assert "Boss" not in out["names"]
     assert out["flagged"]["Boss"] == {"reason": "possessive_floor_crossing", "bare": 1, "possessive": 2}
 
 
 def test_main_appends_a_term_that_qualifies_on_bare_count_alone(tmp_path, monkeypatch):
-    out = _run_main(tmp_path, "I saw Brownbeard come.\nI saw Brownbeard leave.\n"
-                              "I saw Brownbeard sing.\nI saw Brownbeard's crew flee.", monkeypatch)
+    out = _run_main(
+        tmp_path,
+        "I saw Brownbeard come.\nI saw Brownbeard leave.\nI saw Brownbeard sing.\nI saw Brownbeard's crew flee.",
+        monkeypatch,
+    )
     assert out["names"] == ["Brownbeard"]
     assert not out.get("flagged")
 
@@ -285,8 +294,7 @@ def test_main_never_clobbers_a_stronger_flagged_entry(tmp_path, monkeypatch):
     """The crossing lane is the weakest evidence in the file; it must not displace a
     reason glossary_verify/glossary_acquire already put in front of a human."""
     cfg = {"show": "Some Show", "names": [], "flagged": {"Boss": {"reason": "share-too-close"}}}
-    out = _run_main(tmp_path, "I told the Boss to wait.\nBoss's men arrived.\nBoss's ship moved.",
-                    monkeypatch, cfg=cfg)
+    out = _run_main(tmp_path, "I told the Boss to wait.\nBoss's men arrived.\nBoss's ship moved.", monkeypatch, cfg=cfg)
     assert out["flagged"]["Boss"] == {"reason": "share-too-close"}
     assert "Boss" not in out["names"]
 
@@ -295,11 +303,15 @@ def test_mine_text_optionally_reports_the_surface_spellings(monkeypatch):
     """D3a: a consumer needs the forms behind a folded key, not just the count -- a review
     queue entry stripped of the evidence it escalated on cannot be reviewed."""
     bare, poss, mid, forms = {}, {}, set(), {}
-    mine_glossary.mine_text("We fought Brownbeard here. The Brownbeard" + chr(0x2019) + "s crew fled. "
-                 "I know Brownbeard's ship.", bare, poss, mid, forms)
-    assert forms["Brownbeard"] == {"Brownbeard": 1, "Brownbeard" + chr(0x2019) + "s": 1,
-                                   "Brownbeard's": 1}
-    assert bare["Brownbeard"] == 1 and poss["Brownbeard"] == 2   # lanes unaffected by `forms`
+    mine_glossary.mine_text(
+        "We fought Brownbeard here. The Brownbeard" + chr(0x2019) + "s crew fled. I know Brownbeard's ship.",
+        bare,
+        poss,
+        mid,
+        forms,
+    )
+    assert forms["Brownbeard"] == {"Brownbeard": 1, "Brownbeard" + chr(0x2019) + "s": 1, "Brownbeard's": 1}
+    assert bare["Brownbeard"] == 1 and poss["Brownbeard"] == 2  # lanes unaffected by `forms`
 
 
 def test_mine_text_forms_is_optional_and_changes_nothing():

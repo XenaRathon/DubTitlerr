@@ -27,6 +27,7 @@ Run from the repo root (mirrors tools/bakeoff.py's sys.path convention):
 
 Built with help of Claude (Anthropic).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -57,14 +58,14 @@ TOLERANCE_MIN, TOLERANCE_MAX = 0.0, 2.0
 MIN_CUES_DEFAULT = 50
 MIN_PLAIN_SHARE_DEFAULT = 0.70
 
-PAIR_RADIUS_DEFAULT_S = 5.0                 # nearest-onset seed pairing radius
+PAIR_RADIUS_DEFAULT_S = 5.0  # nearest-onset seed pairing radius
 
-RANSAC_INLIER_THRESHOLD_S = 0.30            # post-seed-fit inlier band (fixed, not the --tolerance CLI flag)
-RANSAC_MIN_INLIERS = 10                     # offset_a_s/drift_b are null below this
-RANSAC_MIN_RESIDUAL_N = 2                   # residual_median_s/iqr_s are null below this
-RANSAC_EXHAUSTIVE_CAP = 60                  # <= this many pairs: try every 2-point line (deterministic)
-RANSAC_MAX_RANDOM_CANDIDATES = 200          # above the cap: seeded-random 2-point sample instead
-RANSAC_RANDOM_SEED = 0                      # fixed seed -> reproducible results on large inputs
+RANSAC_INLIER_THRESHOLD_S = 0.30  # post-seed-fit inlier band (fixed, not the --tolerance CLI flag)
+RANSAC_MIN_INLIERS = 10  # offset_a_s/drift_b are null below this
+RANSAC_MIN_RESIDUAL_N = 2  # residual_median_s/iqr_s are null below this
+RANSAC_EXHAUSTIVE_CAP = 60  # <= this many pairs: try every 2-point line (deterministic)
+RANSAC_MAX_RANDOM_CANDIDATES = 200  # above the cap: seeded-random 2-point sample instead
+RANSAC_RANDOM_SEED = 0  # fixed seed -> reproducible results on large inputs
 
 LOOK_FOR_DRIFT_IQR_S = 1.0
 LOOK_FOR_DRIFT_SLOPE = 0.002
@@ -76,27 +77,43 @@ DEFAULT_LANG_ENV = os.environ.get("SUB_LANGS", "eng,en,und,")
 # T2 -- CLI scaffold + show-dir walking
 # ============================================================================
 
+
 def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="timing_compare.py",
         description="Compare Whisper dubtitle card timing against the embedded English "
-                     "subtitle track (read-only, GPU-free). See specs/timing-compare/spec-v3.md.")
-    ap.add_argument("show_dir", nargs="+",
-                     help="one or more show/library directories to walk for episodes")
-    ap.add_argument("--tolerance", type=float, default=TOLERANCE_DEFAULT,
-                     help=f"slack-aware overlap tolerance in seconds, clamped to "
-                          f"[{TOLERANCE_MIN},{TOLERANCE_MAX}] (default {TOLERANCE_DEFAULT})")
-    ap.add_argument("--out", default="timing-compare.report.json",
-                     help="report JSON output path (report writing lands in a later unit)")
-    ap.add_argument("--lang", default=DEFAULT_LANG_ENV,
-                     help="comma-separated accepted subtitle languages, lowercased "
-                          "(default: env SUB_LANGS)")
-    ap.add_argument("--vad", choices=("webrtcvad", "ffmpeg-silencedetect"), default="webrtcvad",
-                     help="VAD backend for in-gap card speech probing (accepted now, wired in a later unit)")
-    ap.add_argument("--vad-aggressiveness", type=int, choices=(0, 1, 2, 3), default=2,
-                     help="webrtcvad aggressiveness 0-3 (accepted now, wired in a later unit)")
-    ap.add_argument("--summary-only", action="store_true",
-                     help="suppress per-episode lines, print only the run summary")
+        "subtitle track (read-only, GPU-free). See specs/timing-compare/spec-v3.md.",
+    )
+    ap.add_argument("show_dir", nargs="+", help="one or more show/library directories to walk for episodes")
+    ap.add_argument(
+        "--tolerance",
+        type=float,
+        default=TOLERANCE_DEFAULT,
+        help=f"slack-aware overlap tolerance in seconds, clamped to "
+        f"[{TOLERANCE_MIN},{TOLERANCE_MAX}] (default {TOLERANCE_DEFAULT})",
+    )
+    ap.add_argument(
+        "--out", default="timing-compare.report.json", help="report JSON output path (report writing lands in a later unit)"
+    )
+    ap.add_argument(
+        "--lang",
+        default=DEFAULT_LANG_ENV,
+        help="comma-separated accepted subtitle languages, lowercased (default: env SUB_LANGS)",
+    )
+    ap.add_argument(
+        "--vad",
+        choices=("webrtcvad", "ffmpeg-silencedetect"),
+        default="webrtcvad",
+        help="VAD backend for in-gap card speech probing (accepted now, wired in a later unit)",
+    )
+    ap.add_argument(
+        "--vad-aggressiveness",
+        type=int,
+        choices=(0, 1, 2, 3),
+        default=2,
+        help="webrtcvad aggressiveness 0-3 (accepted now, wired in a later unit)",
+    )
+    ap.add_argument("--summary-only", action="store_true", help="suppress per-episode lines, print only the run summary")
     return ap
 
 
@@ -125,6 +142,7 @@ def find_episodes(show_dirs: list) -> list:
 # ============================================================================
 # T3 -- conf.json load + hardening
 # ============================================================================
+
 
 def load_conf(path: str) -> tuple:
     """Load a <stem>.dubtitles.conf.json sidecar. Returns (status, rows):
@@ -167,13 +185,16 @@ def load_conf(path: str) -> tuple:
 # verification on the server (see report). Kept deliberately thin/obvious so that
 # manual review is easy.
 
+
 def resolve_track_selection_thresholds() -> tuple:
     """(min_cues, min_plain_share), env-overridable (TIMING_COMPARE_MIN_CUES /
     TIMING_COMPARE_MIN_PLAIN_SHARE). Single source of truth for select_reference_track()
     AND the report's `config` block (T9) -- so the report always reflects the thresholds
     actually applied, even when overridden via env."""
-    return (int(os.environ.get("TIMING_COMPARE_MIN_CUES", MIN_CUES_DEFAULT)),
-            float(os.environ.get("TIMING_COMPARE_MIN_PLAIN_SHARE", MIN_PLAIN_SHARE_DEFAULT)))
+    return (
+        int(os.environ.get("TIMING_COMPARE_MIN_CUES", MIN_CUES_DEFAULT)),
+        float(os.environ.get("TIMING_COMPARE_MIN_PLAIN_SHARE", MIN_PLAIN_SHARE_DEFAULT)),
+    )
 
 
 def _sub_codec_map(video: str) -> dict:
@@ -181,9 +202,13 @@ def _sub_codec_map(video: str) -> dict:
     to label the winning reference_track's codec; common.eng_sub_streams() already
     resolved which indices qualify by language+codec, it just doesn't return codec."""
     try:
-        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "s",
-                             "-show_entries", "stream=index,codec_name", "-of", "json", video],
-                            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=90)
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "s", "-show_entries", "stream=index,codec_name", "-of", "json", video],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=90,
+        )
         streams = json.loads(r.stdout).get("streams", [])
     except Exception as e:
         log("ffprobe failed:", video, e)
@@ -225,10 +250,10 @@ def select_reference_track(video: str, lang: set) -> tuple | None:
         if cue_count < min_cues or plain_share < min_plain_share:
             continue
         if best_track is None or plain_share > best_track["density_score"]:
-            cues = sorted((ev.start / 1000.0, ev.end / 1000.0, ev.plaintext.strip())
-                          for ev in events if common.is_dialogue_event(ev))
-            best_track = {"stream_index": idx, "codec": codecs.get(idx),
-                          "cue_count": cue_count, "density_score": plain_share}
+            cues = sorted(
+                (ev.start / 1000.0, ev.end / 1000.0, ev.plaintext.strip()) for ev in events if common.is_dialogue_event(ev)
+            )
+            best_track = {"stream_index": idx, "codec": codecs.get(idx), "cue_count": cue_count, "density_score": plain_share}
             best_cues = cues
 
     if best_track is None:
@@ -242,6 +267,7 @@ def select_reference_track(video: str, lang: set) -> tuple | None:
 # numpy check: not a declared dependency (pyproject.toml lists pysubs2/faster-whisper/
 # jellyfish only; numpy is present transitively via faster-whisper's stack, not ours to
 # rely on). This is a 1-variable linear fit -- pure-Python closed-form least squares.
+
 
 def nearest_onset_pairs(card_starts: list, cue_starts: list, max_radius_s: float = PAIR_RADIUS_DEFAULT_S) -> list:
     """Pair each card onset (index ci into card_starts) to its nearest cue onset (index
@@ -265,9 +291,11 @@ def nearest_onset_pairs(card_starts: list, cue_starts: list, max_radius_s: float
             ad = abs(d)
             if ad > max_radius_s:
                 continue
-            if (best_j is None or ad < best_ad
-                    or (ad == best_ad and (kt < cue_starts[best_j]
-                                            or (kt == cue_starts[best_j] and cj < best_j)))):
+            if (
+                best_j is None
+                or ad < best_ad
+                or (ad == best_ad and (kt < cue_starts[best_j] or (kt == cue_starts[best_j] and cj < best_j)))
+            ):
                 best_j, best_ad, best_delta = cj, ad, d
         if best_j is not None:
             pairs.append((ci, best_j, best_delta))
@@ -314,8 +342,12 @@ def _iqr(sorted_values: list):
     return q3 - q1
 
 
-def ransac_offset_drift(pairs: list, threshold_s: float = RANSAC_INLIER_THRESHOLD_S,
-                         min_inliers: int = RANSAC_MIN_INLIERS, seed: int = RANSAC_RANDOM_SEED) -> dict:
+def ransac_offset_drift(
+    pairs: list,
+    threshold_s: float = RANSAC_INLIER_THRESHOLD_S,
+    min_inliers: int = RANSAC_MIN_INLIERS,
+    seed: int = RANSAC_RANDOM_SEED,
+) -> dict:
     """Fit offset(t) = a + b*t over (card_start, cue_start) pairs -- t is card_start, the
     fitted quantity is (card_start - cue_start) -- robust to outliers.
 
@@ -335,14 +367,20 @@ def ransac_offset_drift(pairs: list, threshold_s: float = RANSAC_INLIER_THRESHOL
     inlier_count < RANSAC_MIN_RESIDUAL_N), look_for_drift (residual iqr > 1.0 s OR
     |drift_b| > 0.002, either half False/skipped when its input is None)."""
     matched = len(pairs)
-    result = {"offset_a_s": None, "drift_b": None, "matched_pairs_count": matched,
-              "inlier_count": 0, "residual_median_s": None, "residual_iqr_s": None,
-              "look_for_drift": False}
+    result = {
+        "offset_a_s": None,
+        "drift_b": None,
+        "matched_pairs_count": matched,
+        "inlier_count": 0,
+        "residual_median_s": None,
+        "residual_iqr_s": None,
+        "look_for_drift": False,
+    }
     if matched < 2:
         return result
 
     xs = [c for c, _k in pairs]
-    ys = [c - k for c, k in pairs]              # offset(t) target: card_start - cue_start
+    ys = [c - k for c, k in pairs]  # offset(t) target: card_start - cue_start
     idxs = list(range(matched))
 
     if matched <= RANSAC_EXHAUSTIVE_CAP:
@@ -358,7 +396,7 @@ def ransac_offset_drift(pairs: list, threshold_s: float = RANSAC_INLIER_THRESHOL
     best_inliers = []
     for i, j in candidates:
         if xs[i] == xs[j]:
-            continue                             # vertical/degenerate 2-point line
+            continue  # vertical/degenerate 2-point line
         b = (ys[j] - ys[i]) / (xs[j] - xs[i])
         a = ys[i] - b * xs[i]
         inliers = [k for k in idxs if abs(ys[k] - (a + b * xs[k])) <= threshold_s]
@@ -375,7 +413,7 @@ def ransac_offset_drift(pairs: list, threshold_s: float = RANSAC_INLIER_THRESHOL
         resid = _residuals(xs, ys, a, b)
         inliers = [k for k in idxs if abs(resid[k]) <= threshold_s]
         if len(inliers) < 2:
-            inliers = idxs                       # still nothing better -- use every point
+            inliers = idxs  # still nothing better -- use every point
     else:
         inliers = best_inliers
 
@@ -405,8 +443,8 @@ def ransac_offset_drift(pairs: list, threshold_s: float = RANSAC_INLIER_THRESHOL
 # T6 -- slack-aware on-cue/in-gap overlap classification (pure)
 # ============================================================================
 
-def classify_overlap(card_start: float, card_end: float, cue_start: float, cue_end: float,
-                      tolerance: float) -> bool:
+
+def classify_overlap(card_start: float, card_end: float, cue_start: float, cue_end: float, tolerance: float) -> bool:
     """Slack-aware overlap test: True if [card_start, card_end] intersects
     [cue_start, cue_end] once each cue edge is loosened by `tolerance` seconds --
     max(0, min(card_end, cue_end+t) - max(card_start, cue_start-t)) > 0."""
@@ -452,8 +490,7 @@ def covered_cue_count(cards: list, cue_intervals: list, tolerance: float) -> int
         return 0
     count = 0
     for cue_start, cue_end, _text in cue_intervals:
-        if any(classify_overlap(c["aligned_start"], c["aligned_end"], cue_start, cue_end, tolerance)
-               for c in cards):
+        if any(classify_overlap(c["aligned_start"], c["aligned_end"], cue_start, cue_end, tolerance) for c in cards):
             count += 1
     return count
 
@@ -468,9 +505,9 @@ def covered_cue_count(cards: list, cue_intervals: list, tolerance: float) -> int
 # process_episode()'s own tests monkeypatch select_reference_track.
 # ============================================================================
 
-VAD_AUDIO_LANG = ("eng", "en")          # the dub audio track is always English (or the
-                                         # sole audio track) -- independent of --lang,
-                                         # which is the *subtitle* language allowlist.
+VAD_AUDIO_LANG = ("eng", "en")  # the dub audio track is always English (or the
+# sole audio track) -- independent of --lang,
+# which is the *subtitle* language allowlist.
 
 IN_GAP_VERDICT = {True: "in_gap_speech", False: "in_gap_silent", None: "in_gap_vad_error"}
 
@@ -488,10 +525,24 @@ def select_audio_stream(video: str):
     (REQUIRE_ENG=1, the default, requires an eng/en tag; REQUIRE_ENG=0 falls back to the
     first audio stream of any language, matching generate.py's own env gate)."""
     try:
-        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
-                             "-show_entries", "stream=index:stream_tags=language",
-                             "-of", "json", video], capture_output=True, text=True,
-                            stdin=subprocess.DEVNULL, timeout=90)
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a",
+                "-show_entries",
+                "stream=index:stream_tags=language",
+                "-of",
+                "json",
+                video,
+            ],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=90,
+        )
         streams = json.loads(r.stdout).get("streams", [])
     except Exception as e:
         log("ffprobe failed (audio):", video, e)
@@ -517,8 +568,28 @@ def extract_audio_window(video: str, audio_idx: int, start_s: float, end_s: floa
     exists only to compare against the *cue* timeline (T5/T6), never to shift where we
     listen on the dub audio itself (spec-v3.md's VAD acceptance criterion is explicit
     about this). Returns False (never raises) on any ffmpeg failure or empty output."""
-    cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-ss", str(start_s), "-to", str(end_s),
-           "-i", video, "-map", f"0:{audio_idx}", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", out_wav]
+    cmd = [
+        "ffmpeg",
+        "-nostdin",
+        "-y",
+        "-v",
+        "error",
+        "-ss",
+        str(start_s),
+        "-to",
+        str(end_s),
+        "-i",
+        video,
+        "-map",
+        f"0:{audio_idx}",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "pcm_s16le",
+        out_wav,
+    ]
     try:
         subprocess.run(cmd, capture_output=True, timeout=120, stdin=subprocess.DEVNULL)
     except Exception as e:
@@ -527,8 +598,7 @@ def extract_audio_window(video: str, audio_idx: int, start_s: float, end_s: floa
     return os.path.exists(out_wav) and os.path.getsize(out_wav) > 0
 
 
-def classify_in_gap_cards(video: str, cards: list, vad_backend: str = "webrtcvad",
-                           vad_aggressiveness: int = 2) -> None:
+def classify_in_gap_cards(video: str, cards: list, vad_backend: str = "webrtcvad", vad_aggressiveness: int = 2) -> None:
     """Mutates `cards` in place: for every card whose classify_card() result is "in-gap",
     VAD-probes its dub-audio window (card's ORIGINAL [start, end], not aligned_start/
     aligned_end -- see extract_audio_window()) and sets
@@ -567,8 +637,15 @@ def classify_in_gap_cards(video: str, cards: list, vad_backend: str = "webrtcvad
 # verification, see the report).
 # ============================================================================
 
-def process_episode(video: str, lang: set, tolerance: float, pair_radius_s: float = PAIR_RADIUS_DEFAULT_S,
-                     vad_backend: str = "webrtcvad", vad_aggressiveness: int = 2) -> dict:
+
+def process_episode(
+    video: str,
+    lang: set,
+    tolerance: float,
+    pair_radius_s: float = PAIR_RADIUS_DEFAULT_S,
+    vad_backend: str = "webrtcvad",
+    vad_aggressiveness: int = 2,
+) -> dict:
     stem, _ext = os.path.splitext(video)
     conf_path = stem + ".dubtitles.conf.json"
     status, rows = load_conf(conf_path)
@@ -580,10 +657,16 @@ def process_episode(video: str, lang: set, tolerance: float, pair_radius_s: floa
         return {"video": video, "status": "no-reference"}
     reference_track, cue_intervals = ref
 
-    if not rows:                                  # empty conf.json: analyzed, 0 cards, no crash
-        return {"video": video, "status": "analyzed", "reference_track": reference_track,
-                "fit": ransac_offset_drift([]), "cue_count": len(cue_intervals), "cards": [],
-                "cues_covered": 0}
+    if not rows:  # empty conf.json: analyzed, 0 cards, no crash
+        return {
+            "video": video,
+            "status": "analyzed",
+            "reference_track": reference_track,
+            "fit": ransac_offset_drift([]),
+            "cue_count": len(cue_intervals),
+            "cards": [],
+            "cues_covered": 0,
+        }
 
     card_starts = [r["start"] for r in rows]
     cue_starts = [c[0] for c in cue_intervals]
@@ -598,7 +681,7 @@ def process_episode(video: str, lang: set, tolerance: float, pair_radius_s: floa
         card = dict(r)
         card["aligned_start"] = round(aligned_start, 3)
         card["aligned_end"] = round(aligned_end, 3)
-        card["classification"] = classification          # "on-cue" | "in-gap"
+        card["classification"] = classification  # "on-cue" | "in-gap"
         card["low_confidence_alignment"] = low_conf
         cards.append(card)
 
@@ -615,9 +698,15 @@ def process_episode(video: str, lang: set, tolerance: float, pair_radius_s: floa
     # Whisper timestamps.
     cues_covered = covered_cue_count(cards, cue_intervals, tolerance)
 
-    return {"video": video, "status": "analyzed", "reference_track": reference_track,
-            "fit": fit, "cue_count": len(cue_intervals), "cards": cards,
-            "cues_covered": cues_covered}
+    return {
+        "video": video,
+        "status": "analyzed",
+        "reference_track": reference_track,
+        "fit": fit,
+        "cue_count": len(cue_intervals),
+        "cards": cards,
+        "cues_covered": cues_covered,
+    }
 
 
 # ============================================================================
@@ -626,6 +715,7 @@ def process_episode(video: str, lang: set, tolerance: float, pair_radius_s: floa
 # hallucination.py's B1 gate exactly (imported, not re-hardcoded) so the report's bucket
 # labels line up with the thresholds that actually decided drop/flag/keep upstream.
 # ============================================================================
+
 
 def bucket_nsp(nsp: float) -> str:
     """Bucket a kept card's no_speech_prob against hallucination.py's NSP_FLAG/NSP_DROP,
@@ -645,7 +735,7 @@ def bucket_nsp(nsp: float) -> str:
 def bucket_lp(lp: float) -> str:
     """Bucket a kept card's avg_logprob against hallucination.py's LP_FLAG/LP_DROP, STRICT
     per spec-v3.md: >=-0.6 clean, <-0.6 and >=-2.0 flag, <-2.0 drop."""
-    f, d = hallucination.LP_FLAG, hallucination.LP_DROP   # labels derived, see bucket_nsp
+    f, d = hallucination.LP_FLAG, hallucination.LP_DROP  # labels derived, see bucket_nsp
     if lp >= f:
         return f"clean_ge_{f:g}"
     if lp >= d:
@@ -711,7 +801,7 @@ def build_episode_report(res: dict) -> dict:
             in_gap_silent += 1
         elif verdict == "in_gap_speech":
             in_gap_speech += 1
-        elif verdict == "in_gap_vad_error":            # never merged into silent/speech (T10)
+        elif verdict == "in_gap_vad_error":  # never merged into silent/speech (T10)
             in_gap_vad_error += 1
 
     if in_gap and in_gap_speech == 0 and in_gap_silent == 0:
@@ -729,14 +819,23 @@ def build_episode_report(res: dict) -> dict:
 
     return {
         "status": "analyzed",
-        "offset_a_s": fit["offset_a_s"], "drift_b": fit["drift_b"],
-        "matched_pairs_count": fit["matched_pairs_count"], "inlier_count": fit["inlier_count"],
-        "residual_median_s": fit["residual_median_s"], "residual_iqr_s": fit["residual_iqr_s"],
+        "offset_a_s": fit["offset_a_s"],
+        "drift_b": fit["drift_b"],
+        "matched_pairs_count": fit["matched_pairs_count"],
+        "inlier_count": fit["inlier_count"],
+        "residual_median_s": fit["residual_median_s"],
+        "residual_iqr_s": fit["residual_iqr_s"],
         "look_for_drift": fit["look_for_drift"],
-        "pct_cards_on_cue": pct_cards_on_cue, "pct_cues_covered": pct_cues_covered,
+        "pct_cards_on_cue": pct_cards_on_cue,
+        "pct_cues_covered": pct_cues_covered,
         "kept_in_gap": {
-            "total": len(in_gap), "in_gap_silent": in_gap_silent, "in_gap_speech": in_gap_speech,
-            "in_gap_vad_error": in_gap_vad_error, "by_nsp": by_nsp, "by_lp": by_lp, "by_flag": by_flag,
+            "total": len(in_gap),
+            "in_gap_silent": in_gap_silent,
+            "in_gap_speech": in_gap_speech,
+            "in_gap_vad_error": in_gap_vad_error,
+            "by_nsp": by_nsp,
+            "by_lp": by_lp,
+            "by_flag": by_flag,
         },
         "false_in_gap_rate": false_in_gap_rate,
         "flag_validation": flag_validation,
@@ -744,8 +843,7 @@ def build_episode_report(res: dict) -> dict:
     }
 
 
-STATUS_TO_COUNT_KEY = {"no-conf": "no_conf", "no-reference": "no_reference",
-                        "bad-conf": "bad_conf", "analyzed": "analyzed"}
+STATUS_TO_COUNT_KEY = {"no-conf": "no_conf", "no-reference": "no_reference", "bad-conf": "bad_conf", "analyzed": "analyzed"}
 
 
 def aggregate_episodes(results: list) -> dict:
@@ -781,8 +879,7 @@ def aggregate_episodes(results: list) -> dict:
         kept_in_gap_total += len(in_gap)
         in_gap_speech_total += sum(1 for c in in_gap if c.get("in_gap_vad_verdict") == "in_gap_speech")
         in_gap_silent_total += sum(1 for c in in_gap if c.get("in_gap_vad_verdict") == "in_gap_silent")
-        in_gap_vad_error_total += sum(
-            1 for c in in_gap if c.get("in_gap_vad_verdict") == "in_gap_vad_error")
+        in_gap_vad_error_total += sum(1 for c in in_gap if c.get("in_gap_vad_verdict") == "in_gap_vad_error")
 
     denom = counts["analyzed"] + counts["no_reference"]
     applicability_ratio = (counts["analyzed"] / denom) if denom else None
@@ -797,8 +894,10 @@ def aggregate_episodes(results: list) -> dict:
         false_in_gap_rate = (in_gap_speech_total / total_cards) if total_cards else None
 
     return {
-        "no_conf": counts["no_conf"], "no_reference": counts["no_reference"],
-        "bad_conf": counts["bad_conf"], "analyzed": counts["analyzed"],
+        "no_conf": counts["no_conf"],
+        "no_reference": counts["no_reference"],
+        "bad_conf": counts["bad_conf"],
+        "analyzed": counts["analyzed"],
         "applicability_ratio": applicability_ratio,
         "pct_cards_on_cue": pct_cards_on_cue,
         "kept_in_gap": kept_in_gap_total,
@@ -819,8 +918,7 @@ def build_report(show_results: dict, config: dict) -> dict:
         episodes = {os.path.basename(res["video"]): build_episode_report(res) for res in results}
         shows[show_name] = {"episodes": episodes, "aggregate": aggregate_episodes(results)}
     all_results = [res for results in show_results.values() for res in results]
-    return {"schema_version": 2, "config": config, "shows": shows,
-            "aggregate": aggregate_episodes(all_results)}
+    return {"schema_version": 2, "config": config, "shows": shows, "aggregate": aggregate_episodes(all_results)}
 
 
 def write_report_atomic(report: dict, out_path: str) -> None:
@@ -849,10 +947,12 @@ def _fmt(x) -> str:
 
 
 def _log_aggregate_headline(label: str, agg: dict) -> None:
-    log(f"[{label}] applicability_ratio={_fmt(agg['applicability_ratio'])} "
+    log(
+        f"[{label}] applicability_ratio={_fmt(agg['applicability_ratio'])} "
         f"pct_cards_on_cue={_fmt(agg['pct_cards_on_cue'])} "
         f"kept_in_gap.total={agg['kept_in_gap']} in_gap_speech={agg['in_gap_speech']} "
-        f"false_in_gap_rate={_fmt(agg['false_in_gap_rate'])}")
+        f"false_in_gap_rate={_fmt(agg['false_in_gap_rate'])}"
+    )
 
 
 def print_summary(report: dict) -> None:
@@ -877,13 +977,13 @@ def show_name_for_root(root: str) -> str:
 # main
 # ============================================================================
 
+
 def main(argv=None):
     ap = build_arg_parser()
     a = ap.parse_args(argv)
     tolerance = max(TOLERANCE_MIN, min(TOLERANCE_MAX, a.tolerance))
     if tolerance != a.tolerance:
-        log(f"--tolerance {a.tolerance} out of [{TOLERANCE_MIN},{TOLERANCE_MAX}], "
-            f"clamped to {tolerance}")
+        log(f"--tolerance {a.tolerance} out of [{TOLERANCE_MIN},{TOLERANCE_MAX}], clamped to {tolerance}")
     # Mirror common.SUB_LANGS's construction (no `if s.strip()` filter): the default
     # "eng,en,und," must keep the blank token so untagged subtitle streams (language ==
     # "", as returned by common.eng_sub_streams for streams with no language tag) match
@@ -900,16 +1000,20 @@ def main(argv=None):
     for root in a.show_dir:
         show_name = show_name_for_root(root)
         for video in find_episodes([root]):
-            res = process_episode(video, lang, tolerance, vad_backend=a.vad,
-                                   vad_aggressiveness=a.vad_aggressiveness)
+            res = process_episode(video, lang, tolerance, vad_backend=a.vad, vad_aggressiveness=a.vad_aggressiveness)
             results.append(res)
             show_results.setdefault(show_name, []).append(res)
             if not a.summary_only:
                 log(f"{res['status']:12} {video}")
 
-    config = {"tolerance_s": tolerance, "min_cues": min_cues, "min_plain_share": min_plain_share,
-              "pair_radius_s": PAIR_RADIUS_DEFAULT_S, "vad_backend": a.vad,
-              "vad_aggressiveness": a.vad_aggressiveness}
+    config = {
+        "tolerance_s": tolerance,
+        "min_cues": min_cues,
+        "min_plain_share": min_plain_share,
+        "pair_radius_s": PAIR_RADIUS_DEFAULT_S,
+        "vad_backend": a.vad,
+        "vad_aggressiveness": a.vad_aggressiveness,
+    }
     report = build_report(show_results, config)
     write_report_atomic(report, a.out)
     print_summary(report)

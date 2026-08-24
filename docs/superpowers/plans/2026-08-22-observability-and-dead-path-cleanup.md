@@ -21,7 +21,7 @@ successor item, deferred). Origin: adversarial reviews by GPT-5.6 Luna and GLM-5
 ## Global Constraints
 
 - **The pattern being fixed is "handled failure with no observation."** Every bug that
-  motivated this plan was a *correct* fallback that nothing reported taking. A change that
+  motivated this plan was a _correct_ fallback that nothing reported taking. A change that
   adds a fallback without adding its counter re-creates the problem.
 - **Zero activation must be distinguishable from never-evaluated.** `evaluated == 0` and
   `activated == 0` mean different things and must be separately visible.
@@ -33,7 +33,7 @@ successor item, deferred). Origin: adversarial reviews by GPT-5.6 Luna and GLM-5
 - **Sidecars are group-writable** (`common.SIDECAR_MODE = 0o664`, `umask 002`). Any new
   sidecar follows this or a non-root writer cannot rewrite it.
 - **Run the suite in the container:** `docker run --rm -v "$PWD":/src -w /src --entrypoint sh
-  dubtitle-builder:latest -c "pip install -q pytest; python3 -m pytest --ignore=tests/test_boxxo_voice_extract.py"`
+dubtitle-builder:latest -c "pip install -q pytest; python3 -m pytest --ignore=tests/test_boxxo_voice_extract.py"`
   Baseline is **1045 passing**.
 - **Do not touch** `AGENTS.md`, `boxxo_voice_extract.py`, `tests/test_boxxo_voice_extract.py` —
   another workstream owns them.
@@ -46,6 +46,7 @@ Fastest win, no dependencies, and it proves the audit was real. Each item below 
 by source search during the 2026-08-21 review; re-verify before deleting.
 
 **Files:**
+
 - Modify: `common.py` (remove `dialogue_event_count`), `tests/test_common.py:114-127`
 - Modify: `mux.py:50` (remove `DELETE_BROKEN`), `mux.py:171-194` (remove `partners`)
 - Delete: `all_seasons.sh`, `anime_library.sh`, `merge_watcher.sh`, `post_season.sh`,
@@ -53,6 +54,7 @@ by source search during the 2026-08-21 review; re-verify before deleting.
 - Modify: `IMPROVEMENTS.md:199-210,240` (remove `REPAIR_BACKEND_SECONDARY`)
 
 **Interfaces:**
+
 - Consumes: nothing.
 - Produces: nothing. This task only removes.
 
@@ -131,12 +133,14 @@ dead. This replaces the contract-manifest proposal, which was rejected in review
 a second source of truth that rots.
 
 **Files:**
+
 - Modify: `qc.py` (bump `SCHEMA_VERSION` 3 → 4)
 - Modify: `hallucination.py` (`drop_reason`, `flag_reason` — accept an optional recorder)
 - Modify: `generate.py` (pass the recorder at the call sites)
 - Test: `tests/test_hallucination.py`, `tests/test_qc.py`, `tests/test_generate.py`
 
 **Interfaces:**
+
 - Consumes: `qc.Recorder.count(name, n=1)` — the existing counter API (`qc.py:51`).
 - Produces: counters named `rule_<name>_evaluated` and `rule_<name>_activated` in the qc
   sidecar, for `blocklist`, `repetition`, `music`, `low_conf`, `maybe_silence`.
@@ -207,7 +211,7 @@ def drop_reason(card: dict, rec=None) -> str | None:
 ```
 
 Apply the same shape to `flag_reason` for `low_conf` and `maybe_silence`. Note `flag_reason`
-returns on the first match, so `maybe_silence` is only *evaluated* when `low_conf` did not
+returns on the first match, so `maybe_silence` is only _evaluated_ when `low_conf` did not
 fire — that is correct and the counter should reflect it.
 
 - [ ] **Step 4: Wire the call sites in generate.py**
@@ -251,6 +255,7 @@ Per-stage, not one flat queue — triage differs by stage (a repair rejection ne
 check; a punctuation rejection needs a read; a hallucination flag needs an audio listen).
 
 **Files:**
+
 - Create: `unresolved.py`
 - Create: `tests/test_unresolved.py`
 - Modify: `repair.py` (at `skipped_no_ref` `:400`, `rejected` `:451`)
@@ -259,10 +264,11 @@ check; a punctuation rejection needs a read; a hallucination flag needs an audio
   start and no test catches it — see `tests/test_dockerfile_copy.py`)
 
 **Interfaces:**
+
 - Produces: `record(stem, stage, reason, **fields)` appending to
   `<stem>.dubtitles.unresolved.json`; `items(path)` reading them back; `--review` CLI.
 - Entry shape: `{stage, reason, original_text, proposed_text, source_start, source_end,
-  avg_logprob, model, backend, ts}`.
+avg_logprob, model, backend, ts}`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -350,10 +356,12 @@ repair never ran is today indistinguishable from one where it ran and found noth
 `merge_pass.sh` has no `set -e` and checks no exit status; `MERGE_PASS_DONE` prints regardless.
 
 **Files:**
+
 - Modify: `common.py` (`write_stamp`), `mux.py` (`write_stamp` call at `:329`)
 - Test: `tests/test_common.py`, `tests/test_mux.py`
 
 **Interfaces:**
+
 - Consumes: existing stamp dict `{size, mtime, muxed, version}`.
 - Produces: adds `stages: {repair: bool, signs_merge: bool, punctuation: bool}`.
   `stamp_valid()` must IGNORE the new key — an old stamp without it stays valid.
@@ -459,9 +467,10 @@ but for techniques there may be no dub-name field on the wiki to prefer.
 recall on 2026-08-21 and reverted the same hour: it breaks the project's own rule that the wiki
 owns every canonical string and a model only decides which entities to ask about. Only
 `Gum-Gum Pistol` remains, and only because a human confirmed it. `initial_prompt` is the
-highest-leverage place to be wrong — a bad name there biases *every* transcription.
+highest-leverage place to be wrong — a bad name there biases _every_ transcription.
 
 **Possible approaches, none evaluated:**
+
 - Fetch the technique subpages and parse their tables, taking the dub column where one exists.
 - Mine dub names from the shows' own fansub tracks, where a release has one — the transcript
   is then proposing candidates, which is the sanctioned direction, and the fansub carries the

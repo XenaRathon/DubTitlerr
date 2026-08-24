@@ -6,13 +6,14 @@ No test here may reach a model: every one either exercises a pure function or st
 ``reflow()`` -- that is the whole point of restoring BEFORE the split rather than in
 repair.py afterwards.
 """
+
 import punctuation
 import qc
 import reflow
 
-APOS = chr(0x2019)          # constructed, never typed: an editor that normalises a
-                            # literal curly apostrophe would silently disable the guard
-                            # this file exists to pin (and the test would still pass).
+APOS = chr(0x2019)  # constructed, never typed: an editor that normalises a
+# literal curly apostrophe would silently disable the guard
+# this file exists to pin (and the test would still pass).
 
 
 def _words(seg_texts, dt=0.3, t0=1.0):
@@ -21,8 +22,7 @@ def _words(seg_texts, dt=0.3, t0=1.0):
     for si, txt in enumerate(seg_texts):
         s = t
         for tok in txt.split():
-            words.append({"text": tok, "start": round(t, 3), "end": round(t + dt, 3),
-                          "prob": 0.9, "seg": si})
+            words.append({"text": tok, "start": round(t, 3), "end": round(t + dt, 3), "prob": 0.9, "seg": si})
             t = round(t + dt, 3)
         segments.append({"start": s, "end": t, "no_speech_prob": 0.01})
     return words, segments
@@ -34,8 +34,10 @@ def _stub(monkeypatch, answers):
 
     def fake(prompt, **kw):
         calls.append({"prompt": prompt, **kw})
-        if callable(answers): return answers(prompt)
-        if isinstance(answers, list): return answers[len(calls) - 1]
+        if callable(answers):
+            return answers(prompt)
+        if isinstance(answers, list):
+            return answers[len(calls) - 1]
         return answers
 
     monkeypatch.setattr(punctuation, "llm_chat", fake)
@@ -44,9 +46,9 @@ def _stub(monkeypatch, answers):
 
 # --- R4: the mechanical guard ----------------------------------------------------
 
+
 def test_accept_punctuation_and_casing_only():
-    assert punctuation.accept_restoration("we have to go it is way too dangerous",
-                                          "We have to go. It is way too dangerous!")
+    assert punctuation.accept_restoration("we have to go it is way too dangerous", "We have to go. It is way too dangerous!")
 
 
 def test_reject_added_word():
@@ -80,6 +82,7 @@ def test_standalone_punctuation_tokens_are_not_words():
 
 
 # --- R1: run detection ------------------------------------------------------------
+
 
 def test_a_lone_unpunctuated_segment_is_not_a_run():
     texts = ["He went home.", "and then it stopped", "That was it."]
@@ -121,23 +124,24 @@ def test_segment_texts_are_rebuilt_from_the_words():
 
 # --- R5: mapping back onto the timestamped words ----------------------------------
 
+
 def test_restored_tokens_land_on_the_right_words_and_timestamps_never_move(monkeypatch):
     words, segments = _words(["we have to go", "it is way too dangerous"])
     before = [(w["start"], w["end"], w["prob"], w["seg"]) for w in words]
     _stub(monkeypatch, "We have to go. It is way too dangerous!")
     punctuation.restore(words, segments)
-    assert [w["text"] for w in words] == ["We", "have", "to", "go.", "It", "is", "way",
-                                          "too", "dangerous!"]
+    assert [w["text"] for w in words] == ["We", "have", "to", "go.", "It", "is", "way", "too", "dangerous!"]
     assert [(w["start"], w["end"], w["prob"], w["seg"]) for w in words] == before
 
 
 def test_a_word_dict_holding_a_whole_segment_takes_all_its_tokens(monkeypatch):
     """generate.py's no-word-timestamps fallback appends the WHOLE segment as one
     'word'. The mapping is per word DICT, not per token, so that case still works."""
-    words = [{"text": "we have to go", "start": 1.0, "end": 3.0, "prob": 0.9, "seg": 0},
-             {"text": "it is dangerous", "start": 3.0, "end": 5.0, "prob": 0.9, "seg": 1}]
-    segments = [{"start": 1.0, "end": 3.0, "no_speech_prob": 0.0},
-                {"start": 3.0, "end": 5.0, "no_speech_prob": 0.0}]
+    words = [
+        {"text": "we have to go", "start": 1.0, "end": 3.0, "prob": 0.9, "seg": 0},
+        {"text": "it is dangerous", "start": 3.0, "end": 5.0, "prob": 0.9, "seg": 1},
+    ]
+    segments = [{"start": 1.0, "end": 3.0, "no_speech_prob": 0.0}, {"start": 3.0, "end": 5.0, "no_speech_prob": 0.0}]
     _stub(monkeypatch, "We have to go. It is dangerous.")
     punctuation.restore(words, segments)
     assert [w["text"] for w in words] == ["We have to go.", "It is dangerous."]
@@ -145,6 +149,7 @@ def test_a_word_dict_holding_a_whole_segment_takes_all_its_tokens(monkeypatch):
 
 
 # --- R6: every failure path leaves Whisper's words alone --------------------------
+
 
 def test_empty_answer_leaves_the_words_untouched(monkeypatch):
     words, segments = _words(["we have to go", "it is dangerous"])
@@ -163,7 +168,8 @@ def test_transport_failure_leaves_the_words_untouched(monkeypatch):
     words, segments = _words(["we have to go", "it is dangerous"])
     before = [dict(w) for w in words]
 
-    def boom(prompt, **kw): raise OSError("connection refused")
+    def boom(prompt, **kw):
+        raise OSError("connection refused")
 
     monkeypatch.setattr(punctuation, "llm_chat", boom)
     rec = qc.Recorder()
@@ -180,8 +186,7 @@ def test_guard_rejection_leaves_the_words_untouched_and_is_recorded(monkeypatch)
     assert words == before
     assert rec.counters["restore_rejected_guard"] == 1
     assert rec.counters["restore_words_repunctuated"] == 0
-    ev = [e for e in rec.build(show="S", episode="E", stem="x")["events"]
-          if e.get("reason") == "restore_rejected"]
+    ev = [e for e in rec.build(show="S", episode="E", stem="x")["events"] if e.get("reason") == "restore_rejected"]
     assert len(ev) == 1 and ev[0]["segments"] == [0, 2]
 
 
@@ -190,8 +195,7 @@ def test_rejected_run_events_are_bounded(monkeypatch):
     _stub(monkeypatch, "totally different words entirely")
     rec = qc.Recorder()
     punctuation.restore(words, segments, rec)
-    ev = [e for e in rec.build(show="S", episode="E", stem="x")["events"]
-          if e.get("reason") == "restore_rejected"]
+    ev = [e for e in rec.build(show="S", episode="E", stem="x")["events"] if e.get("reason") == "restore_rejected"]
     assert 0 < len(ev) <= punctuation.MAX_REJECT_EVENTS
 
 
@@ -214,6 +218,7 @@ def test_no_words_is_a_no_op(monkeypatch):
 
 # --- R2/R7: one call per run, and the counters ------------------------------------
 
+
 def test_one_call_per_run_covering_the_whole_stretch(monkeypatch):
     words, segments = _words(["one two", "three four", "Done.", "five six", "seven eight"])
     calls = _stub(monkeypatch, lambda p: "")
@@ -235,12 +240,18 @@ def test_counters_on_the_happy_path(monkeypatch):
     assert c["restore_runs_seen"] == 1 and c["restore_runs_sent"] == 1
     assert c["restore_accepted"] == 1 and c["restore_rejected_guard"] == 0
     assert c["restore_empty"] == 0
-    assert c["restore_words_repunctuated"] == 4      # We, go., It, dangerous.
+    assert c["restore_words_repunctuated"] == 4  # We, go., It, dangerous.
 
 
 def test_qc_declares_every_restore_counter():
-    for name in ("restore_runs_seen", "restore_runs_sent", "restore_accepted",
-                 "restore_rejected_guard", "restore_empty", "restore_words_repunctuated"):
+    for name in (
+        "restore_runs_seen",
+        "restore_runs_sent",
+        "restore_accepted",
+        "restore_rejected_guard",
+        "restore_empty",
+        "restore_words_repunctuated",
+    ):
         assert name in qc.COUNTERS
         assert qc.Recorder().build(show="S", episode="E", stem="x")["counters"][name] == 0
 
@@ -267,10 +278,8 @@ def test_max_tokens_scales_with_the_run(monkeypatch):
 
 # --- end to end: the split moves because the punctuation is there -----------------
 
-UNPUNCTUATED = ["we have to go somewhere else",
-                "they all died out there at sea and nobody ever came back home"]
-RESTORED = ("We have to go somewhere else. They all died out there at sea and nobody "
-            "ever came back home.")
+UNPUNCTUATED = ["we have to go somewhere else", "they all died out there at sea and nobody ever came back home"]
+RESTORED = "We have to go somewhere else. They all died out there at sea and nobody ever came back home."
 
 
 def test_without_restoration_reflow_splits_on_character_balance():
@@ -293,16 +302,15 @@ def test_with_restoration_reflow_splits_at_the_restored_sentence_boundary(monkey
 # writing "tempo<em-dash>you" for "tempo you" -- pure punctuation that normalise() saw
 # as one token instead of two.
 
+
 def test_em_dash_between_words_is_a_separator_not_a_word_change():
     em = chr(0x2014)
-    assert punctuation.accept_restoration("the tempo you want",
-                                          f"The tempo{em}you want.")
+    assert punctuation.accept_restoration("the tempo you want", f"The tempo{em}you want.")
 
 
 def test_en_dash_too():
     en = chr(0x2013)
-    assert punctuation.accept_restoration("sunny there is something",
-                                          f"Sunny{en}there is something.")
+    assert punctuation.accept_restoration("sunny there is something", f"Sunny{en}there is something.")
 
 
 def test_hyphen_is_not_split_because_it_is_word_internal():

@@ -7,6 +7,7 @@ specs/v1-polish/spec.md, Phase 1 — Foundation). Stdlib + pysubs2: no imports f
 project modules, so any pipeline stage can import this without dragging in the rest
 of the pipeline (and without risking a circular import).
 """
+
 import http.client
 import json
 import os
@@ -54,9 +55,9 @@ SUB_LANGS = set(os.environ.get("SUB_LANGS", "eng,en,und,").split(","))
 # which uses a related but NOT identical KEEP_STYLE/DROP_STYLE pair for its own purpose).
 KARAOKE = re.compile(r"\\[kK][fo]?\d")
 POSITIONED = re.compile(r"\\(?:pos|move)\(|\\an[134567 89]")
-DROP_STYLE = re.compile(r"warning", re.I)        # junk, never a dialogue reference
-DIALOGUE_EXCLUDE_STYLE = re.compile(
-    r"karaoke|translat|sign|song|caption|title|credit|note|lyric|romaji|kashi|insert", re.I)
+DROP_STYLE = re.compile(r"warning", re.I)  # junk, never a dialogue reference
+DIALOGUE_EXCLUDE_STYLE = re.compile(r"karaoke|translat|sign|song|caption|title|credit|note|lyric|romaji|kashi|insert", re.I)
+
 
 def load_extras(path="data/extras.txt"):
     """Load the EXTRA_DIRS set (Plex "local extras" subfolders + creditless/scene clips --
@@ -69,8 +70,17 @@ def load_extras(path="data/extras.txt"):
         with open(path) as f:
             return {ln.strip().lower() for ln in f if ln.strip() and not ln.startswith("#")}
     except OSError:
-        return {"behind the scenes", "deleted scenes", "featurettes", "interviews",
-                "scenes", "shorts", "trailers", "other", "extras"}
+        return {
+            "behind the scenes",
+            "deleted scenes",
+            "featurettes",
+            "interviews",
+            "scenes",
+            "shorts",
+            "trailers",
+            "other",
+            "extras",
+        }
 
 
 # Plex "local extras" subfolders + creditless/scene clips — never real episodes, often
@@ -121,7 +131,8 @@ PIPELINE_VERSION = 4
 GRANDFATHER_VERSION = 1
 
 
-def log(*a): print(*a, flush=True)
+def log(*a):
+    print(*a, flush=True)
 
 
 def out_for(p):
@@ -129,7 +140,7 @@ def out_for(p):
     with space; creates intermediate directories (safe superset of the non-creating
     variant — callers that write to an already-existing dir are unaffected)."""
     if OUTPUT_ROOT and p.startswith(MEDIA_ROOT):
-        q = OUTPUT_ROOT + p[len(MEDIA_ROOT):]
+        q = OUTPUT_ROOT + p[len(MEDIA_ROOT) :]
         os.makedirs(os.path.dirname(q), exist_ok=True)
         return q
     return p
@@ -137,7 +148,9 @@ def out_for(p):
 
 def ts_srt(t):
     """Format a float number-of-seconds as an SRT timestamp (HH:MM:SS,mmm)."""
-    h = int(t // 3600); m = int((t % 3600) // 60); s = t % 60
+    h = int(t // 3600)
+    m = int((t % 3600) // 60)
+    s = t % 60
     return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
 
 
@@ -157,8 +170,7 @@ def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
     and be fully re-transcribed -- roughly 12 GPU-hours to add a bookkeeping field. Omitted
     entirely when the caller does not know, rather than guessed."""
     st = os.stat(video)
-    doc = {"size": st.st_size, "mtime": st.st_mtime, "muxed": True,
-           "version": PIPELINE_VERSION}
+    doc = {"size": st.st_size, "mtime": st.st_mtime, "muxed": True, "version": PIPELINE_VERSION}
     if stages:
         doc["stages"] = stages
     with open(path, "w") as f:
@@ -201,7 +213,7 @@ def stamp_valid(stamp: dict | None, video: str) -> bool:
         return False
     version = stamp_version(stamp)
     if version is None or version < PIPELINE_VERSION:
-        return False                              # older pipeline -> regenerate in place
+        return False  # older pipeline -> regenerate in place
     return _stamp_matches_file(stamp, video)
 
 
@@ -267,10 +279,24 @@ def eng_sub_tracks(video, sub_langs):
     eng_sub_streams() and signs_sub_streams(). Only the latter needs the title, but both
     must apply the same is_our_track() exclusion, so the filtering lives in one place."""
     try:
-        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "s",
-                            "-show_entries", "stream=index,codec_name:stream_tags=language,title",
-                            "-of", "json", video], capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL, timeout=90)
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "s",
+                "-show_entries",
+                "stream=index,codec_name:stream_tags=language,title",
+                "-of",
+                "json",
+                video,
+            ],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=90,
+        )
         streams = json.loads(r.stdout).get("streams", [])
     except Exception as e:
         log("ffprobe failed:", video, e)
@@ -279,7 +305,7 @@ def eng_sub_tracks(video, sub_langs):
     for st in streams:
         if st.get("codec_name") not in ("ass", "ssa"):
             continue
-        if is_our_track(stream_title(st)):        # our own old output — never context
+        if is_our_track(stream_title(st)):  # our own old output — never context
             continue
         if ((st.get("tags") or {}).get("language", "") or "").lower() in sub_langs:
             out.append((st["index"], stream_title(st)))
@@ -314,11 +340,19 @@ def signs_sub_streams(video, sub_langs):
 
 
 def extract_sub(video, idx, out):
-    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}",
-                    "-c:s", "copy", out], capture_output=True, stdin=subprocess.DEVNULL, timeout=180)
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}", "-c:s", "copy", out],
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        timeout=180,
+    )
     if not (os.path.exists(out) and os.path.getsize(out) > 0):
-        subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}", out],
-                       capture_output=True, stdin=subprocess.DEVNULL, timeout=180)
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-map", f"0:{idx}", out],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=180,
+        )
     return os.path.exists(out) and os.path.getsize(out) > 0
 
 
@@ -335,7 +369,7 @@ def is_dialogue_event(ev: "pysubs2.SSAEvent", txt: str | None = None) -> bool:
     if ev.is_comment:
         return False
     t = ev.text
-    if KARAOKE.search(t) or POSITIONED.search(t):        # sign/song, not dialogue
+    if KARAOKE.search(t) or POSITIONED.search(t):  # sign/song, not dialogue
         return False
     style = ev.style or ""
     if DIALOGUE_EXCLUDE_STYLE.search(style) or DROP_STYLE.search(style):
@@ -414,8 +448,7 @@ def _post_json(url, body, timeout=None):
         conn.connect()
         conn.sock.settimeout(timeout or LLM_TIMEOUT_READ)
         path = (parsed.path or "/") + (("?" + parsed.query) if parsed.query else "")
-        conn.request("POST", path, body=json.dumps(body).encode(),
-                     headers={"Content-Type": "application/json"})
+        conn.request("POST", path, body=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
         resp = conn.getresponse()
         data = resp.read()
         if resp.status >= 400:
@@ -425,8 +458,7 @@ def _post_json(url, body, timeout=None):
         conn.close()
 
 
-def llm_chat(prompt, *, backend="ollama", ollama_url=None, llamacpp_url=None, model=None,
-             max_tokens=80, first_line=True):
+def llm_chat(prompt, *, backend="ollama", ollama_url=None, llamacpp_url=None, model=None, max_tokens=80, first_line=True):
     """One prompt in, the model's text out. ``""`` means "no answer" — never raises, since
     a transport error must not abort a whole show mid-sweep.
 
@@ -442,16 +474,18 @@ def llm_chat(prompt, *, backend="ollama", ollama_url=None, llamacpp_url=None, mo
     to its opening brace — and ``max_tokens`` high enough that the JSON isn't cut short."""
     if backend == "llamacpp":
         url = llamacpp_url
-        body = {"messages": [{"role": "user", "content": prompt}], "temperature": 0,
-                "max_tokens": max_tokens, "chat_template_kwargs": {"enable_thinking": False}}
+        body = {
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "max_tokens": max_tokens,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
     else:
         url = ollama_url
-        body = {"model": model, "prompt": prompt, "stream": False, "think": False,
-                "options": {"temperature": 0}}
+        body = {"model": model, "prompt": prompt, "stream": False, "think": False, "options": {"temperature": 0}}
     try:
         data = _post_json(url, body)
-        out = (data["choices"][0]["message"].get("content") if backend == "llamacpp"
-               else data.get("response", "")) or ""
+        out = (data["choices"][0]["message"].get("content") if backend == "llamacpp" else data.get("response", "")) or ""
         out = out.strip()
     except Exception as e:
         log("  llm fail:", e)
