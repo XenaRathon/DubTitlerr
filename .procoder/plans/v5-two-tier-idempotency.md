@@ -158,14 +158,15 @@ def test_words_json_is_written_through_out_for_and_found_again(monkeypatch, tmp_
 - [ ] Run them. Expected: FAIL — no sidecar writer exists.
 - [ ] Implement the writer. Write **after** `punctuation.restore()` (so the stored
       words are post-punctuation and a replay does not repeat the LLM call) and
-      after reflow's `normalize`/`_clamp_to_segments`/`_dejitter`, recording which
-      passes ran in `transforms_applied`. Persist `segments` as
+      before reflow. Store the words UNTRANSFORMED, exactly as generate holds them:
+      reflow's three word transforms are pure and cost microseconds, and
+      `_card_word_probs()` joins against this same list, so post-transform storage
+      would make the replay diverge for no gain. Persist `segments` as
       `{start, end, no_speech_prob}` per index, plus `audio_duration` from
       `media_duration(wav)` at `generate.py:666`. Temp file + `os.replace`, mode
       `common.SIDECAR_MODE`, path via `out_for()`.
-- [ ] Implement the replay path: load, verify `transcribe_version`, skip the
-      transforms named in `transforms_applied`, and hand `(words, segments,
-      audio_duration)` to `reflow.reflow`. A missing, truncated or version-behind
+- [ ] Implement the replay path: load, verify `transcribe_version`, and hand
+      `(words, segments, audio_duration)` straight to `reflow.reflow`. A missing, truncated or version-behind
       sidecar counts and falls through to full transcription — never raises.
 - [ ] Add the suffix to `generate.py:273` `SIDECAR_SUFFIXES` so
       `park_stale_sidecars` parks it; otherwise a parked old sidecar is read by
