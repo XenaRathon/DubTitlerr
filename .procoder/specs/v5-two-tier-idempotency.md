@@ -6,7 +6,7 @@ Status: complete
 
 `PIPELINE_VERSION` (`common.py:127`, currently 4) is a single global number, and
 `stamp_valid()` (`common.py:208-217`) rejects any stamp below it. So a change that
-alters only what a caption *says* invalidates every stamped episode exactly as
+alters only what a caption _says_ invalidates every stamped episode exactly as
 hard as a change to the decoder, forcing full re-transcription. The 2026-08-21
 review ranked this the largest recurring cost in the system.
 
@@ -63,14 +63,17 @@ library-wide scan existed; this measurement supersedes it.
   alignment has no mechanical signal and documentation is the load-bearing
   register.
 - [S-2] Persist the word list as `<stem>.dubtitles.words.json`, written after
-  `punctuation.restore()` and after reflow's `normalize`/`_clamp_to_segments`/
-  `_dejitter` transforms, so the cached path replays from byte-identical inputs
-  and **skips those transforms entirely**. Because per-segment `no_speech_prob`
-  and the clamp bounds exist only on segment dicts (`reflow.py:398-405`,
-  `:423-437`) and are unrecoverable from words, the sidecar also carries one
-  record per segment plus the episode's `audio_duration` (an independent scalar
-  from `media_duration(wav)`, `generate.py:666`, needed for the tail clamp at
-  `reflow.py:376-377` and for `CascadeInfeasible`).
+  `punctuation.restore()` has mutated `word["text"]` in place and before reflow
+  splits anything, so a replay needs neither the GPU nor the punctuation LLM
+  call. The words are stored **as generate holds them**, pre-reflow-transform:
+  `_normalize`/`_clamp_to_segments`/`_dejitter` are pure, cost microseconds, and
+  `_card_word_probs()` joins against this same untransformed list, so storing
+  the post-transform words would make a replay diverge from the original run for
+  no gain. The sidecar also carries one record per segment, because
+  `card_confidence` reads each card's `no_speech_prob` from the segment list
+  (`reflow.py:398-405`) and that value exists nowhere on a word; and the
+  episode's `audio_duration` (`media_duration(wav)`, `generate.py:666`), which
+  `time_cards` clamps the tail against and raises `CascadeInfeasible` from.
 - [S-3] Absorb `tools/reapply_glossary.py` into the pipeline as a versioned,
   watch-gated **card-text** stage, and record in the stamp which glossary the
   episode's text was corrected against. Classify by comparing the **stored
@@ -148,7 +151,7 @@ library-wide scan existed; this measurement supersedes it.
   `pysubs2` 1.9.0 is present (verified 2026-08-24: 1,108 passed in 21 s). The
   container form remains the check of record for anything touching the image:
   `docker run --rm -v "$PWD":/src -w /src --entrypoint sh dubtitle-builder:latest
-  -c "pip install -q pytest; python3 -m pytest --ignore=tests/test_boxxo_voice_extract.py"`.
+-c "pip install -q pytest; python3 -m pytest --ignore=tests/test_boxxo_voice_extract.py"`.
 - **No AI-attribution trailers** in commits or PRs; `procoder check` blocks them.
 - Any diagnostic `docker run` against the pipeline image passes an explicit
   `--entrypoint`: `container_run.sh` is the entrypoint and ignores a trailing
@@ -179,18 +182,17 @@ reflow's word transforms, before card splitting:
       "model": "large-v3-turbo",
       "initial_prompt": "<the exact string passed to whisper>",
       "audio_duration": 1421.32,
-      "transforms_applied": ["punctuation", "normalize", "clamp", "dejitter"],
       "segments": [{"start": 0.0, "end": 4.2, "no_speech_prob": 0.01}, ...],
-      "words": [{"word": "...", "start": 0.0, "end": 0.0,
-                 "probability": 0.0, "seg": 0}, ...]
+      "words": [{"text": " Call.", "start": 1.5, "end": 2.9,
+                 "prob": 0.9, "seg": 0}, ...]
     }
 
 `initial_prompt` is stored rather than a glossary hash, so [S-3]'s classification
 is a string comparison against the current glossary's prompt — no hash needed, and
 `generate._glossary_version()` (`generate.py:151-161`) remains what it is today,
 a `lastrun.json` label. `segments` carries only the three fields the cached path
-needs; `transforms_applied` records which passes the stored words have already
-been through, so the replay path knows exactly what to skip. Estimated 200–300 KB
+needs. The word dicts use `text` and `prob` -- the keys reflow already consumes
+(`generate.py`'s adapter), not whisper's own `word`/`probability`. Estimated 200–300 KB
 per episode plus ~5–10 KB of segment records — to be confirmed against the first
 written sidecar, not assumed.
 
@@ -288,4 +290,3 @@ written sidecar, not assumed.
       (baseline 1,108 passing before this work, boxxo excluded).
 
 ## Open questions
-

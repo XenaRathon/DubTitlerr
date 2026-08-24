@@ -1351,3 +1351,168 @@ def test_punctuation_is_restored_before_reflow_splits_the_words():
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "generate.py")).read()
     assert "punctuation.restore(words, segments" in src
     assert src.index("punctuation.restore(") < src.index("reflow.reflow(")
+
+
+# --- words.json sidecar (spec v5-two-tier-idempotency, S-2) --------------------
+
+
+def _clamped_fixture():
+    """Words and segments where the transforms demonstrably fire, so a replay that
+    silently drops segment data cannot pass:
+
+    * word 0 is timed 0.9s BEFORE its segment starts, so _clamp_to_segments moves it;
+    * segment 0 carries a non-zero no_speech_prob, which card_confidence reads from the
+      SEGMENT list -- it exists nowhere on a word, so a sidecar without segments would
+      report 0.0 for every card and the music/maybe_silence rules would go inert.
+    """
+    segments = [
+        {"start": 1.0, "end": 3.0, "no_speech_prob": 0.42},
+        {"start": 4.0, "end": 6.0, "no_speech_prob": 0.03},
+    ]
+    words = [
+        {"text": "Buster", "start": 0.1, "end": 1.4, "prob": 0.9, "seg": 0},
+        {"text": " Call.", "start": 1.5, "end": 2.9, "prob": 0.9, "seg": 0},
+        {"text": " Run.", "start": 4.1, "end": 5.8, "prob": 0.8, "seg": 1},
+    ]
+    return words, segments
+
+
+def test_the_fixture_actually_exercises_clamping_and_nsp():
+    """Guard the guard: if the fixture stopped triggering either transform, the
+    round-trip test below would pass while proving nothing."""
+    import reflow
+
+    words, segments = _clamped_fixture()
+    clamped = reflow._clamp_to_segments(reflow._normalize(words), segments)
+    assert clamped[0]["start"] > words[0]["start"], "clamp did not move the leading word"
+    cards = reflow.reflow(words, segments, audio_duration=7.0)
+    assert any(c["no_speech_prob"] > 0 for c in cards), "no card carries a non-zero nsp"
+
+
+def test_a_replay_from_the_sidecar_reproduces_the_original_cards(tmp_path):
+    """The criterion the adversarial review flagged as most able to pass while broken:
+    the replay must be compared against the ORIGINAL run, not against a second
+    replay-shaped run that also omits segment data."""
+    import reflow
+
+    words, segments = _clamped_fixture()
+    audio_duration = 7.0
+    original = reflow.reflow(words, segments, audio_duration=audio_duration)
+
+    stem = str(tmp_path / "ep")
+    generate.write_words(stem, words, segments, audio_duration, initial_prompt="Buster Call")
+    doc = generate.read_words(stem)
+    replayed = reflow.reflow(doc["words"], doc["segments"], audio_duration=doc["audio_duration"])
+
+    assert [(c["start"], c["end"], c["text"]) for c in replayed] == [(c["start"], c["end"], c["text"]) for c in original]
+    assert [c["no_speech_prob"] for c in replayed] == [c["no_speech_prob"] for c in original]
+    assert [c["source_start"] for c in replayed] == [c["source_start"] for c in original]
+
+
+def test_a_replay_without_segments_would_lose_the_confidences(tmp_path):
+    """Pins WHY segments are persisted. Without them every card reports nsp 0.0, and the
+    music drop rule and maybe_silence flag go inert on the cheap path -- the exact
+    dead-rule failure the 2026-08-21 review was written about."""
+    import reflow
+
+    words, segments = _clamped_fixture()
+    with_segments = reflow.reflow(words, segments, audio_duration=7.0)
+    without = reflow.reflow(words, [], audio_duration=7.0)
+    assert any(c["no_speech_prob"] > 0 for c in with_segments)
+    assert all(c["no_speech_prob"] == 0.0 for c in without)
+
+
+def test_the_sidecar_is_group_writable_and_atomic(tmp_path):
+    """Sidecars must stay 0664 or a non-root writer cannot rewrite them."""
+    words, segments = _clamped_fixture()
+    stem = str(tmp_path / "ep")
+    generate.write_words(stem, words, segments, 7.0, initial_prompt="x")
+    path = stem + generate.WORDS_SUFFIX
+    assert os.path.exists(path)
+    assert (os.stat(path).st_mode & 0o777) == common.SIDECAR_MODE
+
+
+def test_a_sidecar_from_an_older_transcribe_version_is_treated_as_absent(tmp_path):
+    """A crash between transcription and stamping leaves exactly this. Serving those
+    words to the text tier would replay an older pipeline's transcript."""
+    import qc
+
+    words, segments = _clamped_fixture()
+    stem = str(tmp_path / "ep")
+    generate.write_words(stem, words, segments, 7.0, initial_prompt="x")
+    doc = json.load(open(stem + generate.WORDS_SUFFIX))
+    doc["transcribe_version"] = common.TRANSCRIBE_VERSION - 1
+    with open(stem + generate.WORDS_SUFFIX, "w") as f:
+        json.dump(doc, f)
+
+    rec = qc.Recorder()
+    assert generate.read_words(stem, rec=rec) is None
+    assert rec.counters["words_version_mismatch"] == 1
+
+
+def test_a_truncated_sidecar_is_counted_not_raised(tmp_path):
+    """Half a sidecar must not poison a re-run."""
+    import qc
+
+    stem = str(tmp_path / "ep")
+    with open(stem + generate.WORDS_SUFFIX, "w") as f:
+        f.write('{"schema_version": 1, "words": [')
+
+    rec = qc.Recorder()
+    assert generate.read_words(stem, rec=rec) is None
+    assert rec.counters["words_missing"] == 1
+
+
+def test_an_absent_sidecar_is_counted_not_raised(tmp_path):
+    import qc
+
+    rec = qc.Recorder()
+    assert generate.read_words(str(tmp_path / "nope"), rec=rec) is None
+    assert rec.counters["words_missing"] == 1
+
+
+def test_a_readable_sidecar_counts_as_reused(tmp_path):
+    import qc
+
+    words, segments = _clamped_fixture()
+    stem = str(tmp_path / "ep")
+    generate.write_words(stem, words, segments, 7.0, initial_prompt="x")
+    rec = qc.Recorder()
+    assert generate.read_words(stem, rec=rec) is not None
+    assert rec.counters["words_reused"] == 1
+
+
+def test_words_json_is_written_through_out_for_and_found_again(tmp_path, monkeypatch):
+    """Writes redirect onto OUTPUT_ROOT; reads must follow the same convention. Getting
+    this half-right makes the cache miss silently -- words_missing forever, and every
+    episode re-transcribes while looking perfectly healthy."""
+    media = tmp_path / "media"
+    out = tmp_path / "out"
+    (media / "Show").mkdir(parents=True)
+    out.mkdir()
+    monkeypatch.setattr(common, "MEDIA_ROOT", str(media))
+    monkeypatch.setattr(common, "OUTPUT_ROOT", str(out))
+
+    words, segments = _clamped_fixture()
+    stem = str(media / "Show" / "ep")
+    generate.write_words(stem, words, segments, 7.0, initial_prompt="x")
+
+    assert not os.path.exists(stem + generate.WORDS_SUFFIX), "write did not redirect"
+    assert generate.read_words(stem) is not None, "read did not follow the redirect"
+
+
+def test_the_words_suffix_is_parked_with_the_other_sidecars():
+    """A parked old-version words.json left readable would be served to the cached path."""
+    assert generate.WORDS_SUFFIX in generate.SIDECAR_SUFFIXES
+
+
+def test_write_words_propagates_so_the_caller_must_handle_it(tmp_path):
+    """_atomic_write deliberately does NOT swallow -- the srt and conf are the episode's
+    product and a run that lost them must not report ok. words.json is different: it is
+    a cache, and the transcription output is already committed by the time it is written.
+    So process() wraps this call, and this test is what makes that wrapper load-bearing
+    rather than decorative -- if write_words ever started swallowing, the counter in
+    process() would go silent and an uncacheable episode would look like a healthy one."""
+    words, segments = _clamped_fixture()
+    with pytest.raises(OSError):  # a missing parent directory: FileNotFoundError
+        generate.write_words(str(tmp_path / "no" / "such" / "dir" / "ep"), words, segments, 7.0)

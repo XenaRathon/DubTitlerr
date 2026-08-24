@@ -56,6 +56,7 @@ import reflow
 from common import (
     SIDECAR_MODE,
     STAMP_SUFFIX,
+    TRANSCRIBE_VERSION,
     VIDEO_EXTS,
     load_extras,
     out_for,
@@ -270,7 +271,81 @@ def _card_word_probs(card, words):
 
 QC_SUFFIX = ".dubtitles.qc.json"
 STALE_SUFFIX = ".stale"  # parked, not deleted -- see park_stale_sidecars
-SIDECAR_SUFFIXES = (".eng.dubtitles.ass", ".eng.dubtitles.srt", ".dubtitles.conf.json", QC_SUFFIX)
+WORDS_SUFFIX = ".dubtitles.words.json"
+# WORDS_SUFFIX is parked with the rest: a words.json left behind by a superseded
+# pipeline would otherwise be READ by the cached text-tier path, replaying an older
+# run's transcript into a current-version episode.
+SIDECAR_SUFFIXES = (".eng.dubtitles.ass", ".eng.dubtitles.srt", ".dubtitles.conf.json", QC_SUFFIX, WORDS_SUFFIX)
+WORDS_SCHEMA_VERSION = 1
+
+
+def write_words(stem, words, segments, audio_duration, initial_prompt=""):
+    """Persist the word list so a TEXT-tier change can re-run without the GPU.
+
+    Written at exactly one point: AFTER punctuation.restore() has mutated word["text"]
+    in place, and BEFORE reflow splits anything. That is what makes a replay free of the
+    punctuation LLM call while still reproducing the same cards.
+
+    ``segments`` is persisted alongside, and is NOT redundant: card_confidence() reads
+    each card's no_speech_prob from the SEGMENT list (reflow.py), and that value exists
+    nowhere on a word. A sidecar without it would replay every card at nsp 0.0, silently
+    disabling the music drop rule and the maybe_silence flag on the cheap path.
+    ``audio_duration`` likewise -- time_cards() clamps the tail against it and raises
+    CascadeInfeasible from it; it is measured from the wav, which is long gone by replay.
+
+    ``initial_prompt`` is stored as the STRING, not as a hash of the glossary file: the
+    prompt is the only glossary-derived input the decoder ever sees, so comparing it is
+    what distinguishes a glossary edit that needs the GPU from one that does not.
+
+    The words are stored as generate holds them -- pre-reflow-transform. reflow's
+    _normalize/_clamp_to_segments/_dejitter are pure and cost microseconds, and
+    _card_word_probs() joins against this same untransformed list, so storing the
+    post-transform words would make the replay diverge from the original run for no gain."""
+    doc = {
+        "schema_version": WORDS_SCHEMA_VERSION,
+        "transcribe_version": TRANSCRIBE_VERSION,
+        "model": os.environ.get("WHISPER_MODEL", ""),
+        "initial_prompt": initial_prompt,
+        "audio_duration": audio_duration,
+        "segments": segments,
+        "words": words,
+    }
+    _atomic_write(out_for(stem + WORDS_SUFFIX), lambda f: json.dump(doc, f))
+
+
+def read_words(stem, rec=None):
+    """The persisted word list, or None when it cannot be used -- never an exception.
+
+    Every unusable state is COUNTED rather than swallowed, because the failure mode this
+    guards is silent: a sidecar that is never found looks exactly like an episode that
+    simply needs transcribing, and would re-transcribe forever while reporting healthy.
+    Read through out_for() to match write_words -- following one convention on write and
+    the other on read is precisely that silent miss."""
+    path = out_for(stem + WORDS_SUFFIX)
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        if rec:
+            rec.count("words_missing")
+        return None
+    try:
+        version = int(doc.get("transcribe_version"))
+    except (TypeError, ValueError):
+        version = None
+    if version is None or version != TRANSCRIBE_VERSION:
+        # A crash between transcription and stamping leaves a sidecar from the previous
+        # transcribe tier. Serving it would replay an older decoder's transcript.
+        if rec:
+            rec.count("words_version_mismatch")
+        return None
+    if not doc.get("words"):
+        if rec:
+            rec.count("words_missing")
+        return None
+    if rec:
+        rec.count("words_reused")
+    return doc
 
 
 def park_stale_sidecars(stem):
@@ -730,6 +805,17 @@ def process(video):
     # punctuation.restore's docstring.
     rec = qc.Recorder()
     punctuation.restore(words, segments, rec, stem=stem)
+    # S-2: persist the word list HERE -- after restore() has mutated word["text"] in
+    # place, before reflow splits anything -- so a text-tier re-run replays these exact
+    # inputs with no GPU and no punctuation LLM call. Never fatal: the transcription
+    # output is already committed by this point, so a failed sidecar write costs the
+    # episode its cheap path, not its run. It is COUNTED, because an uncacheable episode
+    # that says nothing looks identical to one that simply needed transcribing.
+    try:
+        write_words(stem, words, segments, audio_duration, initial_prompt=INITIAL_PROMPT)
+    except Exception as e:
+        rec.count("words_missing")
+        log("words.json write failed (episode stays GPU-only):", stem, e)
     # A1: reflow whisper's words into clean, well-timed cards. C1: name-correct each card.
     # B1: drop near-certain hallucinations, flag the suspect, collapse runaway repeat runs.
     merge_log, cascade_log = [], []
