@@ -1,0 +1,21 @@
+# prettier 3.9.6 destroys fenced code blocks in these two: a ```toml fence indented
+# six spaces inside a "- [ ]" task item comes back out as an inline `toml span, and
+# the block's contents are dumped into the paragraph (10 and 14 fences -> 0).
+# --check calls the originals clean, so only --write is dangerous. Verified against
+# a scratch copy, not guessed. Drop these lines once prettier handles indented fences.
+specs/v1-polish/tasks.md
+specs/v2-models-ops/tasks.md
+
+# prettier oscillates on this one: the continuation line of a multi-line inline code
+# span inside a list item flips between 2- and 4-space indent on every run, so it is
+# never "formatted". Same class of bug as the two above.
+specs/c1-glossary-precision/tasks.md
+
+# NOT ignored on purpose, though the gate reports it as "NOT checked":
+#   glossaries/Frieren Beyond Journey's End (2023) {tvdb-424536}.json
+# prettier 3.9.6 refuses any explicitly-passed path holding BOTH an apostrophe and
+# {braces} -- "ignored due to negative glob patterns" -- and exits 2. Reduced to
+# `a's {b-1}.json` errors, `as {b-1}.json` does not. The file itself is clean
+# (verified via --stdin-filepath). Listing it here would not help: prettier errors
+# the same way, and an entry would hide a real problem later. The name has to match
+# the media library folder, so it cannot be renamed. Revisit when prettier fixes it.

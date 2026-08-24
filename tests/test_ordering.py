@@ -3,6 +3,7 @@
 Lets a library run process the seasons a viewer is ABOUT to watch (>= a start season)
 before the ones they've already seen, instead of a flat S01->S36 alphabetical grind.
 Pure stdlib; paths are plain strings. Built with help of Claude (Anthropic)."""
+
 import ordering as o
 
 BASE = "/media/Anime Library/One Pace"
@@ -19,6 +20,7 @@ def paths(*specs):
 
 # --- season_ep parsing -------------------------------------------------------
 
+
 def test_season_ep_parses_numeric():
     assert o.season_ep(paths("20:1")[0]) == (20, 1)
     assert o.season_ep(paths("1:10")[0]) == (1, 10)
@@ -31,12 +33,14 @@ def test_season_ep_unmatched_is_high_sentinel():
 
 # --- order_files: start disabled = plain lexical -----------------------------
 
+
 def test_order_start_zero_is_plain_sorted():
     files = paths("20:1", "1:2", "3:1")
     assert o.order_files(files, 0) == sorted(files)
 
 
 # --- order_files: watch-order priority ---------------------------------------
+
 
 def test_order_puts_start_season_and_after_first():
     files = paths("1:2", "18:1", "20:1", "21:5", "36:2")
@@ -66,6 +70,7 @@ def test_order_unmatched_files_sort_last_but_stable():
 
 
 # --- read_start: config file + env fallback ----------------------------------
+
 
 def test_read_start_from_file(tmp_path):
     f = tmp_path / "season_priority.txt"
@@ -98,6 +103,7 @@ def test_read_start_file_beats_env(monkeypatch, tmp_path):
 
 
 # --- read_start: V2 C4 -- no hardcoded default path; explicit "disabled" logging -------
+
 
 def test_read_start_no_path_no_env_logs_disabled(monkeypatch, capsys):
     """No explicit path AND no SEASON_PRIORITY_FILE env -> watch-order is disabled,

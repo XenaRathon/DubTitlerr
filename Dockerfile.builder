@@ -15,6 +15,10 @@ FROM mccloud/subgen:2026.06.2
 # wheel for it (unlike the repo's py3.14 dev venv -- see tools/vad.py's module docstring);
 # if that ever regresses, drop this line and use `--vad ffmpeg-silencedetect` instead
 # (dep-free, ffmpeg is already in this image).
+# Versions deliberately unpinned: Debian rotates its package pool, so a pinned
+# apt version stops resolving within weeks and breaks every rebuild. pip is left
+# to pyproject.toml, which is where this project declares its ranges.
+# hadolint ignore=DL3008,DL3013
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-pip wamerican mkvtoolnix \
     && python3 -m pip install --no-cache-dir pysubs2 jellyfish \

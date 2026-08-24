@@ -19,24 +19,24 @@ validated by the multi-show end-to-end on the server.
 
 ## Affected files (by layer)
 
-| Layer | File | Change |
-|---|---|---|
-| Core | `mux.py` | `DELETE_BROKEN_HARDLINKS=0` default; `.dubtitles.done` stamp (write after verify+replace, before sidecar rm; record size+mtime); `MIN_FREE_GB` free-space gate (`has_room`); **mp4→mkv** path (embed `.srt`, remove old `.mp4` link only); broaden `keep_sub` (mul / signs-songs name); EXDEV-safe finalize; assert fonts kept. |
-| Orchestration | `merge_pass.sh` | After assemble (mkv `.ass`) or for a terminal mp4 `.srt`, run the per-episode mux (root); skip if stamped/muxed. |
-| Orchestration | `generate.py` | `needs_work()` + `process()` skip on a valid `.dubtitles.done` stamp (stat-only). |
-| Image | `Dockerfile.builder` | `apt-get install mkvtoolnix`. |
-| Tests (new) | `tests/test_mux.py` | stamp, is_muxed/skip, has_room, keep_sub (signs/songs), build_cmd flags (fake identify), mp4 detection. |
+| Layer         | File                 | Change                                                                                                                                                                                                                                                                                                                          |
+| ------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core          | `mux.py`             | `DELETE_BROKEN_HARDLINKS=0` default; `.dubtitles.done` stamp (write after verify+replace, before sidecar rm; record size+mtime); `MIN_FREE_GB` free-space gate (`has_room`); **mp4→mkv** path (embed `.srt`, remove old `.mp4` link only); broaden `keep_sub` (mul / signs-songs name); EXDEV-safe finalize; assert fonts kept. |
+| Orchestration | `merge_pass.sh`      | After assemble (mkv `.ass`) or for a terminal mp4 `.srt`, run the per-episode mux (root); skip if stamped/muxed.                                                                                                                                                                                                                |
+| Orchestration | `generate.py`        | `needs_work()` + `process()` skip on a valid `.dubtitles.done` stamp (stat-only).                                                                                                                                                                                                                                               |
+| Image         | `Dockerfile.builder` | `apt-get install mkvtoolnix`.                                                                                                                                                                                                                                                                                                   |
+| Tests (new)   | `tests/test_mux.py`  | stamp, is_muxed/skip, has_room, keep_sub (signs/songs), build_cmd flags (fake identify), mp4 detection.                                                                                                                                                                                                                         |
 
 ## Risks and mitigation
 
-| Risk | Mitigation |
-|---|---|
+| Risk                                                    | Mitigation                                                                                                                                       |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Atomic finalize EXDEV (temp on another mergerfs branch) | Detect EXDEV; retry with a temp colocated on the target's branch; never leave a partial library file (verify-then-replace). Validated on server. |
-| Filling the near-full pool | `has_room` pre-check skips+logs; self-throttles; reaper frees old inodes. |
-| Breaking a seeding torrent | Never delete partner hardlinks; only the library's own old file. |
-| mp4→mkv rename confuses Sonarr/Radarr | Accepted (user chose uniform mkv); call out in the rollout notes; arrs re-import the renamed file. |
-| Re-transcription loop after sidecar deletion | `.dubtitles.done` stat-gate + ffprobe backstop; explicit test. |
-| Losing weird signs/songs tracks | `keep_sub` keeps `mul`/signs-songs-named tracks; tested. |
+| Filling the near-full pool                              | `has_room` pre-check skips+logs; self-throttles; reaper frees old inodes.                                                                        |
+| Breaking a seeding torrent                              | Never delete partner hardlinks; only the library's own old file.                                                                                 |
+| mp4→mkv rename confuses Sonarr/Radarr                   | Accepted (user chose uniform mkv); call out in the rollout notes; arrs re-import the renamed file.                                               |
+| Re-transcription loop after sidecar deletion            | `.dubtitles.done` stat-gate + ffprobe backstop; explicit test.                                                                                   |
+| Losing weird signs/songs tracks                         | `keep_sub` keeps `mul`/signs-songs-named tracks; tested.                                                                                         |
 
 ## Rollback and reversibility
 

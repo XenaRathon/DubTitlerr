@@ -15,6 +15,7 @@ left to the C3 LLM repair stage. ``name_suspect`` flags lines the LLM should loo
 Pure stdlib + a wordlist file — unit-testable without CUDA/LLM. See
 specs/c1-glossary-precision/spec.md.  Built with help of Claude (Anthropic).
 """
+
 from __future__ import annotations
 
 import difflib
@@ -22,15 +23,18 @@ import json
 import os
 import re
 
-try:                     # V2 A4: tier-4 phonetic match. Optional dep -- degrade to the
+try:  # V2 A4: tier-4 phonetic match. Optional dep -- degrade to the
     import jellyfish  # existing 3-tier behavior if it isn't installed (see Dockerfile.builder).
 except ImportError:
     jellyfish = None
 
 # Guarded-fuzzy thresholds: short words demand near-identical matches.
 MIN_FUZZY_LEN = 4
+
+
 def fuzzy_cutoff(n: int) -> float:
     return 0.95 if n <= 5 else (0.90 if n <= 7 else 0.84)
+
 
 # Wordlist for the English-word gate: the apt `wamerican` dict in the image, plus a
 # bundled fallback shipped next to this module (also what the tests use).
@@ -92,7 +96,7 @@ def _one_indel(a: str, b: str) -> bool:
     if abs(len(a) - len(b)) != 1:
         return False
     short, lng = (a, b) if len(a) < len(b) else (b, a)
-    return any(lng[:i] + lng[i + 1:] == short for i in range(len(lng)))
+    return any(lng[:i] + lng[i + 1 :] == short for i in range(len(lng)))
 
 
 _TOKEN_RE = re.compile(r"^([^\w']*)([\w'][\w'-]*?)([^\w']*)$")
@@ -129,7 +133,7 @@ def _fix_token(tok: str, names: list[str], token_fixes: dict) -> tuple[str, int]
     low = core.lower()
     if low in token_fixes:
         return pre + token_fixes[low] + post, 1
-    if any(low == nm.lower() for nm in names):     # already a correct name -> leave
+    if any(low == nm.lower() for nm in names):  # already a correct name -> leave
         return tok, 0
     if len(core) < MIN_FUZZY_LEN or "'" in core or is_english(low):
         return tok, 0
@@ -149,9 +153,8 @@ def _fix_token(tok: str, names: list[str], token_fixes: dict) -> tuple[str, int]
 def correct(text: str, gloss: dict) -> tuple[str, int]:
     """Apply the tiered correction to one line; return (corrected, n_changes)."""
     n = 0
-    for key in sorted(gloss["phrase_fixes"], key=len, reverse=True):   # phrases first
-        text, c = re.compile(r"\b" + re.escape(key) + r"\b", re.I).subn(
-            gloss["phrase_fixes"][key], text)
+    for key in sorted(gloss["phrase_fixes"], key=len, reverse=True):  # phrases first
+        text, c = re.compile(r"\b" + re.escape(key) + r"\b", re.I).subn(gloss["phrase_fixes"][key], text)
         n += c
     out = []
     for tok in text.split():
@@ -174,8 +177,8 @@ def name_suspect(text: str, gloss: dict) -> bool:
         low = core.lower()
         if len(core) < MIN_FUZZY_LEN or low in names_lower or is_english(low):
             continue
-        if core[0].isupper():                                  # unknown proper noun
+        if core[0].isupper():  # unknown proper noun
             return True
         if names and difflib.get_close_matches(core.title(), names, n=1, cutoff=0.78):
-            return True                                        # lowercase near-name mishear
+            return True  # lowercase near-name mishear
     return False

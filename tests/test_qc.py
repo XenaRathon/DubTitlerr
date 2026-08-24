@@ -13,7 +13,7 @@ def test_quantiles_are_complete_even_when_events_truncate():
     assert doc["events_retained"] == qc.MAX_EVENTS
     assert doc["event_count_total"] == qc.MAX_EVENTS + 50
     q = doc["quantiles"]["displacement"]
-    assert q["max"] == pytest.approx(5.49)       # every observation counted
+    assert q["max"] == pytest.approx(5.49)  # every observation counted
     assert q["p50"] < q["p90"] < q["p99"] <= q["max"]
 
 
@@ -29,7 +29,7 @@ def test_counters_default_to_zero_and_increment():
     r.count("merged_backward", 3)
     c = r.build(show="S", episode="E1", stem="/x/E1")["counters"]
     assert c["merged_backward"] == 3
-    assert c["stolen"] == 0                      # declared, not absent
+    assert c["stolen"] == 0  # declared, not absent
 
 
 def test_write_returns_false_on_failure_and_never_raises():
@@ -54,8 +54,7 @@ def test_priority_events_are_never_evicted_by_ordinary_ones():
 def test_priority_flag_is_not_stored_as_an_event_field():
     r = qc.Recorder()
     r.event(priority=True, card_id="c0", reason="layout_exception")
-    assert r.build(show="S", episode="E", stem="x")["events"][0] == {
-        "card_id": "c0", "reason": "layout_exception"}
+    assert r.build(show="S", episode="E", stem="x")["events"][0] == {"card_id": "c0", "reason": "layout_exception"}
 
 
 def test_sidecar_is_written_world_readable_and_group_writable(tmp_path):
@@ -64,6 +63,7 @@ def test_sidecar_is_written_world_readable_and_group_writable(tmp_path):
     GROUP-WRITABLE too, because the uid that regenerates the episode is not always the uid
     that created the sidecar. 0644 shipped for months and broke every non-root writer."""
     import stat
+
     p = tmp_path / "e.dubtitles.qc.json"
     assert qc.write(str(p), {"a": 1}) is True
     assert stat.S_IMODE(p.stat().st_mode) == 0o664
@@ -75,6 +75,7 @@ def test_qc_mode_matches_common(tmp_path):
     import stat
 
     import common
+
     p = tmp_path / "e.dubtitles.qc.json"
     assert qc.write(str(p), {"a": 1}) is True
     assert stat.S_IMODE(p.stat().st_mode) == common.SIDECAR_MODE
@@ -87,6 +88,7 @@ def test_plain_open_sidecars_are_group_writable(tmp_path):
     import stat
 
     import common  # noqa: F401  (import applies the umask)
+
     p = tmp_path / "plain.json"
     with open(p, "w") as f:
         f.write("{}")

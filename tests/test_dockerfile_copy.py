@@ -2,15 +2,25 @@
 nothing in CI builds the image -- so a new top-level module can pass 987 tests and
 ImportError on container start. qc.py did exactly that across 33 commits and four
 review rounds. This closes the gap between the tested artifact and the shipped one."""
+
 import ast
 import os
 import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # modules gen_loop.sh / container_run.sh actually run inside the container
-ENTRYPOINTS = ["generate.py", "repair.py", "mux.py", "mine_glossary.py",
-               "glossary_verify.py", "glossary_acquire.py", "recreate_srt.py",
-               "dub_signs_merge.py", "plex_refresh.py", "watch_queue.py"]
+ENTRYPOINTS = [
+    "generate.py",
+    "repair.py",
+    "mux.py",
+    "mine_glossary.py",
+    "glossary_verify.py",
+    "glossary_acquire.py",
+    "recreate_srt.py",
+    "dub_signs_merge.py",
+    "plex_refresh.py",
+    "watch_queue.py",
+]
 
 
 def _copied():
@@ -39,7 +49,8 @@ def test_every_module_an_entrypoint_imports_is_copied_into_the_image():
     missing = {}
     for ep in ENTRYPOINTS:
         p = os.path.join(ROOT, ep)
-        if not os.path.exists(p): continue
+        if not os.path.exists(p):
+            continue
         for mod in _local_imports(p):
             if mod + ".py" not in copied:
                 missing.setdefault(mod + ".py", []).append(ep)

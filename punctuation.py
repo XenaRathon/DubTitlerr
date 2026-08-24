@@ -31,6 +31,7 @@ Env:
 See docs/superpowers/specs/2026-08-20-punctuation-restoration-design.md.
 Built with help of Claude (Anthropic).
 """
+
 from __future__ import annotations
 
 import os
@@ -58,11 +59,11 @@ RESTORE_BACKEND = os.environ.get("RESTORE_BACKEND", os.environ.get("REPAIR_BACKE
 RESTORE_MODEL = os.environ.get("RESTORE_MODEL", os.environ.get("REPAIR_MODEL", "qwen3:8b"))
 OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
 RESTORE_LLAMACPP_URL = os.environ.get(
-    "RESTORE_LLAMACPP_URL",
-    os.environ.get("REPAIR_LLAMACPP_URL", "http://192.168.1.232:8080/v1/chat/completions"))
+    "RESTORE_LLAMACPP_URL", os.environ.get("REPAIR_LLAMACPP_URL", "http://192.168.1.232:8080/v1/chat/completions")
+)
 RESTORE_MAX_TOKENS = int(os.environ.get("RESTORE_MAX_TOKENS", "2048"))
-MAX_REJECT_EVENTS = 20    # a systematic rejection pattern shows in the first few; the rest
-                          # would only crowd the shared event budget (see qc.Recorder.event)
+MAX_REJECT_EVENTS = 20  # a systematic rejection pattern shows in the first few; the rest
+# would only crowd the shared event budget (see qc.Recorder.event)
 
 
 def _norm(tok: str) -> str:
@@ -111,11 +112,11 @@ def _contraction_ok(o: str, n: str) -> bool:
     Verified against the container's 104k wordlist: allows dont/theres/youre/didnt/
     isnt/wasnt/couldnt/im/ive/thats/hed...; blocks well/shed/hell/ill/were/its/lets/wont."""
     if not WORDS:
-        return False          # no wordlist -> no allowance. `o not in WORDS` would be
-                              # vacuously TRUE on an empty set, making a dev box without
-                              # wamerican LOOSER than production instead of stricter --
-                              # the same divergence that made a name_suspect test pass
-                              # here and fail in the container.
+        return False  # no wordlist -> no allowance. `o not in WORDS` would be
+        # vacuously TRUE on an empty set, making a dev box without
+        # wamerican LOOSER than production instead of stricter --
+        # the same divergence that made a name_suspect test pass
+        # here and fail in the container.
     if "'" in o or "'" not in n:
         return False
     return n.replace("'", "") == o and o not in WORDS
@@ -124,7 +125,8 @@ def _contraction_ok(o: str, n: str) -> bool:
 def _split_dashes(toks: list[str]) -> list[str]:
     out = []
     for t in toks:
-        for d in _DASHES: t = t.replace(d, " ")
+        for d in _DASHES:
+            t = t.replace(d, " ")
         out.extend(x for x in t.split() if x)
     return out
 
@@ -167,10 +169,13 @@ def find_runs(texts: list[str], min_run: int | None = None) -> list[tuple[int, i
     runs, i, n = [], 0, len(texts)
     while i < n:
         if not is_candidate(texts[i]):
-            i += 1; continue
+            i += 1
+            continue
         j = i
-        while j < n and is_candidate(texts[j]): j += 1
-        if j - i >= min_run: runs.append((i, j))
+        while j < n and is_candidate(texts[j]):
+            j += 1
+        if j - i >= min_run:
+            runs.append((i, j))
         i = j
     return runs
 
@@ -205,9 +210,15 @@ def _ask(prompt: str, n_words: int) -> str:
     its opening sentence. Returns "" on any failure -- llm_chat already swallows transport
     errors, and the except is the belt to that braces (R6 is absolute)."""
     try:
-        return llm_chat(prompt, backend=RESTORE_BACKEND, ollama_url=OLLAMA,
-                        llamacpp_url=RESTORE_LLAMACPP_URL, model=RESTORE_MODEL,
-                        max_tokens=_max_tokens(n_words), first_line=False)
+        return llm_chat(
+            prompt,
+            backend=RESTORE_BACKEND,
+            ollama_url=OLLAMA,
+            llamacpp_url=RESTORE_LLAMACPP_URL,
+            model=RESTORE_MODEL,
+            max_tokens=_max_tokens(n_words),
+            first_line=False,
+        )
     except Exception:
         return ""
 
@@ -221,10 +232,13 @@ def _apply(run_words: list[dict], new_text: str) -> int:
     i = changed = 0
     for w in run_words:
         k = sum(1 for t in w["text"].split() if _norm(t))
-        if not k: continue
-        repl = " ".join(toks[i:i + k]); i += k
+        if not k:
+            continue
+        repl = " ".join(toks[i : i + k])
+        i += k
         if repl and repl != w["text"].strip():
-            w["text"] = repl; changed += 1
+            w["text"] = repl
+            changed += 1
     return changed
 
 
@@ -237,24 +251,30 @@ def restore(words: list[dict], segments: list[dict], rec=None, stem=None) -> Non
     it a dead endpoint is indistinguishable from "nothing needed changing". Never raises: an
     episode that cannot reach the model is an episode that generates exactly as it did
     before this pass existed."""
-    def count(name, n=1):
-        if rec is not None and n: rec.count(name, n)
 
-    if RESTORE_PUNCTUATION == "0" or not words or not segments: return
+    def count(name, n=1):
+        if rec is not None and n:
+            rec.count(name, n)
+
+    if RESTORE_PUNCTUATION == "0" or not words or not segments:
+        return
     texts = segment_texts(words, len(segments))
     sent = find_runs(texts, RESTORE_MIN_RUN)
-    count("restore_runs_seen", len(find_runs(texts, 2)))   # every run; sent may be fewer
-    if not sent: return
+    count("restore_runs_seen", len(find_runs(texts, 2)))  # every run; sent may be fewer
+    if not sent:
+        return
     by_seg: dict[int, list[dict]] = {}
     for w in words:
         si = w.get("seg")
-        if isinstance(si, int): by_seg.setdefault(si, []).append(w)
+        if isinstance(si, int):
+            by_seg.setdefault(si, []).append(w)
     rejected_events = 0
     for a, b in sent:
         run_words = [w for si in range(a, b) for w in by_seg.get(si, [])]
         orig = " ".join(w["text"].strip() for w in run_words)
         n_words = len(normalise(orig))
-        if not n_words: continue
+        if not n_words:
+            continue
         count("restore_runs_sent")
         new = _ask(build_prompt(texts[a:b]), n_words)
         if not new:
@@ -262,19 +282,25 @@ def restore(words: list[dict], segments: list[dict], rec=None, stem=None) -> Non
             # llm_chat() returns "" on EVERY transport failure, so a dead endpoint looks
             # exactly like "no change needed". This is what tells the two apart.
             if stem:
-                unresolved.record(stem, "punctuation", "llm_empty", original_text=orig[:300],
-                                  segments=[a, b], words=n_words)
+                unresolved.record(stem, "punctuation", "llm_empty", original_text=orig[:300], segments=[a, b], words=n_words)
             continue
         if not accept_restoration(orig, new):
             count("restore_rejected_guard")
             if stem:
-                unresolved.record(stem, "punctuation", "rejected_guard",
-                                  original_text=orig[:300], proposed_text=new[:300],
-                                  segments=[a, b], words=n_words)
+                unresolved.record(
+                    stem,
+                    "punctuation",
+                    "rejected_guard",
+                    original_text=orig[:300],
+                    proposed_text=new[:300],
+                    segments=[a, b],
+                    words=n_words,
+                )
             if rec is not None and rejected_events < MAX_REJECT_EVENTS:
                 rejected_events += 1
-                rec.event(reason="restore_rejected", segments=[a, b], words=n_words,
-                          sent=orig[:200], got=new.replace("\n", " ")[:200])
+                rec.event(
+                    reason="restore_rejected", segments=[a, b], words=n_words, sent=orig[:200], got=new.replace("\n", " ")[:200]
+                )
             continue
         count("restore_accepted")
         count("restore_words_repunctuated", _apply(run_words, new))

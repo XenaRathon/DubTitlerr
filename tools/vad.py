@@ -34,6 +34,7 @@ what IS and is NOT covered by unit tests here.
 
 Built with help of Claude (Anthropic).
 """
+
 from __future__ import annotations
 
 import re
@@ -43,7 +44,7 @@ import wave
 
 try:
     import webrtcvad
-except ImportError:                     # pragma: no cover -- exercised for real in this dev venv
+except ImportError:  # pragma: no cover -- exercised for real in this dev venv
     webrtcvad = None
 
 sys.path.insert(0, ".")
@@ -53,10 +54,10 @@ log = common.log
 
 # --- Tunables ---
 
-SAMPLE_RATE = 16000                     # extract_audio_window() (timing_compare.py) always
-SAMPLE_WIDTH = 2                        # produces 16k mono pcm_s16le, matching generate.py's
-                                         # extract_wav() convention.
-VALID_FRAME_MS = (10, 20, 30)           # the only frame durations webrtcvad accepts
+SAMPLE_RATE = 16000  # extract_audio_window() (timing_compare.py) always
+SAMPLE_WIDTH = 2  # produces 16k mono pcm_s16le, matching generate.py's
+# extract_wav() convention.
+VALID_FRAME_MS = (10, 20, 30)  # the only frame durations webrtcvad accepts
 DEFAULT_FRAME_MS = 30
 
 # Fraction of frames a window needs flagged "voiced" (webrtcvad) -- or fraction of the
@@ -67,14 +68,15 @@ DEFAULT_FRAME_MS = 30
 # first real run (spec-v3.md open question: "VAD aggressiveness + music-masked speech").
 VAD_MIN_VOICED_RATIO_DEFAULT = 0.3
 
-SILENCEDETECT_NOISE_DB = -30            # ffmpeg silencedetect noise floor
-SILENCEDETECT_MIN_DURATION_S = 0.3      # shortest gap silencedetect will report
+SILENCEDETECT_NOISE_DB = -30  # ffmpeg silencedetect noise floor
+SILENCEDETECT_MIN_DURATION_S = 0.3  # shortest gap silencedetect will report
 
 
 # ============================================================================
 # Pure decision core -- the ONLY part of this module unit-testable without webrtcvad or
 # ffmpeg in this dev venv. No I/O, no subprocess, no C-extension.
 # ============================================================================
+
 
 def voiced_ratio_to_verdict(voiced_frames: list, min_voiced_ratio: float = VAD_MIN_VOICED_RATIO_DEFAULT):
     """Pure decision: speech present (True) if the fraction of `voiced_frames` (one bool
@@ -91,8 +93,9 @@ def voiced_ratio_to_verdict(voiced_frames: list, min_voiced_ratio: float = VAD_M
     return (sum(1 for v in voiced_frames if v) / len(voiced_frames)) >= min_voiced_ratio
 
 
-def frame_pcm(pcm_bytes: bytes, sample_rate: int = SAMPLE_RATE, frame_ms: int = DEFAULT_FRAME_MS,
-              sample_width: int = SAMPLE_WIDTH) -> list:
+def frame_pcm(
+    pcm_bytes: bytes, sample_rate: int = SAMPLE_RATE, frame_ms: int = DEFAULT_FRAME_MS, sample_width: int = SAMPLE_WIDTH
+) -> list:
     """Pure byte-slicer: split raw little-endian 16-bit PCM audio into fixed-size frames
     (webrtcvad requires exactly 10/20/30 ms frames at a supported sample rate -- it raises
     on any other buffer length). Drops a trailing partial frame (at most `frame_ms`
@@ -102,7 +105,7 @@ def frame_pcm(pcm_bytes: bytes, sample_rate: int = SAMPLE_RATE, frame_ms: int = 
     frame_bytes = int(sample_rate * (frame_ms / 1000.0) * sample_width)
     if frame_bytes <= 0 or not pcm_bytes:
         return []
-    return [pcm_bytes[i:i + frame_bytes] for i in range(0, len(pcm_bytes) - frame_bytes + 1, frame_bytes)]
+    return [pcm_bytes[i : i + frame_bytes] for i in range(0, len(pcm_bytes) - frame_bytes + 1, frame_bytes)]
 
 
 def read_wav_pcm(wav_path: str, expected_rate: int = SAMPLE_RATE, expected_width: int = SAMPLE_WIDTH):
@@ -159,10 +162,15 @@ def parse_silencedetect_output(stderr_text: str) -> float:
 # faster_whisper -- which is NOT the same as having run real webrtcvad.
 # ============================================================================
 
-def _vad_probe_webrtcvad(wav_path: str, aggressiveness: int = 2, frame_ms: int = DEFAULT_FRAME_MS,
-                          min_voiced_ratio: float = VAD_MIN_VOICED_RATIO_DEFAULT):
+
+def _vad_probe_webrtcvad(
+    wav_path: str,
+    aggressiveness: int = 2,
+    frame_ms: int = DEFAULT_FRAME_MS,
+    min_voiced_ratio: float = VAD_MIN_VOICED_RATIO_DEFAULT,
+):
     if webrtcvad is None:
-        return None                     # guarded: module unavailable -> in_gap_vad_error, no crash
+        return None  # guarded: module unavailable -> in_gap_vad_error, no crash
     pcm = read_wav_pcm(wav_path)
     if pcm is None:
         return None
@@ -178,17 +186,35 @@ def _vad_probe_webrtcvad(wav_path: str, aggressiveness: int = 2, frame_ms: int =
     return voiced_ratio_to_verdict(voiced, min_voiced_ratio)
 
 
-def _vad_probe_ffmpeg_silencedetect(wav_path: str, noise_db: int = SILENCEDETECT_NOISE_DB,
-                                     min_silence_s: float = SILENCEDETECT_MIN_DURATION_S,
-                                     min_voiced_ratio: float = VAD_MIN_VOICED_RATIO_DEFAULT):
+def _vad_probe_ffmpeg_silencedetect(
+    wav_path: str,
+    noise_db: int = SILENCEDETECT_NOISE_DB,
+    min_silence_s: float = SILENCEDETECT_MIN_DURATION_S,
+    min_voiced_ratio: float = VAD_MIN_VOICED_RATIO_DEFAULT,
+):
     duration = wav_duration_s(wav_path)
     if not duration or duration <= 0:
         return None
     try:
         r = subprocess.run(
-            ["ffmpeg", "-nostdin", "-v", "info", "-i", wav_path,
-             "-af", f"silencedetect=noise={noise_db}dB:d={min_silence_s}", "-f", "null", "-"],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "info",
+                "-i",
+                wav_path,
+                "-af",
+                f"silencedetect=noise={noise_db}dB:d={min_silence_s}",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
     except Exception as e:
         log("ffmpeg silencedetect failed:", wav_path, e)
         return None
@@ -204,8 +230,10 @@ def _vad_probe_ffmpeg_silencedetect(wav_path: str, noise_db: int = SILENCEDETECT
 # Public entry point
 # ============================================================================
 
-def vad_probe(wav_path: str, aggressiveness: int = 2, backend: str = "webrtcvad",
-              min_voiced_ratio: float = VAD_MIN_VOICED_RATIO_DEFAULT):
+
+def vad_probe(
+    wav_path: str, aggressiveness: int = 2, backend: str = "webrtcvad", min_voiced_ratio: float = VAD_MIN_VOICED_RATIO_DEFAULT
+):
     """Run a VAD backend over a 16 kHz mono wav window and return True (speech present),
     False (no voiced speech / effectively silent), or None (could not determine -- no wav,
     backend unavailable, subprocess/parse failure). Never raises: this is the seam
@@ -221,6 +249,6 @@ def vad_probe(wav_path: str, aggressiveness: int = 2, backend: str = "webrtcvad"
             return _vad_probe_ffmpeg_silencedetect(wav_path, min_voiced_ratio=min_voiced_ratio)
         log("vad_probe: unknown backend", backend)
         return None
-    except Exception as e:   # belt-and-suspenders: VAD must never crash the run (spec-v3.md)
+    except Exception as e:  # belt-and-suspenders: VAD must never crash the run (spec-v3.md)
         log("vad_probe failed:", wav_path, backend, e)
         return None

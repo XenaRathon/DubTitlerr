@@ -18,6 +18,7 @@ Usage:
 
 No GPU needed locally — the models run on the Ollama host. Built with help of Claude.
 """
+
 import argparse
 import json
 import sys
@@ -59,9 +60,8 @@ def cards_from_raw(raw):
     words, segments = [], []
     for si, s in enumerate(raw):
         segments.append({"start": s["start"], "end": s["end"], "no_speech_prob": s["no_speech_prob"]})
-        for w in (s["words"] or []):
-            words.append({"text": w["word"], "start": w["start"], "end": w["end"],
-                          "prob": w["probability"] or 1.0, "seg": si})
+        for w in s["words"] or []:
+            words.append({"text": w["word"], "start": w["start"], "end": w["end"], "prob": w["probability"] or 1.0, "seg": si})
     return reflow.reflow(words, segments)
 
 
@@ -81,8 +81,7 @@ def parse_llamacpp_specs(specs):
 
 
 def _post_json(url, body, timeout=180):
-    req = urllib.request.Request(url, data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
@@ -93,8 +92,7 @@ def _first_line(out):
 
 def ask_ollama(ollama, model, prompt):
     # think=False keeps qwen3/qwen3.5 from emitting <think> blocks (ignored by qwen2.5)
-    body = {"model": model, "prompt": prompt, "stream": False, "think": False,
-            "options": {"temperature": 0}}
+    body = {"model": model, "prompt": prompt, "stream": False, "think": False, "options": {"temperature": 0}}
     t0 = time.monotonic()
     try:
         out = _first_line(_post_json(ollama, body).get("response", "").strip())
@@ -126,8 +124,12 @@ def ask_llamacpp_chat(url, prompt):
     measured empty after 114 s at max_tokens=512, versus correct output in 4.3 s with
     thinking off. An empty reply is surfaced as <EMPTY ...> rather than "", because ""
     would score as "model correctly left the line alone" — a silent false pass."""
-    body = {"messages": [{"role": "user", "content": prompt}], "temperature": 0,
-            "max_tokens": 80, "chat_template_kwargs": {"enable_thinking": False}}
+    body = {
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "max_tokens": 80,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
     t0 = time.monotonic()
     try:
         msg = _post_json(url, body)["choices"][0]["message"]
@@ -169,23 +171,33 @@ def main():
     ap.add_argument("--ollama", default="http://192.168.1.196:11434/api/generate")
     ap.add_argument("--models", nargs="+", default=["qwen3:8b", "qwen3.5:4b", "qwen2.5:7b"])
     ap.add_argument("--limit", type=int, default=15)
-    ap.add_argument("--llamacpp", nargs="*", default=[], metavar="NAME=URL",
-                    help="serve these model names from a llama.cpp /completion endpoint "
-                         "instead of Ollama (raw prompt — mirrors repair.py exactly)")
-    ap.add_argument("--llamacpp-chat", nargs="*", default=[], metavar="NAME=URL",
-                    help="same, but via /v1/chat/completions so the model's chat template "
-                         "is applied and thinking is disabled (needed by templated instruct "
-                         "models; repair.py's raw /completion path cannot drive them)")
+    ap.add_argument(
+        "--llamacpp",
+        nargs="*",
+        default=[],
+        metavar="NAME=URL",
+        help="serve these model names from a llama.cpp /completion endpoint "
+        "instead of Ollama (raw prompt — mirrors repair.py exactly)",
+    )
+    ap.add_argument(
+        "--llamacpp-chat",
+        nargs="*",
+        default=[],
+        metavar="NAME=URL",
+        help="same, but via /v1/chat/completions so the model's chat template "
+        "is applied and thinking is disabled (needed by templated instruct "
+        "models; repair.py's raw /completion path cannot drive them)",
+    )
     a = ap.parse_args()
 
     llamacpp = parse_llamacpp_specs(a.llamacpp)
     llamacpp_chat = parse_llamacpp_specs(a.llamacpp_chat)
     gloss = glossary.load(a.glossary)
     cards = load_cards(a.raw, a.conf)
-    for c in cards:                                  # deterministic layer first (as in prod)
+    for c in cards:  # deterministic layer first (as in prod)
         c["text"] = glossary.correct(c["text"], gloss)[0]
-    targets = [c for c in cards if repair.is_target(c, gloss)][:a.limit]
-    prompts = [repair.build_prompt(c["text"], "", gloss) for c in targets]   # glossary-only (mp4)
+    targets = [c for c in cards if repair.is_target(c, gloss)][: a.limit]
+    prompts = [repair.build_prompt(c["text"], "", gloss) for c in targets]  # glossary-only (mp4)
     print(f"cards={len(cards)} targets={len(targets)} (showing {len(targets)})  models={a.models}\n")
 
     # model-OUTER so each model loads once (avoids reload thrash on the 8GB GPU).

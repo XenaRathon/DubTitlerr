@@ -41,7 +41,7 @@ Two independent reasons that flag stays False:
 1. **The original one (pre-existing):** with True, a music-masked stretch of One Pace
    S19E16 collapsed into a single 139s segment and real dialogue was LOST.
 2. **VRAM, measured 2026-08-20:** True OOMs on this box -- `CUDA failed with error out of
-   memory`, in a fresh process, GPU idle at 121MiB, 1060/6GB/large-v3/beam 7. True grows
+memory`, in a fresh process, GPU idle at 121MiB, 1060/6GB/large-v3/beam 7. True grows
    the decoder prompt with previous text and there is no headroom. Fitting it would mean
    `beam_size=1` or `large-v3-turbo`, both of which cost accuracy elsewhere.
 

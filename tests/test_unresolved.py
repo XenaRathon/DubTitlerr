@@ -1,20 +1,21 @@
 """Per-stage unresolved queue -- the missing human rung of the deterministic -> LLM -> human
 ladder for the subtitle path (glossary_acquire already has one; repair/punctuation did not)."""
-import json
+
 import os
 import stat
-
-import pytest
 
 import unresolved
 
 
 def test_records_per_stage_and_survives_reread(tmp_path):
     stem = str(tmp_path / "ep")
-    assert unresolved.record(stem, "repair", "no_reference", original_text="Gum -gum!",
-                             source_start=1.0, source_end=1.4, avg_logprob=-0.79) is True
-    assert unresolved.record(stem, "punctuation", "llm_empty",
-                             original_text="who are you") is True
+    assert (
+        unresolved.record(
+            stem, "repair", "no_reference", original_text="Gum -gum!", source_start=1.0, source_end=1.4, avg_logprob=-0.79
+        )
+        is True
+    )
+    assert unresolved.record(stem, "punctuation", "llm_empty", original_text="who are you") is True
     got = unresolved.items(stem)
     assert [e["stage"] for e in got] == ["repair", "punctuation"]
     assert got[0]["reason"] == "no_reference"
@@ -26,9 +27,9 @@ def test_rejected_guard_keeps_the_model_proposal(tmp_path):
     """repair.py currently increments `rejected` and DISCARDS what the model proposed. The
     proposal is the whole evidence a human needs to judge whether the guard was right."""
     stem = str(tmp_path / "ep")
-    unresolved.record(stem, "repair", "rejected_guard",
-                      original_text="catch Hirohoshi",
-                      proposed_text="catch Crocodile", avg_logprob=-1.2)
+    unresolved.record(
+        stem, "repair", "rejected_guard", original_text="catch Hirohoshi", proposed_text="catch Crocodile", avg_logprob=-1.2
+    )
     e = unresolved.items(stem)[0]
     assert e["original_text"] == "catch Hirohoshi"
     assert e["proposed_text"] == "catch Crocodile"
@@ -44,6 +45,7 @@ def test_never_raises_and_never_blocks_an_episode(tmp_path):
 def test_sidecar_is_group_writable(tmp_path):
     """A non-root writer must be able to append later -- see common.SIDECAR_MODE."""
     import common
+
     stem = str(tmp_path / "ep")
     unresolved.record(stem, "repair", "no_reference")
     mode = stat.S_IMODE(os.stat(stem + unresolved.SUFFIX).st_mode)
@@ -65,7 +67,7 @@ def test_torn_final_line_costs_only_that_entry(tmp_path):
     stem = str(tmp_path / "ep")
     unresolved.record(stem, "repair", "no_reference", original_text="intact")
     with open(stem + unresolved.SUFFIX, "a") as f:
-        f.write('{"stage": "repair", "reas')          # torn mid-write
+        f.write('{"stage": "repair", "reas')  # torn mid-write
     got = unresolved.items(stem)
     assert len(got) == 1 and got[0]["original_text"] == "intact"
 
@@ -98,7 +100,6 @@ def test_repair_llm_empty_is_a_declared_reason(tmp_path):
     fix for it until an end-to-end run against a dead endpoint exposed it."""
     assert "llm_empty" in unresolved.REASONS["repair"]
     stem = str(tmp_path / "ep")
-    unresolved.record(stem, "repair", "llm_empty", original_text="garbled line",
-                      reference="the fansub line", avg_logprob=-1.4)
+    unresolved.record(stem, "repair", "llm_empty", original_text="garbled line", reference="the fansub line", avg_logprob=-1.4)
     e = unresolved.items(stem)[0]
     assert e["reason"] == "llm_empty" and e["reference"] == "the fansub line"

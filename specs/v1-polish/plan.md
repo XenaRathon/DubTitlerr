@@ -45,32 +45,32 @@ fixtures). Each test file targets one load-bearing untested function.
 
 ## Affected files (by layer)
 
-| Layer | File | Change |
-|---|---|---|
-| New module | `common.py` | Create: `out_for`, `ts_srt`, `find_video`, `eng_sub_streams`, `extract_sub`, `VIDEO_EXTS`, `EXTRA_DIRS`, `read_stamp`, `write_stamp`, `stamp_valid`, `STAMP_SUFFIX`, `MEDIA_UID`, `MEDIA_GID`, `log` |
-| Transcription | `generate.py` | Remove `out_for`, `ts`, `EXTRA_DIRS` definitions; remove `import mux`; import from `common`; `beam_size` → `WHISPER_BEAM_SIZE` env var |
-| Mux | `mux.py` | Remove stamp helpers, `MEDIA_UID`, `MEDIA_GID`, `log`; import from `common`; keep `IDENTIFY` caching (out of scope but opportunistic) |
-| Repair | `repair.py` | Remove `out_for`, `ts`, `find_video`, `eng_sub_streams`, `extract`, `VIDEO_EXTS`, `MEDIA_UID`, `MEDIA_GID`; import from `common`; `build_prompt()` + prev/next params; `is_target()` fencepost; `process()` passes surrounding lines |
-| Signs merge | `dub_signs_merge.py` | Remove `find_video`, `eng_sub_streams`, `extract`, `VIDEO_EXTS`, `MEDIA_UID`, `MEDIA_GID`, `out_for`, `log`; import from `common`; add `HAS_DRAWING` + `ANIMATED` regexes; update `keep_event()`; add layer normalization in `build()` |
-| Glossary mining | `mine_glossary.py` | Remove `EXTRA_DIRS`; import from `common` |
-| SRT rebuild | `recreate_srt.py` | Remove `ts`; import from `common` |
-| Config | `pyproject.toml` | Add `[project]` section with `dependencies` and `[project.optional-dependencies]` |
-| CI | `.github/workflows/test.yml` | Create: checkout → setup-python → pip install pysubs2 pytest → pytest -q |
-| Tests (new) | `tests/test_dub_signs_merge.py` | `test_keep_event_matrix`, `test_layer_ordering` |
-| Tests (new) | `tests/test_generate.py` | `test_needs_work_matrix` (7 cases) |
-| Tests (new) | `tests/test_mine_glossary.py` | `test_mine_text` (capitalization, mid-sentence, filtering) |
-| Tests (update) | `tests/test_repair.py` | Update `test_build_prompt_*` for new signature; add `test_build_prompt_includes_context`; add `test_is_target_fencepost` |
-| Tests (update) | `tests/test_mux.py` | Update imports to use `common` instead of `mux` for stamp helpers |
+| Layer           | File                            | Change                                                                                                                                                                                                                                 |
+| --------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| New module      | `common.py`                     | Create: `out_for`, `ts_srt`, `find_video`, `eng_sub_streams`, `extract_sub`, `VIDEO_EXTS`, `EXTRA_DIRS`, `read_stamp`, `write_stamp`, `stamp_valid`, `STAMP_SUFFIX`, `MEDIA_UID`, `MEDIA_GID`, `log`                                   |
+| Transcription   | `generate.py`                   | Remove `out_for`, `ts`, `EXTRA_DIRS` definitions; remove `import mux`; import from `common`; `beam_size` → `WHISPER_BEAM_SIZE` env var                                                                                                 |
+| Mux             | `mux.py`                        | Remove stamp helpers, `MEDIA_UID`, `MEDIA_GID`, `log`; import from `common`; keep `IDENTIFY` caching (out of scope but opportunistic)                                                                                                  |
+| Repair          | `repair.py`                     | Remove `out_for`, `ts`, `find_video`, `eng_sub_streams`, `extract`, `VIDEO_EXTS`, `MEDIA_UID`, `MEDIA_GID`; import from `common`; `build_prompt()` + prev/next params; `is_target()` fencepost; `process()` passes surrounding lines   |
+| Signs merge     | `dub_signs_merge.py`            | Remove `find_video`, `eng_sub_streams`, `extract`, `VIDEO_EXTS`, `MEDIA_UID`, `MEDIA_GID`, `out_for`, `log`; import from `common`; add `HAS_DRAWING` + `ANIMATED` regexes; update `keep_event()`; add layer normalization in `build()` |
+| Glossary mining | `mine_glossary.py`              | Remove `EXTRA_DIRS`; import from `common`                                                                                                                                                                                              |
+| SRT rebuild     | `recreate_srt.py`               | Remove `ts`; import from `common`                                                                                                                                                                                                      |
+| Config          | `pyproject.toml`                | Add `[project]` section with `dependencies` and `[project.optional-dependencies]`                                                                                                                                                      |
+| CI              | `.github/workflows/test.yml`    | Create: checkout → setup-python → pip install pysubs2 pytest → pytest -q                                                                                                                                                               |
+| Tests (new)     | `tests/test_dub_signs_merge.py` | `test_keep_event_matrix`, `test_layer_ordering`                                                                                                                                                                                        |
+| Tests (new)     | `tests/test_generate.py`        | `test_needs_work_matrix` (7 cases)                                                                                                                                                                                                     |
+| Tests (new)     | `tests/test_mine_glossary.py`   | `test_mine_text` (capitalization, mid-sentence, filtering)                                                                                                                                                                             |
+| Tests (update)  | `tests/test_repair.py`          | Update `test_build_prompt_*` for new signature; add `test_build_prompt_includes_context`; add `test_is_target_fencepost`                                                                                                               |
+| Tests (update)  | `tests/test_mux.py`             | Update imports to use `common` instead of `mux` for stamp helpers                                                                                                                                                                      |
 
 ## Risks and mitigation
 
-| Risk | Mitigation |
-|---|---|
-| `common.py` extraction breaks an import edge case (circular import, module-level side effect) | `common.py` is pure stdlib with zero imports from other project modules — no circular import possible. Phase 1 is purely moving code, no logic changes. |
-| `eng_sub_streams()` unified implementation misses a codec_name edge case | `repair.py` needs ASS/SSA only; `dub_signs_merge.py` also needs ASS/SSA (the "subrip" branch is for `mine_glossary.py`, which doesn't use `eng_sub_streams`). Single implementation checks for `("ass", "ssa")` — correct for both consumers. |
-| `keep_event()` drawing-check false positive on `\p0` (disable drawing) | Dialogue never uses `\p`. The false-positive rate is effectively zero. If it ever occurs, the event is kept (rendered normally, no visual corruption) — strictly better than dropping a real sign. |
-| Beam size 7 OOMs the GTX 1060 6GB | `WHISPER_BEAM_SIZE` env var means no code change needed to revert to 5. Test on a single short episode first. |
-| CI fails because `pysubs2` or test deps aren't available | GitHub Actions `ubuntu-latest` has pip; `pysubs2` is pure Python on PyPI. The workflow YAML explicitly installs it. |
+| Risk                                                                                          | Mitigation                                                                                                                                                                                                                                    |
+| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `common.py` extraction breaks an import edge case (circular import, module-level side effect) | `common.py` is pure stdlib with zero imports from other project modules — no circular import possible. Phase 1 is purely moving code, no logic changes.                                                                                       |
+| `eng_sub_streams()` unified implementation misses a codec_name edge case                      | `repair.py` needs ASS/SSA only; `dub_signs_merge.py` also needs ASS/SSA (the "subrip" branch is for `mine_glossary.py`, which doesn't use `eng_sub_streams`). Single implementation checks for `("ass", "ssa")` — correct for both consumers. |
+| `keep_event()` drawing-check false positive on `\p0` (disable drawing)                        | Dialogue never uses `\p`. The false-positive rate is effectively zero. If it ever occurs, the event is kept (rendered normally, no visual corruption) — strictly better than dropping a real sign.                                            |
+| Beam size 7 OOMs the GTX 1060 6GB                                                             | `WHISPER_BEAM_SIZE` env var means no code change needed to revert to 5. Test on a single short episode first.                                                                                                                                 |
+| CI fails because `pysubs2` or test deps aren't available                                      | GitHub Actions `ubuntu-latest` has pip; `pysubs2` is pure Python on PyPI. The workflow YAML explicitly installs it.                                                                                                                           |
 
 ## Rollback and reversibility
 

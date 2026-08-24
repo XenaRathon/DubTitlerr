@@ -30,16 +30,16 @@
 
 ## Edge cases and failure modes
 
-| Case | Expected behavior |
-|---|---|
-| <e.g. empty input> | <...> |
-| <e.g. soft-deleted record> | <...> |
+| Case                       | Expected behavior |
+| -------------------------- | ----------------- |
+| <e.g. empty input>         | <...>             |
+| <e.g. soft-deleted record> | <...>             |
 
 ## Decisions taken
 
-| Decision | Rejected alternative | Why |
-|---|---|---|
-| <...> | <...> | <...> |
+| Decision | Rejected alternative | Why   |
+| -------- | -------------------- | ----- |
+| <...>    | <...>                | <...> |
 
 ## Constraints
 

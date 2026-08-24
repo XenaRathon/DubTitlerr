@@ -31,7 +31,7 @@ repeats every sweep.
 
 **Verify every factual claim against the source before accepting or attacking it.** This author
 has been wrong about exactly this kind of claim repeatedly — most recently by checking the
-repo's glossaries and reporting "the other 14 are clean" when the *deployed* copies had 8 of 15
+repo's glossaries and reporting "the other 14 are clean" when the _deployed_ copies had 8 of 15
 damaged. Same filename, different artifact, opposite answer. When a claim matches what you'd
 expect, that is when to check it hardest.
 
@@ -50,8 +50,8 @@ Anchors worth confirming: `glossary_acquire.acquire()` (the phase order), `harve
 
 2. **`(path, size, mtime)` over CIFS.** The harvest cache reuses the `.dubtitles.done` triple.
    But this library is mounted over CIFS with `cache=none,nobrl,actimeo=1`. Is mtime trustworthy
-   enough there for a cache key? `stamp_valid()` uses it to decide whether to *redo expensive
-   work*, which fails safe; this cache would use it to decide whether to *skip reading a file*,
+   enough there for a cache key? `stamp_valid()` uses it to decide whether to _redo expensive
+   work_, which fails safe; this cache would use it to decide whether to _skip reading a file_,
    which fails silent. Are those the same risk? If not, say what changes.
 
 3. **Junk recycling at 3x growth.** Frequency-derived `junk` re-enters the queue when a token's
@@ -60,14 +60,14 @@ Anchors worth confirming: `glossary_acquire.acquire()` (the phase order), `harve
    or is there a `junk` reason that looks structural and is not?
 
 4. **Does the cache change what the pipeline decides?** It is meant to be purely a performance
-   change. Find a path where caching a verdict produces a *different* glossary than not caching
+   change. Find a path where caching a verdict produces a _different_ glossary than not caching
    it — ordering effects, `anchor_terms` growing between runs, `escalate` seeing a smaller
    proposal set and therefore different context.
 
 5. **The deferred 94% proposal rate.** `propose` returns 7,695 proposals from 8,199 tokens. The
    spec defers this on the grounds that the cache makes it cost nothing per sweep. Is deferring
    right, or does a near-pass-through `propose` mean the cache is about to memoize a large pile
-   of *wrong* verdicts — making a bad decision permanent instead of merely repeated?
+   of _wrong_ verdicts — making a bad decision permanent instead of merely repeated?
 
 6. **What did the spec miss entirely?**
 

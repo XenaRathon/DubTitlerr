@@ -11,6 +11,7 @@ WHOLE output list, not over one step:
 
 Built with help of Claude (Anthropic).
 """
+
 import copy
 import random
 
@@ -25,11 +26,25 @@ SEEDS = range(60)
 
 # short, long, and outright unwrappable tokens (>MAX_LINE, >MAX_CHARS with no
 # interior boundary) so wrap_balance's fallback path is exercised.
-_TOKENS = ["a", "I", "no", "yes", "wait", "hello", "there", "kind", "of", "really",
-           "the", "unbelievable", "extraordinarily", "x",
-           "supercalifragilisticexpialidocious",
-           "pneumonoultramicroscopicsilicovolcanoconiosisandthensome"]
-_DURS = [0.0, 0.0, 0.02, 0.08, 0.2, 0.35, 0.6, 1.4, 3.2, 6.9, 9.5]   # 9.5 > MAX_DUR
+_TOKENS = [
+    "a",
+    "I",
+    "no",
+    "yes",
+    "wait",
+    "hello",
+    "there",
+    "kind",
+    "of",
+    "really",
+    "the",
+    "unbelievable",
+    "extraordinarily",
+    "x",
+    "supercalifragilisticexpialidocious",
+    "pneumonoultramicroscopicsilicovolcanoconiosisandthensome",
+]
+_DURS = [0.0, 0.0, 0.02, 0.08, 0.2, 0.35, 0.6, 1.4, 3.2, 6.9, 9.5]  # 9.5 > MAX_DUR
 # 0.0 == back-to-back; 0.05/0.08 == successors closer than MIN_GAP (9 such pairs
 # ship today); -0.04 == whisper handing us an overlapping pair; >0.5 == span break.
 _GAPS = [0.0, 0.0, 0.001, 0.05, 0.08, 0.2, 0.49, 0.51, 1.3, 4.0, -0.04]
@@ -37,12 +52,16 @@ _GAPS = [0.0, 0.0, 0.001, 0.05, 0.08, 0.2, 0.49, 0.51, 1.3, 4.0, -0.04]
 
 def _token(rng, punct_p):
     r = rng.random()
-    if r < 0.03: return ""                      # blank word: must vanish, not crash
-    if r < 0.05: return "   "
+    if r < 0.03:
+        return ""  # blank word: must vanish, not crash
+    if r < 0.05:
+        return "   "
     t = rng.choice(_TOKENS)
     p = rng.random()
-    if p < punct_p: return t + rng.choice(".?!")
-    if p < punct_p + 0.12: return t + rng.choice(",;:")
+    if p < punct_p:
+        return t + rng.choice(".?!")
+    if p < punct_p + 0.12:
+        return t + rng.choice(",;:")
     return t
 
 
@@ -53,13 +72,21 @@ def _random_words(rng, n, punct_p=0.12, seg_p=0.2):
     for _ in range(n):
         dur = rng.choice(_DURS)
         start, end = t, t + dur
-        w = {"text": _token(rng, punct_p), "start": round(start, 3), "end": round(end, 3),
-             "prob": rng.choice([0.0, 0.1, 0.5, 0.9, 1.0]), "seg": seg}
-        if rng.random() < 0.03: w["start"] = None      # whisper drops these in the wild
-        if rng.random() < 0.03: w["end"] = None
+        w = {
+            "text": _token(rng, punct_p),
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "prob": rng.choice([0.0, 0.1, 0.5, 0.9, 1.0]),
+            "seg": seg,
+        }
+        if rng.random() < 0.03:
+            w["start"] = None  # whisper drops these in the wild
+        if rng.random() < 0.03:
+            w["end"] = None
         out.append(w)
         t = max(end + rng.choice(_GAPS), 0.0)
-        if rng.random() < seg_p: seg += 1
+        if rng.random() < seg_p:
+            seg += 1
     return out
 
 
@@ -78,28 +105,32 @@ def _segments_for(rng, words):
         lo, hi = segs.get(s, [0.0, 0.0])
         mode = rng.random()
         if mode < 0.15:
-            out.append({"no_speech_prob": rng.random()})                   # unbounded
+            out.append({"no_speech_prob": rng.random()})  # unbounded
             continue
-        if mode < 0.35:                                                    # too tight
+        if mode < 0.35:  # too tight
             span = hi - lo
             lo, hi = lo + span * 0.25, hi - span * 0.25
-            if hi < lo: lo = hi
+            if hi < lo:
+                lo = hi
         elif mode < 0.5:
-            lo, hi = lo - 0.4, hi + 0.4                                    # too loose
+            lo, hi = lo - 0.4, hi + 0.4  # too loose
         out.append({"start": round(lo, 3), "end": round(hi, 3), "no_speech_prob": rng.random()})
-    if out and rng.random() < 0.1: out.pop()          # words referencing a missing segment
+    if out and rng.random() < 0.1:
+        out.pop()  # words referencing a missing segment
     return out
 
 
 def _random_episode(rng):
-    mode = rng.choice(["mixed", "staccato", "dense", "sparse", "single", "empty", "mixed", "dense",
-                       "staccato", "mixed", "sparse", "staccato"])
-    if mode == "empty": return [], []
+    mode = rng.choice(
+        ["mixed", "staccato", "dense", "sparse", "single", "empty", "mixed", "dense", "staccato", "mixed", "sparse", "staccato"]
+    )
+    if mode == "empty":
+        return [], []
     if mode == "single":
         words = _random_words(rng, 1)
-    elif mode == "staccato":            # runs of consecutive short groups ("Yes." "No.")
+    elif mode == "staccato":  # runs of consecutive short groups ("Yes." "No.")
         words = _random_words(rng, rng.randint(8, 40), punct_p=0.55, seg_p=0.4)
-    elif mode == "dense":               # long unbroken utterances -> overflow splitting
+    elif mode == "dense":  # long unbroken utterances -> overflow splitting
         words = _random_words(rng, rng.randint(30, 90), punct_p=0.02, seg_p=0.05)
     elif mode == "sparse":
         words = _random_words(rng, rng.randint(4, 20), punct_p=0.2, seg_p=0.6)
@@ -110,6 +141,7 @@ def _random_episode(rng):
 
 # --- reference helpers (mirror reflow()'s own pre-timing pipeline) ------------
 
+
 def _groups(words, segments):
     """The groups reflow() hands to merge_runts(): same five lines, so a card's
     original onset and last-word end can be named without new production fields."""
@@ -117,7 +149,8 @@ def _groups(words, segments):
     out = []
     for span in reflow.split_spans(prepped):
         for g in reflow.segment_span(span):
-            if reflow._text(g).strip(): out.append(g)
+            if reflow._text(g).strip():
+                out.append(g)
     return out
 
 
@@ -135,12 +168,13 @@ def _splittable(text):
     ~1% of production cards are 82-84 chars with no boundary near the midpoint;
     wrap_balance falls through to an over-long fallback for exactly those."""
     ws = text.split()
-    if len(ws) < 2: return len(text) <= reflow.MAX_LINE
-    return any(len(" ".join(ws[:i])) <= reflow.MAX_LINE and len(" ".join(ws[i:])) <= reflow.MAX_LINE
-               for i in range(1, len(ws)))
+    if len(ws) < 2:
+        return len(text) <= reflow.MAX_LINE
+    return any(len(" ".join(ws[:i])) <= reflow.MAX_LINE and len(" ".join(ws[i:])) <= reflow.MAX_LINE for i in range(1, len(ws)))
 
 
 # --- 1-4: whole-list invariants over reflow() --------------------------------
+
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_whole_list_invariants(seed):
@@ -151,7 +185,7 @@ def test_whole_list_invariants(seed):
     try:
         cards = reflow.reflow(words, segments)
     except reflow.CascadeInfeasible:
-        return                                   # explicit, allowed failure mode
+        return  # explicit, allowed failure mode
     assert words == pristine, "reflow() mutated its input words"
     assert len(cards) == len(groups)
 
@@ -164,8 +198,7 @@ def test_whole_list_invariants(seed):
         # A card may end before its own last word ONLY where the profile caps it: at
         # MAX_DUR past its onset, or MIN_GAP before the successor's spoken onset (which
         # is where time_cards() caps it, using the successor's PRE-shift onset).
-        capped_by_next = (i + 1 < len(groups)
-                          and c["end"] >= groups[i + 1][0]["start"] - reflow.MIN_GAP - reflow.EPS)
+        capped_by_next = i + 1 < len(groups) and c["end"] >= groups[i + 1][0]["start"] - reflow.MIN_GAP - reflow.EPS
         assert c["end"] >= min(last_end, onset + reflow.MAX_DUR) - reflow.EPS or capped_by_next
     for a, b in zip(cards, cards[1:]):
         assert b["start"] > a["start"], "starts must be strictly ordered"
@@ -197,7 +230,8 @@ def test_preprocessing_never_moves_a_word_earlier_than_spoken(seed):
     words, segments = _random_episode(rng)
     prepped = reflow._dejitter(reflow._clamp_to_segments(reflow._normalize(words), segments))
     for raw, out in zip(words, prepped):
-        if raw["start"] is None: continue
+        if raw["start"] is None:
+            continue
         seg = segments[raw["seg"]] if raw["seg"] < len(segments) else {}
         hi = seg.get("end")
         clamped = hi is not None and seg.get("start") is not None and raw["start"] > hi
@@ -205,6 +239,7 @@ def test_preprocessing_never_moves_a_word_earlier_than_spoken(seed):
 
 
 # --- 5. idempotence and purity ----------------------------------------------
+
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_merge_runts_is_a_fixed_point_and_pure(seed):
@@ -223,12 +258,14 @@ def test_merge_runts_is_a_fixed_point_and_pure(seed):
 
 # --- CascadeInfeasible accounting and the bounded-audio tail -----------------
 
+
 @pytest.mark.parametrize("seed", SEEDS)
 def test_bounded_audio_keeps_the_invariants_or_raises_with_full_accounting(seed):
     rng = random.Random(seed)
     words, segments = _random_episode(rng)
     groups = _timed_groups(words, segments)
-    if not groups: return
+    if not groups:
+        return
     span_end = max(g[-1]["end"] for g in groups)
     audio = round(span_end * rng.uniform(0.4, 1.15), 3)
     try:
@@ -240,7 +277,7 @@ def test_bounded_audio_keeps_the_invariants_or_raises_with_full_accounting(seed)
         assert e.residual > 0 and e.applied >= 0
         assert 0 <= e.index < len(groups)
         return
-    for (s, en) in times:
+    for s, en in times:
         assert s < en
     for (s0, e0), (s1, _e1) in zip(times, times[1:]):
         assert s1 - e0 >= reflow.MIN_GAP - reflow.EPS
@@ -251,18 +288,19 @@ def test_bounded_audio_keeps_the_invariants_or_raises_with_full_accounting(seed)
         assert en - s <= reflow.MAX_DUR + reflow.EPS
     for r in records:
         assert r["requested_shift"] > reflow.EPS
-        if r["unfixable"]:                       # the tail clamp: NONE of the ask was applied,
-            assert r["applied_shift"] == 0.0     # so requested == applied + residual is a real
-            assert abs(r["requested_shift"] - r["residual_shift"]) <= reflow.EPS   # statement
+        if r["unfixable"]:  # the tail clamp: NONE of the ask was applied,
+            assert r["applied_shift"] == 0.0  # so requested == applied + residual is a real
+            assert abs(r["requested_shift"] - r["residual_shift"]) <= reflow.EPS  # statement
             assert r["hops"] == 0
-        else:                                    # a SUCCESS record: _cascade returns its own
-            assert r["hops"] >= 1                # request on every success path, so applied
-            assert r["displaced"]                # == requested and residual == 0.0 ALWAYS. The
-            assert "applied_shift" not in r      # identity was true by construction and would
-            assert "residual_shift" not in r     # survive replacing both fields with literals.
+        else:  # a SUCCESS record: _cascade returns its own
+            assert r["hops"] >= 1  # request on every success path, so applied
+            assert r["displaced"]  # == requested and residual == 0.0 ALWAYS. The
+            assert "applied_shift" not in r  # identity was true by construction and would
+            assert "residual_shift" not in r  # survive replacing both fields with literals.
 
 
 # --- degenerate inputs -------------------------------------------------------
+
 
 def test_empty_input_yields_no_cards():
     assert reflow.reflow([], []) == []

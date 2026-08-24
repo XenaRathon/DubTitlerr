@@ -26,12 +26,12 @@ Anime English dubs are recorded to lip-sync the original animation, so **dub spe
 at ~the same timestamps as the original dialogue** — which the embedded, human-timed subtitle
 track already marks. That subtitle track is a partial answer to "was anyone speaking here?".
 
-**[v3] But it is only a *partial* answer, and the panel consult made that precise.** A kept
+**[v3] But it is only a _partial_ answer, and the panel consult made that precise.** A kept
 Whisper card sitting in a subtitle **gap** has two explanations the subtitle track alone cannot
 separate: (1) a hallucination over silence/music — what we want to catch — or (2) a **real dub
 line the subs simply omit** (ADR/background chatter, narration, dub-only added dialogue). Gating
 naively on "in-gap" would silently drop case (2). So Phase 0 must add an **independent acoustic
-check** of the dub audio at each in-gap card to split those two cases — that split *is* the
+check** of the dub audio at each in-gap card to split those two cases — that split _is_ the
 measurement that decides whether a Phase-1 gate is safe.
 
 Before wiring any of this into gating (and before the pending V2 rebuild/deploy), we measure:
@@ -61,7 +61,7 @@ dub speech the subs missed** (the false-drop risk a gate would incur).
   dropped cards can't be seen here; that direction needs a raw pre-drop GPU dump (deferred).
   **[v3] Note the survivorship consequence explicitly:** because B1 already removed the most obvious
   music hallucinations, `kept_in_gap` is a **lower bound / floor** on the true hallucination rate,
-  not the rate itself. The report and the Phase-1 trigger must be read as "leaked *past B1*."
+  not the rate itself. The report and the Phase-1 trigger must be read as "leaked _past B1_."
 - **Timing refinement / snapping** card boundaries to cue boundaries.
 - **[v3] Full DTW / piecewise-nonlinear alignment.** The linear (offset+drift) model is the Phase-0
   upgrade over a constant offset. If post-fit residual IQR stays large, the report flags the episode
@@ -98,9 +98,7 @@ dub speech the subs missed** (the false-drop risk a gate would incur).
 - [ ] **[v3] VAD probe of in-gap cards:** for every kept card classified `in-gap`, extract the DUB
       audio window at the card's **original** (un-aligned) `[start, end]` — Whisper's timebase, since
       the audio is what Whisper heard — as 16 kHz mono via ffmpeg into the temp dir, and run a
-      lightweight CPU VAD (`webrtcvad`, aggressiveness configurable) over it. Classify the card:
-      - `in_gap_silent` — VAD reports no voiced speech in the window (confident hallucination).
-      - `in_gap_speech` — VAD reports voiced speech (likely a real dub-only line the subs omit).
+      lightweight CPU VAD (`webrtcvad`, aggressiveness configurable) over it. Classify the card: - `in_gap_silent` — VAD reports no voiced speech in the window (confident hallucination). - `in_gap_speech` — VAD reports voiced speech (likely a real dub-only line the subs omit).
       On VAD/extraction failure (no audio stream, ffmpeg error) → `in_gap_vad_error`, counted
       separately, never silently merged into either verdict. VAD backend selectable via `--vad`
       (`webrtcvad` default; `ffmpeg-silencedetect` dep-free fallback, cruder — energy-based, cannot
@@ -154,45 +152,45 @@ dub speech the subs missed** (the false-drop risk a gate would incur).
 
 ## Edge cases and failure modes
 
-| Case | Expected behavior |
-|---|---|
-| No `.dubtitles.conf.json` | `no-conf`, skip |
-| `conf.json` mid-write / malformed | `json.JSONDecodeError` → `bad-conf`, skip, count |
-| `conf.json` row `start >= end` or negative `start` | drop the row, continue |
-| No English sub track (dub-only mp4) | `no-reference`, skip |
-| Only sub track is signs/songs | density scorer rejects → `no-reference`, skip |
-| Multiple English sub tracks | pick highest density; ties → lower index; record which |
-| All episodes in a show are `no-reference` | per-show aggregate coverage/offset/false-in-gap = `null`; status counts still numeric |
-| `conf.json` empty (0 kept cards) | `analyzed`, 0 cards; coverage `null`, not a crash |
-| **[v3]** PAL/framerate drift | captured as `drift_b`; residual measured **after** the linear fit; `look_for_drift` set when residual still large or slope steep |
-| **[v3]** Video has no decodable audio stream / ffmpeg fails on a window | that card → `in_gap_vad_error`, counted; never merged into silent/speech |
-| **[v3]** `webrtcvad` unavailable/unbuildable | fall back to `--vad ffmpeg-silencedetect` with a warning; if that also fails, in-gap cards get `in_gap_vad_error` and `false_in_gap_rate` is reported `null` |
-| Card overlaps two cues | `on-cue` if it overlaps any; pairing uses nearest cue-start |
+| Case                                                                    | Expected behavior                                                                                                                                            |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| No `.dubtitles.conf.json`                                               | `no-conf`, skip                                                                                                                                              |
+| `conf.json` mid-write / malformed                                       | `json.JSONDecodeError` → `bad-conf`, skip, count                                                                                                             |
+| `conf.json` row `start >= end` or negative `start`                      | drop the row, continue                                                                                                                                       |
+| No English sub track (dub-only mp4)                                     | `no-reference`, skip                                                                                                                                         |
+| Only sub track is signs/songs                                           | density scorer rejects → `no-reference`, skip                                                                                                                |
+| Multiple English sub tracks                                             | pick highest density; ties → lower index; record which                                                                                                       |
+| All episodes in a show are `no-reference`                               | per-show aggregate coverage/offset/false-in-gap = `null`; status counts still numeric                                                                        |
+| `conf.json` empty (0 kept cards)                                        | `analyzed`, 0 cards; coverage `null`, not a crash                                                                                                            |
+| **[v3]** PAL/framerate drift                                            | captured as `drift_b`; residual measured **after** the linear fit; `look_for_drift` set when residual still large or slope steep                             |
+| **[v3]** Video has no decodable audio stream / ffmpeg fails on a window | that card → `in_gap_vad_error`, counted; never merged into silent/speech                                                                                     |
+| **[v3]** `webrtcvad` unavailable/unbuildable                            | fall back to `--vad ffmpeg-silencedetect` with a warning; if that also fails, in-gap cards get `in_gap_vad_error` and `false_in_gap_rate` is reported `null` |
+| Card overlaps two cues                                                  | `on-cue` if it overlaps any; pairing uses nearest cue-start                                                                                                  |
 
 ## Components / changes
 
-| Layer | File | Change |
-|---|---|---|
-| Analytics (new) | `tools/timing_compare.py` | CLI, RANSAC line fit, overlap + VAD classification, report builder, summary. |
-| Analytics (new) | `tools/vad.py` **[v3]** | `vad_probe()` — webrtcvad + ffmpeg-silencedetect backends over a 16 kHz mono window. |
-| Tests (new) | `tests/test_timing_compare.py` | Unit tests for the pure functions (incl. RANSAC + VAD frame-decision). |
-| Common (refactor) | `common.py` | Hoist `dialogue_intervals(video, stream_indices=None)`; add `dialogue_event_count`, `dialogue_density_score`. |
-| Repair (refactor) | `repair.py` | `from common import dialogue_intervals` (no behavior change). |
-| Deps **[v3]** | `pyproject.toml`, `Dockerfile.builder` | add `webrtcvad`. |
+| Layer             | File                                   | Change                                                                                                        |
+| ----------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Analytics (new)   | `tools/timing_compare.py`              | CLI, RANSAC line fit, overlap + VAD classification, report builder, summary.                                  |
+| Analytics (new)   | `tools/vad.py` **[v3]**                | `vad_probe()` — webrtcvad + ffmpeg-silencedetect backends over a 16 kHz mono window.                          |
+| Tests (new)       | `tests/test_timing_compare.py`         | Unit tests for the pure functions (incl. RANSAC + VAD frame-decision).                                        |
+| Common (refactor) | `common.py`                            | Hoist `dialogue_intervals(video, stream_indices=None)`; add `dialogue_event_count`, `dialogue_density_score`. |
+| Repair (refactor) | `repair.py`                            | `from common import dialogue_intervals` (no behavior change).                                                 |
+| Deps **[v3]**     | `pyproject.toml`, `Dockerfile.builder` | add `webrtcvad`.                                                                                              |
 
 ## Decisions taken
 
-| Decision | Rejected alternative | Why |
-|---|---|---|
-| **[v3]** Linear offset+drift fit (RANSAC) | Single constant global offset (v2) | PAL 25↔23.976 is ~4% *progressive* drift; a constant median fits the middle and mis-classifies episode ends. A line is O(N), GPU-free, and captures the dominant effect; RANSAC resists clustered-cue / mis-pair bias the greedy median suffers. |
-| **[v3]** Independent VAD probe of in-gap cards | Subtitle gaps alone = "hallucination" | The sub track is not exhaustive; a gap card can be a real dub-only/ADR/narration line. Only an independent acoustic check separates "hallucination over silence" from "real speech the subs omit" — which is exactly the Phase-1 gate's safety question. |
-| **[v3]** webrtcvad primary, ffmpeg-silencedetect fallback | RMS energy only | Energy can't tell voiced speech from loud music/SFX — and music is the confounder. webrtcvad targets voiced speech; ffmpeg fallback keeps the tool runnable with zero new deps. |
-| **[v3]** Report `kept_in_gap` as a leaked-*past-B1* floor | Present it as the hallucination rate | Survivorship: B1 already removed the worst music hallucinations before `conf.json`. Framing prevents the go/no-go from reading an optimistic floor as the truth. |
-| conf.json-only (kept cards) | Raw-dump every episode for false-drops | GPU-free, seconds over a couple shows. False-drops need raw dumps; deferred. |
-| Auto-detect dialogue track | Name it manually | Layout varies; auto-detect also yields `applicability_ratio`. |
-| Standalone `tools/` scripts | A mode inside the live pipeline | Offline, non-invasive; matches `bakeoff.py`/`dump_whisper.py`. |
-| Reuse `common.dialogue_intervals` | Reimplement extraction | Single source of truth with `repair.py`; no drift. |
-| Temp-dir extraction | Sidecar next to media | Preserves read-only on the media tree. |
+| Decision                                                  | Rejected alternative                   | Why                                                                                                                                                                                                                                                      |
+| --------------------------------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **[v3]** Linear offset+drift fit (RANSAC)                 | Single constant global offset (v2)     | PAL 25↔23.976 is ~4% _progressive_ drift; a constant median fits the middle and mis-classifies episode ends. A line is O(N), GPU-free, and captures the dominant effect; RANSAC resists clustered-cue / mis-pair bias the greedy median suffers.         |
+| **[v3]** Independent VAD probe of in-gap cards            | Subtitle gaps alone = "hallucination"  | The sub track is not exhaustive; a gap card can be a real dub-only/ADR/narration line. Only an independent acoustic check separates "hallucination over silence" from "real speech the subs omit" — which is exactly the Phase-1 gate's safety question. |
+| **[v3]** webrtcvad primary, ffmpeg-silencedetect fallback | RMS energy only                        | Energy can't tell voiced speech from loud music/SFX — and music is the confounder. webrtcvad targets voiced speech; ffmpeg fallback keeps the tool runnable with zero new deps.                                                                          |
+| **[v3]** Report `kept_in_gap` as a leaked-_past-B1_ floor | Present it as the hallucination rate   | Survivorship: B1 already removed the worst music hallucinations before `conf.json`. Framing prevents the go/no-go from reading an optimistic floor as the truth.                                                                                         |
+| conf.json-only (kept cards)                               | Raw-dump every episode for false-drops | GPU-free, seconds over a couple shows. False-drops need raw dumps; deferred.                                                                                                                                                                             |
+| Auto-detect dialogue track                                | Name it manually                       | Layout varies; auto-detect also yields `applicability_ratio`.                                                                                                                                                                                            |
+| Standalone `tools/` scripts                               | A mode inside the live pipeline        | Offline, non-invasive; matches `bakeoff.py`/`dump_whisper.py`.                                                                                                                                                                                           |
+| Reuse `common.dialogue_intervals`                         | Reimplement extraction                 | Single source of truth with `repair.py`; no drift.                                                                                                                                                                                                       |
+| Temp-dir extraction                                       | Sidecar next to media                  | Preserves read-only on the media tree.                                                                                                                                                                                                                   |
 
 ## Constraints
 
@@ -209,7 +207,7 @@ dub speech the subs missed** (the false-drop risk a gate would incur).
 ## Open questions (risks / tuning knobs)
 
 - [ ] **[v3] Recalibrated Phase-1 trigger.** The v2 "≥80% on-cue / ≤30% no-reference" conflated
-      *timing aligns* with *gate is safe*. Replace with a gate-safety-first rule: **open the Phase-1
+      _timing aligns_ with _gate is safe_. Replace with a gate-safety-first rule: **open the Phase-1
       gating spec only if, across ≥3 shows with a usable dialogue track, `false_in_gap_rate` (real dub
       speech in gaps, per the VAD) is ≤ ~2% AND `in_gap_silent` is a material share of `kept_in_gap`
       (there's actually something to gain).** `pct_cards_on_cue` and `applicability_ratio` remain

@@ -21,6 +21,7 @@ episode with no conf.json, so already-repaired text is never re-repaired.
 Usage:  python3 tools/recover_dub_srt.py [--apply] <video.mkv> [...]
 Without --apply it only reports what it would recover.  Built with help of Claude.
 """
+
 import os
 import sys
 import tempfile
@@ -78,8 +79,7 @@ def write_srt(events, out_path):
         raise ValueError(f"refusing to write an empty dubtitle sidecar: {out_path}")
     with open(out_path, "w", encoding="utf-8") as f:
         for i, ev in enumerate(events, 1):
-            f.write(f"{i}\n{ts_srt(ev.start / 1000.0)} --> {ts_srt(ev.end / 1000.0)}\n"
-                    f"{ev.plaintext.strip()}\n\n")
+            f.write(f"{i}\n{ts_srt(ev.start / 1000.0)} --> {ts_srt(ev.end / 1000.0)}\n{ev.plaintext.strip()}\n\n")
     return len(events)
 
 
@@ -89,10 +89,26 @@ def our_track_index(video):
     track we WANT. The codec comes back too because an extracted SRT and a style-less ASS
     are indistinguishable once pysubs2 has parsed them (see dub_events)."""
     import json
+
     try:
-        r = _sp.run(["ffprobe", "-v", "error", "-select_streams", "s", "-show_entries",
-                     "stream=index,codec_name:stream_tags=language,title", "-of", "json",
-                     video], capture_output=True, text=True, stdin=_sp.DEVNULL, timeout=90)
+        r = _sp.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "s",
+                "-show_entries",
+                "stream=index,codec_name:stream_tags=language,title",
+                "-of",
+                "json",
+                video,
+            ],
+            capture_output=True,
+            text=True,
+            stdin=_sp.DEVNULL,
+            timeout=90,
+        )
         streams = json.loads(r.stdout).get("streams", [])
     except Exception as e:
         log("ffprobe failed:", video, e)
@@ -107,7 +123,7 @@ def recover(source, out_path):
     """``source`` is either a video (the track is extracted) or an .ass/.srt already on
     disk. Returns a short status string."""
     if os.path.exists(out_path):
-        return "exists"                     # fresher work already there — never clobber it
+        return "exists"  # fresher work already there — never clobber it
     if source.lower().endswith((".ass", ".ssa", ".srt")):
         evs = dub_events(source, srt_origin=source.lower().endswith(".srt"))
     else:
@@ -134,8 +150,11 @@ def main():
         stem = os.path.splitext(video)[0]
         out = stem + ".eng.dubtitles.srt"
         if not apply:
-            res = "exists" if os.path.exists(out) else ("would-recover"
-                  if our_track_index(video)[0] is not None else "no-dubtitles-track")
+            res = (
+                "exists"
+                if os.path.exists(out)
+                else ("would-recover" if our_track_index(video)[0] is not None else "no-dubtitles-track")
+            )
         else:
             res = recover(video, out)
         counts[res] = counts.get(res, 0) + 1

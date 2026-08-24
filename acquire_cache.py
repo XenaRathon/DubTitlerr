@@ -29,6 +29,7 @@ Contract, mirroring qc.write and unresolved.record: this is an OPTIMISATION. It 
 raise and never change what the pipeline decides. A corrupt or unreadable cache degrades to
 a full run.
 """
+
 from __future__ import annotations
 
 import json
@@ -74,8 +75,7 @@ def save(gloss_path: str, cache: dict) -> bool:
     p = path_for(gloss_path)
     tmp = None
     try:
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p) or ".",
-                                   prefix=os.path.basename(p) + ".", suffix=".tmp")
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p) or ".", prefix=os.path.basename(p) + ".", suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(cache, f, ensure_ascii=False, indent=1, sort_keys=True)
         os.chmod(tmp, SIDECAR_MODE)
@@ -121,11 +121,11 @@ def is_fresh(entry: dict, count: int, floor_anchor, norm_titles: set, normalize)
         return True
     reason = entry.get("reason", "")
     if not recycles(reason):
-        return True                        # structural: the fact cannot change
+        return True  # structural: the fact cannot change
     if count > int(entry.get("count", 0)) * JUNK_RECHECK_GROWTH:
-        return False                       # materially more evidence than last time
+        return False  # materially more evidence than last time
     if entry.get("floor_anchor") != floor_anchor:
-        return False                       # the anchor its floor rested on moved
+        return False  # the anchor its floor rested on moved
     return True
 
 
@@ -139,7 +139,7 @@ def skippable(cache: dict, counts: dict, anchor_for, norm_titles: set, normalize
         try:
             if is_fresh(entry, counts.get(tok, 0), anchor_for(tok), norm_titles, normalize):
                 out.add(tok)
-        except Exception:                  # a malformed entry costs that token, not the run
+        except Exception:  # a malformed entry costs that token, not the run
             continue
     return out
 
@@ -154,8 +154,10 @@ def remember(cache: dict, proposals: list, counts: dict) -> dict:
         if not tok:
             continue
         verdict = p.get("verdict")
-        entry = {"verdict": "junk" if verdict == "flag" else verdict,
-                 "count": int(counts.get(tok, p.get("variant_count", 0)) or 0)}
+        entry = {
+            "verdict": "junk" if verdict == "flag" else verdict,
+            "count": int(counts.get(tok, p.get("variant_count", 0)) or 0),
+        }
         if p.get("reason"):
             entry["reason"] = p["reason"]
         if p.get("canonical"):

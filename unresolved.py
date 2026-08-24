@@ -33,6 +33,7 @@ what decides whether the entries are worth a human's attention at all.
 Contract, mirroring qc.write: this is OBSERVABILITY. It must never raise and never fail an
 episode that otherwise generated correctly. Every entry point returns a bool.
 """
+
 import json
 import os
 import tempfile
@@ -44,11 +45,15 @@ SUFFIX = ".dubtitles.unresolved.jsonl"
 # Reasons, per stage. Kept as a module constant so the --review CLI and the call sites cannot
 # drift apart, and so a typo'd reason is visible rather than silently creating a new bucket.
 REASONS = {
-    "repair": ("no_reference",      # no fansub anchor overlapped this card's source window
-               "rejected_guard",    # the model proposed an edit; accept_repair() refused it
-               "llm_empty"),        # the backend returned nothing (transport failure or timeout)
-    "punctuation": ("llm_empty",    # ditto -- a dead endpoint looks exactly like "no change"
-                    "rejected_guard"),  # accept_restoration() found the model rewrote words
+    "repair": (
+        "no_reference",  # no fansub anchor overlapped this card's source window
+        "rejected_guard",  # the model proposed an edit; accept_repair() refused it
+        "llm_empty",
+    ),  # the backend returned nothing (transport failure or timeout)
+    "punctuation": (
+        "llm_empty",  # ditto -- a dead endpoint looks exactly like "no change"
+        "rejected_guard",
+    ),  # accept_restoration() found the model rewrote words
 }
 
 
@@ -71,7 +76,7 @@ def items(stem: str) -> list:
                 try:
                     e = json.loads(line)
                 except ValueError:
-                    continue          # torn final line; everything before it is intact
+                    continue  # torn final line; everything before it is intact
                 if isinstance(e, dict):
                     out.append(e)
     except OSError:
@@ -120,7 +125,7 @@ def record(stem: str, stage: str, reason: str, **fields) -> bool:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         if not exists:
-            os.chmod(path, SIDECAR_MODE)   # only the creator sets the mode
+            os.chmod(path, SIDECAR_MODE)  # only the creator sets the mode
         return True
     except (OSError, ValueError):
         return False
@@ -148,9 +153,9 @@ def resolve(stem: str, index: int, accept: bool, note: str = "") -> bool:
 
 _EVIDENCE = {
     # what a human needs to see to settle each reason, in the order it helps
-    "no_reference":   ("original_text", "source_start", "source_end", "avg_logprob"),
+    "no_reference": ("original_text", "source_start", "source_end", "avg_logprob"),
     "rejected_guard": ("original_text", "proposed_text", "reference", "avg_logprob", "words"),
-    "llm_empty":      ("original_text", "segments", "words"),
+    "llm_empty": ("original_text", "segments", "words"),
 }
 
 
@@ -160,9 +165,8 @@ def _render(i: int, e: dict) -> str:
     for k in _EVIDENCE.get(e["reason"], ()):
         if k in e:
             lines.append(f"  {k:14} {e[k]}")
-    for k, v in e.items():                       # anything not in the template, so nothing hides
-        if k not in ("stage", "reason", "resolved", "accepted", "note") \
-                and k not in _EVIDENCE.get(e["reason"], ()):
+    for k, v in e.items():  # anything not in the template, so nothing hides
+        if k not in ("stage", "reason", "resolved", "accepted", "note") and k not in _EVIDENCE.get(e["reason"], ()):
             lines.append(f"  {k:14} {v}")
     return "\n".join(lines)
 
@@ -170,16 +174,17 @@ def _render(i: int, e: dict) -> str:
 def main(argv=None):
     import argparse
     import glob as _glob
-    ap = argparse.ArgumentParser(
-        description="Review subtitle-quality cases the pipeline could not settle.")
+
+    ap = argparse.ArgumentParser(description="Review subtitle-quality cases the pipeline could not settle.")
     ap.add_argument("target", help="an episode stem, or a directory to walk")
-    ap.add_argument("--review", action="store_true",
-                    help="interactive walk (default: list pending and exit)")
+    ap.add_argument("--review", action="store_true", help="interactive walk (default: list pending and exit)")
     a = ap.parse_args(argv)
 
-    stems = ([a.target] if os.path.exists(a.target + SUFFIX)
-             else [p[:-len(SUFFIX)] for p in sorted(_glob.glob(
-                 os.path.join(a.target, "**", "*" + SUFFIX), recursive=True))])
+    stems = (
+        [a.target]
+        if os.path.exists(a.target + SUFFIX)
+        else [p[: -len(SUFFIX)] for p in sorted(_glob.glob(os.path.join(a.target, "**", "*" + SUFFIX), recursive=True))]
+    )
     total = 0
     for stem in stems:
         todo = pending(stem)
@@ -195,12 +200,12 @@ def main(argv=None):
             try:
                 ans = input("  keep as-is [k] / needs fixing [f] / skip [s] ? ").strip().lower()
             except (EOFError, KeyboardInterrupt):
-                print("\n  stopped."); return 0
+                print("\n  stopped.")
+                return 0
             if ans in ("k", "f"):
                 note = input("  note (optional): ").strip()
                 resolve(stem, idx, accept=(ans == "k"), note=note)
-    print(f"\n{total} pending across {len(stems)} episode(s)."
-          if total else "\nNothing pending.")
+    print(f"\n{total} pending across {len(stems)} episode(s)." if total else "\nNothing pending.")
     return 0
 
 

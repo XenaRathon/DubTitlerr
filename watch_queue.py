@@ -23,6 +23,7 @@ answer and an unreachable source are different facts, and only one of them is ev
 either source cannot be read, the order file is left ALONE -- a stale queue is safe; a queue
 silently narrowed by an outage is not.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -42,7 +43,7 @@ PLEX_SECTION = os.environ.get("PLEX_SECTION", "7")
 ANIME_ROOT = os.environ.get("ANIME_ROOT", "/media/Anime Library")
 TIMEOUT = int(os.environ.get("WATCH_QUEUE_TIMEOUT", "30"))
 PER_PAGE = 1000
-MAX_PAGES = 100          # backstop; 20k items is 21 pages today
+MAX_PAGES = 100  # backstop; 20k items is 21 pages today
 
 
 class Unreachable(Exception):
@@ -82,8 +83,7 @@ def from_watchstate(since: int) -> dict:
     # timestamp -- so stopping early silently reads a near-random slice of the library and
     # calls it "recently watched".
     while page <= pages and page <= MAX_PAGES:
-        body = _get(f"{base}/v1/api/history?perpage={PER_PAGE}&page={page}",
-                    {"X-apikey": WATCHSTATE_API_KEY})
+        body = _get(f"{base}/v1/api/history?perpage={PER_PAGE}&page={page}", {"X-apikey": WATCHSTATE_API_KEY})
         try:
             doc = json.loads(body)
         except ValueError as e:
@@ -96,7 +96,7 @@ def from_watchstate(since: int) -> dict:
         pages = int((doc.get("paging") or {}).get("last_page") or 1)
         for it in rows:
             if it.get("type") != "episode" or not it.get("watched"):
-                continue          # watched=0 rows carry an air date in `updated`, not a play time
+                continue  # watched=0 rows carry an air date in `updated`, not a play time
             ts = int(it.get("updated") or 0)
             title = (it.get("title") or "").strip()
             if title and ts >= since:
@@ -113,8 +113,7 @@ def from_plex(since: int) -> dict:
     indication the filter had not applied."""
     if not (PLEX_URL and PLEX_TOKEN):
         raise Unreachable("PLEX_URL/PLEX_TOKEN not set")
-    url = (f"{PLEX_URL.rstrip('/')}/status/sessions/history/all"
-           f"?librarySectionID={PLEX_SECTION}&X-Plex-Token={PLEX_TOKEN}")
+    url = f"{PLEX_URL.rstrip('/')}/status/sessions/history/all?librarySectionID={PLEX_SECTION}&X-Plex-Token={PLEX_TOKEN}"
     xml = _get(url).decode("utf-8", "replace")
     out: dict[str, int] = {}
     for row in re.findall(r"<Video\b[^>]*>", xml):
@@ -161,18 +160,17 @@ def match_dirs(titles: dict, dirs: list) -> tuple[list, list]:
         by_clean.setdefault(clean_title(d), d)
         k = fold(d)
         if k in by_fold:
-            fold_dupes.add(k)          # ambiguous: two directories fold together
+            fold_dupes.add(k)  # ambiguous: two directories fold together
         else:
             by_fold[k] = d
     hits, misses = {}, []
     for t, ts in titles.items():
         k = fold(t)
-        d = (by_exact.get(t) or by_clean.get(clean_title(t))
-             or (None if k in fold_dupes else by_fold.get(k)))
+        d = by_exact.get(t) or by_clean.get(clean_title(t)) or (None if k in fold_dupes else by_fold.get(k))
         if d:
             hits[d] = max(hits.get(d, 0), ts)
         else:
-            misses.append(t)           # includes anything ambiguous -- report, never guess
+            misses.append(t)  # includes anything ambiguous -- report, never guess
     order = [d for d, _ in sorted(hits.items(), key=lambda kv: (-kv[1], kv[0]))]
     return order, sorted(misses)
 
@@ -187,12 +185,11 @@ def build(since: int, root: str, pins: list | None = None) -> tuple[list, dict]:
     for t, ts in px.items():
         merged[t] = max(merged.get(t, 0), ts)
     order, misses = match_dirs(merged, library_dirs(root))
-    for p in reversed(pins or []):            # pinned shows lead, in the order given
+    for p in reversed(pins or []):  # pinned shows lead, in the order given
         if p in order:
             order.remove(p)
         order.insert(0, p)
-    return order, {"watchstate": len(ws), "plex": len(px), "union": len(merged),
-                   "matched": len(order), "unmatched": misses}
+    return order, {"watchstate": len(ws), "plex": len(px), "union": len(merged), "matched": len(order), "unmatched": misses}
 
 
 def main(argv=None):
@@ -200,24 +197,27 @@ def main(argv=None):
     ap.add_argument("--window-days", type=int, default=90)
     ap.add_argument("--out", default=os.environ.get("ANIME_ORDER", "/config/anime_order.txt"))
     ap.add_argument("--root", default=ANIME_ROOT)
-    ap.add_argument("--pin", action="append", default=[],
-                    help="always queue this show, however long since it was watched")
+    ap.add_argument("--pin", action="append", default=[], help="always queue this show, however long since it was watched")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
 
     import time
+
     since = int(time.time()) - a.window_days * 86400
     try:
         order, rep = build(since, a.root, a.pin)
     except Unreachable as e:
         print(f"watch_queue: REFUSING TO WRITE -- {e}", file=sys.stderr)
         return 2
-    print(f"watch_queue: watchstate={rep['watchstate']} plex={rep['plex']} "
-          f"union={rep['union']} matched={rep['matched']} window={a.window_days}d")
+    print(
+        f"watch_queue: watchstate={rep['watchstate']} plex={rep['plex']} "
+        f"union={rep['union']} matched={rep['matched']} window={a.window_days}d"
+    )
     if rep["unmatched"]:
-        print(f"  no library directory for {len(rep['unmatched'])}: "
-              f"{', '.join(rep['unmatched'][:10])}"
-              + (" …" if len(rep["unmatched"]) > 10 else ""))
+        print(
+            f"  no library directory for {len(rep['unmatched'])}: "
+            f"{', '.join(rep['unmatched'][:10])}" + (" …" if len(rep["unmatched"]) > 10 else "")
+        )
     for i, d in enumerate(order, 1):
         print(f"  {i:>2} {d}")
     if a.dry_run:

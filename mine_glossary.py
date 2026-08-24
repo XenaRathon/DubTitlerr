@@ -10,6 +10,7 @@ CPU only (ffmpeg + pysubs2). Env: GLOSSARY_DIR (default /config/glossaries),
 MINE_MIN_COUNT (a name must recur >= this across the new episodes, default 3).
 Built with help of Claude (Anthropic).
 """
+
 import json
 import os
 import re
@@ -64,23 +65,46 @@ def eng_sub_text(video):
     reinforce its errors into the glossary. No fallback — a file whose only English sub
     is our dubtitle mines nothing."""
     try:
-        r = subprocess.run(["ffprobe","-v","error","-select_streams","s","-show_entries",
-                            "stream=index,codec_name:stream_tags=language,title","-of","json","-nostdin",video],
-                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "s",
+                "-show_entries",
+                "stream=index,codec_name:stream_tags=language,title",
+                "-of",
+                "json",
+                "-nostdin",
+                video,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
         streams = json.loads(r.stdout).get("streams", [])
     except Exception:
         return ""
-    cand = [s for s in streams
-            if ((s.get("tags") or {}).get("language") or "").lower() in ("eng","en","und","")
-            and s.get("codec_name") in ("ass","ssa","subrip")
-            and not is_our_track(stream_title(s))]
+    cand = [
+        s
+        for s in streams
+        if ((s.get("tags") or {}).get("language") or "").lower() in ("eng", "en", "und", "")
+        and s.get("codec_name") in ("ass", "ssa", "subrip")
+        and not is_our_track(stream_title(s))
+    ]
     if not cand:
         return ""
     idx = cand[0]["index"]
     with tempfile.TemporaryDirectory() as td:
         out = os.path.join(td, "s.ass")
-        subprocess.run(["ffmpeg","-y","-v","error","-nostdin","-i",video,"-map",f"0:{idx}",out],
-                       capture_output=True, timeout=120, stdin=subprocess.DEVNULL)
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-nostdin", "-i", video, "-map", f"0:{idx}", out],
+            capture_output=True,
+            timeout=120,
+            stdin=subprocess.DEVNULL,
+        )
         if not os.path.exists(out):
             return ""
         try:
@@ -130,12 +154,13 @@ def mine_text(text, bare, poss, midsentence, forms=None):
             if not re.match(r"^[A-Z][a-z]{3,}$", folded):
                 continue
             if forms is not None:
-                seen = forms.setdefault(folded, {}); seen[core] = seen.get(core, 0) + 1
-            if folded != core:                  # possessive: reinforces, never originates
+                seen = forms.setdefault(folded, {})
+                seen[core] = seen.get(core, 0) + 1
+            if folded != core:  # possessive: reinforces, never originates
                 poss[folded] = poss.get(folded, 0) + 1
                 continue
             bare[core] = bare.get(core, 0) + 1
-            if i > 0:                       # not the first word of the sentence
+            if i > 0:  # not the first word of the sentence
                 midsentence.add(core)
 
 
@@ -157,7 +182,8 @@ def admit(bare, poss, midsentence, min_count=None, common=None, existing=frozens
     common = COMMON if common is None else common
     new, queue = [], {}
     for t in sorted(midsentence):
-        if t.lower() in common or t.lower() in existing: continue
+        if t.lower() in common or t.lower() in existing:
+            continue
         b, p = bare.get(t, 0), poss.get(t, 0)
         if b >= min_count:
             new.append(t)
@@ -184,9 +210,12 @@ def queue_for_review(cfg, queue):
     added = []
     for term, meta in queue.items():
         cur = flagged.get(term)
-        if isinstance(cur, str): cur = {"reason": cur}
-        if cur and cur.get("reason") != REVIEW_REASON: continue
-        if cur is None: added.append(term)
+        if isinstance(cur, str):
+            cur = {"reason": cur}
+        if cur and cur.get("reason") != REVIEW_REASON:
+            continue
+        if cur is None:
+            added.append(term)
         flagged[term] = meta
     if flagged:
         cfg["flagged"] = flagged
@@ -195,14 +224,17 @@ def queue_for_review(cfg, queue):
 
 def main():
     if len(sys.argv) < 2:
-        print("usage: mine_glossary.py <show_dir>"); return
+        print("usage: mine_glossary.py <show_dir>")
+        return
     show_dir = sys.argv[1].rstrip("/")
     show = os.path.basename(show_dir)
     gpath = os.path.join(GLOSS_DIR, show + ".json")
     cfg = {"show": show, "initial_prompt": "", "names": [], "hard_fixes": {}}
     if os.path.exists(gpath):
-        try: cfg.update(json.load(open(gpath)))
-        except Exception as e: print("mine: bad glossary, starting fresh:", e)
+        try:
+            cfg.update(json.load(open(gpath)))
+        except Exception as e:
+            print("mine: bad glossary, starting fresh:", e)
     existing = {n.lower() for n in cfg.get("names", [])}
 
     counter, poss, mid = {}, {}, set()
@@ -210,7 +242,7 @@ def main():
     for dp, dns, fs in os.walk(show_dir):
         dns[:] = [d for d in dns if d.lower() not in EXTRA_DIRS]
         for fn in fs:
-            if not fn.lower().endswith((".mkv",".mp4")) or SKIP_FILE_RE.search(fn):
+            if not fn.lower().endswith((".mkv", ".mp4")) or SKIP_FILE_RE.search(fn):
                 continue
             stem = os.path.splitext(os.path.join(dp, fn))[0]
             # only NEW episodes (no dubtitle yet) -> each episode mined exactly once, additively
@@ -218,10 +250,11 @@ def main():
                 continue
             txt = eng_sub_text(os.path.join(dp, fn))
             if txt:
-                mine_text(txt, counter, poss, mid); mined_eps += 1
+                mine_text(txt, counter, poss, mid)
+                mined_eps += 1
 
     new, queue = admit(counter, poss, mid, MIN_COUNT, COMMON, existing)
-    queued = queue_for_review(cfg, queue)   # D5: the crossing lane goes to a human, never auto-appended
+    queued = queue_for_review(cfg, queue)  # D5: the crossing lane goes to a human, never auto-appended
     if not new and not queued:
         print(f"mine[{show}]: {mined_eps} new ep(s), no new terms (dict has {len(existing)})")
         return
@@ -230,10 +263,11 @@ def main():
     if not cfg.get("initial_prompt"):
         top = sorted(cfg["names"], key=lambda n: -counter.get(n, 0))[:30]
         title = re.sub(r"\s*\{tvdb-\d+\}|\s*\(\d{4}\)", "", show)
-        cfg["initial_prompt"] = (f"This is {title}, a Japanese anime (English dub). Spell names "
-                                 f"correctly: " + ", ".join(top) + ".")
+        cfg["initial_prompt"] = f"This is {title}, a Japanese anime (English dub). Spell names correctly: " + ", ".join(top) + "."
     os.makedirs(GLOSS_DIR, exist_ok=True)
-    json.dump(cfg, open(gpath, "w"), indent=2, ensure_ascii=False)
+    with open(gpath, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+        f.write("\n")  # POSIX line: prettier flags a glossary without it
     review = f" | {len(queued)} queued for review: {queued[:5]}" if queued else ""
     print(f"mine[{show}]: +{len(new)} terms from {mined_eps} new ep(s) -> {new[:15]}{review}")
 

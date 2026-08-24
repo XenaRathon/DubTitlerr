@@ -42,7 +42,7 @@ observability; the signs/songs phase (D) covers the lower-priority formatting it
       or contains glossary names not in the original) are re-sent to the
       secondary model (`REPAIR_MODEL_SECONDARY`, defaults to same as primary).
       NOTE: the "contains a glossary name not in the original" trigger fires on
-      essentially *every* successful name repair (inserting the correct glossary
+      essentially _every_ successful name repair (inserting the correct glossary
       name is the whole point of repair), so this is best understood as
       "re-verify all name-changing repairs with the stronger model," NOT a
       "only ambiguous lines go to the slow model, keep 90% fast" optimization.
@@ -149,8 +149,8 @@ observability; the signs/songs phase (D) covers the lower-priority formatting it
 - **#39 Glossary JSON schema** — requires community-repo design decisions. Defer
   to a future "Community Glossary Repo" spec.
 - **#40 common_words.txt comment** — single comment, do anytime.- **#53 Resolution normalization (pixel transform)** — the full coordinate
-      transform is complex; this spec only adds the warning (Phase D). Actual
-      normalization is deferred to V3.
+  transform is complex; this spec only adds the warning (Phase D). Actual
+  normalization is deferred to V3.
 
 ### Summary: now covers all 56 review items
 
@@ -187,29 +187,29 @@ observability; the signs/songs phase (D) covers the lower-priority formatting it
 
 ## Edge cases and failure modes
 
-| Case | Expected behavior |
-|---|---|
-| `llamacpp` backend unreachable | Log warning, fall back to returning empty string (same as current Ollama failure path) |
-| `REPAIR_MODEL_SECONDARY` same as primary | Two-pass becomes a no-op (same model, skip redundant second call) |
-| `jellyfish` not installed | Phonetic tier skipped gracefully (try/except ImportError); degrade to existing 3-tier correction |
-| `word_probs` missing in older conf.json files | `is_target()` treats missing field as "all probs ok" — backward-compatible |
-| `data/extras.txt` missing or unreadable | Fall back to inline defaults (current hardcoded set) |
-| `anime_library.sh --dry-run` with no files | Prints "would generate 0, repair 0, mux 0" |
+| Case                                                     | Expected behavior                                                                                |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `llamacpp` backend unreachable                           | Log warning, fall back to returning empty string (same as current Ollama failure path)           |
+| `REPAIR_MODEL_SECONDARY` same as primary                 | Two-pass becomes a no-op (same model, skip redundant second call)                                |
+| `jellyfish` not installed                                | Phonetic tier skipped gracefully (try/except ImportError); degrade to existing 3-tier correction |
+| `word_probs` missing in older conf.json files            | `is_target()` treats missing field as "all probs ok" — backward-compatible                       |
+| `data/extras.txt` missing or unreadable                  | Fall back to inline defaults (current hardcoded set)                                             |
+| `anime_library.sh --dry-run` with no files               | Prints "would generate 0, repair 0, mux 0"                                                       |
 | `gen_loop.sh` with `set -e` and a `find` returning empty | `find ... \|\| true` prevents exit; stall detection `$after -le $before` still works with both 0 |
-| Style collision log in `build()` for identical styles | No-op (don't log if fontname AND fontsize match) |
-| Font MIME type is `application/octet-stream` | Log warning but don't fail verify — some valid fonts have generic MIME |
+| Style collision log in `build()` for identical styles    | No-op (don't log if fontname AND fontsize match)                                                 |
+| Font MIME type is `application/octet-stream`             | Log warning but don't fail verify — some valid fonts have generic MIME                           |
 
 ## Decisions taken
 
-| Decision | Rejected alternative | Why |
-|---|---|---|
-| Phonetic matching uses `jellyfish.metaphone()`, not Soundex | Soundex | Metaphone handles non-English names better (anime character names are Japanese → English transliterations). Jellyfish is pure Python, no C deps. |
-| `REPAIR_BACKEND` env var with separate HTTP paths | Single URL with format detection | Ollama API (`/api/generate`) and llama.cpp API (`/completion`) have fundamentally different request/response schemas. Separate code paths are cleaner than format-sniffing. |
-| Two-pass repair uses same model by default (no-op) | Always requires a secondary | Makes the feature opt-in. Most users have one model; the two-pass is for the homelab's specific dual-model setup. |
-| `data/` files with inline fallbacks | Only data files, no fallbacks | Keeps the project runnable without the data files (dev/test environments). The Dockerfile can COPY them for production. |
-| `EXTRA_DIRS` consolidation uses a data file + common.py loader + shell lib | Single Python source, shell duplicates | The shell scripts (`merge_pass.sh`, `post_show.sh`) need the list in grep-compatible form. A data file + shell function is the only way to have a single source of truth. |
-| `set -e` in `gen_loop.sh` with explicit `\|\| true` | No `set -e` (current) | The existing stall-detection logic (`$after -le $before`) is load-bearing. `set -e` prevents silent failures in the mine/verify/generate sequence; explicit fallthroughs preserve the crash-resume behavior. |
-| Phase D resolution check: warn only, don't transform | Full coordinate transform | Coordinate transform requires parsing `\pos` tags and scaling by ratio — ~50 lines of regex math with edge cases. The mismatch is rare; a loud warning is sufficient for now. Full transform deferred to V3. |
+| Decision                                                                   | Rejected alternative                   | Why                                                                                                                                                                                                          |
+| -------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Phonetic matching uses `jellyfish.metaphone()`, not Soundex                | Soundex                                | Metaphone handles non-English names better (anime character names are Japanese → English transliterations). Jellyfish is pure Python, no C deps.                                                             |
+| `REPAIR_BACKEND` env var with separate HTTP paths                          | Single URL with format detection       | Ollama API (`/api/generate`) and llama.cpp API (`/completion`) have fundamentally different request/response schemas. Separate code paths are cleaner than format-sniffing.                                  |
+| Two-pass repair uses same model by default (no-op)                         | Always requires a secondary            | Makes the feature opt-in. Most users have one model; the two-pass is for the homelab's specific dual-model setup.                                                                                            |
+| `data/` files with inline fallbacks                                        | Only data files, no fallbacks          | Keeps the project runnable without the data files (dev/test environments). The Dockerfile can COPY them for production.                                                                                      |
+| `EXTRA_DIRS` consolidation uses a data file + common.py loader + shell lib | Single Python source, shell duplicates | The shell scripts (`merge_pass.sh`, `post_show.sh`) need the list in grep-compatible form. A data file + shell function is the only way to have a single source of truth.                                    |
+| `set -e` in `gen_loop.sh` with explicit `\|\| true`                        | No `set -e` (current)                  | The existing stall-detection logic (`$after -le $before`) is load-bearing. `set -e` prevents silent failures in the mine/verify/generate sequence; explicit fallthroughs preserve the crash-resume behavior. |
+| Phase D resolution check: warn only, don't transform                       | Full coordinate transform              | Coordinate transform requires parsing `\pos` tags and scaling by ratio — ~50 lines of regex math with edge cases. The mismatch is rare; a loud warning is sufficient for now. Full transform deferred to V3. |
 
 ## Constraints
 

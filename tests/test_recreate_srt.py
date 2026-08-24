@@ -1,6 +1,7 @@
 """recreate_srt rebuilds an srt from conf.json. conf.json stores FLATTENED text, so the
 rebuild must re-wrap or the episode ships as unwrapped single lines -- the library-wide
 defect this suite exists to prevent."""
+
 import json
 
 import recreate_srt
@@ -17,18 +18,19 @@ def _cues(text):
     out = []
     for block in text.strip().split("\n\n"):
         lines = block.split("\n")
-        if len(lines) >= 3: out.append(lines[2:])
+        if len(lines) >= 3:
+            out.append(lines[2:])
     return out
 
 
 def test_recreate_rewraps_flattened_conf_text(tmp_path):
     flat = "Now everybody lift your hands up Sing about what you are dreaming"
-    assert len(flat) > reflow.MAX_LINE                      # the defect's precondition
+    assert len(flat) > reflow.MAX_LINE  # the defect's precondition
     srt = recreate_srt.recreate(_write_conf(tmp_path, [{"start": 0.0, "end": 5.0, "text": flat}]))
     cue = _cues(open(srt).read())[0]
     assert len(cue) == 2
     assert all(len(ln) <= reflow.MAX_LINE for ln in cue)
-    assert " ".join(cue) == flat                            # no words lost to wrapping
+    assert " ".join(cue) == flat  # no words lost to wrapping
 
 
 def test_recreate_skips_an_existing_srt(tmp_path):

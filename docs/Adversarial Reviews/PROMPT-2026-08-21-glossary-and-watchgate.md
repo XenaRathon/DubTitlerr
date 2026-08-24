@@ -19,7 +19,7 @@ Spec 1 is the priority — it blocks a 183-episode regeneration. Spec 2 is secon
 
 **Verify every factual claim against the source before you accept or attack it.** These specs
 assert measured facts about code behaviour, and the author has been wrong about exactly this
-kind of claim before — twice in one day, both times because a *default value* silently
+kind of claim before — twice in one day, both times because a _default value_ silently
 produced the expected answer:
 
 - A test used `c.get("source_end", c["end"])` on cards that lacked `source_end`, so the
@@ -53,8 +53,8 @@ Answer these directly. Disagreement is more useful than agreement.
    or a symptom of something structurally wrong in how this glossary separates tiers?
 
 2. **Attack the proposed fix.** Spec 1 §3.2 argues no deterministic guard can separate a
-   *correct* canonicalisation (`Doflamingo` -> `Donquixote Doflamingo`, `Kaido` -> `Kaidou`)
-   from a *wrong* one (`Raftel` -> `Ratel`, `Trafalgar` -> `Trafalgar Lami`), because both
+   _correct_ canonicalisation (`Doflamingo` -> `Donquixote Doflamingo`, `Kaido` -> `Kaidou`)
+   from a _wrong_ one (`Raftel` -> `Ratel`, `Trafalgar` -> `Trafalgar Lami`), because both
    shapes are identical under edit distance and containment — so any changed term escalates to
    a human review queue. **Is that giving up too early?** The pipeline has access to the show's
    own transcripts and, for many releases, an embedded fansub track. Is there a signal there

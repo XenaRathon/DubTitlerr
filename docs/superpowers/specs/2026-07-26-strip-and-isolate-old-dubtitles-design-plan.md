@@ -25,24 +25,24 @@ after the migration window are treated as stale and regenerated.
 
 ## Affected files (by layer)
 
-| Layer | File | Change |
-|---|---|---|
-| Core | `common.py` | Add `TRACK_NAME`, `PIPELINE_VERSION`, `GRANDFATHER_VERSION`. Update `eng_sub_streams()` to fetch `stream_tags=title` and exclude `TRACK_NAME`. Update `write_stamp()` to record version. Update `stamp_valid()` to require `version >= PIPELINE_VERSION`. |
-| MUX | `mux.py` | Import `TRACK_NAME` from `common.py` (drop local constant). Update `keep_sub()` to drop tracks whose `track_name == TRACK_NAME`. Make `process()` skip guard stamp-only (remove `has_dubtitles_track()` backstop). |
-| Generation | `generate.py` | Remove the `SKIP_IF_MUXED` guard and the now-dead `has_dubtitles_track()` function. Rely on the existing version-aware `stamp_valid` check at the top of `process()`. |
-| Glossary | `mine_glossary.py` | Update `eng_sub_text()` ffprobe query to fetch `stream_tags=title` and exclude streams with `title == TRACK_NAME`. |
-| Migration (new) | `scripts/migrate_write_v1_stamps.py` | One-time pass: for files with a `Dubtitles` track but no `.dubtitles.done` stamp, write a v1 stamp. |
-| Tests | `tests/test_common.py`, `tests/test_mux.py`, `tests/test_generate.py`, `tests/test_mine_glossary.py` | Add/update unit tests for title exclusion, version-aware stamps, stamp-only skip, and migration. |
+| Layer           | File                                                                                                 | Change                                                                                                                                                                                                                                                    |
+| --------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core            | `common.py`                                                                                          | Add `TRACK_NAME`, `PIPELINE_VERSION`, `GRANDFATHER_VERSION`. Update `eng_sub_streams()` to fetch `stream_tags=title` and exclude `TRACK_NAME`. Update `write_stamp()` to record version. Update `stamp_valid()` to require `version >= PIPELINE_VERSION`. |
+| MUX             | `mux.py`                                                                                             | Import `TRACK_NAME` from `common.py` (drop local constant). Update `keep_sub()` to drop tracks whose `track_name == TRACK_NAME`. Make `process()` skip guard stamp-only (remove `has_dubtitles_track()` backstop).                                        |
+| Generation      | `generate.py`                                                                                        | Remove the `SKIP_IF_MUXED` guard and the now-dead `has_dubtitles_track()` function. Rely on the existing version-aware `stamp_valid` check at the top of `process()`.                                                                                     |
+| Glossary        | `mine_glossary.py`                                                                                   | Update `eng_sub_text()` ffprobe query to fetch `stream_tags=title` and exclude streams with `title == TRACK_NAME`.                                                                                                                                        |
+| Migration (new) | `scripts/migrate_write_v1_stamps.py`                                                                 | One-time pass: for files with a `Dubtitles` track but no `.dubtitles.done` stamp, write a v1 stamp.                                                                                                                                                       |
+| Tests           | `tests/test_common.py`, `tests/test_mux.py`, `tests/test_generate.py`, `tests/test_mine_glossary.py` | Add/update unit tests for title exclusion, version-aware stamps, stamp-only skip, and migration.                                                                                                                                                          |
 
 ## Risks and mitigation
 
-| Risk | Mitigation |
-|---|---|
-| Mass regeneration of files without stamps | Run `scripts/migrate_write_v1_stamps.py` before deploy; deploy only after migration is complete. |
-| Old dubtitle still used as context in a missed code path | Audit: every call site that reads embedded subs is listed in the spec's enumeration audit; verify with grep/code search before merging. |
-| Track ordering changes in MKV players | New track is appended last; default track flag is set correctly by `mux.build_cmd`. Test in a player before version bump. |
-| Orphaned sidecars after stamp write but before cleanup | Documented, low-impact; sidecar is harmless and will be cleaned up on the next version-bump re-process. |
-| `generate.has_dubtitles_track()` removed but another script imports it | Search the codebase before removal; no external callers expected. |
+| Risk                                                                   | Mitigation                                                                                                                              |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Mass regeneration of files without stamps                              | Run `scripts/migrate_write_v1_stamps.py` before deploy; deploy only after migration is complete.                                        |
+| Old dubtitle still used as context in a missed code path               | Audit: every call site that reads embedded subs is listed in the spec's enumeration audit; verify with grep/code search before merging. |
+| Track ordering changes in MKV players                                  | New track is appended last; default track flag is set correctly by `mux.build_cmd`. Test in a player before version bump.               |
+| Orphaned sidecars after stamp write but before cleanup                 | Documented, low-impact; sidecar is harmless and will be cleaned up on the next version-bump re-process.                                 |
+| `generate.has_dubtitles_track()` removed but another script imports it | Search the codebase before removal; no external callers expected.                                                                       |
 
 ## Rollback and reversibility
 

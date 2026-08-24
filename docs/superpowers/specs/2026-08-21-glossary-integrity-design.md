@@ -14,14 +14,14 @@ Reviewers should check this table first — every defect below is a consequence 
 `glossary.load_dict()` (glossary.py:62-76) reads exactly five keys. Everything else in the
 file is bookkeeping with **zero runtime effect**.
 
-| key | read by | what it actually does |
-|---|---|---|
-| `names` | `glossary.correct()` → `_fix_token()` (glossary.py:124-147); `name_suspect()` (164-180); `repair._glossary_terms()` (repair.py:120) | deterministic **single-token** correction: exact, guarded fuzzy, Metaphone |
-| `phrases` | `repair._glossary_terms()` (repair.py:120) **only** | term list in the repair LLM prompt |
-| `hard_fixes` | `correct()` — split into token vs phrase maps by `load_dict()` | deterministic exact rewrite |
-| `initial_prompt` | whisper decoder bias | biases **every** transcription |
-| `show` | prompt assembly | — |
-| `verified`, `known`, `flagged`, `acquired` | `glossary_verify` / `glossary_acquire` only | **nothing at runtime** |
+| key                                        | read by                                                                                                                             | what it actually does                                                      |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `names`                                    | `glossary.correct()` → `_fix_token()` (glossary.py:124-147); `name_suspect()` (164-180); `repair._glossary_terms()` (repair.py:120) | deterministic **single-token** correction: exact, guarded fuzzy, Metaphone |
+| `phrases`                                  | `repair._glossary_terms()` (repair.py:120) **only**                                                                                 | term list in the repair LLM prompt                                         |
+| `hard_fixes`                               | `correct()` — split into token vs phrase maps by `load_dict()`                                                                      | deterministic exact rewrite                                                |
+| `initial_prompt`                           | whisper decoder bias                                                                                                                | biases **every** transcription                                             |
+| `show`                                     | prompt assembly                                                                                                                     | —                                                                          |
+| `verified`, `known`, `flagged`, `acquired` | `glossary_verify` / `glossary_acquire` only                                                                                         | **nothing at runtime**                                                     |
 
 Two consequences that matter:
 
@@ -70,7 +70,7 @@ lives only in the adjudication prompt. Nothing checks the result. Two failure ki
 - **Wiki-canon over dub:** `Kaidou` (dub: Kaido), `Arabasta` (dub: Alabasta). Same authority
   mismatch already recorded for techniques — the wiki records Japanese-derived romanisation.
 - **Wrong entity:** `Raftel -> Ratel` (a different word entirely), `Trafalgar -> Trafalgar
-  Lami` (Lami is Law's sister; the bare surname belongs to Law), `Jabra -> Jabari`.
+Lami` (Lami is Law's sister; the bare surname belongs to Law), `Jabra -> Jabari`.
 
 D1 makes D2 destructive rather than merely additive: a wrong adjudication does not sit
 beside the right term, it replaces it.
@@ -92,7 +92,7 @@ says **"Second Gear"** — and `initial_prompt` is the highest-leverage place to
 
 `apply_results()` keeps the original term and **adds** the canonical form, routed by shape:
 
-- canonical is one token  -> append to `names`
+- canonical is one token -> append to `names`
 - canonical is multi-word -> append to `phrases`
 
 The original term stays where it was. Both tiers keep what they need, and a bad adjudication
@@ -150,12 +150,12 @@ error" lesson applied to data instead of counters: the acquisition run reported 
 
 ## 5. Testing
 
-| test | asserts |
-|---|---|
+| test                                    | asserts                                                                       |
+| --------------------------------------- | ----------------------------------------------------------------------------- |
 | `apply_results` keeps the original term | `Doflamingo` still in `names` after a high-confidence `Donquixote Doflamingo` |
-| canonical routed by shape | single token -> `names`, multi-word -> `phrases` |
-| a changed term does not auto-apply | `Raftel` -> `Ratel` lands in `flagged`, not `names` |
-| a genuinely new term still auto-applies | unchanged behaviour for the normal path |
-| verified-reachability invariant | every `verified` term reachable at runtime |
-| no multi-word entry in `names` | shape check |
-| backfill is idempotent | running it twice is a no-op |
+| canonical routed by shape               | single token -> `names`, multi-word -> `phrases`                              |
+| a changed term does not auto-apply      | `Raftel` -> `Ratel` lands in `flagged`, not `names`                           |
+| a genuinely new term still auto-applies | unchanged behaviour for the normal path                                       |
+| verified-reachability invariant         | every `verified` term reachable at runtime                                    |
+| no multi-word entry in `names`          | shape check                                                                   |
+| backfill is idempotent                  | running it twice is a no-op                                                   |

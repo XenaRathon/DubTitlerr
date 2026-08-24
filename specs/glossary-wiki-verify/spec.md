@@ -73,27 +73,27 @@ correct (dub-preferred) spelling for confident matches, and flag the rest.
 
 ## Edge cases and failure modes
 
-| Case | Expected |
-|---|---|
-| Wiki can't be resolved | Leave glossary unchanged; flag nothing applied; log; (community can add a `wiki` override). |
-| Term has no good candidate | Kept as-is, added to `flagged` (no-match). |
-| LLM low-confidence | Kept as-is, flagged (review). |
-| Wiki/LLM timeout or HTTP error | No-op for that run; never crash the sweep. |
-| Dub spelling differs from wiki primary | Prefer dub (LLM instructed); record `dub_note`. |
-| Term already in `verified` | Skipped (incremental). |
-| Huge wiki (1000s of titles) | Pre-match narrows to top-K before the LLM; index cached. |
-| Community-submitted glossary, unknown show | Same flow via the module/CLI; override if needed. |
+| Case                                       | Expected                                                                                    |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| Wiki can't be resolved                     | Leave glossary unchanged; flag nothing applied; log; (community can add a `wiki` override). |
+| Term has no good candidate                 | Kept as-is, added to `flagged` (no-match).                                                  |
+| LLM low-confidence                         | Kept as-is, flagged (review).                                                               |
+| Wiki/LLM timeout or HTTP error             | No-op for that run; never crash the sweep.                                                  |
+| Dub spelling differs from wiki primary     | Prefer dub (LLM instructed); record `dub_note`.                                             |
+| Term already in `verified`                 | Skipped (incremental).                                                                      |
+| Huge wiki (1000s of titles)                | Pre-match narrows to top-K before the LLM; index cached.                                    |
+| Community-submitted glossary, unknown show | Same flow via the module/CLI; override if needed.                                           |
 
 ## Decisions taken
 
-| Decision | Rejected | Why |
-|---|---|---|
-| Hybrid: fetch wiki + LLM adjudicate | deterministic-only; LLM-researcher | Authoritative data + judgment for dub-vs-manga; reproducible. |
-| Local qwen3:8b, configurable | cloud-only; escalation | Local-first; wiki data does the heavy lifting; cheap (infrequent). |
-| Mining hook + CLI + reusable module | hook-only; standalone-only | Build (mining) + modification (CLI/community front-ends) coverage. |
-| Auto-apply high-confidence, flag rest | suggest-only; apply-all | Automatic accuracy without guessing on the uncertain. |
-| Auto-resolve + `wiki` override | explicit-only; web-search | Zero-config for easy shows; override pins the tricky/community ones. |
-| Full main-namespace index, LLM-filtered | character-cat-only; curated cats | Uniform coverage of names/places/ships/terms/attacks. |
+| Decision                                | Rejected                           | Why                                                                  |
+| --------------------------------------- | ---------------------------------- | -------------------------------------------------------------------- |
+| Hybrid: fetch wiki + LLM adjudicate     | deterministic-only; LLM-researcher | Authoritative data + judgment for dub-vs-manga; reproducible.        |
+| Local qwen3:8b, configurable            | cloud-only; escalation             | Local-first; wiki data does the heavy lifting; cheap (infrequent).   |
+| Mining hook + CLI + reusable module     | hook-only; standalone-only         | Build (mining) + modification (CLI/community front-ends) coverage.   |
+| Auto-apply high-confidence, flag rest   | suggest-only; apply-all            | Automatic accuracy without guessing on the uncertain.                |
+| Auto-resolve + `wiki` override          | explicit-only; web-search          | Zero-config for easy shows; override pins the tricky/community ones. |
+| Full main-namespace index, LLM-filtered | character-cat-only; curated cats   | Uniform coverage of names/places/ships/terms/attacks.                |
 
 ## Constraints
 

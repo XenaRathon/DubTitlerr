@@ -47,12 +47,12 @@ id 1), plus the Jellyfin server. Jellyfin is household-only, so WatchState's cov
 
 ### 3.2 Plex alone would miss the primary show
 
-| source | One Pace last activity |
-|---|---|
-| Plex `lastViewedAt` on the show | 2026-07-11 22:09 |
-| WatchState `max(updated)`, `via=jellyfin` | **2026-08-20 22:50** |
+| source                                    | One Pace last activity |
+| ----------------------------------------- | ---------------------- |
+| Plex `lastViewedAt` on the show           | 2026-07-11 22:09       |
+| WatchState `max(updated)`, `via=jellyfin` | **2026-08-20 22:50**   |
 
-Exactly **40.0 days** apart. Playback happens on Jellyfin; WatchState syncs the *watched flag*
+Exactly **40.0 days** apart. Playback happens on Jellyfin; WatchState syncs the _watched flag_
 into Plex without bumping Plex's display `lastViewedAt`. A 30-day Plex-only gate would have
 dropped One Pace — the show the v4 regeneration exists for — while returning a confident,
 correctly-sorted list of everything else.
@@ -88,7 +88,7 @@ across all accounts** (everyone else). Neither source is a superset of the other
     GET /v1/api/backends  ->  200
 
 **Plex** — `PLEX_URL` / `PLEX_TOKEN` / `PLEX_SECTION=7` already in the stack. The admin token
-returns *all* accounts' history; each `<Video>` row carries `accountID`, `grandparentTitle`
+returns _all_ accounts' history; each `<Video>` row carries `accountID`, `grandparentTitle`
 and `viewedAt`.
 
 **Caution, measured:** the `viewedAt>>=<ts>` query parameter was **silently ignored** — a
@@ -155,22 +155,22 @@ A small module, `watch_queue.py`, run once per sweep before the loop re-reads th
 ## 6. Out of scope
 
 - Changing `gen_loop.sh`'s control flow — regenerating the file it already re-reads is enough.
-- Watch history as a *quality* signal (e.g. prioritising episodes rewatched often).
+- Watch history as a _quality_ signal (e.g. prioritising episodes rewatched often).
 - Movies. WatchState tracks 641; the dubtitle pipeline is show-oriented.
 
 ## 7. Testing
 
-| test | asserts |
-|---|---|
-| unreachable source -> no write | `anime_order.txt` byte-identical, non-zero exit, reason logged |
-| reachable but empty -> no write | distinguishes "nothing watched" from "could not tell" |
-| non-anime shows excluded | a WatchState title with no `ANIME_ROOT` directory is not queued |
-| title -> directory matching | `{tvdb-...}` and `(YYYY)` suffixes resolve |
-| unmatched title is reported | appears in output, does not vanish |
-| ordering | most-recently-watched first |
-| a queued show is not narrowed | every episode of a queued show remains eligible, watched or not |
-| pinned show always present | even with a last-played far outside the window |
-| union across sources | a show seen only in Plex under another account is queued |
-| Plex date filter is not trusted | rows outside the window are dropped client-side |
-| HTML-escaped titles | `I&#39;m in Love with the Villainess` matches its directory |
-| dry-run writes nothing | — |
+| test                            | asserts                                                         |
+| ------------------------------- | --------------------------------------------------------------- |
+| unreachable source -> no write  | `anime_order.txt` byte-identical, non-zero exit, reason logged  |
+| reachable but empty -> no write | distinguishes "nothing watched" from "could not tell"           |
+| non-anime shows excluded        | a WatchState title with no `ANIME_ROOT` directory is not queued |
+| title -> directory matching     | `{tvdb-...}` and `(YYYY)` suffixes resolve                      |
+| unmatched title is reported     | appears in output, does not vanish                              |
+| ordering                        | most-recently-watched first                                     |
+| a queued show is not narrowed   | every episode of a queued show remains eligible, watched or not |
+| pinned show always present      | even with a last-played far outside the window                  |
+| union across sources            | a show seen only in Plex under another account is queued        |
+| Plex date filter is not trusted | rows outside the window are dropped client-side                 |
+| HTML-escaped titles             | `I&#39;m in Love with the Villainess` matches its directory     |
+| dry-run writes nothing          | —                                                               |

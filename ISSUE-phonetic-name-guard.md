@@ -29,10 +29,10 @@ The first two are the clearest signal: **the identical token `Syrahose` gets two
 
 Three prompt variants were measured (see `a4f7dd2` for the full write-up):
 
-| approach | result |
-|---|---|
-| restate "never replace a name" more forcefully | no effect — the old prompt already said it |
-| remove the glossary from the prompt entirely | 42% -> 38%; the name list is not the trigger |
+| approach                                                                    | result                                           |
+| --------------------------------------------------------------------------- | ------------------------------------------------ |
+| restate "never replace a name" more forcefully                              | no effect — the old prompt already said it       |
+| remove the glossary from the prompt entirely                                | 42% -> 38%; the name list is not the trigger     |
 | verification-only framing + worked examples + nothing trailing the ASR line | 42% -> 25%, glossary-name fabrication eliminated |
 
 The third shipped. The residue above is what survives it. Further wording changes trade one failure for another: the same prompt applied to `nanbeige4.2-3b` drove it to **1 edit across 120 targets** — an inert no-op that also loses its genuine repairs.
@@ -58,4 +58,5 @@ This is testable without a GPU, deterministic, and independent of which model is
 - Worth re-running the three-show comparison after the guard lands to quantify the remaining error rate.
 
 ---
+
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

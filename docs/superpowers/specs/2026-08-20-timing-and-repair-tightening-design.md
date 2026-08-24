@@ -16,11 +16,12 @@ verification of the output found three defects the pipeline had no way to see.
    The worst observed is `'Cool!'` at 0.02s -- 294 cps, roughly one frame.
 
    MEASUREMENT CORRECTION (v2): the first count was 1,140. A naive `duration <
-   MIN_DUR` test counts 410 cards that the current code deliberately set to exactly
+MIN_DUR` test counts 410 cards that the current code deliberately set to exactly
    `start + MIN_DUR`, whose duration recomputes as 0.8299999999999998 from the
    3-decimal values stored in `conf.json`. Every comparison against a duration
    threshold in this pipeline MUST carry an epsilon (1e-6). The naive form
    overstated the defect by 56%.
+
 2. **The QC data that would have caught this is computed and discarded.**
    `generate.py:320-323` calculates `over_cps`, `max_dur` and `violations` on every
    episode, logs them, and persists only four unrelated counters to `lastrun.json`.
@@ -35,11 +36,11 @@ verification of the output found three defects the pipeline had no way to see.
    `repair.py:388-390` rewrites the srt from those conf rows without ever re-wrapping.
    Measured on shipped, muxed Dubtitles tracks:
 
-   | show | cues | multi-line | line > 42 chars |
-   |---|---|---|---|
-   | One Pace S30E01 | 520 | **0** | 165 (32%) |
-   | Chainsaw Man | 1,123 | **0** | 298 (27%) |
-   | BEASTARS | 411 | **0** | 101 (25%) |
+   | show            | cues  | multi-line | line > 42 chars |
+   | --------------- | ----- | ---------- | --------------- |
+   | One Pace S30E01 | 520   | **0**      | 165 (32%)       |
+   | Chainsaw Man    | 1,123 | **0**      | 298 (27%)       |
+   | BEASTARS        | 411   | **0**      | 101 (25%)       |
 
    Zero multi-line cues exist anywhere in the library. This is a larger and more
    visible defect than the runt cards, and it is invisible to the current QC because
@@ -66,7 +67,7 @@ branch "rescues" the card to `MIN_GAP` -- two frames -- and reports success. The
 median gap from a runt to its successor is 0.083s, exactly `MIN_GAP`, confirming
 these cards were squeezed against their neighbour rather than genuinely brief.
 
-93% of runts end in sentence punctuation. They are sentence *tails* -- the last word
+93% of runts end in sentence punctuation. They are sentence _tails_ -- the last word
 or two of a sentence, followed immediately by a new one.
 
 ### Root cause of (2)
@@ -116,7 +117,7 @@ the shift in this order:
 2. **the gap** to the card after it
 3. whatever remains propagates to the next card, recursively
 
-No cap on cascade depth. No card ever moves *earlier*: a caption arriving slightly
+No cap on cascade depth. No card ever moves _earlier_: a caption arriving slightly
 late is preferable to one arriving early, which can spoil.
 
 **A2a (v3) -- the shift is not the extension delta.** A2 originally said the successor
@@ -197,7 +198,7 @@ group boundaries. Explicitly:
 - the scan is left-to-right; a runt merges into its immediate predecessor only
 - a predecessor that has already absorbed a runt in this pass is a legal target for
   the next one, subject to the same four constraints re-evaluated on the merged form
-- a merged card that is *still* below `MIN_DUR` (both parts were short) is not a
+- a merged card that is _still_ below `MIN_DUR` (both parts were short) is not a
   failure -- it falls through to A2 like any other short card
 - every merge records a `merge_reason`; every steal records `stolen_from` and the
   cascade id
@@ -237,12 +238,12 @@ Measured frequency on Punk Hazard: 0 occurrences. Cheap insurance, not a live bu
 
 **Measured on Punk Hazard (10,020 cards, 730 genuine runts, epsilon-corrected):**
 
-| outcome | count |
-|---|---|
-| fixed by backward merge | 313 (43%) |
-| fixed by forward steal | 395 (54%) |
-| last-card extended freely | 0 |
-| **remaining below `MIN_DUR`** | **0** |
+| outcome                       | count     |
+| ----------------------------- | --------- |
+| fixed by backward merge       | 313 (43%) |
+| fixed by forward steal        | 395 (54%) |
+| last-card extended freely     | 0         |
+| **remaining below `MIN_DUR`** | **0**     |
 
 Cascade behaviour with surplus absorption: 80% terminate in one hop, p90 two hops,
 max seven. 489 cards (5.0%) end up displaced later at all; median 0.27s, p90 0.67s,
@@ -392,7 +393,7 @@ visually invalid -- which is exactly how Problem 4 survived.
 the same acceptance validation as the first pass. Today it does not.
 
 **C5 confirmed during implementation, and worse than stated:** the secondary output did
-not bypass *part* of the gate, it bypassed `accept_repair` ENTIRELY -- no length band,
+not bypass _part_ of the gate, it bypassed `accept_repair` ENTIRELY -- no length band,
 no reference-borrow guard, no profile check. `new2` was written over an already-accepted
 first-pass repair after only `glossary.correct()`. Since `_needs_secondary_check` fires
 on ~every name-changing repair by design, that was the COMMON path, not a rare one. Now
@@ -532,10 +533,10 @@ whose `eng_sub_text()` reads embedded fansub tracks and explicitly excludes our 
 dubtitle track. So the source asymmetry below is not two lanes inside one module; it is
 the boundary BETWEEN the two:
 
-| module | source | writes |
-|---|---|---|
-| `mine_glossary.py` | embedded fansub track (human-authored) | auto-appends to `names` |
-| `glossary_acquire.py` | our own transcript (Whisper guessing) | wiki-adjudicated |
+| module                | source                                 | writes                  |
+| --------------------- | -------------------------------------- | ----------------------- |
+| `mine_glossary.py`    | embedded fansub track (human-authored) | auto-appends to `names` |
+| `glossary_acquire.py` | our own transcript (Whisper guessing)  | wiki-adjudicated        |
 
 What D1 actually contributes is the provenance model and the apply rule, not a new
 input. The self-reinforcement objection still does not apply, for the reason v4 gave: a
@@ -557,11 +558,11 @@ glossaries: 15   with anchors: 15   empty: 0
 are everywhere and the near-miss lane has something to anchor to. The three layers
 compose as intended:
 
-| layer | fills | gate |
-|---|---|---|
-| `mine_glossary` | bulk of `names`, from fansub tracks | count floor, auto-append |
-| `glossary_verify` | canonical dub-preferred spellings, from the wiki | cached, incremental |
-| `glossary_acquire` | the residue no fansub covers | wiki-adjudicated, D3 apply rule |
+| layer              | fills                                            | gate                            |
+| ------------------ | ------------------------------------------------ | ------------------------------- |
+| `mine_glossary`    | bulk of `names`, from fansub tracks              | count floor, auto-append        |
+| `glossary_verify`  | canonical dub-preferred spellings, from the wiki | cached, incremental             |
+| `glossary_acquire` | the residue no fansub covers                     | wiki-adjudicated, D3 apply rule |
 
 So the human gate bites only on a genuinely NEW term -- a name no fansub anywhere in the
 show ever wrote, e.g. One Pace S29-S30's `Shirahoshi` and `Van Der Decken`, the case that
@@ -631,10 +632,10 @@ counts -- otherwise the floors are not the floors that were measured.
   error). Errors cluster at low counts.
 - **>= 3 occurrences** for a brand-new term.
 
-The distribution runs opposite to intuition. High counts are *correct names missing
-from the glossary* -- `Momonosuke` 21x, `Brownbeard` 16x, `Vegapunk` 14x -- because
+The distribution runs opposite to intuition. High counts are _correct names missing
+from the glossary_ -- `Momonosuke` 21x, `Brownbeard` 16x, `Vegapunk` 14x -- because
 Whisper hears a name consistently when it is clear. The errors live in the tail:
-`Kinamon` 2x (a mangled `Kin'emon`, which *is* already in the glossary and therefore
+`Kinamon` 2x (a mangled `Kin'emon`, which _is_ already in the glossary and therefore
 reachable as a near-miss target), `Whitestrom` 2x, `Morphosis` 2x, `Hazzard` 4x. A
 flat floor of 3 keeps the names and discards the mistakes.
 
@@ -714,10 +715,10 @@ anywhere.
 
 Measured against the shipped implementation, A/B on the same 22-episode corpus:
 
-| | old | new |
-|---|---|---|
-| auto-append lane | 122 terms | **122 terms, byte-identical** |
-| possessive_floor_crossing queue | n/a | **0** |
+|                                 | old       | new                           |
+| ------------------------------- | --------- | ----------------------------- |
+| auto-append lane                | 122 terms | **122 terms, byte-identical** |
+| possessive_floor_crossing queue | n/a       | **0**                         |
 
 The safety property is what matters and it holds exactly: the lane that writes to the
 glossary with no human in the loop is unchanged, term for term. The recovered evidence is
@@ -730,10 +731,10 @@ expected to fire. It should not be described as one.
 
 The extraction is shared; the admission policy is not:
 
-*(A code sketch stood here in v2 proposing a shared-extraction split with a dictionary
+_(A code sketch stood here in v2 proposing a shared-extraction split with a dictionary
 gate. It is REMOVED rather than annotated: revised prose sitting above stale code reads
 as an instruction, which is exactly how the v3 review found an implementer would have
-re-added the withdrawn gate. The two-lane rule below is the whole design.)*
+re-added the withdrawn gate. The two-lane rule below is the whole design.)_
 
 Both paths get possessive folding, because the evidence loss is real on both. No
 dictionary gate is added on either path -- see the v4 lane split below for what makes
@@ -829,7 +830,7 @@ instead of 370; 4,680 cards displaced (49.4%) instead of 449 (4.7%); p99 latenes
 5.88s and max 12.64s instead of 1.36s; cascades to 54 cards. A 12-second displacement
 is a caption arriving in a different scene. The deeper objection is that cps and
 duration have different correct fixes: a too-short card needs more time, a too-dense
-card needs *fewer characters* -- the repair step's job or the splitter's, not the
+card needs _fewer characters_ -- the repair step's job or the splitter's, not the
 timer's. **Roadmap:** revisit with a delta cap once `qc.json` shows the real p90 cps
 delta.
 
@@ -850,7 +851,7 @@ actually matters.
 **Clustering flagged-card text for the review queue.** See D2 -- it escalates the
 opening theme.
 
-**Admitting apostrophe/hyphen tokens as *new* candidates.** Measured: zero additional
+**Admitting apostrophe/hyphen tokens as _new_ candidates.** Measured: zero additional
 finds on this show. `Kin'emon` is already in the glossary, so the near-miss path
 reaches its variants without this change. **Roadmap** if another show needs it.
 
@@ -860,7 +861,7 @@ into a manual pipeline; the first busy week leaves 40 episodes stalled.
 ## Prerequisite (raised to blocking in v2)
 
 **The VAD orphan bug is upstream of A and must be handled before A's acceptance result
-means anything.** `_dejitter()` (`reflow.py:218-236`) only closes gaps *within* a
+means anything.** `_dejitter()` (`reflow.py:218-236`) only closes gaps _within_ a
 Whisper segment (`words[j]["seg"] == words[i]["seg"]`), so a word that belongs to the
 next utterance but was emitted in the previous segment survives as its own tiny card
 over silence.
@@ -914,7 +915,6 @@ utterances (`Yes.`, `Wait.`) before trusting the flag.
 - Library-wide rollout. This increment re-runs Punk Hazard only.
 - Relocating the pipeline to the 3500g node.
 
-
 ---
 
 ## Appendix: v2 review disposition
@@ -925,25 +925,25 @@ substantive content, itself truncated mid-table). Buffy's review carried the wei
 
 ### Accepted and folded in
 
-| finding | where | evidence |
-|---|---|---|
-| Glossary correction runs AFTER timing and wrapping | verified `generate.py:283` then `:290` | led directly to Problem 4 |
-| Line wrapping destroyed by repair | Problem 4, C3 | verified on muxed output, 3 shows, 0 multi-line cues |
-| A1 merge order is non-deterministic as specified | A4 | two implementations could differ |
-| A2 state transition underspecified; invariants incomplete | A5 | `end >= natural_end` and `start < end` were unasserted |
-| Cascade bound is a corpus property, not a proof | A section note | stated explicitly rather than implied |
-| Last card can extend past audio end | A6 | 0 occurrences measured; clamp is insurance |
-| B1 records outcomes, not distributions | B1 schema | `required_extension` quantiles added |
-| Missing sidecar must differ from clean episode | B4 | |
-| D5 shared fold is unsafe without a dictionary gate | D5 | verified: `mine_glossary.py:133-134` has no dict gate; `boss` not in the 213-entry deny-list |
-| D3 provenance not representable in `harvest()` | D3a | |
-| Harvest scope vs measured floor scope | D3b | |
-| VAD orphan is upstream of A, not merely deferred | Prerequisite | an orphan merged backward passes every invariant and is wrong |
-| No-ref repair targets vanish silently | Out of scope note | ladder terminates in a drop |
-| C2 must validate per-line, not just total | C4 | this is how Problem 4 survived |
-| Secondary-model output unvalidated | C5 | |
-| Property-based whole-list tests needed | Testing | composition is the failure surface |
-| No threshold may be set from one arc | B3 / roadmap | stated explicitly |
+| finding                                                   | where                                  | evidence                                                                                     |
+| --------------------------------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Glossary correction runs AFTER timing and wrapping        | verified `generate.py:283` then `:290` | led directly to Problem 4                                                                    |
+| Line wrapping destroyed by repair                         | Problem 4, C3                          | verified on muxed output, 3 shows, 0 multi-line cues                                         |
+| A1 merge order is non-deterministic as specified          | A4                                     | two implementations could differ                                                             |
+| A2 state transition underspecified; invariants incomplete | A5                                     | `end >= natural_end` and `start < end` were unasserted                                       |
+| Cascade bound is a corpus property, not a proof           | A section note                         | stated explicitly rather than implied                                                        |
+| Last card can extend past audio end                       | A6                                     | 0 occurrences measured; clamp is insurance                                                   |
+| B1 records outcomes, not distributions                    | B1 schema                              | `required_extension` quantiles added                                                         |
+| Missing sidecar must differ from clean episode            | B4                                     |                                                                                              |
+| D5 shared fold is unsafe without a dictionary gate        | D5                                     | verified: `mine_glossary.py:133-134` has no dict gate; `boss` not in the 213-entry deny-list |
+| D3 provenance not representable in `harvest()`            | D3a                                    |                                                                                              |
+| Harvest scope vs measured floor scope                     | D3b                                    |                                                                                              |
+| VAD orphan is upstream of A, not merely deferred          | Prerequisite                           | an orphan merged backward passes every invariant and is wrong                                |
+| No-ref repair targets vanish silently                     | Out of scope note                      | ladder terminates in a drop                                                                  |
+| C2 must validate per-line, not just total                 | C4                                     | this is how Problem 4 survived                                                               |
+| Secondary-model output unvalidated                        | C5                                     |                                                                                              |
+| Property-based whole-list tests needed                    | Testing                                | composition is the failure surface                                                           |
+| No threshold may be set from one arc                      | B3 / roadmap                           | stated explicitly                                                                            |
 
 ### Accepted as caveat, not blocking
 
@@ -959,7 +959,7 @@ exists to make that explicit rather than to avoid it.
 **groq A1-E1** ("a backward merge can leave the card still below `MIN_DUR` because the
 merge does not recompute the duration"). The arithmetic in the counter-example is
 wrong: a backward merge spans predecessor-start to runt-end, so the merged duration is
-at least the predecessor's. The *underlying* case -- both cards short, merged span
+at least the predecessor's. The _underlying_ case -- both cards short, merged span
 still under `MIN_DUR` -- is real and is now stated explicitly in A4 as falling through
 to A2.
 
@@ -986,7 +986,6 @@ timing and wrapping, so a name expansion can push a corrected line over `MAX_LIN
 Either correct text before group sizing, or add a deterministic post-glossary
 re-wrap/validate pass. C2's guard does not cover deterministic corrections. **This is
 the one design question v2 leaves open.**
-
 
 ---
 
@@ -1064,7 +1063,6 @@ theorem; a full library scan runs after C3 lands.
 6. B1's bounded, effect-list event schema
 7. Orphan quarantine reported as unfixed, never as fixed
 
-
 ---
 
 ## Appendix: v4 review disposition (round 3, final)
@@ -1074,12 +1072,12 @@ review is closed; implementation proceeds from this document.
 
 ### The four conditions
 
-| # | Condition | Section | Status |
-|---|---|---|---|
-| 1 | D5 must require an independently qualifying bare-form lane | D5 | folded in |
-| 2 | A2b must define the infeasible-cascade output contract (strict: do not mux) | A2b | folded in |
-| 3 | C7 must trigger on measured layout invalidity, not the +2 growth cap | C7 | folded in |
-| 4 | A2b/B1 must reconcile residual timing failures with the event schema | B1 | folded in |
+| #   | Condition                                                                   | Section | Status    |
+| --- | --------------------------------------------------------------------------- | ------- | --------- |
+| 1   | D5 must require an independently qualifying bare-form lane                  | D5      | folded in |
+| 2   | A2b must define the infeasible-cascade output contract (strict: do not mux) | A2b     | folded in |
+| 3   | C7 must trigger on measured layout invalidity, not the +2 growth cap        | C7      | folded in |
+| 4   | A2b/B1 must reconcile residual timing failures with the event schema        | B1      | folded in |
 
 ### What round 3 caught that rounds 1 and 2 did not
 
@@ -1132,14 +1130,14 @@ Carried forward as roadmap rather than blockers, per the round-3 verdict:
 
 Where another show could change the decision rather than the measurement:
 
-| Decision | What would change it |
-|---|---|
-| A3: never steal for `MAX_CPS` | denser dialogue, fewer gaps, or longer canonicals could leave a large unreadable population; the general rule is "do not enable until QC measures its displacement cost on that corpus", not "cps-stealing is wrong" |
-| No hard cascade displacement cap | this corpus's surplus/gap distribution may not exist elsewhere; continuous dense dialogue could make `cascade_infeasible` routine rather than never |
-| Single-word orphan quarantine | another model, VAD setting, language or audio mix can produce multi-word orphans; the guard needs coverage testing, not generalisation from one morphology |
-| D4's floors of 2 and 3 | nicknames, two legitimate dub spellings, or names used mostly possessively all shift the distribution |
-| C7 deferring the compiler | a glossary with multiword or heavily expanded canonicals changes the calculus; measured layout validity stays authoritative |
-| A6/A2b infeasibility being rare | zero observed clamps on one arc establishes nothing across codecs, Whisper versions, or show pacing |
+| Decision                         | What would change it                                                                                                                                                                                                 |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A3: never steal for `MAX_CPS`    | denser dialogue, fewer gaps, or longer canonicals could leave a large unreadable population; the general rule is "do not enable until QC measures its displacement cost on that corpus", not "cps-stealing is wrong" |
+| No hard cascade displacement cap | this corpus's surplus/gap distribution may not exist elsewhere; continuous dense dialogue could make `cascade_infeasible` routine rather than never                                                                  |
+| Single-word orphan quarantine    | another model, VAD setting, language or audio mix can produce multi-word orphans; the guard needs coverage testing, not generalisation from one morphology                                                           |
+| D4's floors of 2 and 3           | nicknames, two legitimate dub spellings, or names used mostly possessively all shift the distribution                                                                                                                |
+| C7 deferring the compiler        | a glossary with multiword or heavily expanded canonicals changes the calculus; measured layout validity stays authoritative                                                                                          |
+| A6/A2b infeasibility being rare  | zero observed clamps on one arc establishes nothing across codecs, Whisper versions, or show pacing                                                                                                                  |
 
 The Netflix profile constants are general project requirements. The measured
 frequencies that justify the chosen repair strategy are not.

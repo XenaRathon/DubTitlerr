@@ -24,25 +24,27 @@
 
 ## File Structure
 
-| File | Responsibility | Tasks |
-|---|---|---|
-| `reflow.py` | card grouping, merging, timing, wrapping (pure) | 1, 5, 6, 7, 8, 9 |
-| `qc.py` (new) | QC sidecar schema, quantiles, bounded event list | 2 |
-| `generate.py` | pipeline orchestration, conf/srt writing, QC wiring | 3, 9, 10 |
-| `repair.py` | LLM repair, acceptance guards, srt rewrite | 4, 9, 11 |
-| `recreate_srt.py` | rebuild srt from conf | 4 |
-| `mine_glossary.py` | fansub name mining | 12 |
-| `glossary_acquire.py` | wiki-adjudicated acquisition | 13 |
+| File                  | Responsibility                                      | Tasks            |
+| --------------------- | --------------------------------------------------- | ---------------- |
+| `reflow.py`           | card grouping, merging, timing, wrapping (pure)     | 1, 5, 6, 7, 8, 9 |
+| `qc.py` (new)         | QC sidecar schema, quantiles, bounded event list    | 2                |
+| `generate.py`         | pipeline orchestration, conf/srt writing, QC wiring | 3, 9, 10         |
+| `repair.py`           | LLM repair, acceptance guards, srt rewrite          | 4, 9, 11         |
+| `recreate_srt.py`     | rebuild srt from conf                               | 4                |
+| `mine_glossary.py`    | fansub name mining                                  | 12               |
+| `glossary_acquire.py` | wiki-adjudicated acquisition                        | 13               |
 
 ---
 
 ### Task 1: Epsilon discipline and duration helpers
 
 **Files:**
+
 - Modify: `reflow.py` (constants block, ~line 26-40)
 - Test: `tests/test_reflow.py`
 
 **Interfaces:**
+
 - Produces: `reflow.EPS`, `reflow.is_short(dur)`, `reflow.card_cps(text, dur)` -- used by every later task.
 
 - [ ] **Step 1: Write the failing test**
@@ -109,10 +111,12 @@ git commit -m "feat(reflow): add EPS and duration helpers for threshold comparis
 ### Task 2: The QC sidecar module
 
 **Files:**
+
 - Create: `qc.py`
 - Test: `tests/test_qc.py`
 
 **Interfaces:**
+
 - Produces: `qc.Recorder` with `.count(name, n=1)`, `.observe(metric, value)`, `.event(**fields)`, `.build(show, episode, stem, **meta) -> dict`, and `qc.write(path, doc) -> bool`.
 - `MAX_EVENTS = 500`.
 
@@ -268,10 +272,12 @@ git commit -m "feat(qc): per-episode sidecar with counters, quantiles and bounde
 ### Task 3: Wire QC into generate.py and add the MIN_DUR floor
 
 **Files:**
+
 - Modify: `generate.py` (~line 318-333, the stats block)
 - Test: `tests/test_generate.py`
 
 **Interfaces:**
+
 - Consumes: `qc.Recorder`, `qc.write`, `reflow.is_short`, `reflow.card_cps`.
 - Produces: `<stem>.dubtitles.qc.json` beside `<stem>.dubtitles.conf.json`.
 
@@ -348,11 +354,13 @@ git commit -m "fix(generate): validate the MIN_DUR floor and persist a QC sideca
 ### Task 4: Restore line wrapping in repair.py (LIVE DEFECT)
 
 **Files:**
+
 - Modify: `repair.py` (~line 386-390, the srt rewrite)
 - Modify: `recreate_srt.py` (same defect, same fix)
 - Test: `tests/test_repair.py`
 
 **Interfaces:**
+
 - Consumes: `reflow.wrap_balance` (already public).
 
 **Context -- this is the highest-visibility item in the plan.** `generate.py:303` writes `conf.json` with `text.replace("\n", " ")`, flattening the wrap. `repair.py:388-390` then rewrites the srt from those conf rows and never re-wraps. Verified against shipped, muxed tracks: **zero multi-line cues exist anywhere in the library**; 25-32% of cues exceed 42 characters on one line (One Pace S30E01 165/520, Chainsaw Man 298/1123, BEASTARS 101/411). Every episode that passes through repair ships unwrapped -- whether or not repair changed a single word.
@@ -413,13 +421,15 @@ git commit -m "fix(repair): re-wrap the srt on rewrite - every episode shipped u
 ### Task 5: Orphan detection and quarantine (PREREQUISITE for Task 6)
 
 **Files:**
+
 - Modify: `reflow.py` (`segment_span` output / group provenance)
 - Test: `tests/test_reflow.py`
 
 **Interfaces:**
+
 - Produces: `reflow.is_orphan_group(group) -> bool` and an `"orphan"` key on the card dict.
 
-**Why this comes BEFORE merging.** `_dejitter()` (`reflow.py:217-234`) only closes gaps *within* a whisper segment (`words[j]["seg"] == words[i]["seg"]`), so a word belonging to the next utterance but emitted in the previous segment survives as its own tiny card over silence. By duration alone that is indistinguishable from a sentence-tail runt -- so Task 6's backward merge would attach it to the sentence it does **not** belong to, while satisfying every invariant. Quarantine first, or Task 6 cements the defect.
+**Why this comes BEFORE merging.** `_dejitter()` (`reflow.py:217-234`) only closes gaps _within_ a whisper segment (`words[j]["seg"] == words[i]["seg"]`), so a word belonging to the next utterance but emitted in the previous segment survives as its own tiny card over silence. By duration alone that is indistinguishable from a sentence-tail runt -- so Task 6's backward merge would attach it to the sentence it does **not** belong to, while satisfying every invariant. Quarantine first, or Task 6 cements the defect.
 
 **Quarantine is not a fix.** An orphan excluded from merging and extended by Task 6 is still the wrong word over the wrong audio. It is reported separately and never counted as fixed.
 
@@ -482,16 +492,19 @@ git commit -m "feat(reflow): flag cross-segment orphan groups so merging can qua
 ### Task 6: Backward merge (A1/A4)
 
 **Files:**
+
 - Modify: `reflow.py` (new `merge_runts`, called from `reflow()` before `time_cards`)
 - Test: `tests/test_reflow.py`
 
 **Interfaces:**
+
 - Produces: `reflow.merge_runts(groups) -> (groups, list[dict])` -- merged groups plus one record per merge (`{"reason", "into", "absorbed"}`).
 - Consumes: `is_short`, `card_cps`, `is_orphan_group`.
 
 **Measured on Punk Hazard:** 730 genuine runts; merge fixes 313 (43%).
 
 **Determinism (A4) -- two implementations must agree:**
+
 - single left-to-right pass to a fixed point; a runt merges only into its immediate predecessor
 - a predecessor that already absorbed a runt is a legal target for the next, with all four constraints re-evaluated on the merged form
 - a merged group still below `MIN_DUR` is not a failure; it falls through to Task 7
@@ -588,10 +601,12 @@ git commit -m "feat(reflow): merge runt groups backward when the merged card fit
 ### Task 7: Forward steal with cascade (A2/A2a/A2b/A6)
 
 **Files:**
+
 - Modify: `reflow.py` (`time_cards`)
 - Test: `tests/test_reflow.py`
 
 **Interfaces:**
+
 - Produces: `reflow.time_cards(groups, audio_duration=None) -> (list[(start, end)], list[dict])` -- timings plus cascade records.
 - Raises: `reflow.CascadeInfeasible` when the shift cannot fit before `audio_duration`.
 
@@ -658,9 +673,11 @@ git commit -m "feat(reflow): steal forward to satisfy MIN_DUR, absorbing pre-exi
 ### Task 8: Property-based whole-list invariants (A5)
 
 **Files:**
+
 - Create: `tests/test_reflow_properties.py`
 
 **Interfaces:**
+
 - Consumes: everything from Tasks 5-7.
 
 **Why:** Tasks 6 and 7 are each table-tested in isolation, but the failure surface is their COMPOSITION -- `merge -> time -> steal -> cascade -> clamp`. Both live defects found in review were composition bugs. Use a seeded `random.Random` (stdlib -- no new dependency); no hypothesis.
@@ -721,16 +738,18 @@ git commit -m "test(reflow): property-based whole-list invariants over merge+ste
 ### Task 9: Source timing vs display timing (C6)
 
 **Files:**
+
 - Modify: `reflow.py` (emit `source_start`/`source_end` on each card)
 - Modify: `generate.py` (persist both into `conf.json`)
 - Modify: `repair.py` (`overlap_ref` selects on the SOURCE window)
 - Test: `tests/test_repair.py`, `tests/test_reflow.py`
 
 **Interfaces:**
+
 - Produces: `conf.json` rows gain `source_start` / `source_end`.
 - Consumes: `overlap_ref(ivals, c.get("source_start", c["start"]), c.get("source_end", c["end"]))` -- the fallback keeps old sidecars working.
 
-**Why this blocks shipping A before C.** Task 7 moves a card's DISPLAY start later. `overlap_ref()` then picks the fansub reference by that moved window. The dangerous case is not a missed reference (repair simply skips) -- it is a card displaced onto its NEIGHBOUR's cue and using it as the evidence justifying a repair. `accept_repair()`'s borrow and length guards check that a repair did not *copy* the reference, not that the reference *describes the card's audio*. A merged card carries the union of its source groups' windows.
+**Why this blocks shipping A before C.** Task 7 moves a card's DISPLAY start later. `overlap_ref()` then picks the fansub reference by that moved window. The dangerous case is not a missed reference (repair simply skips) -- it is a card displaced onto its NEIGHBOUR's cue and using it as the evidence justifying a repair. `accept_repair()`'s borrow and length guards check that a repair did not _copy_ the reference, not that the reference _describes the card's audio_. A merged card carries the union of its source groups' windows.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -756,6 +775,7 @@ git commit -m "fix(repair): anchor reference selection to source timing, not dis
 ### Task 10: Post-glossary re-wrap and validate (C7)
 
 **Files:**
+
 - Modify: `generate.py` (after `glossary.correct`, before `conf`/srt are written)
 - Test: `tests/test_generate.py`
 
@@ -791,6 +811,7 @@ git commit -m "feat(generate): re-wrap and validate cards after glossary correct
 ### Task 11: Duration-aware and per-line repair acceptance (C2/C4/C5)
 
 **Files:**
+
 - Modify: `repair.py` (`accept_repair` signature and body; secondary-check path)
 - Test: `tests/test_repair.py`
 
@@ -819,10 +840,12 @@ git commit -m "fix(repair): reject repairs that break the readability profile fo
 ### Task 12: Possessive folding with an independently qualifying bare lane (D5)
 
 **Files:**
+
 - Modify: `mine_glossary.py` (`mine_text`, admission in `main`)
 - Test: `tests/test_mine_glossary.py`
 
 **Interfaces:**
+
 - Produces: `mine_text(text, bare, poss, mid)` -- separate bare and possessive counters.
 
 **Context.** `mine_glossary.py:100` tests `^[A-Z][a-z]{3,}$` against a core that still carries `'s`, so `Brownbeard's`, `Vegapunk's`, `Hazzard's` match nothing and are counted as neither form -- evidence split across forms and discarded.
@@ -877,10 +900,12 @@ git commit -m "feat(mine): fold possessives as reinforcing evidence, never as or
 ### Task 13: Transcript-sourced candidates (D1/D2/D3/D3a/D3b/D4)
 
 **Files:**
+
 - Modify: `glossary_acquire.py`
 - Test: `tests/test_glossary_acquire.py`
 
 **Interfaces:**
+
 - Produces: a candidate record `{variant, source, raw_forms, normalized_forms, settled_target, occurrence_count, episode_count, contexts}`.
 
 **Context.** The miner excludes our own dubtitle track to avoid reinforcing its errors, so a release with no fansub track mines nothing -- which is how `Hazzard`(4x), `Kinamon`(2x) and `Whitestrom`(2x) shipped. Feeding our `conf.json` in is safe here because a candidate is never trusted; it is adjudicated against the wiki, and the wiki breaks the loop.

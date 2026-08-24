@@ -17,7 +17,7 @@ the one question worth your remaining session time.
    The spec was going to ship a queue counting rows that were touched, not watched.
 
 2. **§3.4's invariant is too weak.** Correct — "something reachable" passes when a wrong
-   canonical replaced the right term. It must be the *verified term itself*.
+   canonical replaced the right term. It must be the _verified term itself_.
 
 3. **Release sequencing is unordered.** Correct. The next scheduled `glossary_verify.py` run
    re-triggers the bug under old code.

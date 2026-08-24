@@ -13,6 +13,7 @@ Reusable module + CLI — called by the mining hook in gen_loop, a standalone co
 future community-repo front-ends. Source of truth = wiki/publisher (dub-preferred). See
 specs/glossary-wiki-verify/spec.md.  Built with help of Claude (Anthropic).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,8 +33,9 @@ from common import llm_chat
 def log(*a):
     print(*a, flush=True)
 
-TOPK = 6                  # candidate titles per term handed to the LLM
-CAND_CUTOFF = 0.62        # min similarity for a candidate (0.5 let junk like blarghxyzqq->Largo in)
+
+TOPK = 6  # candidate titles per term handed to the LLM
+CAND_CUTOFF = 0.62  # min similarity for a candidate (0.5 let junk like blarghxyzqq->Largo in)
 VERIFY_MODEL = os.environ.get("VERIFY_MODEL", "qwen3:8b")
 OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
 # VERIFY_BACKEND (ollama|llamacpp) lets adjudication run on the same server as repair, so
@@ -42,15 +44,15 @@ OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
 # unless it is overridden explicitly.
 VERIFY_BACKEND = os.environ.get("VERIFY_BACKEND", os.environ.get("REPAIR_BACKEND", "ollama"))
 VERIFY_LLAMACPP_URL = os.environ.get(
-    "VERIFY_LLAMACPP_URL",
-    os.environ.get("REPAIR_LLAMACPP_URL", "http://127.0.0.1:8080/v1/chat/completions"))
+    "VERIFY_LLAMACPP_URL", os.environ.get("REPAIR_LLAMACPP_URL", "http://127.0.0.1:8080/v1/chat/completions")
+)
 # Adjudication returns a JSON object, not a subtitle line: it needs a real token budget and
 # must not be truncated to its first line.
 VERIFY_MAX_TOKENS = int(os.environ.get("VERIFY_MAX_TOKENS", "512"))
 CACHE_DIR = os.environ.get("WIKI_CACHE_DIR", "/config/wiki_cache")
 HTTP_TIMEOUT = int(os.environ.get("WIKI_HTTP_TIMEOUT", "20"))
-WIKI_TTL = int(os.environ.get("WIKI_CACHE_TTL", str(30 * 24 * 3600)))   # refresh index monthly
-VERIFY_WORKERS = int(os.environ.get("VERIFY_WORKERS", "4"))   # V2 C2: concurrent adjudicate() calls
+WIKI_TTL = int(os.environ.get("WIKI_CACHE_TTL", str(30 * 24 * 3600)))  # refresh index monthly
+VERIFY_WORKERS = int(os.environ.get("VERIFY_WORKERS", "4"))  # V2 C2: concurrent adjudicate() calls
 
 
 def candidates(term: str, titles: list[str], k: int = TOPK) -> list[str]:
@@ -88,7 +90,8 @@ def build_adjudication_prompt(term: str, cands: list[str], show: str) -> str:
         "or no candidate is clearly the same entity, return confidence 'none' and empty canonical. "
         "Do NOT guess.\n"
         'Reply ONLY as JSON: {"canonical": "<spelling or empty>", '
-        '"confidence": "high|low|none", "dub_note": "<short or empty>"}')
+        '"confidence": "high|low|none", "dub_note": "<short or empty>"}'
+    )
 
 
 def parse_adjudication(text: str) -> dict:
@@ -104,18 +107,22 @@ def parse_adjudication(text: str) -> dict:
     conf = str(d.get("confidence", "none")).lower()
     if conf not in ("high", "low", "none"):
         conf = "low"
-    return {"canonical": str(d.get("canonical", "") or ""), "confidence": conf,
-            "dub_note": str(d.get("dub_note", "") or "")}
+    return {"canonical": str(d.get("canonical", "") or ""), "confidence": conf, "dub_note": str(d.get("dub_note", "") or "")}
 
 
 def adjudicate(term: str, cands: list[str], show: str) -> dict:
     """LLM pick -> {'canonical': str, 'confidence': 'high'|'low'|'none', 'dub_note': str}."""
     if not cands:
         return {"canonical": "", "confidence": "none", "dub_note": ""}
-    out = llm_chat(build_adjudication_prompt(term, cands, show),
-                   backend=VERIFY_BACKEND, ollama_url=OLLAMA,
-                   llamacpp_url=VERIFY_LLAMACPP_URL, model=VERIFY_MODEL,
-                   max_tokens=VERIFY_MAX_TOKENS, first_line=False)
+    out = llm_chat(
+        build_adjudication_prompt(term, cands, show),
+        backend=VERIFY_BACKEND,
+        ollama_url=OLLAMA,
+        llamacpp_url=VERIFY_LLAMACPP_URL,
+        model=VERIFY_MODEL,
+        max_tokens=VERIFY_MAX_TOKENS,
+        first_line=False,
+    )
     if not out:
         return {"canonical": "", "confidence": "none", "dub_note": ""}
     return parse_adjudication(out)
@@ -173,10 +180,11 @@ def apply_results(gloss: dict, results: dict) -> dict:
             # acquire-first order only -- verify-first appears to work, which is exactly
             # how it would reach production unnoticed).
             from glossary_acquire import is_expansion
+
             if is_expansion(term, canon):
                 dest = _shape_list(names, phrases, canon)
                 if canon not in dest:
-                    dest.append(canon)            # ADD -- the term itself is left in place
+                    dest.append(canon)  # ADD -- the term itself is left in place
             else:
                 flagged[term] = {"reason": "respelling-needs-review", "canonical": canon}
         elif conf != "high" or not canon:
@@ -212,8 +220,7 @@ def normalize_api(url: str) -> str:
 
 
 def allpages_url(api: str, apcontinue: str | None = None) -> str:
-    u = (api + "?action=query&list=allpages&apnamespace=0&aplimit=500"
-         "&apfilterredir=nonredirects&format=json")
+    u = api + "?action=query&list=allpages&apnamespace=0&aplimit=500&apfilterredir=nonredirects&format=json"
     if apcontinue:
         u += "&apcontinue=" + urllib.parse.quote(apcontinue)
     return u
@@ -256,7 +263,7 @@ def fetch_titles(wiki_api: str, show_key: str) -> list[str]:
         pass
     titles: list[str] = []
     cont = None
-    for _ in range(40):                          # page cap (40 * 500 = 20k titles)
+    for _ in range(40):  # page cap (40 * 500 = 20k titles)
         try:
             resp = _http_json(allpages_url(wiki_api, cont))
         except Exception:
@@ -308,7 +315,9 @@ def verify(gloss_path: str, override: str | None = None, force: bool = False) ->
     new = apply_results(gloss, results)
     new.setdefault("wiki", api)
     try:
-        json.dump(new, open(gloss_path, "w"), indent=2, ensure_ascii=False)
+        with open(gloss_path, "w", encoding="utf-8") as f:
+            json.dump(new, f, indent=2, ensure_ascii=False)
+            f.write("\n")  # POSIX line: prettier flags a glossary without it
     except OSError as e:
         return {**rep, "wiki": api, "note": f"write-failed: {e}"}
     # Count what ACTUALLY happened, not what was proposed. Before 2026-08-21 every
@@ -316,12 +325,17 @@ def verify(gloss_path: str, override: str | None = None, force: bool = False) ->
     # and "applied" were the same number. They no longer are: a respelling is escalated,
     # not applied, and reporting it as applied would hide the escalation entirely.
     from glossary_acquire import is_expansion
-    changed = [t for t, a in results.items()
-               if a["confidence"] == "high" and a["canonical"] and a["canonical"] != t]
+
+    changed = [t for t, a in results.items() if a["confidence"] == "high" and a["canonical"] and a["canonical"] != t]
     applied = sum(1 for t in changed if is_expansion(t, results[t]["canonical"]))
-    return {"show": show, "wiki": api, "checked": len(terms),
-            "applied": applied, "escalated": len(changed) - applied,
-            "flagged": len(new.get("flagged", {}))}
+    return {
+        "show": show,
+        "wiki": api,
+        "checked": len(terms),
+        "applied": applied,
+        "escalated": len(changed) - applied,
+        "flagged": len(new.get("flagged", {})),
+    }
 
 
 def main():

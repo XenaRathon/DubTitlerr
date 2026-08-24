@@ -11,6 +11,7 @@ they can never become an answer.
 See docs/superpowers/specs/2026-08-19-glossary-name-acquisition-design.md.
 Built with help of Claude (Anthropic).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -227,9 +228,9 @@ def _iter_episode_texts(show_dir: str):
     for dp, _dns, fs in os.walk(show_dir):
         for fn in sorted(fs):
             if fn.endswith(CONF_SUFFIX):
-                stem, text = os.path.join(dp, fn[:-len(CONF_SUFFIX)]), _conf_text(os.path.join(dp, fn))
+                stem, text = os.path.join(dp, fn[: -len(CONF_SUFFIX)]), _conf_text(os.path.join(dp, fn))
             elif fn.endswith(SRT_SUFFIX):
-                stem, text = os.path.join(dp, fn[:-len(SRT_SUFFIX)]), _srt_text(os.path.join(dp, fn))
+                stem, text = os.path.join(dp, fn[: -len(SRT_SUFFIX)]), _srt_text(os.path.join(dp, fn))
             else:
                 continue
             if stem in stems_done or not text:
@@ -247,8 +248,16 @@ def _candidate(variant: str, source: str) -> dict:
 
     `settled_target` is filled per PROPOSAL, not here: it depends on the wiki canonical
     the token resolves to, which harvest cannot know."""
-    return {"variant": variant, "source": source, "raw_forms": {}, "normalized_forms": [],
-            "settled_target": None, "occurrence_count": 0, "episode_count": 0, "contexts": []}
+    return {
+        "variant": variant,
+        "source": source,
+        "raw_forms": {},
+        "normalized_forms": [],
+        "settled_target": None,
+        "occurrence_count": 0,
+        "episode_count": 0,
+        "contexts": [],
+    }
 
 
 def harvest_candidates(show_dir: str, source: str = SOURCE_TRANSCRIPT) -> tuple[dict, set, list]:
@@ -271,7 +280,7 @@ def harvest_candidates(show_dir: str, source: str = SOURCE_TRANSCRIPT) -> tuple[
     for stem, text in _iter_episode_texts(show_dir):
         scope.append(stem)
         bare: dict = {}
-        poss: dict = {}      # D5/task 12: counted separately, never folded into `bare`
+        poss: dict = {}  # D5/task 12: counted separately, never folded into `bare`
         forms: dict = {}
         mine_glossary.mine_text(text, bare, poss, mid, forms)
         for tok in set(bare) | set(poss):
@@ -328,20 +337,26 @@ def build_merge_prompt(variant: str, canonical: str, ctx_v: list, ctx_c: list, s
         f'Spelling A: "{variant}"\n{lines_v}\n\n'
         f'Spelling B: "{canonical}"\n{lines_c}\n\n'
         f"A nickname the characters actually use is NOT a mis-transcription.\n"
-        f'Answer with JSON only: {{"same_entity": true|false, "confidence": "high"|"low"}}\n')
+        f'Answer with JSON only: {{"same_entity": true|false, "confidence": "high"|"low"}}\n'
+    )
 
 
 def adjudicate_merge(variant: str, canonical: str, ctx_v: list, ctx_c: list, show: str) -> dict:
     """LLM merge decision -> {'same_entity': bool, 'confidence': 'high'|'low'|'none'}."""
     none = {"same_entity": False, "confidence": "none"}
     try:
-        out = llm_chat(build_merge_prompt(variant, canonical, ctx_v, ctx_c, show),
-                       backend=glossary_verify.VERIFY_BACKEND, ollama_url=glossary_verify.OLLAMA,
-                       llamacpp_url=glossary_verify.VERIFY_LLAMACPP_URL,
-                       model=glossary_verify.VERIFY_MODEL,
-                       max_tokens=glossary_verify.VERIFY_MAX_TOKENS, first_line=False)
+        out = llm_chat(
+            build_merge_prompt(variant, canonical, ctx_v, ctx_c, show),
+            backend=glossary_verify.VERIFY_BACKEND,
+            ollama_url=glossary_verify.OLLAMA,
+            llamacpp_url=glossary_verify.VERIFY_LLAMACPP_URL,
+            model=glossary_verify.VERIFY_MODEL,
+            max_tokens=glossary_verify.VERIFY_MAX_TOKENS,
+            first_line=False,
+        )
     except Exception as e:
-        log("acquire: merge adjudication failed:", variant, e); return none
+        log("acquire: merge adjudication failed:", variant, e)
+        return none
     if not out:
         return none
     m = re.search(r"\{.*\}", out, re.S)
@@ -352,8 +367,7 @@ def adjudicate_merge(variant: str, canonical: str, ctx_v: list, ctx_c: list, sho
     except ValueError:
         return none
     conf = str(d.get("confidence", "none")).lower()
-    return {"same_entity": d.get("same_entity") is True,
-            "confidence": conf if conf in ("high", "low", "none") else "low"}
+    return {"same_entity": d.get("same_entity") is True, "confidence": conf if conf in ("high", "low", "none") else "low"}
 
 
 def escalate(proposals: list, ctx: dict, show: str) -> list:
@@ -368,9 +382,9 @@ def escalate(proposals: list, ctx: dict, show: str) -> list:
     out = []
     for p in proposals:
         if p.get("reason") != "share-too-close":
-            out.append(p); continue
-        adj = adjudicate_merge(p["variant"], p["canonical"],
-                               ctx.get(p["variant"], []), ctx.get(p["canonical"], []), show)
+            out.append(p)
+            continue
+        adj = adjudicate_merge(p["variant"], p["canonical"], ctx.get(p["variant"], []), ctx.get(p["canonical"], []), show)
         if adj["same_entity"] and adj["confidence"] == "high":
             out.append({**p, "verdict": "apply", "reason": "context-merged"})
         elif not adj["same_entity"] and adj["confidence"] == "high":
@@ -403,8 +417,7 @@ def anchor_terms(gloss: dict) -> set:
     `known` is deliberately excluded. Those are spellings a human REJECTED via --review;
     anchoring a new candidate to one would make a rejected misspelling the corroborating
     evidence for the next correction."""
-    return ({str(n) for n in gloss.get("names") or []}
-            | {str(v) for v in (gloss.get("hard_fixes") or {}).values() if v})
+    return {str(n) for n in gloss.get("names") or []} | {str(v) for v in (gloss.get("hard_fixes") or {}).values() if v}
 
 
 def settled_target(variant: str, canonical: str, anchors: set | None) -> str | None:
@@ -459,7 +472,8 @@ def source_gate(proposals: list) -> list:
     out = []
     for p in proposals:
         if p.get("verdict") != "apply" or p.get("source", SOURCE_TRANSCRIPT) != SOURCE_TRANSCRIPT:
-            out.append(p); continue
+            out.append(p)
+            continue
         target, grew = p.get("settled_target"), len(p["canonical"]) - len(p["variant"])
         if not target:
             out.append({**p, "verdict": "flag", "reason": "transcript-new-term"})
@@ -472,8 +486,15 @@ def source_gate(proposals: list) -> list:
     return out
 
 
-def decide(variant: str, variant_count: int, canonical: str, canonical_count: int,
-           score: float, midsentence: bool, floor: int | None = None) -> dict:
+def decide(
+    variant: str,
+    variant_count: int,
+    canonical: str,
+    canonical_count: int,
+    score: float,
+    midsentence: bool,
+    floor: int | None = None,
+) -> dict:
     """Run the four gates over one variant->canonical proposal.
 
     `floor` is D4's split recurrence floor, defaulting to MIN_COUNT (a brand-new term).
@@ -536,9 +557,15 @@ def _resolve_tokens(counts: dict, titles: list) -> dict:
     return resolved
 
 
-def propose(counts: dict, midsentence: set, titles: list, settled: set | None = None,
-            resolved: dict | None = None, candidates: dict | None = None,
-            anchors: set | None = None) -> list:
+def propose(
+    counts: dict,
+    midsentence: set,
+    titles: list,
+    settled: set | None = None,
+    resolved: dict | None = None,
+    candidates: dict | None = None,
+    anchors: set | None = None,
+) -> list:
     """One proposal per harvested token that resolves to a wiki title.
 
     A token matching no title yields nothing here -- it is the tier-B queue's business
@@ -581,11 +608,21 @@ def propose(counts: dict, midsentence: set, titles: list, settled: set | None = 
         # or an already-flagged reason) is still eligible to be (re)labelled english-word.
         if d["verdict"] != "known" and glossary.is_english(tok.lower()):
             d = {"verdict": "flag", "reason": "english-word", "bound": 0.0}
-        out.append({"variant": tok, "canonical": canon, "variant_count": counts[tok],
-                    "canonical_count": canon_count, "score": round(score, 3),
-                    "source": cand["source"], "settled_target": target,
-                    "occurrence_count": counts[tok], "episode_count": cand["episode_count"],
-                    "raw_forms": cand["raw_forms"], **d})
+        out.append(
+            {
+                "variant": tok,
+                "canonical": canon,
+                "variant_count": counts[tok],
+                "canonical_count": canon_count,
+                "score": round(score, 3),
+                "source": cand["source"],
+                "settled_target": target,
+                "occurrence_count": counts[tok],
+                "episode_count": cand["episode_count"],
+                "raw_forms": cand["raw_forms"],
+                **d,
+            }
+        )
     return out
 
 
@@ -600,8 +637,7 @@ def unmatched(counts: dict, midsentence: set, titles: list, resolved: dict | Non
     the join running twice (see propose's docstring)."""
     if resolved is None:
         resolved = _resolve_tokens(counts, titles)
-    return sorted(t for t, c in counts.items()
-                  if c >= MIN_COUNT and t in midsentence and t not in resolved)
+    return sorted(t for t, c in counts.items() if c >= MIN_COUNT and t in midsentence and t not in resolved)
 
 
 def _provenance(p: dict, scope: int) -> dict:
@@ -610,8 +646,12 @@ def _provenance(p: dict, scope: int) -> dict:
     Recorded on BOTH lanes. On `acquired` it is the justification for an unattended write;
     on `flagged` it is the evidence a reviewer needs -- a review queue whose entries arrive
     without the reason they escalated defeats the point of escalating."""
-    return {"source": p.get("source", SOURCE_TRANSCRIPT), "settled_target": p.get("settled_target"),
-            "episode_count": p.get("episode_count", 0), "scope": scope}
+    return {
+        "source": p.get("source", SOURCE_TRANSCRIPT),
+        "settled_target": p.get("settled_target"),
+        "episode_count": p.get("episode_count", 0),
+        "scope": scope,
+    }
 
 
 def apply_proposals(gloss: dict, proposals: list, run_id: str, scope: int = 0) -> dict:
@@ -636,22 +676,36 @@ def apply_proposals(gloss: dict, proposals: list, run_id: str, scope: int = 0) -
     known = set(g.get("known", []))
     for p in proposals:
         term = p["variant"]
-        flagged.pop(term, None)                     # I3: never stays queued once decided
+        flagged.pop(term, None)  # I3: never stays queued once decided
         if p["verdict"] == "known":
-            known.add(term); continue
-        if p["verdict"] != "apply":
-            fixes.pop(term, None); acquired.pop(term, None)
-            flagged[term] = {"reason": p["reason"], "canonical": p["canonical"],
-                             "variant_count": p["variant_count"], "canonical_count": p["canonical_count"],
-                             "score": p["score"], "bound": round(p.get("bound", 0.0), 3),
-                             "context": p.get("context", []), **_provenance(p, scope)}
+            known.add(term)
             continue
-        known.discard(term)                          # C2: an apply verdict wins over a stale known
+        if p["verdict"] != "apply":
+            fixes.pop(term, None)
+            acquired.pop(term, None)
+            flagged[term] = {
+                "reason": p["reason"],
+                "canonical": p["canonical"],
+                "variant_count": p["variant_count"],
+                "canonical_count": p["canonical_count"],
+                "score": p["score"],
+                "bound": round(p.get("bound", 0.0), 3),
+                "context": p.get("context", []),
+                **_provenance(p, scope),
+            }
+            continue
+        known.discard(term)  # C2: an apply verdict wins over a stale known
         fixes[term] = p["canonical"]
-        acquired[term] = {"canonical": p["canonical"], "count": p["variant_count"],
-                          "canonical_count": p["canonical_count"],
-                          "score": p["score"], "bound": round(p.get("bound", 0.0), 3),
-                          "reason": p["reason"], "run": run_id, **_provenance(p, scope)}
+        acquired[term] = {
+            "canonical": p["canonical"],
+            "count": p["variant_count"],
+            "canonical_count": p["canonical_count"],
+            "score": p["score"],
+            "bound": round(p.get("bound", 0.0), 3),
+            "reason": p["reason"],
+            "run": run_id,
+            **_provenance(p, scope),
+        }
     if not flagged:
         g.pop("flagged", None)
     if known:
@@ -698,11 +752,15 @@ def review_items(gloss: dict) -> list:
     for term, meta in sorted((gloss.get("flagged") or {}).items()):
         if isinstance(meta, str):
             meta = {"reason": meta}
-        item = {"term": term, "reason": meta.get("reason", ""),
-                "canonical": meta.get("canonical", ""),
-                "variant_count": meta.get("variant_count", 0),
-                "canonical_count": meta.get("canonical_count", 0),
-                "bound": meta.get("bound", 0.0), "context": meta.get("context", [])}
+        item = {
+            "term": term,
+            "reason": meta.get("reason", ""),
+            "canonical": meta.get("canonical", ""),
+            "variant_count": meta.get("variant_count", 0),
+            "canonical_count": meta.get("canonical_count", 0),
+            "bound": meta.get("bound", 0.0),
+            "context": meta.get("context", []),
+        }
         for k, v in meta.items():
             if k not in item:
                 item[k] = v
@@ -730,10 +788,15 @@ def record_decision(gloss: dict, term: str, accept: bool) -> dict:
     canon = meta.get("canonical", "")
     if accept and canon and not is_expansion(term, canon) and normalize_title(canon) == canon:
         g.setdefault("hard_fixes", {})[term] = canon
-        g.setdefault("acquired", {})[term] = {"canonical": canon, "count": meta.get("variant_count", 0),
-                                              "canonical_count": meta.get("canonical_count", 0),
-                                              "score": meta.get("score", 0.0), "bound": meta.get("bound", 0.0),
-                                              "reason": "human-approved", "run": "review"}
+        g.setdefault("acquired", {})[term] = {
+            "canonical": canon,
+            "count": meta.get("variant_count", 0),
+            "canonical_count": meta.get("canonical_count", 0),
+            "score": meta.get("score", 0.0),
+            "bound": meta.get("bound", 0.0),
+            "reason": "human-approved",
+            "run": "review",
+        }
         g["known"] = sorted(set(g.get("known", [])) - {term})
         g.get("flagged", {}).pop(term, None)
     elif accept and canon:
@@ -759,6 +822,7 @@ def _write_json(path: str, obj) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=2, ensure_ascii=False)
+        f.write("\n")  # POSIX line: prettier flags a glossary without it
     os.replace(tmp, path)
 
 
@@ -805,12 +869,15 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     # ACQUIRE_NO_CACHE=1 forces a full run without editing the file, for the case where an
     # operator wants to re-derive everything after changing a threshold.
     cache = {} if os.environ.get("ACQUIRE_NO_CACHE") else acquire_cache.load(gloss_path)
-    cached = acquire_cache.skippable(
-        cache, counts, lambda t: settled_target(t, resolved.get(t, ("", 0))[0], anchors),
-        norm_titles, normalize_title) if cache else set()
+    cached = (
+        acquire_cache.skippable(
+            cache, counts, lambda t: settled_target(t, resolved.get(t, ("", 0))[0], anchors), norm_titles, normalize_title
+        )
+        if cache
+        else set()
+    )
     settled = settled | cached
-    proposals = propose(counts, mid, titles, settled, resolved=resolved,
-                        candidates=cands, anchors=anchors)
+    proposals = propose(counts, mid, titles, settled, resolved=resolved, candidates=cands, anchors=anchors)
     close = [p for p in proposals if p.get("reason") == "share-too-close"]
     if close:
         toks = sorted({p["variant"] for p in close} | {p["canonical"] for p in close})
@@ -845,7 +912,8 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
         try:
             adj = glossary_verify.adjudicate(term, glossary_verify.candidates(term, titles), show)
         except Exception as e:
-            log("acquire: adjudicate failed:", term, e); continue
+            log("acquire: adjudicate failed:", term, e)
+            continue
         if adj.get("confidence") != "high" or not adj.get("canonical"):
             continue
         # C1: tier B's canonical is free-form LLM text -- re-run R1 (wiki membership) and
@@ -856,9 +924,10 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
         tier_b[term] = canon if (canon in norm_titles and not is_expansion(term, canon)) else ""
     applied = [p for p in proposals if p["verdict"] == "apply"]
     known = [p for p in proposals if p["verdict"] == "known"]
-    flag_props = [p for p in proposals if p["verdict"] == "flag"]     # I5: was shadowed below
-    digest = hashlib.sha1("|".join(f"{p['variant']}>{p['canonical']}" for p in sorted(
-        proposals, key=lambda p: p["variant"])).encode()).hexdigest()[:8]
+    flag_props = [p for p in proposals if p["verdict"] == "flag"]  # I5: was shadowed below
+    digest = hashlib.sha1(
+        "|".join(f"{p['variant']}>{p['canonical']}" for p in sorted(proposals, key=lambda p: p["variant"])).encode()
+    ).hexdigest()[:8]
     run_id = f"{show}:{len(titles)}:{files}:{digest}"
     if apply and (proposals or tier_b):
         try:
@@ -867,20 +936,37 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
                 tctx = context_lines(show_dir, list(tier_b))
                 flagged = out.setdefault("flagged", {})
                 for term, canon in tier_b.items():
-                    flagged[term] = {"reason": "no-wiki-match", "canonical": canon,
-                                     "variant_count": counts.get(term, 0), "canonical_count": 0,
-                                     "bound": 0.0, "context": tctx.get(term, []),
-                                     **_provenance(cands.get(term, {}), files)}
+                    flagged[term] = {
+                        "reason": "no-wiki-match",
+                        "canonical": canon,
+                        "variant_count": counts.get(term, 0),
+                        "canonical_count": 0,
+                        "bound": 0.0,
+                        "context": tctx.get(term, []),
+                        **_provenance(cands.get(term, {}), files),
+                    }
             _write_json(gloss_path, out)
         except Exception as e:
-            try: os.remove(gloss_path + ".tmp")
-            except OSError: pass
+            try:
+                os.remove(gloss_path + ".tmp")
+            except OSError:
+                pass
             return {"show": show, "wiki": api, "note": f"write-failed: {e}", "files": files}
-    return {"show": show, "wiki": api, "files": files, "titles": len(titles),
-            "proposed": len(proposals), "applied": len(applied), "known": len(known),
-            "flagged": len(flag_props), "dry_run": not apply, "scope": len(scope),
-            "scope_episodes": [os.path.basename(s) for s in scope],
-            "proposals": proposals, "tier_b": tier_b}
+    return {
+        "show": show,
+        "wiki": api,
+        "files": files,
+        "titles": len(titles),
+        "proposed": len(proposals),
+        "applied": len(applied),
+        "known": len(known),
+        "flagged": len(flag_props),
+        "dry_run": not apply,
+        "scope": len(scope),
+        "scope_episodes": [os.path.basename(s) for s in scope],
+        "proposals": proposals,
+        "tier_b": tier_b,
+    }
 
 
 def main():
@@ -928,9 +1014,11 @@ def main():
         return
     rep = acquire(a.glossary, a.show_dir, apply=a.apply, override=a.wiki)
     for p in rep.get("proposals", []):
-        log(f"{p['verdict']:5} {p['variant']:18} -> {p['canonical']:22} "
+        log(
+            f"{p['verdict']:5} {p['variant']:18} -> {p['canonical']:22} "
             f"seen {p['variant_count']:4}/{p['canonical_count']:<4} sim {p['score']:.3f} "
-            f"bound {p.get('bound', 0.0):.3f}  {p['reason']}")
+            f"bound {p.get('bound', 0.0):.3f}  {p['reason']}"
+        )
     log(json.dumps({k: v for k, v in rep.items() if k != "proposals"}, ensure_ascii=False))
 
 

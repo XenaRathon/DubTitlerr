@@ -8,6 +8,7 @@ is the *same* file `repair.py` consumes in production -- so the bake-off judges 
 on exactly the lines the live pipeline would have sent them, with no GPU and no reflow
 re-derivation. Ollama calls are not exercised here (no network in tests).
 """
+
 import json
 
 import pytest
@@ -29,6 +30,7 @@ def _write(tmp_path, rows, name="ep.dubtitles.conf.json"):
 
 
 # --- conf.json loading --------------------------------------------------------
+
 
 def test_load_cards_from_conf_returns_the_rows_as_cards(tmp_path):
     rows = [_conf_row("First line."), _conf_row("Second line.")]
@@ -66,6 +68,7 @@ def test_load_cards_from_conf_rejects_rows_missing_text(tmp_path):
 
 # --- input selection ----------------------------------------------------------
 
+
 def test_load_cards_requires_one_input(tmp_path):
     with pytest.raises(SystemExit):
         bo.load_cards(None, None)
@@ -80,14 +83,15 @@ def test_load_cards_rejects_both_inputs(tmp_path):
 
 # --- the targets it selects are the ones production would send ----------------
 
+
 def test_conf_cards_feed_the_real_is_target_predicate(tmp_path):
     """End-to-end on the selection logic: a clean high-confidence line is not a target,
     a low-logprob line is -- using repair.is_target itself, not a copy."""
     import glossary
     import repair
+
     gloss = glossary.load("")
-    rows = [_conf_row("A perfectly clear line.", lp=-0.1, nsp=0.01),
-            _conf_row("grbled nnsense here", lp=-1.4, nsp=0.02)]
+    rows = [_conf_row("A perfectly clear line.", lp=-0.1, nsp=0.01), _conf_row("grbled nnsense here", lp=-1.4, nsp=0.02)]
     cards = bo.load_cards(None, _write(tmp_path, rows))
     targets = [c for c in cards if repair.is_target(c, gloss)]
     assert [c["text"] for c in targets] == ["grbled nnsense here"]
@@ -100,6 +104,7 @@ def test_conf_cards_feed_the_real_is_target_predicate(tmp_path):
 # compatibility patches"), which is why it runs in its own container. repair.py already
 # supports a llama.cpp backend (REPAIR_BACKEND=llamacpp); the bake-off has to speak the
 # same protocol or those models simply can't be evaluated.
+
 
 def test_parse_llamacpp_specs_builds_a_name_to_url_map():
     m = bo.parse_llamacpp_specs(["nanbeige=http://host:8090/completion"])
@@ -126,9 +131,9 @@ def test_llamacpp_body_matches_production_repair(monkeypatch):
     assert seen["url"] == "http://host:8090/completion"
     assert seen["body"]["prompt"] == "PROMPT"
     assert seen["body"]["temperature"] == 0
-    assert "model" not in seen["body"]              # llama.cpp has no model selector
+    assert "model" not in seen["body"]  # llama.cpp has no model selector
     assert seen["body"]["stop"] == ["\n"]
-    assert out == "Zoro drew his blade."            # first line, unquoted, stripped
+    assert out == "Zoro drew his blade."  # first line, unquoted, stripped
     assert dt >= 0
 
 
@@ -153,6 +158,7 @@ def test_ask_routes_llamacpp_models_away_from_ollama(monkeypatch):
 # empty message (verified: empty after 114s at max_tokens=512; correct output in 4.3s with
 # thinking off). Chat mode exists so such a model can be judged on its real behaviour.
 
+
 def test_llamacpp_chat_applies_template_and_disables_thinking(monkeypatch):
     seen = {}
 
@@ -172,8 +178,11 @@ def test_llamacpp_chat_reports_an_empty_reply_rather_than_silently_scoring_it(mo
     """An empty content with reasoning_content populated means thinking was not actually
     disabled. Returning "" would look like the model declined to change the line -- i.e.
     a perfect no-op score -- so it has to be visibly flagged instead."""
-    monkeypatch.setattr(bo, "_post_json", lambda u, b, timeout=180: {
-        "choices": [{"message": {"content": "", "reasoning_content": "thinking..."}}]})
+    monkeypatch.setattr(
+        bo,
+        "_post_json",
+        lambda u, b, timeout=180: {"choices": [{"message": {"content": "", "reasoning_content": "thinking..."}}]},
+    )
     out, _ = bo.ask_llamacpp_chat("http://host/v1/chat/completions", "P")
     assert out.startswith("<EMPTY")
 
@@ -193,6 +202,7 @@ def test_ask_prefers_chat_endpoint_when_given(monkeypatch):
 # enough to blow any sane budget. Emitting each model's block as soon as that model
 # finishes means a kill during model 3 still yields models 1 and 2.
 
+
 def test_format_model_block_pairs_each_target_with_its_output():
     targets = [{"text": "zolo drew"}, {"text": "nami said"}]
     outs = ["Zoro drew", "Nami said"]
@@ -200,7 +210,7 @@ def test_format_model_block_pairs_each_target_with_its_output():
     assert "qwen3.5:9b" in block
     assert "zolo drew" in block and "Zoro drew" in block
     assert "nami said" in block and "Nami said" in block
-    assert "2.0" in block          # avg latency per line
+    assert "2.0" in block  # avg latency per line
 
 
 def test_format_model_block_survives_fewer_outputs_than_targets():

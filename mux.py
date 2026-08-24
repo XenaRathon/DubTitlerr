@@ -27,6 +27,7 @@ Env: MUX_ROOTS (colon list), KEEP_LANGS, MIN_FREE_GB (skip threshold, default 5)
 DUR_TOL (seconds, default 2), MEDIA_UID/GID.
 Requires mkvtoolnix (mkvmerge) + ffprobe.  Built with help of Claude (Anthropic).
 """
+
 import argparse
 import errno
 import json
@@ -46,8 +47,8 @@ KEEP_LANGS = set(os.environ.get("KEEP_LANGS", "eng,en,dut,nld,nl,und,").split(",
 _val = os.environ.get("HARDLINK_ROOTS")
 HL_ROOTS = _val.split(":") if _val else ROOTS
 DUR_TOL = float(os.environ.get("DUR_TOL", "2"))
-MIN_FREE_GB = float(os.environ.get("MIN_FREE_GB", "5"))   # skip a remux if the pool is this low
-SIZE_FACTOR = 1.1                                         # temp ~ source size (+headroom)
+MIN_FREE_GB = float(os.environ.get("MIN_FREE_GB", "5"))  # skip a remux if the pool is this low
+SIZE_FACTOR = 1.1  # temp ~ source size (+headroom)
 ASS_SUFFIX = ".eng.dubtitles.ass"
 SRT_SUFFIX = ".eng.dubtitles.srt"
 # subtitle track names that mark a signs/songs track worth keeping regardless of language
@@ -84,8 +85,7 @@ def identify(path):
     """mkvmerge -J, cached per path — build_cmd() and verify() both identify files;
     caching avoids the duplicate subprocess call."""
     if path not in _IDENTIFY_CACHE:
-        r = subprocess.run(["mkvmerge", "-J", path], capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL, timeout=120)
+        r = subprocess.run(["mkvmerge", "-J", path], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
         _IDENTIFY_CACHE[path] = json.loads(r.stdout)
     return _IDENTIFY_CACHE[path]
 
@@ -105,9 +105,13 @@ def duration(path):
     safe truncation signal for a remux that drops tracks -- use video_duration() for that.
     Kept because it is still the right number for "how long is this file"."""
     try:
-        r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                            "-of", "csv=p=0", path], capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL, timeout=60)
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
         return float(r.stdout.strip() or 0)
     except Exception:
         return 0.0
@@ -130,10 +134,24 @@ def _parse_duration(v):
 def _ffprobe_video(path):
     """First video stream's duration field + tags (split out so tests can stub the I/O)."""
     try:
-        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
-                            "-show_entries", "stream=duration:stream_tags=DURATION",
-                            "-of", "json", path], capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL, timeout=60)
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=duration:stream_tags=DURATION",
+                "-of",
+                "json",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
         streams = json.loads(r.stdout).get("streams", [])
         return streams[0] if streams else {}
     except Exception:
@@ -194,10 +212,10 @@ def _stages_ran(stem: str, src: str) -> dict:
     }
     try:
         with open(stem + ".dubtitles.qc.json", encoding="utf-8") as f:
-            counters = (json.load(f).get("counters") or {})
+            counters = json.load(f).get("counters") or {}
         st["punctuation"] = counters.get("restore_runs_sent", 0) > 0
     except (OSError, ValueError):
-        pass          # no qc sidecar (pre-QC episode) -> cannot tell, so say nothing
+        pass  # no qc sidecar (pre-QC episode) -> cannot tell, so say nothing
     return st
 
 
@@ -208,18 +226,20 @@ def build_cmd(info, orig, ass, out):
     keep = KEEP_LANGS | original_langs(info)
     audio_keep, sub_keep, dropped = [], [], []
     for t in info.get("tracks", []):
-        tid = t["id"]; lang = ((t.get("properties") or {}).get("language") or "").lower()
+        tid = t["id"]
+        lang = ((t.get("properties") or {}).get("language") or "").lower()
         if t["type"] == "audio":
             (audio_keep if lang in keep else dropped).append(str(tid) if lang in keep else f"audio:{lang or 'und'}")
         elif t["type"] == "subtitles":
             if keep_sub(t, keep):
                 sub_keep.append(str(tid))
             elif is_our_track((t.get("properties") or {}).get("track_name")):
-                dropped.append(f"sub:{TRACK_NAME}(old)")   # labelled so the mux log shows the strip
+                dropped.append(f"sub:{TRACK_NAME}(old)")  # labelled so the mux log shows the strip
             else:
                 dropped.append(f"sub:{lang or 'und'}")
     cmd = ["mkvmerge", "-o", out]
-    if audio_keep: cmd += ["-a", ",".join(audio_keep)]      # else: keep all audio (safety)
+    if audio_keep:
+        cmd += ["-a", ",".join(audio_keep)]  # else: keep all audio (safety)
     # -s is a WHITELIST and mkvmerge's default is copy-every-subtitle-track, so an empty
     # keep list must become an explicit -S ("no source subs") — omitting the flag would
     # copy back the very tracks `dropped` claims were removed. That is the mp4-origin /
@@ -227,14 +247,24 @@ def build_cmd(info, orig, ass, out):
     # tracks, and verify() (presence-only) would pass it and stamp it.
     cmd += ["-s", ",".join(sub_keep)] if sub_keep else ["-S"]
     for t in info.get("tracks", []):
-        tid = t["id"]; lang = ((t.get("properties") or {}).get("language") or "").lower()
+        tid = t["id"]
+        lang = ((t.get("properties") or {}).get("language") or "").lower()
         if t["type"] == "audio" and str(tid) in audio_keep:
             cmd += ["--default-track-flag", f"{tid}:{'yes' if lang in ('eng', 'en') else 'no'}"]
         elif t["type"] == "subtitles" and str(tid) in sub_keep:
             cmd += ["--default-track-flag", f"{tid}:no"]
-    cmd += [orig,
-            "--track-name", f"0:{TRACK_NAME}", "--language", "0:eng",
-            "--default-track-flag", "0:yes", "--sub-charset", "0:UTF-8", ass]
+    cmd += [
+        orig,
+        "--track-name",
+        f"0:{TRACK_NAME}",
+        "--language",
+        "0:eng",
+        "--default-track-flag",
+        "0:yes",
+        "--sub-charset",
+        "0:UTF-8",
+        ass,
+    ]
     return cmd, dropped
 
 
@@ -298,12 +328,12 @@ def process(orig, apply):
     if src is None:
         return "no-sub"
     if stamp_valid(read_stamp(stamp), orig):
-        return "already-muxed"                     # stat-only, version-aware stamp is the ONLY guard
+        return "already-muxed"  # stat-only, version-aware stamp is the ONLY guard
     if not has_room(_free_bytes(orig), os.path.getsize(orig)):
         log("  skip (low disk):", os.path.basename(orig))
         return "skip-no-room"
     out = stem + ".muxtmp.mkv"
-    final = stem + ".mkv"                           # every episode ends as an mkv
+    final = stem + ".mkv"  # every episode ends as an mkv
     cmd, dropped = build_cmd(identify(orig), orig, src, out)
     if not apply:
         log(f"  PLAN mux {os.path.basename(orig)} ({ext}->mkv)  drop-tracks={dropped}")
@@ -317,24 +347,28 @@ def process(orig, apply):
                 os.remove(out)
             return "verify-" + res
         os.chown(out, st.st_uid or MEDIA_UID, st.st_gid or MEDIA_GID)
-        _finalize(out, final)                       # write the muxed mkv
+        _finalize(out, final)  # write the muxed mkv
         if os.path.abspath(orig) != os.path.abspath(final) and os.path.exists(orig):
-            os.remove(orig)                         # mp4->mkv: drop the OLD library link (partner survives)
+            os.remove(orig)  # mp4->mkv: drop the OLD library link (partner survives)
         try:
             write_stamp(stamp, final, stages=_stages_ran(stem, src))
-                                                    # stamp BEFORE removing sidecars (crash-safe skip)
+            # stamp BEFORE removing sidecars (crash-safe skip)
         except OSError as e:
             # The remux already landed, but the stamp is now the ONLY record that this
             # file is done (the ffprobe backstop is gone). Without a stamp the next sweep
             # redoes the whole multi-GB mkvmerge — every sweep, forever. Keep the sidecars
             # so a retry can still succeed, and surface it as its own status rather than
             # letting it read as a normal "muxed" line.
-            log(f"  ERROR: muxed OK but stamp write FAILED ({e}) — {os.path.basename(final)} "
-                f"will be re-muxed every sweep until the stamp can be written")
+            log(
+                f"  ERROR: muxed OK but stamp write FAILED ({e}) — {os.path.basename(final)} "
+                f"will be re-muxed every sweep until the stamp can be written"
+            )
             return "stamp-write-failed"
         for suff in (ASS_SUFFIX, SRT_SUFFIX):
-            try: os.remove(stem + suff)
-            except OSError: pass
+            try:
+                os.remove(stem + suff)
+            except OSError:
+                pass
         with open(stem + ".dubtitles.mux.log", "w") as f:
             f.write(f"muxed {os.path.basename(orig)} -> mkv; eng audio + Dubtitles default\n")
             f.write("dropped non-keep tracks: " + ", ".join(dropped) + "\n")
@@ -360,8 +394,7 @@ def main():
             if not os.path.isdir(root):
                 continue
             for dp, _, files in os.walk(root):
-                vids += [os.path.join(dp, f) for f in files
-                         if f.lower().endswith((".mkv", ".mp4", ".m4v"))]
+                vids += [os.path.join(dp, f) for f in files if f.lower().endswith((".mkv", ".mp4", ".m4v"))]
     counts = {}
     for v in vids:
         res = process(v, a.apply)

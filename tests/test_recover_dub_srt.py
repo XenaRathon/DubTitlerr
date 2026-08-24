@@ -12,6 +12,7 @@ This is the one place the pipeline reads its own output on purpose. It is not a 
 leak: the recovered lines go straight back out as dialogue, and repair.py skips an
 episode with no conf.json, so nothing re-repairs text that was already repaired.
 """
+
 import pysubs2
 import pytest
 
@@ -38,12 +39,11 @@ def _sign(start, end, text=r"{\pos(10,20)}a sign"):
 
 # --- extracting the dialogue back out ----------------------------------------
 
+
 def test_extracts_only_the_dubtitles_styled_events(tmp_path):
     """The signs sitting in the same track are exactly what the rebuild replaces —
     carrying them into the new sidecar would re-merge last version's broken signs."""
-    p = _muxed_track(tmp_path, [_dub(0, 1000, "First line."),
-                                _sign(0, 1000),
-                                _dub(2000, 3000, "Second line.")])
+    p = _muxed_track(tmp_path, [_dub(0, 1000, "First line."), _sign(0, 1000), _dub(2000, 3000, "Second line.")])
     lines = rec.dub_events(p)
     assert [e.plaintext for e in lines] == ["First line.", "Second line."]
 
@@ -69,6 +69,7 @@ def test_returns_nothing_when_the_track_has_no_dubtitles_events(tmp_path):
 
 
 # --- writing the sidecar ------------------------------------------------------
+
 
 def test_writes_a_well_formed_srt(tmp_path):
     p = _muxed_track(tmp_path, [_dub(0, 1500, "Hello."), _dub(2000, 3000, "Goodbye.")])
@@ -107,6 +108,7 @@ def test_never_overwrites_an_existing_sidecar(tmp_path):
 # BUT our dialogue -- there are no signs in them to confuse with it -- so every event
 # counts.
 
+
 def _srt_track(tmp_path, lines):
     p = tmp_path / "ep.srt"
     body = ""
@@ -117,8 +119,7 @@ def _srt_track(tmp_path, lines):
 
 
 def test_srt_origin_track_yields_all_its_events(tmp_path):
-    p = _srt_track(tmp_path, [("00:00:01,000", "00:00:02,000", "First line."),
-                              ("00:00:03,000", "00:00:04,000", "Second line.")])
+    p = _srt_track(tmp_path, [("00:00:01,000", "00:00:02,000", "First line."), ("00:00:03,000", "00:00:04,000", "Second line.")])
     lines = rec.dub_events(p, srt_origin=True)
     assert [e.plaintext for e in lines] == ["First line.", "Second line."]
 
@@ -153,11 +154,14 @@ def test_recover_reads_the_codec_and_uses_it(tmp_path, monkeypatch):
 # in it. So a track with ZERO "Dubtitles"-styled events cannot be signs-only -- it is
 # dialogue that simply isn't carrying our style name.
 
+
 def test_ass_track_with_no_dubtitles_style_falls_back_to_every_event(tmp_path):
     subs = pysubs2.SSAFile()
     subs.styles["Default"] = pysubs2.SSAStyle()
-    subs.events = [pysubs2.SSAEvent(start=0, end=1000, style="Default", text="The name's Boxxo!"),
-                   pysubs2.SSAEvent(start=2000, end=3000, style="Default", text="Hello, there!")]
+    subs.events = [
+        pysubs2.SSAEvent(start=0, end=1000, style="Default", text="The name's Boxxo!"),
+        pysubs2.SSAEvent(start=2000, end=3000, style="Default", text="Hello, there!"),
+    ]
     p = tmp_path / "ep.ass"
     subs.save(str(p))
     got = [e.plaintext for e in rec.dub_events(str(p))]

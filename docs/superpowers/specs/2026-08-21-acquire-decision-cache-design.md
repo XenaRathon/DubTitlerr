@@ -11,15 +11,15 @@ sweeps and has never once completed on One Pace
 
 Profiled in-container against the live One Pace corpus (462 episodes), phase by phase:
 
-| phase | cost | share |
-|---|---|---|
-| `harvest_candidates` (462 `conf.json` over CIFS) | 35.3 s | 5% |
-| `fetch_titles` (8,109 titles, disk-cached) | 0.0 s | 0% |
-| `_resolve_tokens` (8,199 tokens x 8,109 titles) | 44.7 s | 6% |
-| `propose` -> **7,695 proposals** | 0.5 s | 0% |
-| `context_lines` #1 (462 files, 597 tokens) | 115.3 s | 16% |
-| **`escalate` — 371 LLM calls** | **470.7 s** | **71%** |
-| `context_lines` #2 (462 files, flagged terms) | >420 s, killed | — |
+| phase                                            | cost           | share   |
+| ------------------------------------------------ | -------------- | ------- |
+| `harvest_candidates` (462 `conf.json` over CIFS) | 35.3 s         | 5%      |
+| `fetch_titles` (8,109 titles, disk-cached)       | 0.0 s          | 0%      |
+| `_resolve_tokens` (8,199 tokens x 8,109 titles)  | 44.7 s         | 6%      |
+| `propose` -> **7,695 proposals**                 | 0.5 s          | 0%      |
+| `context_lines` #1 (462 files, 597 tokens)       | 115.3 s        | 16%     |
+| **`escalate` — 371 LLM calls**                   | **470.7 s**    | **71%** |
+| `context_lines` #2 (462 files, flagged terms)    | >420 s, killed | —       |
 
 Two facts do the damage.
 
@@ -59,7 +59,7 @@ corpus fingerprint, no TTL, and no versioned key to get wrong — the failure mo
 fingerprint (silently serving an old answer, or silently invalidating everything) is exactly the
 class of bug this project keeps finding.
 
-**Exception, and the spec was wrong without it: the `canonical` payload.** The *verdict label*
+**Exception, and the spec was wrong without it: the `canonical` payload.** The _verdict label_
 is stable under new episodes. The `canonical` that an `apply` verdict writes into `hard_fixes`
 is not — it is resolved against today's wiki title set, and `fetch_titles` re-fetches on a
 30-day TTL (`WIKI_TTL`, glossary_verify.py:52). A page rename leaves the cached canonical
@@ -81,7 +81,7 @@ only the entries whose canonical actually disappeared. A title-set hash was cons
 rejected: it bumps on any rename anywhere and re-runs the whole 71% `escalate` cost, which is
 the "silently invalidating everything" half of the failure this section rejects.
 
-It detects *disappearance*, not *re-resolution* — a canonical that changes to a different valid
+It detects _disappearance_, not _re-resolution_ — a canonical that changes to a different valid
 title is not caught. That is acceptable: a genuine canonical correction is a case a human should
 re-litigate, not one the cache should quietly swap.
 
@@ -121,14 +121,14 @@ keyed on `(path, size, mtime)` — the same triple `common.stamp_valid()` alread
 **Correction (review, 2026-08-21):** an earlier draft of this spec described the mount as
 `cache=none,nobrl,actimeo=1`. `actimeo` is an NFS option and is **not** in the CIFS mount; the
 live options are `vers=3.0,uid=1000,gid=100,file_mode=0777,dir_mode=0777,nobrl,cache=none`. The
-number was carried over from a *different* CIFS mount on the laptop. This project runs NFS on
+number was carried over from a _different_ CIFS mount on the laptop. This project runs NFS on
 fasc and CIFS on 3200g, and conflating them is the exact class of error the reviews keep
 catching.
 
 **The reuse is not as safe as "same triple" implies, and the reason is the direction of the
-decision.** `stamp_valid()` uses the triple to decide whether to *redo expensive work*: a stale
+decision.** `stamp_valid()` uses the triple to decide whether to _redo expensive work_: a stale
 mtime causes a needless re-transcription — wasteful, visible, correct. This cache would use it
-to decide whether to *skip reading a file*: a stale mtime drops an episode from the corpus
+to decide whether to _skip reading a file_: a stale mtime drops an episode from the corpus
 silently. Fail-loud versus fail-silent, same key, same filesystem. The `size` component catches
 most real edits, so the residual risk is a same-size content change, which for a regenerated
 `conf.json` is possible but unlikely. Mitigation: on any `stat` error or ambiguity, re-read
@@ -162,18 +162,18 @@ nothing per sweep, so it stops being urgent.
 
 ## 4. Testing
 
-| test | asserts |
-|---|---|
-| a cached verdict short-circuits the LLM | second run makes zero `escalate` calls for known tokens |
-| a new token still reaches the pipeline | absence is a cache miss |
-| junk recycles on material growth | `count` past `cached_count * 3` re-queues it |
-| structural junk never recycles | `english-word` stays junk at any count |
-| harvest cache keyed on (path, size, mtime) | an edited episode is re-read; an untouched one is not |
-| a corrupt cache degrades to a full run | never raises, never blocks a sweep |
-| cache write is atomic | temp + `os.replace`, group-writable per `common.SIDECAR_MODE` |
-| a renamed wiki canonical invalidates only that entry | drop one title from `fetch_titles`; only entries whose canonical normalised to it miss |
-| a junk entry re-queues when its near-miss becomes an anchor | an unrelated `below-floor` token stays cached |
-| structural junk never recycles at any count | `english-word`, `already-canonical`, `sentence-initial-only` |
-| every non-structural junk reason recycles | not just `below-floor` |
-| a stat error re-reads rather than trusting the cache | the default branch is the expensive one |
-| second run is materially faster | end-to-end assertion, not a unit mock |
+| test                                                        | asserts                                                                                |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| a cached verdict short-circuits the LLM                     | second run makes zero `escalate` calls for known tokens                                |
+| a new token still reaches the pipeline                      | absence is a cache miss                                                                |
+| junk recycles on material growth                            | `count` past `cached_count * 3` re-queues it                                           |
+| structural junk never recycles                              | `english-word` stays junk at any count                                                 |
+| harvest cache keyed on (path, size, mtime)                  | an edited episode is re-read; an untouched one is not                                  |
+| a corrupt cache degrades to a full run                      | never raises, never blocks a sweep                                                     |
+| cache write is atomic                                       | temp + `os.replace`, group-writable per `common.SIDECAR_MODE`                          |
+| a renamed wiki canonical invalidates only that entry        | drop one title from `fetch_titles`; only entries whose canonical normalised to it miss |
+| a junk entry re-queues when its near-miss becomes an anchor | an unrelated `below-floor` token stays cached                                          |
+| structural junk never recycles at any count                 | `english-word`, `already-canonical`, `sentence-initial-only`                           |
+| every non-structural junk reason recycles                   | not just `below-floor`                                                                 |
+| a stat error re-reads rather than trusting the cache        | the default branch is the expensive one                                                |
+| second run is materially faster                             | end-to-end assertion, not a unit mock                                                  |

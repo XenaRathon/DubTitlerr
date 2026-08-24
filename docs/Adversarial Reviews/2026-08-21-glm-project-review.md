@@ -1,7 +1,7 @@
 # Second independent review — is this ready to be broken into implementation tasks?
 
 **Reviewer:** GLM-5.2 (Buffy), 2026-08-21.
-**Scope:** answer the owner's question: *is this ready to be broken into implementation tasks, and in what order?*
+**Scope:** answer the owner's question: _is this ready to be broken into implementation tasks, and in what order?_
 
 I read the source. The three deliverables are in the order the owner asked for.
 
@@ -23,7 +23,7 @@ Consider what actually killed the three dead paths:
 
 A manifest + AST CI test would catch all three, but so would: (i) a runtime liveness counter on every gated rule (`evaluated` / `activated` / `error`), which Luna mentions as a secondary add but which is actually the primary instrument; and (ii) a one-time dead-code audit, which is a script you run once, not infrastructure you maintain.
 
-The manifest approach has a specific failure mode that makes it dangerous here: it creates a **second source of truth** for what the pipeline does. In a one-operator system, the manifest will rot. A rule gets added in code; the developer forgets to update `pipeline_contract.json`; the CI test now certifies a *stale* contract as passing — which is worse than no contract, because it provides false confidence that the system is verified. The brief's §5.5 ("configuration that looked applied and wasn't") is exactly this failure shape: a thing that says "verified" while being stale.
+The manifest approach has a specific failure mode that makes it dangerous here: it creates a **second source of truth** for what the pipeline does. In a one-operator system, the manifest will rot. A rule gets added in code; the developer forgets to update `pipeline_contract.json`; the CI test now certifies a _stale_ contract as passing — which is worse than no contract, because it provides false confidence that the system is verified. The brief's §5.5 ("configuration that looked applied and wasn't") is exactly this failure shape: a thing that says "verified" while being stale.
 
 **Cost of getting wrong:** medium. The manifest becomes a maintenance burden that the single operator will not keep current, and its presence will discourage the cheaper, more reliable approach (runtime counters + a dead-code grep).
 
@@ -64,7 +64,7 @@ The `DUB_SUFFIX` mismatch is the highest-risk item in this category, and it is n
 
 **Cost of getting wrong:** low-medium. The schema becomes another stale source of truth (same failure as the contract manifest). The startup log is cheaper, more honest, and catches the same bugs.
 
-**Priority:** below the `unresolved` queue and the liveness counters. The config surface is a risk that compounds over time; the dead paths and missing human rung are failures that are happening *right now*.
+**Priority:** below the `unresolved` queue and the liveness counters. The config surface is a risk that compounds over time; the dead paths and missing human rung are failures that are happening _right now_.
 
 ---
 
@@ -79,13 +79,13 @@ Luna identified write-only observability (QC sidecars, lastrun.json, repair-summ
 
 The specific mechanism is in `merge_pass.sh`. The script has no `set -e`. It runs `repair.py`, `dub_signs_merge.py`, and `mux.py` per episode without checking any exit status. The final `MERGE_PASS_DONE` line is printed regardless. Luna flagged this as "P1 — merge-stage failures are not propagated to the supervisor." That is the symptom. The miss is what it means for the system's self-model.
 
-Consider: `generate.py:process()` returns `"ok"` and writes the `.eng.dubtitles.srt` + `.dubtitles.conf.json`. The merge loop then picks up the episode. If `repair.py` fails (Ollama down, `common.llm_chat` returns `""`, every target is `skipped_no_ref`), the srt is never rewritten — but the *original* srt from generation is still there. `dub_signs_merge.py` runs on that un-repaired srt. `mux.py` embeds it. The `.dubtitles.done` stamp is written. The episode is "done."
+Consider: `generate.py:process()` returns `"ok"` and writes the `.eng.dubtitles.srt` + `.dubtitles.conf.json`. The merge loop then picks up the episode. If `repair.py` fails (Ollama down, `common.llm_chat` returns `""`, every target is `skipped_no_ref`), the srt is never rewritten — but the _original_ srt from generation is still there. `dub_signs_merge.py` runs on that un-repaired srt. `mux.py` embeds it. The `.dubtitles.done` stamp is written. The episode is "done."
 
-Nobody knows repair didn't run. The QC sidecar records `flagged` and `low_conf` counters from *generation*, but the repair summary (`*.repair-summary.json`) is either not written (repair returned `"skip"` because no srt/conf) or written with `targets=0, repaired=0` — which looks identical to "this episode was clean, nothing needed repair."
+Nobody knows repair didn't run. The QC sidecar records `flagged` and `low_conf` counters from _generation_, but the repair summary (`*.repair-summary.json`) is either not written (repair returned `"skip"` because no srt/conf) or written with `targets=0, repaired=0` — which looks identical to "this episode was clean, nothing needed repair."
 
 The repair summary is the only artifact that could distinguish "repair ran and found nothing" from "repair didn't run." But `repair.py:process()` returns `"skip"` (no srt/conf — the episode was never generated) or `"clean"` (no targets found) or `"repaired"` — and `merge_pass.sh` ignores all three. The `.dubtitles.done` stamp records `{size, mtime, muxed, version}` — nothing about which stages ran.
 
-This is the same class as the `tools/vad.py` example the owner gave: a thing that exists and works (`tools/vad.py` with webrtcvad, better against loud music/SFX) was missed by the author designing a Silero VAD stage, because the Dockerfile's `|| echo` swallowed the webrtcvad install failure, and the module is absent from the running image. The system *lies about its own state* — it says "webrtcvad installed" in the Dockerfile comment, says "use --vad ffmpeg-silencedetect" in the fallback, and the running image has neither. The pipeline contract between "what the Dockerfile says is installed" and "what the running container can import" is unverified.
+This is the same class as the `tools/vad.py` example the owner gave: a thing that exists and works (`tools/vad.py` with webrtcvad, better against loud music/SFX) was missed by the author designing a Silero VAD stage, because the Dockerfile's `|| echo` swallowed the webrtcvad install failure, and the module is absent from the running image. The system _lies about its own state_ — it says "webrtcvad installed" in the Dockerfile comment, says "use --vad ffmpeg-silencedetect" in the fallback, and the running image has neither. The pipeline contract between "what the Dockerfile says is installed" and "what the running container can import" is unverified.
 
 The same lie happens at the stage level: the `.dubtitles.done` stamp says "this episode is complete" without recording whether repair actually examined it. A version bump (`PIPELINE_VERSION = 4`) would re-transcribe everything, but if the Ollama endpoint is still down, every re-transcribed episode would be muxed without repair again, and the stamp would say "v4, done."
 
@@ -99,9 +99,9 @@ The same lie happens at the stage level: the `.dubtitles.done` stamp says "this 
 
 **Item 0: Fix the webrtcvad install in the Dockerfile (prerequisite, blocks Item 5)**
 
-The `Dockerfile.builder` wraps `webrtcvad` install in `|| echo`, so a silent failure leaves the module absent. `tools/vad.py` already exists with a webrtcvad backend chosen specifically for being better against loud music/SFX — the exact failure mode that killed the author's Silero tests. The VAD hang-trim design (§3.1) proposes Silero VAD, which is "already vendored inside `faster_whisper.vad`." But `tools/vad.py`'s webrtcvad backend is a *different* detector that was deliberately chosen for the *exact* failure mode the Silero tests hit (§4: "Silero VAD as a drop gate deleted 19.8% of real dialogue").
+The `Dockerfile.builder` wraps `webrtcvad` install in `|| echo`, so a silent failure leaves the module absent. `tools/vad.py` already exists with a webrtcvad backend chosen specifically for being better against loud music/SFX — the exact failure mode that killed the author's Silero tests. The VAD hang-trim design (§3.1) proposes Silero VAD, which is "already vendored inside `faster_whisper.vad`." But `tools/vad.py`'s webrtcvad backend is a _different_ detector that was deliberately chosen for the _exact_ failure mode the Silero tests hit (§4: "Silero VAD as a drop gate deleted 19.8% of real dialogue").
 
-Before implementing the hang trim, the owner should either (a) fix the webrtcvad install (remove the `|| echo`, fail the build if it is absent, verify `import webrtcvad` in the running container), or (b) explicitly document why Silero is preferred over the existing webrtcvad for the *locator* use case (§3.2 step 2) despite webrtcvad being better for the *drop gate* use case (§4). The design does not address this.
+Before implementing the hang trim, the owner should either (a) fix the webrtcvad install (remove the `|| echo`, fail the build if it is absent, verify `import webrtcvad` in the running container), or (b) explicitly document why Silero is preferred over the existing webrtcvad for the _locator_ use case (§3.2 step 2) despite webrtcvad being better for the _drop gate_ use case (§4). The design does not address this.
 
 **Wasted effort if skipped:** if the hang trim is built on Silero and then Silero turns out to be inferior to the already-existing webrtcvad for the same reason it was inferior in §4, the implementation is wasted.
 
@@ -110,6 +110,7 @@ Before implementing the hang trim, the owner should either (a) fix the webrtcvad
 **Item 1: Add liveness counters to every gated rule (independent, no dependencies)**
 
 Add `evaluated` / `activated` / `error` counters to:
+
 - `hallucination.drop_reason` (the `blocklist`, `repetition`, `music` branches — `music` is already known to be zero)
 - `hallucination.flag_reason` (the `low_conf` / `maybe_silence` branches)
 - `punctuation.restore` (the `restore_runs_sent` / `restore_accepted` / `restore_empty` / `restore_rejected_guard` counters already exist — this is done)
@@ -136,6 +137,7 @@ This rides on the existing QC sidecar infrastructure (`qc.Recorder`). No new fil
 **Item 3: Build the `unresolved` queue for subtitle-quality decisions (independent, highest value)**
 
 Implement per-stage unresolved queues at the points that currently only increment counters:
+
 - `repair.py`: when `skipped_no_ref` or `rejected` is incremented, write an entry to `<show>.unresolved.json` with `{stage: "repair", reason, original_text, proposed_text, source_start, source_end, confidence_fields}`.
 - `punctuation.py`: when `restore_empty` or `restore_rejected_guard` is incremented, write an entry.
 - `hallucination.py` / `generate.py`: when `flag` is written but no drop occurs, write an entry (or simply consume the existing `flag` field that nothing reads).
@@ -143,7 +145,7 @@ Implement per-stage unresolved queues at the points that currently only incremen
 Add a `--review` CLI mirroring `glossary_acquire.py`'s pattern. The operator walks the queue, decides, and the decision is recorded.
 
 **Dependency:** none. This is the missing human rung of the ladder.
-**Blocked by:** nothing. But it should be done *before* the VAD hang trim, because the hang trim's 11 no-op cards (§3.2 step 3, the 36.7% of gated cards that get no VAD result) are exactly the kind of case that should flow into this queue rather than silently keeping their 7-second hang.
+**Blocked by:** nothing. But it should be done _before_ the VAD hang trim, because the hang trim's 11 no-op cards (§3.2 step 3, the 36.7% of gated cards that get no VAD result) are exactly the kind of case that should flow into this queue rather than silently keeping their 7-second hang.
 
 ---
 
@@ -151,7 +153,7 @@ Add a `--review` CLI mirroring `glossary_acquire.py`'s pattern. The operator wal
 
 Add `{repair_ran, repair_targets, signs_merge_ran}` to the stamp (or a sibling `<stem>.dubtitles.stages.json`). An episode where `repair_ran == False` but the conf has targets is a silent failure that is today indistinguishable from a clean episode.
 
-This is the "next §5.5" the owner asked about in item 4 of the brief. The healthcheck/autoheal mismatch Luna found (P0) is real but is a deployment problem; this is a *pipeline* problem of the same shape — the system says "done" without recording what "done" means.
+This is the "next §5.5" the owner asked about in item 4 of the brief. The healthcheck/autoheal mismatch Luna found (P0) is real but is a deployment problem; this is a _pipeline_ problem of the same shape — the system says "done" without recording what "done" means.
 
 **Dependency:** none. But it should be done before any `PIPELINE_VERSION` bump, because a bump without this information re-transcribes everything and still cannot tell you whether repair ran on the re-transcribed output.
 
@@ -160,6 +162,7 @@ This is the "next §5.5" the owner asked about in item 4 of the brief. The healt
 **Item 5: VAD hang trim (depends on Item 0)**
 
 The design in `2026-08-21-vad-hang-trim-design.md` is implementable, but only after:
+
 1. Item 0 (webrtcvad install fix or explicit Silero-vs-webrtcvad justification).
 2. The 30-card candidate set is run read-only with the actual implementation, as Luna's self-critique and the design's own §6.6 ("No end-to-end validation yet. That is the first implementation step, not a later one") both require.
 
@@ -205,7 +208,7 @@ Item 6  (PIPELINE_VERSION refinement)   ← depends on 4
 Item 7  (config cleanup)                ← independent, low priority
 ```
 
-Items 1, 2, 3, and 4 are all independent and should be done first. They are small, they address the failures happening *right now* (dead paths, missing human rung, silent stage skips), and they establish the infrastructure that Items 5 and 6 need. Item 5 (the VAD hang trim the owner is about to act on) should not be the first thing implemented, because it depends on the webrtcvad decision (Item 0) and because its 11 no-op cards need the unresolved queue (Item 3) to not be a known hole.
+Items 1, 2, 3, and 4 are all independent and should be done first. They are small, they address the failures happening _right now_ (dead paths, missing human rung, silent stage skips), and they establish the infrastructure that Items 5 and 6 need. Item 5 (the VAD hang trim the owner is about to act on) should not be the first thing implemented, because it depends on the webrtcvad decision (Item 0) and because its 11 no-op cards need the unresolved queue (Item 3) to not be a known hole.
 
 ### What to drop
 

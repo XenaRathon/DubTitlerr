@@ -1,4 +1,5 @@
 """Unit tests for glossary_verify.py pure core (wiki HTTP + LLM are integration)."""
+
 import json
 import threading
 import time
@@ -21,34 +22,37 @@ def test_constants_present():
 
 # --- T2: candidates ----------------------------------------------------------
 
+
 def test_candidates_topk_and_cutoff():
     titles = ["Spandam", "Enies Lobby", "Going Merry", "Monkey D. Luffy", "Roronoa Zoro"]
     c = gv.candidates("spandom", titles, k=3)
     assert "Spandam" in c
     assert len(c) <= 3
-    assert gv.candidates("zzzzxxxxqq", titles) == []      # nothing similar -> empty
+    assert gv.candidates("zzzzxxxxqq", titles) == []  # nothing similar -> empty
 
 
 # --- T3: apply_results -------------------------------------------------------
+
 
 def test_apply_never_deletes_the_original_term():
     """The 2026-08-21 bug: `lst[i] = canon` replaced in place, deleting 17 names and 6
     phrases from the live One Pace glossary into `verified`, which nothing reads."""
     g = gl(names=["Spandom", "Luffy"])
-    res = {"Spandom": {"canonical": "Spandam", "confidence": "high", "dub_note": ""},
-           "Luffy": {"canonical": "Luffy", "confidence": "high", "dub_note": ""}}
+    res = {
+        "Spandom": {"canonical": "Spandam", "confidence": "high", "dub_note": ""},
+        "Luffy": {"canonical": "Luffy", "confidence": "high", "dub_note": ""},
+    }
     out = gv.apply_results(g, res)
-    assert "Spandom" in out["names"]                      # <- the whole point
+    assert "Spandom" in out["names"]  # <- the whole point
     assert set(out["verified"]) >= {"Spandom", "Luffy"}
-    assert out["initial_prompt"] == "P"                   # curated prompt preserved
+    assert out["initial_prompt"] == "P"  # curated prompt preserved
 
 
 def test_apply_adds_an_expansion_alongside_routed_by_shape():
     """`Doflamingo` -> `Donquixote Doflamingo` is the same entity written longer: additive,
     and multi-word so it belongs in `phrases` -- `names` feeds a per-TOKEN matcher."""
     g = gl(names=["Doflamingo"])
-    out = gv.apply_results(g, {"Doflamingo": {"canonical": "Donquixote Doflamingo",
-                                              "confidence": "high", "dub_note": ""}})
+    out = gv.apply_results(g, {"Doflamingo": {"canonical": "Donquixote Doflamingo", "confidence": "high", "dub_note": ""}})
     assert out["names"] == ["Doflamingo"]
     assert out["phrases"] == ["Donquixote Doflamingo"]
 
@@ -57,12 +61,12 @@ def test_apply_flags_a_respelling_instead_of_applying_it():
     """The dangerous class. Measured on One Pace, every wrong high-confidence canonical was
     a respelling: Raftel->Ratel, Jabra->Jabari, Alabasta->Arabasta, Kaido->Kaidou."""
     g = gl(names=["Raftel", "Jabra"])
-    out = gv.apply_results(g, {"Raftel": {"canonical": "Ratel", "confidence": "high"},
-                               "Jabra": {"canonical": "Jabari", "confidence": "high"}})
-    assert out["names"] == ["Raftel", "Jabra"]            # neither applied
+    out = gv.apply_results(
+        g, {"Raftel": {"canonical": "Ratel", "confidence": "high"}, "Jabra": {"canonical": "Jabari", "confidence": "high"}}
+    )
+    assert out["names"] == ["Raftel", "Jabra"]  # neither applied
     assert "Ratel" not in out["names"] and "Jabari" not in out["names"]
-    assert out["flagged"]["Raftel"] == {"reason": "respelling-needs-review",
-                                        "canonical": "Ratel"}
+    assert out["flagged"]["Raftel"] == {"reason": "respelling-needs-review", "canonical": "Ratel"}
 
 
 def test_apply_is_idempotent_on_a_second_run():
@@ -76,8 +80,10 @@ def test_apply_is_idempotent_on_a_second_run():
 
 def test_apply_flags_low_and_no_match_without_changing():
     g = gl(names=["Krieg", "Blarg"])
-    res = {"Krieg": {"canonical": "Don Krieg", "confidence": "low", "dub_note": ""},
-           "Blarg": {"canonical": "", "confidence": "none", "dub_note": ""}}
+    res = {
+        "Krieg": {"canonical": "Don Krieg", "confidence": "low", "dub_note": ""},
+        "Blarg": {"canonical": "", "confidence": "none", "dub_note": ""},
+    }
     out = gv.apply_results(g, res)
     assert "Krieg" in out["names"] and "Blarg" in out["names"]
     assert "Krieg" in out["flagged"] and "Blarg" in out["flagged"]
@@ -102,6 +108,7 @@ def test_apply_preserves_unknown_fields():
 
 # --- T4: pending_terms (incremental) -----------------------------------------
 
+
 def test_pending_terms_skips_verified():
     g = gl(names=["Luffy", "Zoro"], phrases=["Grand Line"], verified=["Luffy"])
     p = gv.pending_terms(g)
@@ -109,6 +116,7 @@ def test_pending_terms_skips_verified():
 
 
 # --- T5: build_adjudication_prompt -------------------------------------------
+
 
 def test_prompt_has_term_candidates_and_dub_rule():
     p = gv.build_adjudication_prompt("spandom", ["Spandam", "Spandine"], "One Piece")
@@ -118,6 +126,7 @@ def test_prompt_has_term_candidates_and_dub_rule():
 
 
 # --- T6: wiki I/O pure helpers -----------------------------------------------
+
 
 def test_wiki_candidates_from_messy_title():
     cands = gv.wiki_candidates("One Piece (1999) {tvdb-81797}")
@@ -135,14 +144,15 @@ def test_allpages_url_and_parse():
     u = gv.allpages_url("https://x.fandom.com/api.php")
     assert "list=allpages" in u and "apnamespace=0" in u
     titles, cont = gv.parse_allpages(
-        {"query": {"allpages": [{"title": "Spandam"}, {"title": "Enies Lobby"}]},
-         "continue": {"apcontinue": "Foo"}})
+        {"query": {"allpages": [{"title": "Spandam"}, {"title": "Enies Lobby"}]}, "continue": {"apcontinue": "Foo"}}
+    )
     assert titles == ["Spandam", "Enies Lobby"] and cont == "Foo"
     t2, c2 = gv.parse_allpages({"query": {"allpages": [{"title": "A"}]}})
     assert t2 == ["A"] and c2 is None
 
 
 # --- T7: LLM reply parsing ---------------------------------------------------
+
 
 def test_parse_adjudication_clean_json():
     d = gv.parse_adjudication('{"canonical": "Spandam", "confidence": "high", "dub_note": ""}')
@@ -164,6 +174,7 @@ def test_parse_adjudication_bad_confidence_defaults_low():
 
 
 # --- V2 C2: verify() parallelizes adjudicate() with ThreadPoolExecutor -----------------
+
 
 def test_verify_adjudicates_terms_concurrently(monkeypatch, tmp_path):
     """4 pending terms with VERIFY_WORKERS=4 (default) must all be IN FLIGHT
@@ -203,7 +214,7 @@ def test_verify_preserves_term_result_pairing_despite_completion_order(monkeypat
     monkeypatch.setattr(gv, "candidates", lambda term, titles, k=gv.TOPK: [canon[term]])
 
     def fake_adjudicate(term, cands, show):
-        if term == "Spandom":              # submitted first, finishes LAST
+        if term == "Spandom":  # submitted first, finishes LAST
             time.sleep(0.05)
         return {"canonical": cands[0], "confidence": "high", "dub_note": ""}
 
