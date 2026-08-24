@@ -3,7 +3,8 @@
 Status: open
 Created: 2026-08-24
 Epic: v5-two-tier-idempotency
-Sprint: 001-v5-foundation-two-tier-versions-word-list-persistence-and
+Sprint: -
+Carried: 001-v5-foundation-two-tier-versions-word-list-persistence-and — Its second half requires a LIVE sweep: bump TEXT_VERSION on a pinned show, sweep, observe words_reused > 0. Production is deliberately stopped and stays stopped until every change from this week is committed (owner decision 2026-08-24), so the observation cannot be made. The fixture half is implemented and green; carrying rather than closing on fixtures alone, because 'a fixture proves ordering but never proves anything drains' is exactly what this story exists to guard.
 
 ## Description
 
