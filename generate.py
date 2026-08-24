@@ -63,6 +63,7 @@ from common import (
     load_extras,
     out_for,
     read_stamp,
+    read_words,
     stale_tiers,
     stale_version_stamp,
     stamp_valid,
@@ -682,6 +683,166 @@ def _cascade_infeasible(stem, fail, exc):
     return "cascade-infeasible"
 
 
+def text_stages(stem, words, segments, audio_duration, rec, fail):
+    """Everything downstream of the word list: reflow, glossary correction, the
+    hallucination gate, layout re-validation, and the srt/conf write.
+
+    Extracted so a CACHED re-run and a fresh transcription execute the SAME code. Two
+    copies would drift, and the drift would be a replay that quietly produces different
+    cards than the run it claims to reproduce -- undetectable without comparing two full
+    runs of the same episode. Everything above this line is the transcribe tier; this is
+    the text tier, and it costs CPU minutes."""
+    # A1: reflow whisper's words into clean, well-timed cards. C1: name-correct each card.
+    # B1: drop near-certain hallucinations, flag the suspect, collapse runaway repeat runs.
+    merge_log, cascade_log = [], []
+    try:
+        cards = reflow.reflow(words, segments, merge_log=merge_log, audio_duration=audio_duration, cascade_log=cascade_log)
+    except reflow.CascadeInfeasible as e:
+        return _cascade_infeasible(stem, fail, e)
+    kept, fixes, dropped = [], 0, 0
+    for c in cards:
+        if hallucination.drop_reason(c, rec=rec):  # blocklist / repetition / music -> drop
+            dropped += 1
+            continue
+        lines, n = [], 0
+        for ln in c["text"].split("\n"):  # correct per line so the wrap is preserved
+            fixed, k = glossary.correct(ln, GLOSS)
+            lines.append(fixed)
+            n += k
+        fixes += n
+        kc = dict(c)
+        kc["text"] = "\n".join(lines)
+        kc["pre_correction_text"] = c["text"]  # C7 tells a broken layout from an inherited one
+        kc["flag"] = hallucination.flag_reason(c, rec=rec)  # weaker single signal -> kept but marked
+        kc["word_probs"] = _card_word_probs(c, words, rec=rec)  # V2 A6: per-word confidence for repair
+        kept.append(kc)
+    collapsed = hallucination.collapse_runs(kept)
+    # C7: layout was decided before the glossary rewrote the text -- re-wrap and
+    # re-validate the corrected cards before anything is written. (`rec` was opened before
+    # the restoration pass so its counters land in this same sidecar.)
+    _revalidate_after_correction(rec, collapsed)
+    rows = [(c["start"], c["end"], c["text"]) for c in collapsed]
+    conf = []
+    for c in collapsed:
+        row = {
+            "start": round(c["start"], 3),
+            "end": round(c["end"], 3),
+            # C6: the audio evidence window, kept separate from the display timing a
+            # forward steal may have moved. repair.py selects its fansub reference on
+            # THIS pair; sidecars written before C6 simply lack it and fall back.
+            "source_start": round(c["source_start"], 3),
+            "source_end": round(c["source_end"], 3),
+            "avg_logprob": round(c["avg_logprob"], 3),
+            "no_speech_prob": round(c["no_speech_prob"], 3),
+            "text": c["text"].replace("\n", " "),
+        }
+        if c.get("flag"):
+            row["flag"] = c["flag"]
+        if c.get("word_probs"):
+            row["word_probs"] = c["word_probs"]  # optional/backward-compat (V2 A6/A7)
+        conf.append(row)
+    srt = out_for(stem + SUFFIX)
+    confp = out_for(stem + ".dubtitles.conf.json")
+
+    def _render_srt(f):
+        for i, (a, b, t) in enumerate(rows, 1):
+            f.write(f"{i}\n{ts_srt(a)} --> {ts_srt(b)}\n{t}\n\n")
+
+    _atomic_write(srt, _render_srt)  # both atomic: the in-flight marker is
+    _atomic_write(confp, lambda f: json.dump(conf, f))  # already gone by here (see helper)
+    for p in (srt, confp):  # the qc sidecar is chowned in _write_qc, after it
+        try:
+            os.chown(p, UID, GID)  # exists
+        except OSError as e:
+            log(f"chown failed for {p}: {e}")
+    # QC sidecar: observability only -- a write failure is logged, never fatal, since the
+    # episode already generated correctly (see qc.write's docstring).
+    _record_qc(rec, collapsed)
+    rec.count("cards_after", len(rows))
+    _record_before(rec, cards, merge_log)
+    # Deferred from Task 5: orphan candidates are quarantined, not fixed -- count them
+    # separately from merges, and never bump orphan_candidates_fixed (nothing here fixes
+    # one). merged_backward comes from merge_runts()'s own records, not re-derived.
+    rec.count("orphan_candidates", sum(1 for c in cards if c.get("orphan")))
+    rec.count("merged_backward", len(merge_log))
+    _record_cascades(rec, cards, cascade_log)
+    low = sum(1 for c in conf if c["avg_logprob"] < -0.8 or c["no_speech_prob"] > 0.6)
+    flagged = sum(1 for c in conf if c.get("flag"))
+    rec.count("low_conf", low)
+    rec.count("flagged", flagged)  # both were logged and
+    _write_qc(rec, stem)  # then thrown away
+    # Only now is the replacement COMPLETE -- srt, conf AND sidecar. Dropping the parked
+    # copies before the sidecar exists would leave a window where neither generation's
+    # qc.json is on disk.
+    drop_parked_sidecars(stem)
+    max_dur = max((b - a for a, b, _ in rows), default=0.0)
+    faults = [_card_faults(t, b - a) for a, b, t in rows]  # B2: the SAME predicate the
+    over_cps = sum(1 for f in faults if "over_cps" in f)  # sidecar counts, so the number
+    bad = sum(1 for f in faults if f)  # an operator reads cannot differ
+    collapsed_n = len(kept) - len(collapsed)
+    log(
+        f"  cards={len(rows)} name-fixes={fixes} dropped-hallucination={dropped} "
+        f"collapsed={collapsed_n} flagged={flagged} low-conf={low} "
+        f"max_dur={max_dur:.1f}s over_cps={over_cps} violations={bad} "
+        f"meanlp={sum(c['avg_logprob'] for c in conf) / max(1, len(conf)):.2f}"
+    )
+    _LAST_STATS.clear()  # V2 C1: this episode's contribution to the show's lastrun.json
+    _LAST_STATS.update(
+        {"cards_written": len(rows), "dropped_hallucination": dropped, "collapsed_runs": collapsed_n, "flagged": flagged}
+    )
+    return "ok"
+
+
+def partition_todo(files):
+    """Split outstanding work by TIER: ``(transcribe_todo, text_todo)``.
+
+    An episode whose transcript is current and whose words.json is usable needs only the
+    text stages, which cost CPU minutes. Without this split a TEXT_VERSION bump sends
+    every one of those episodes back through the decoder -- for the live library that is
+    576 episodes and roughly two GPU-days, which is precisely the cost the tier split
+    exists to remove.
+
+    An episode that is text-stale but has NO usable words.json goes to the transcribe
+    queue: it transcribes once and gains a sidecar. That is a migration, not a bump, and
+    it is far better than being skipped forever for want of a cache."""
+    transcribe_todo, text_todo = [], []
+    for v in files:
+        stem = os.path.splitext(v)[0]
+        if os.path.exists(stem + ".dubtitles.fail"):
+            continue  # poison marker wins, exactly as in needs_work()
+        stale = stale_tiers(read_stamp(stem + STAMP_SUFFIX), v)
+        if not stale:
+            continue
+        if "transcribe" in stale:
+            transcribe_todo.append(v)
+        elif read_words(stem) is not None:
+            text_todo.append(v)
+        else:
+            transcribe_todo.append(v)
+    return transcribe_todo, text_todo
+
+
+def process_text(video):
+    """Re-run the TEXT tier from the persisted word list -- no GPU, no punctuation LLM.
+
+    Runs the identical text_stages() a fresh transcription runs, so a replay cannot
+    quietly diverge from the run it claims to reproduce. Writes a new srt and conf;
+    merge_pass then re-muxes the episode, because its stamp is text-stale."""
+    stem = os.path.splitext(video)[0]
+    rec = qc.Recorder()
+    doc = read_words(stem, rec=rec)
+    if doc is None:
+        return "no-words"
+    return text_stages(
+        stem,
+        doc["words"],
+        doc.get("segments") or [],
+        doc.get("audio_duration"),
+        rec,
+        stem + ".dubtitles.fail",
+    )
+
+
 def process(video):
     stem = os.path.splitext(video)[0]
     # The version-aware stamp (common.stamp_valid) is the ONLY "already muxed" guard.
@@ -789,105 +950,7 @@ def process(video):
     except Exception as e:
         rec.count("words_missing")
         log("words.json write failed (episode stays GPU-only):", stem, e)
-    # A1: reflow whisper's words into clean, well-timed cards. C1: name-correct each card.
-    # B1: drop near-certain hallucinations, flag the suspect, collapse runaway repeat runs.
-    merge_log, cascade_log = [], []
-    try:
-        cards = reflow.reflow(words, segments, merge_log=merge_log, audio_duration=audio_duration, cascade_log=cascade_log)
-    except reflow.CascadeInfeasible as e:
-        return _cascade_infeasible(stem, fail, e)
-    kept, fixes, dropped = [], 0, 0
-    for c in cards:
-        if hallucination.drop_reason(c, rec=rec):  # blocklist / repetition / music -> drop
-            dropped += 1
-            continue
-        lines, n = [], 0
-        for ln in c["text"].split("\n"):  # correct per line so the wrap is preserved
-            fixed, k = glossary.correct(ln, GLOSS)
-            lines.append(fixed)
-            n += k
-        fixes += n
-        kc = dict(c)
-        kc["text"] = "\n".join(lines)
-        kc["pre_correction_text"] = c["text"]  # C7 tells a broken layout from an inherited one
-        kc["flag"] = hallucination.flag_reason(c, rec=rec)  # weaker single signal -> kept but marked
-        kc["word_probs"] = _card_word_probs(c, words, rec=rec)  # V2 A6: per-word confidence for repair
-        kept.append(kc)
-    collapsed = hallucination.collapse_runs(kept)
-    # C7: layout was decided before the glossary rewrote the text -- re-wrap and
-    # re-validate the corrected cards before anything is written. (`rec` was opened before
-    # the restoration pass so its counters land in this same sidecar.)
-    _revalidate_after_correction(rec, collapsed)
-    rows = [(c["start"], c["end"], c["text"]) for c in collapsed]
-    conf = []
-    for c in collapsed:
-        row = {
-            "start": round(c["start"], 3),
-            "end": round(c["end"], 3),
-            # C6: the audio evidence window, kept separate from the display timing a
-            # forward steal may have moved. repair.py selects its fansub reference on
-            # THIS pair; sidecars written before C6 simply lack it and fall back.
-            "source_start": round(c["source_start"], 3),
-            "source_end": round(c["source_end"], 3),
-            "avg_logprob": round(c["avg_logprob"], 3),
-            "no_speech_prob": round(c["no_speech_prob"], 3),
-            "text": c["text"].replace("\n", " "),
-        }
-        if c.get("flag"):
-            row["flag"] = c["flag"]
-        if c.get("word_probs"):
-            row["word_probs"] = c["word_probs"]  # optional/backward-compat (V2 A6/A7)
-        conf.append(row)
-    srt = out_for(stem + SUFFIX)
-    confp = out_for(stem + ".dubtitles.conf.json")
-
-    def _render_srt(f):
-        for i, (a, b, t) in enumerate(rows, 1):
-            f.write(f"{i}\n{ts_srt(a)} --> {ts_srt(b)}\n{t}\n\n")
-
-    _atomic_write(srt, _render_srt)  # both atomic: the in-flight marker is
-    _atomic_write(confp, lambda f: json.dump(conf, f))  # already gone by here (see helper)
-    for p in (srt, confp):  # the qc sidecar is chowned in _write_qc, after it
-        try:
-            os.chown(p, UID, GID)  # exists
-        except OSError as e:
-            log(f"chown failed for {p}: {e}")
-    # QC sidecar: observability only -- a write failure is logged, never fatal, since the
-    # episode already generated correctly (see qc.write's docstring).
-    _record_qc(rec, collapsed)
-    rec.count("cards_after", len(rows))
-    _record_before(rec, cards, merge_log)
-    # Deferred from Task 5: orphan candidates are quarantined, not fixed -- count them
-    # separately from merges, and never bump orphan_candidates_fixed (nothing here fixes
-    # one). merged_backward comes from merge_runts()'s own records, not re-derived.
-    rec.count("orphan_candidates", sum(1 for c in cards if c.get("orphan")))
-    rec.count("merged_backward", len(merge_log))
-    _record_cascades(rec, cards, cascade_log)
-    low = sum(1 for c in conf if c["avg_logprob"] < -0.8 or c["no_speech_prob"] > 0.6)
-    flagged = sum(1 for c in conf if c.get("flag"))
-    rec.count("low_conf", low)
-    rec.count("flagged", flagged)  # both were logged and
-    _write_qc(rec, stem)  # then thrown away
-    # Only now is the replacement COMPLETE -- srt, conf AND sidecar. Dropping the parked
-    # copies before the sidecar exists would leave a window where neither generation's
-    # qc.json is on disk.
-    drop_parked_sidecars(stem)
-    max_dur = max((b - a for a, b, _ in rows), default=0.0)
-    faults = [_card_faults(t, b - a) for a, b, t in rows]  # B2: the SAME predicate the
-    over_cps = sum(1 for f in faults if "over_cps" in f)  # sidecar counts, so the number
-    bad = sum(1 for f in faults if f)  # an operator reads cannot differ
-    collapsed_n = len(kept) - len(collapsed)
-    log(
-        f"  cards={len(rows)} name-fixes={fixes} dropped-hallucination={dropped} "
-        f"collapsed={collapsed_n} flagged={flagged} low-conf={low} "
-        f"max_dur={max_dur:.1f}s over_cps={over_cps} violations={bad} "
-        f"meanlp={sum(c['avg_logprob'] for c in conf) / max(1, len(conf)):.2f}"
-    )
-    _LAST_STATS.clear()  # V2 C1: this episode's contribution to the show's lastrun.json
-    _LAST_STATS.update(
-        {"cards_written": len(rows), "dropped_hallucination": dropped, "collapsed_runs": collapsed_n, "flagged": flagged}
-    )
-    return "ok"
+    return text_stages(stem, words, segments, audio_duration, rec, fail)
 
 
 def build_lastrun(show, elapsed_s, episodes_total, transcribed, totals, census):
@@ -973,6 +1036,10 @@ def main():
         return True
 
     todo = [v for v in files if needs_work(v)]
+    # Split what needs doing by TIER. needs_work() stays the gate (it also honours the
+    # pending-sidecar and poison-marker skips); this only decides which queue the
+    # survivors land in.
+    transcribe_todo, text_todo = partition_todo(todo)
     # Counted over EVERY file, not just todo: the question this answers is "how far
     # behind is the part of the library I am not watching", and that is invisible if it
     # only counts what is already queued.
@@ -980,16 +1047,31 @@ def main():
     log(
         f"model={MODEL} compute={COMPUTE} require_eng={os.environ.get('REQUIRE_ENG', '1')} "
         f"files={len(files)} todo={len(todo)} "
+        f"transcribe={len(transcribe_todo)} text={len(text_todo)} "
         f"transcribe_stale={census['transcribe_stale']} text_stale={census['text_stale']}"
     )
     if not todo:
         log("nothing to transcribe (all done) — skipping model load")
         return
-    globals()["WMODEL"] = WhisperModel(MODEL, device="cuda", compute_type=COMPUTE, download_root=MODEL_DIR)
+    # The model is loaded ONLY when something actually needs the decoder. A text-only
+    # sweep otherwise paid a ~40s GPU model load to perform zero transcription, which
+    # would have made the cheap tier quietly not cheap.
+    if transcribe_todo:
+        globals()["WMODEL"] = WhisperModel(MODEL, device="cuda", compute_type=COMPUTE, download_root=MODEL_DIR)
+    else:
+        log("text-tier work only — skipping the model load")
     t0 = time.monotonic()  # V2 C1: per-show run summary
     transcribed = 0
     totals = {"cards_written": 0, "dropped_hallucination": 0, "collapsed_runs": 0, "flagged": 0}
-    for v in todo:
+    # Text tier first: it is CPU-minutes per episode, so the cheap wins land before the
+    # GPU queue starts consuming the night.
+    for v in text_todo:
+        log("→", os.path.basename(v), "(text)")
+        try:
+            log("  ", process_text(v))
+        except Exception as e:
+            log("  ERROR", type(e).__name__, e)  # one bad sidecar must not abort the show
+    for v in transcribe_todo:
         log("→", os.path.basename(v))
         try:
             status = process(v)  # one bad episode must not abort the show

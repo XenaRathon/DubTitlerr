@@ -1597,3 +1597,84 @@ def test_card_word_probs_is_unchanged_for_a_plausible_window():
     words = [{"prob": 0.9, "start": 0.5, "end": 1.0}, {"prob": 0.4, "start": 3.0, "end": 3.5}]
     card = {"text": "it", "start": 0.0, "end": 1.0, "source_start": 0.0, "source_end": 1.2}
     assert generate._card_word_probs(card, words) == [0.9]
+
+
+# --- tier partition and the cached replay (spec v5, S-2 replay / S-9) ----------
+
+
+def test_a_text_stale_episode_with_words_goes_to_the_text_queue(tmp_path):
+    """The 576 v4 episodes after adoption. They must NOT reach the GPU: that is the
+    entire saving, and without this split a sweep re-transcribes all of them."""
+    words, segments = _clamped_fixture()
+    v = _stamped(tmp_path, "ep.mkv", transcribe_version=common.TRANSCRIBE_VERSION, version=4)
+    generate.write_words(os.path.splitext(v)[0], words, segments, 7.0, initial_prompt="p")
+
+    transcribe_todo, text_todo = generate.partition_todo([v])
+
+    assert transcribe_todo == []
+    assert text_todo == [v]
+
+
+def test_a_text_stale_episode_without_words_must_be_retranscribed(tmp_path):
+    """No sidecar means the cheap path cannot run. The episode transcribes ONCE and gains
+    one -- a migration, not a bump -- rather than being silently skipped forever."""
+    v = _stamped(tmp_path, "ep.mkv", transcribe_version=common.TRANSCRIBE_VERSION, version=4)
+
+    transcribe_todo, text_todo = generate.partition_todo([v])
+
+    assert transcribe_todo == [v]
+    assert text_todo == []
+
+
+def test_a_transcribe_stale_episode_is_never_sent_to_the_text_queue(tmp_path):
+    """A v2 stamp was decoded by an older pipeline; replaying its words would replay that
+    older decoder's output."""
+    words, segments = _clamped_fixture()
+    v = _stamped(tmp_path, "ep.mkv", version=2)
+    generate.write_words(os.path.splitext(v)[0], words, segments, 7.0, initial_prompt="p")
+
+    transcribe_todo, text_todo = generate.partition_todo([v])
+
+    assert transcribe_todo == [v]
+    assert text_todo == []
+
+
+def test_a_current_episode_is_in_neither_queue(tmp_path):
+    v = _stamped(
+        tmp_path,
+        "ep.mkv",
+        transcribe_version=common.TRANSCRIBE_VERSION,
+        text_version=common.TEXT_VERSION,
+    )
+    assert generate.partition_todo([v]) == ([], [])
+
+
+def test_a_poison_marked_episode_is_in_neither_queue(tmp_path):
+    """The .fail marker wins over everything, as it does in needs_work()."""
+    v = _stamped(tmp_path, "ep.mkv", version=4)
+    open(os.path.splitext(v)[0] + ".dubtitles.fail", "w").close()
+    assert generate.partition_todo([v]) == ([], [])
+
+
+def test_the_replay_writes_output_without_touching_a_model(tmp_path, monkeypatch):
+    """The cheap tier proven cheap: a text-tier re-run must not construct WhisperModel.
+    Asserted by making the constructor raise, not by timing."""
+    words, segments = _clamped_fixture()
+    v = _stamped(tmp_path, "ep.mkv", transcribe_version=common.TRANSCRIBE_VERSION, version=4)
+    stem = os.path.splitext(v)[0]
+    generate.write_words(stem, words, segments, 7.0, initial_prompt="p")
+
+    def _boom(*a, **k):
+        raise AssertionError("a text-tier re-run loaded the whisper model")
+
+    monkeypatch.setattr(generate, "WhisperModel", _boom)
+
+    assert generate.process_text(v) == "ok"
+    assert os.path.exists(stem + ".eng.dubtitles.srt")
+    assert os.path.exists(stem + ".dubtitles.conf.json")
+
+
+def test_the_replay_reports_when_the_sidecar_is_unusable(tmp_path, monkeypatch):
+    v = _stamped(tmp_path, "ep.mkv", transcribe_version=common.TRANSCRIBE_VERSION, version=4)
+    monkeypatch.setattr(generate, "WhisperModel", lambda *a, **k: None)
+    assert generate.process_text(v) == "no-words"
