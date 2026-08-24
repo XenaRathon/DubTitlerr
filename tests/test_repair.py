@@ -1145,3 +1145,80 @@ def test_repair_backend_defaults_to_ollama_when_unset(monkeypatch):
     monkeypatch.delenv("REPAIR_BACKEND", raising=False)
     assert importlib.reload(repair).REPAIR_BACKEND == "ollama"
     importlib.reload(repair)  # restore ambient config for the rest of the session
+
+
+# --- implausible source window (VAD design S6; spec v5, S-6) -------------------
+
+
+def test_process_takes_no_reference_from_an_implausible_source_window(tmp_path, monkeypatch):
+    """A 7s source span on a one-word card selects whatever fansub line falls inside it --
+    possibly a different line entirely. The guard must yield NO reference, not the display
+    window: on 99% of gated cards display == source, so a fallback reproduces the very
+    window just declared implausible."""
+    stem = str(tmp_path / "ep_badwin")
+    conf_path = stem + repair.CONF_SUFFIX
+    _write_conf(
+        conf_path,
+        stem + repair.SRT_SUFFIX,
+        [
+            {
+                "start": 12.0,
+                "end": 12.9,
+                "source_start": 6.0,
+                "source_end": 14.0,  # 8.0s > MAX_DUR on a one-word card
+                "text": "it",
+                "avg_logprob": -0.6,
+                "no_speech_prob": 0.1,
+            }
+        ],
+    )
+
+    g = gl()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_badwin.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(6.5, 7.5, "a neighbour's line")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "should never be called")
+
+    repair.process(conf_path)
+
+    with open(stem + ".dubtitles.repair-summary.json") as f:
+        summary = json.load(f)
+    assert summary["skipped_no_ref"] == 1, "the bad window must yield no anchor"
+    assert summary["rules"]["rule_source_window_activated"] == 1
+    assert summary["rules"]["rule_source_window_evaluated"] == 1
+
+
+def test_process_still_anchors_a_plausible_window(tmp_path, monkeypatch):
+    """The guard is scoped: an ordinary card keeps its reference and the rule reports
+    evaluated-but-not-activated, which is what makes a dead rule visible."""
+    stem = str(tmp_path / "ep_okwin")
+    conf_path = stem + repair.CONF_SUFFIX
+    _write_conf(
+        conf_path,
+        stem + repair.SRT_SUFFIX,
+        [
+            {
+                "start": 12.0,
+                "end": 12.9,
+                "source_start": 12.0,
+                "source_end": 12.9,
+                "text": "garbled line",
+                "avg_logprob": -0.6,
+                "no_speech_prob": 0.1,
+            }
+        ],
+    )
+
+    g = gl()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_okwin.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(12.0, 12.9, "the right line")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "a fixed line")
+
+    repair.process(conf_path)
+
+    with open(stem + ".dubtitles.repair-summary.json") as f:
+        summary = json.load(f)
+    assert summary["skipped_no_ref"] == 0
+    assert summary["rules"]["rule_source_window_activated"] == 0
+    assert summary["rules"]["rule_source_window_evaluated"] == 1

@@ -62,6 +62,8 @@ import time
 import urllib.parse
 
 import glossary
+import hallucination
+import qc
 import reflow
 import unresolved
 from common import MEDIA_GID, MEDIA_UID, dialogue_intervals, find_video, out_for, ts_srt
@@ -400,6 +402,7 @@ def process(conf_path):
         return "clean"  # nothing to repair (e.g. S15E01)
     ivals = dialogue_intervals(video)
     audit, fixed, skipped_no_ref, rejected = [], 0, 0, 0
+    rec = qc.Recorder()  # S-6 liveness counters, merged into the summary below
     llm_empty = 0
     rejected_secondary = 0  # C5: second-pass output refused by the gate
     repaired_lines = []  # A10: per-line detail for the summary
@@ -407,7 +410,18 @@ def process(conf_path):
         # C6: select the reference on the SOURCE window -- where the audio actually was --
         # not the display window, which the timing layer may have stolen forward onto the
         # NEIGHBOUR's cue. The .get fallback keeps every pre-C6 sidecar working unchanged.
-        ref = overlap_ref(ivals, c.get("source_start", c["start"]), c.get("source_end", c["end"]))
+        #
+        # S-6: unless that window is one whisper got wrong. A 7-second span on a one-word
+        # card selects whatever fansub line happens to fall inside it -- possibly a
+        # different line entirely -- and the guard then rejects the repair and counts a
+        # rejection, recording nothing about the REFERENCE having been wrong. The guard
+        # fires BEFORE the .get() below, or it reads the very default it exists to doubt.
+        # No reference, not the display window: on 99% of gated cards display == source,
+        # so falling back reproduces the window just declared implausible.
+        if hallucination.bad_source_window(c, rec=rec):
+            ref = ""
+        else:
+            ref = overlap_ref(ivals, c.get("source_start", c["start"]), c.get("source_end", c["end"]))
         if not ref:
             skipped_no_ref += 1
             # The counter alone made this indistinguishable from "repair ran and found
@@ -508,6 +522,9 @@ def process(conf_path):
         "p95_latency_ms": round(_p95(lat_values)) if lat_values else 0,
         "model": MODEL,
         "model_secondary": MODEL_SECONDARY,
+        # evaluated>0 with activated==0 across a season is the dead-rule signal. Carried
+        # here because repair writes its own summary rather than a qc sidecar.
+        "rules": dict(rec.counters),
         "repaired_lines": repaired_lines,
     }
     summary_out = out_for(stem + ".dubtitles.repair-summary.json")

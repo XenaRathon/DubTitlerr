@@ -1578,3 +1578,22 @@ def test_the_census_is_reported_per_tier_in_lastrun():
     assert doc["transcribe_stale"] == 7
     assert doc["text_stale"] == 12
     assert doc["episodes_transcribed"] == 4
+
+
+def test_card_word_probs_returns_nothing_for_an_implausible_window():
+    """Measured: 20 of 401 gated cards carried MORE probabilities than they had words,
+    because a 7s window swallows the neighbours'. One would have been flagged for repair
+    purely on borrowed evidence. Empty, not the display window."""
+    words = [
+        {"prob": 0.9, "start": 0.5, "end": 1.0},
+        {"prob": 0.4, "start": 3.0, "end": 3.5},
+        {"prob": 0.8, "start": 6.0, "end": 6.5},
+    ]
+    card = {"text": "it", "start": 0.0, "end": 1.0, "source_start": 0.0, "source_end": 8.0}
+    assert generate._card_word_probs(card, words) == []
+
+
+def test_card_word_probs_is_unchanged_for_a_plausible_window():
+    words = [{"prob": 0.9, "start": 0.5, "end": 1.0}, {"prob": 0.4, "start": 3.0, "end": 3.5}]
+    card = {"text": "it", "start": 0.0, "end": 1.0, "source_start": 0.0, "source_end": 1.2}
+    assert generate._card_word_probs(card, words) == [0.9]

@@ -246,7 +246,7 @@ def extract_wav(video, idx, wav):
     return os.path.exists(wav) and os.path.getsize(wav) > 1000
 
 
-def _card_word_probs(card, words):
+def _card_word_probs(card, words, rec=None):
     """Per-word linear probabilities for one card (V2 A6), joined by time overlap
     against the full per-episode word list built in process()'s transcribe loop.
     reflow.Card doesn't retain which whisper words it was built from, so this
@@ -266,6 +266,14 @@ def _card_word_probs(card, words):
     source window -- rather than re-querying after the merge widens the window to
     cover the whole repeated run -- keeps the list aligned with the text it
     actually describes."""
+    # S-6: a 1-2 word card whose source span exceeds MAX_DUR carries a whisper
+    # timestamp already proven wrong, and a window that wide inherits the NEIGHBOURS'
+    # probabilities -- measured at 20 of 401 gated cards, one of which would have been
+    # flagged for repair purely on borrowed evidence. Return nothing rather than
+    # substituting the display window: on 99% of gated cards display == source exactly,
+    # so a fallback reproduces the window just declared implausible.
+    if hallucination.bad_source_window(card, rec=rec):
+        return []
     a = card.get("source_start", card["start"])
     b = card.get("source_end", card["end"])
     return [round(w["prob"], 3) for w in words if w["end"] > a and w["start"] < b]
@@ -803,7 +811,7 @@ def process(video):
         kc["text"] = "\n".join(lines)
         kc["pre_correction_text"] = c["text"]  # C7 tells a broken layout from an inherited one
         kc["flag"] = hallucination.flag_reason(c, rec=rec)  # weaker single signal -> kept but marked
-        kc["word_probs"] = _card_word_probs(c, words)  # V2 A6: per-word confidence for repair
+        kc["word_probs"] = _card_word_probs(c, words, rec=rec)  # V2 A6: per-word confidence for repair
         kept.append(kc)
     collapsed = hallucination.collapse_runs(kept)
     # C7: layout was decided before the glossary rewrote the text -- re-wrap and
