@@ -278,13 +278,13 @@ def test_process_skips_on_a_current_version_stamp(tmp_path, monkeypatch):
 
 
 def test_process_remuxes_a_file_whose_stamp_is_from_an_older_pipeline_version(tmp_path, monkeypatch):
-    """A PIPELINE_VERSION bump is the regeneration trigger: the v1 stamp still matches
+    """A version bump is the regeneration trigger: the v1 stamp still matches
     size+mtime, but its version is behind, so the file is re-muxed in place."""
     import common
 
     v = _muxable(tmp_path, monkeypatch, [aud(0, "eng"), subt(1, "eng", mux.TRACK_NAME)])
     mux.write_stamp(str(tmp_path / ("ep" + mux.STAMP_SUFFIX)), v)
-    monkeypatch.setattr(common, "PIPELINE_VERSION", common.PIPELINE_VERSION + 1)
+    monkeypatch.setattr(common, "TEXT_VERSION", common.TEXT_VERSION + 1)
     assert mux.process(v, apply=False) == "plan"
 
 

@@ -1,6 +1,6 @@
 """Tests for tools/recover_dub_srt.py — rebuilding the dub-dialogue sidecar without a GPU.
 
-A PIPELINE_VERSION bump makes every episode regenerate. For the ~2/3 of the library
+A transcribe-tier bump makes every episode regenerate. For the ~2/3 of the library
 that still has its ``<stem>.dubtitles.conf.json``, recreate_srt.py rebuilds the sidecar
 and repair.py re-runs normally. The rest have nothing left on disk — their only surviving
 copy of the dub dialogue is the muxed "Dubtitles" track itself, whose Dubtitles-styled

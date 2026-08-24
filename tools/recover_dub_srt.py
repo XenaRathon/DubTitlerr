@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rebuild ``<stem>.eng.dubtitles.srt`` from the episode's ALREADY-MUXED Dubtitles track.
 
-Companion to recreate_srt.py, for the harder half of a PIPELINE_VERSION regeneration.
+Companion to recreate_srt.py, for the harder half of a transcribe-tier regeneration.
 recreate_srt.py rebuilds the sidecar from ``<stem>.dubtitles.conf.json``; this one is for
 the episodes whose conf.json is long gone, where the only surviving copy of the dub
 dialogue is the muxed track itself.
