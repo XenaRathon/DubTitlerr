@@ -39,3 +39,26 @@ def test_an_empty_run_summarises_without_raising():
     out = mb.summarise([], [], [])
     assert out["segments"] == 0
     assert out["nsp_alive_frac"] is None
+
+
+def test_a_live_nsp_alone_does_not_revive_the_music_rule():
+    """The decisive check. hallucination.music is a CONJUNCTION: nsp > 0.95 AND
+    avg_logprob < -2.0. A model can have a perfectly live nsp distribution and still
+    never fire it, if the high-nsp segments are not the same segments with terrible
+    logprob. Reporting the two marginals separately would imply a revival that does not
+    exist -- which is the shape of every wrong conclusion this project has had to retract."""
+    nsps = [0.99, 0.98, 0.10]  # two segments clear the nsp threshold
+    lps = [-0.3, -0.4, -3.0]  # ...but neither of those has a bad logprob
+    out = mb.summarise(nsps, lps, ["a", "b", "c"])
+    assert out["nsp_over_0_95"] == 2
+    assert out["music_rule_would_fire"] == 0
+
+
+def test_the_conjunction_fires_when_both_conditions_land_together():
+    out = mb.summarise([0.99, 0.10], [-3.0, -0.2], ["a", "b"])
+    assert out["music_rule_would_fire"] == 1
+
+
+def test_maybe_silence_uses_the_gates_own_threshold():
+    out = mb.summarise([0.9, 0.4, 0.6], [-0.2, -0.2, -0.2], ["a", "b", "c"])
+    assert out["maybe_silence_would_fire"] == 2

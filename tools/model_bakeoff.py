@@ -80,7 +80,16 @@ def summarise(nsps: list[float], lps: list[float], texts: list[str]) -> dict:
         return round(statistics.quantiles(v, n=100)[p - 1], 6) if len(v) > 1 else (round(v[0], 6) if v else None)
 
     blocklist_hits = sum(1 for t in texts if hallucination.BLOCKLIST.search(t))
+    # THE decisive number, and the one a marginal distribution cannot answer: the music
+    # rule is a CONJUNCTION (nsp > NSP_DROP AND avg_logprob < LP_DROP). A model can have
+    # a perfectly live nsp and still never fire it, if the segments with high nsp are not
+    # the same segments with terrible logprob. Counting each condition separately would
+    # imply a revival that may not exist.
+    both = sum(1 for nsp, lp in zip(nsps, lps) if nsp > hallucination.NSP_DROP and lp < hallucination.LP_DROP)
+    silence = sum(1 for n in nsps if n > hallucination.NSP_FLAG) if hasattr(hallucination, "NSP_FLAG") else None
     return {
+        "music_rule_would_fire": both,
+        "maybe_silence_would_fire": silence,
         "segments": len(nsps),
         "nsp_min": round(min(nsps), 12) if nsps else None,
         "nsp_median": q(nsps, 50),
