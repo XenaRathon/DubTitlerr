@@ -96,9 +96,12 @@ STAMP_SUFFIX = ".dubtitles.done"
 # mux.keep_sub() drops it so a re-mux replaces rather than duplicates it.
 TRACK_NAME = "Dubtitles"
 
-# PIPELINE_VERSION: the output version recorded in each .dubtitles.done stamp. A file
-# whose stamp is older than this reads as STALE and is regenerated in place. Bumping it
-# is a deliberate operator action -- the only thing that triggers a global regeneration.
+# The output versions recorded in each .dubtitles.done stamp. A file whose stamp is
+# behind in either tier reads as STALE and is regenerated in place. Bumping either is a
+# deliberate operator action -- the only thing that triggers a global regeneration.
+# History below is the bump manual: every entry says what changed in the OUTPUT and why
+# only a regeneration puts it into the files. Entries v2-v4 predate the tier split and
+# were single-version bumps; read them as transcribe-tier bumps.
 # v2 (2026-07-27): every v1 dubtitle has broken signs. The merge deduplicated events on
 # their PLAINTEXT, which collapsed each stacked typeset composition to its black backing
 # layer and threw away the white top layer, so credits/captions/titles rendered solid
@@ -124,10 +127,26 @@ TRACK_NAME = "Dubtitles"
 # (Gum-Gum and its mishearings, Gas-Gas, Tashigi, guinea pigs) chosen from a 22-episode scan.
 # The 183 episodes stamped v3 were produced BEFORE both and carry the artefacts, so v3 is not
 # a state worth keeping -- hence a bump rather than a targeted stamp deletion.
-PIPELINE_VERSION = 4
+# v5 (2026-08-24): the single version becomes TWO, because one number made a glossary
+# fix cost the same as a decoder change -- a full re-transcribe of the library. See
+# .procoder/adr/0001-idempotency-is-keyed-on-two-tiers-not-one-version.md.
+#
+# TRANSCRIBE_VERSION covers audio -> words. Bump it for ANY decoder-affecting change:
+#   the whisper model, WHISPER_BEAM_SIZE, the compute type, whisper's own thresholds,
+#   vad settings, or the initial_prompt (which the glossary feeds -- generate.py:112).
+#   NOTHING DETECTS THESE MECHANICALLY. A change to any of them that does not carry a
+#   bump leaves the library silently stale, and this comment is the only guard.
+# TEXT_VERSION covers everything downstream of the word list: punctuation, reflow,
+#   glossary correction, repair, the merge, the mux.
+#
+# Adoption is 4/5, NOT 5/5. The 576 stamps live at v4 were produced by the current
+# decoder, so they are transcribe-fresh and only text-stale: they migrate at
+# watch-gated pace instead of burning ~2 GPU-days to record a bookkeeping change.
+TRANSCRIBE_VERSION = 4
+TEXT_VERSION = 5
 # GRANDFATHER_VERSION: fixed constant, never changes. The version assumed for a stamp
-# written before versioning existed (no "version" key). At introduction it equals
-# PIPELINE_VERSION, so the rollout regenerates nothing.
+# written before versioning existed (no "version" key). At introduction it equalled
+# the pipeline version, so that rollout regenerated nothing.
 GRANDFATHER_VERSION = 1
 
 
@@ -156,8 +175,8 @@ def ts_srt(t):
 
 def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
     """Write the .dubtitles.done idempotency stamp recording the muxed file's size+mtime
-    and the PIPELINE_VERSION that produced it (stamp_valid rejects an older version, so a
-    version bump marks every prior-version file stale).
+    and the tier versions that produced it (stamp_valid rejects a stamp behind either
+    tier, so a version bump marks every prior-version file stale).
 
     ``stages`` optionally records WHICH stages actually ran, e.g.
     ``{"repair": False, "signs_merge": True, "punctuation": True}``. The stamp used to say
@@ -170,7 +189,19 @@ def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
     and be fully re-transcribed -- roughly 12 GPU-hours to add a bookkeeping field. Omitted
     entirely when the caller does not know, rather than guessed."""
     st = os.stat(video)
-    doc = {"size": st.st_size, "mtime": st.st_mtime, "muxed": True, "version": PIPELINE_VERSION}
+    doc = {
+        "size": st.st_size,
+        "mtime": st.st_mtime,
+        "muxed": True,
+        # "version" is written for backward compatibility ONLY: an older build of this
+        # pipeline, and scripts/migrate_write_v1_stamps.py, read it. A stamp without it
+        # reads to them as pre-versioning (GRANDFATHER_VERSION) and therefore stale,
+        # which would re-transcribe the library. TEXT_VERSION is the right value: it is
+        # the version of the OUTPUT, which is what those readers are asking about.
+        "version": TEXT_VERSION,
+        "transcribe_version": TRANSCRIBE_VERSION,
+        "text_version": TEXT_VERSION,
+    }
     if stages:
         doc["stages"] = stages
     with open(path, "w") as f:
@@ -196,6 +227,38 @@ def stamp_version(stamp: dict) -> int | None:
         return None
 
 
+def _tier_version(stamp: dict, key: str) -> int | None:
+    """One tier's version out of a stamp, falling back to the legacy single "version"
+    key for the 813 stamps written before tiers existed. ``None`` for a value that
+    cannot be read as an integer -- callers treat that as stale, never as an exception,
+    because this runs outside mux's try/except and one bad sidecar must not abort a
+    whole sweep."""
+    raw = stamp.get(key, stamp.get("version", GRANDFATHER_VERSION))
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def stale_tiers(stamp: dict | None, video: str) -> set[str]:
+    """Which of {"transcribe", "text"} this stamp is behind on, empty when it is current.
+
+    A missing stamp, an unmuxed one, or one describing a DIFFERENT file (size+mtime)
+    is stale in both tiers: there is nothing to reuse. Otherwise each tier is compared
+    independently, so a TEXT_VERSION bump costs CPU minutes instead of GPU hours."""
+    if not stamp or not stamp.get("muxed") or not _stamp_matches_file(stamp, video):
+        return {"transcribe", "text"}
+    stale = set()
+    tv = _tier_version(stamp, "transcribe_version")
+    if tv is None or tv < TRANSCRIBE_VERSION:
+        stale.add("transcribe")
+        stale.add("text")  # new words invalidate everything derived from them
+    xv = _tier_version(stamp, "text_version")
+    if xv is None or xv < TEXT_VERSION:
+        stale.add("text")
+    return stale
+
+
 def _stamp_matches_file(stamp: dict, video: str) -> bool:
     """True if the stamp describes THIS exact file (size + mtime), ignoring version."""
     try:
@@ -206,20 +269,15 @@ def _stamp_matches_file(stamp: dict, video: str) -> bool:
 
 
 def stamp_valid(stamp: dict | None, video: str) -> bool:
-    """True if the stamp matches the current file (size+mtime) AND was written by the
-    current PIPELINE_VERSION — i.e. still muxed, not replaced, and not stale output.
-    A stamp with no "version" key predates versioning and counts as GRANDFATHER_VERSION."""
-    if not stamp or not stamp.get("muxed"):
-        return False
-    version = stamp_version(stamp)
-    if version is None or version < PIPELINE_VERSION:
-        return False  # older pipeline -> regenerate in place
-    return _stamp_matches_file(stamp, video)
+    """True if the stamp matches the current file (size+mtime) AND is current in BOTH
+    tiers — i.e. still muxed, not replaced, and not stale output. Unchanged in meaning
+    and signature, so no caller had to move when the single version became two."""
+    return not stale_tiers(stamp, video)
 
 
 def stale_version_stamp(stamp: dict | None, video: str) -> bool:
     """True if the stamp is OUR stamp for exactly this file (muxed, size+mtime match) but
-    records an older PIPELINE_VERSION.
+    records an older version in either tier.
 
     That state means the video IS our own output from a superseded pipeline — and
     therefore that any ``.eng.dubtitles.*`` sidecar sitting next to it is that same old
@@ -228,12 +286,9 @@ def stale_version_stamp(stamp: dict | None, video: str) -> bool:
     sidecar-existence skips in generate.py would otherwise block the re-transcribe while
     mux happily re-embedded the OLD subtitle and stamped it current — a version bump that
     silently no-ops on exactly the files it was meant to fix."""
-    if not stamp or not stamp.get("muxed"):
+    if not stamp or not stamp.get("muxed") or not _stamp_matches_file(stamp, video):
         return False
-    version = stamp_version(stamp)
-    if version is None or version >= PIPELINE_VERSION:
-        return False
-    return _stamp_matches_file(stamp, video)
+    return bool(stale_tiers(stamp, video))
 
 
 def find_video(stem):

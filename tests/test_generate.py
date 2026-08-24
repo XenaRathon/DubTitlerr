@@ -118,7 +118,7 @@ def _ffprobe_reports_a_dubtitles_track(monkeypatch):
 def test_process_no_longer_skips_on_an_embedded_dubtitles_track(monkeypatch, tmp_path):
     """Case 7 from T18/spec.md, RETIRED. The SKIP_IF_MUXED ffprobe backstop is gone: an
     embedded Dubtitles track no longer means "done", because mux now replaces that track
-    rather than duplicating it. Without this, a PIPELINE_VERSION regeneration would
+    rather than duplicating it. Without this, a version-bump regeneration would
     silently no-op on every already-dubbed episode. process() must run past the muxed
     check (it stops at the next gate -- no English audio -- proving it got there)."""
     v = tmp_path / "ep.mkv"
@@ -145,11 +145,11 @@ def test_process_skips_on_a_current_version_stamp(monkeypatch, tmp_path):
 
 def test_process_retranscribes_a_file_whose_stamp_is_from_an_older_pipeline_version(monkeypatch, tmp_path):
     """The version-aware stamp is now the sole skip guard, so it is also the sole
-    regeneration trigger: bump PIPELINE_VERSION and the v1-stamped file transcribes again."""
+    regeneration trigger: bump a tier version and the v1-stamped file transcribes again."""
     v = tmp_path / "ep.mkv"
     v.write_bytes(b"x" * 1000)
     common.write_stamp(str(tmp_path / ("ep" + generate.STAMP_SUFFIX)), str(v))
-    monkeypatch.setattr(common, "PIPELINE_VERSION", common.PIPELINE_VERSION + 1)
+    monkeypatch.setattr(common, "TEXT_VERSION", common.TEXT_VERSION + 1)
     _ffprobe_reports_a_dubtitles_track(monkeypatch)
     monkeypatch.setattr(generate, "eng_audio_index", lambda video: None)
     assert generate.process(str(v)) == "no-eng-dub"
@@ -466,7 +466,7 @@ def _stale_stamped(tmp_path, monkeypatch, leftovers=(), fresh=()):
         p = tmp_path / name
         p.write_text("freshly transcribed, awaiting mux")
         os.utime(p, (stamp_mtime + 60, stamp_mtime + 60))  # written after the stamp
-    monkeypatch.setattr(common, "PIPELINE_VERSION", common.PIPELINE_VERSION + 1)
+    monkeypatch.setattr(common, "TEXT_VERSION", common.TEXT_VERSION + 1)
     return v
 
 

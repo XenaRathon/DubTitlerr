@@ -192,7 +192,8 @@ def test_track_name_and_version_constants():
     """The canonical marker for our own generated track (mux.py sets it as the mkv
     track name; every context reader excludes it) plus the stamp version constants."""
     assert common.TRACK_NAME == "Dubtitles"
-    assert common.PIPELINE_VERSION >= 1
+    assert common.TRANSCRIBE_VERSION >= 1
+    assert common.TEXT_VERSION >= 1
     assert common.GRANDFATHER_VERSION == 1
 
 
@@ -299,7 +300,7 @@ def test_write_stamp_records_the_pipeline_version(tmp_path):
     v.write_bytes(b"x" * 100)
     sp = str(tmp_path / ("ep" + common.STAMP_SUFFIX))
     common.write_stamp(sp, str(v))
-    assert common.read_stamp(sp)["version"] == common.PIPELINE_VERSION
+    assert common.read_stamp(sp)["version"] == common.TEXT_VERSION
 
 
 def test_stamp_valid_rejects_a_stamp_from_an_older_pipeline_version(tmp_path, monkeypatch):
@@ -308,7 +309,7 @@ def test_stamp_valid_rejects_a_stamp_from_an_older_pipeline_version(tmp_path, mo
     sp = str(tmp_path / ("ep" + common.STAMP_SUFFIX))
     common.write_stamp(sp, str(v))
     stamp = common.read_stamp(sp)
-    monkeypatch.setattr(common, "PIPELINE_VERSION", common.PIPELINE_VERSION + 1)
+    monkeypatch.setattr(common, "TEXT_VERSION", common.TEXT_VERSION + 1)
     assert not common.stamp_valid(stamp, str(v))  # stale output -> regenerate in place
 
 
@@ -322,13 +323,17 @@ def test_stamp_valid_accepts_a_stamp_at_the_current_version(tmp_path):
 
 def test_stamp_valid_grandfathers_a_versionless_stamp(tmp_path):
     """A stamp written before this feature has no "version" key; it counts as
-    GRANDFATHER_VERSION, so the rollout regenerates nothing while
-    PIPELINE_VERSION == GRANDFATHER_VERSION."""
+    GRANDFATHER_VERSION in BOTH tiers, so it is current only while both tiers still sit
+    at GRANDFATHER_VERSION. They no longer do (4/5), so such a stamp is stale -- which
+    is correct: it predates every output-changing fix v2 through v5."""
     v = tmp_path / "ep.mkv"
     v.write_bytes(b"x" * 100)
     st = v.stat()
     old = {"size": st.st_size, "mtime": st.st_mtime, "muxed": True}
-    assert common.stamp_valid(old, str(v)) is (common.PIPELINE_VERSION == common.GRANDFATHER_VERSION)
+    both_at_grandfather = (
+        common.TRANSCRIBE_VERSION == common.GRANDFATHER_VERSION and common.TEXT_VERSION == common.GRANDFATHER_VERSION
+    )
+    assert common.stamp_valid(old, str(v)) is both_at_grandfather
 
 
 def test_stamp_valid_rejects_a_versionless_stamp_after_a_version_bump(tmp_path, monkeypatch):
@@ -336,7 +341,7 @@ def test_stamp_valid_rejects_a_versionless_stamp_after_a_version_bump(tmp_path, 
     v.write_bytes(b"x" * 100)
     st = v.stat()
     old = {"size": st.st_size, "mtime": st.st_mtime, "muxed": True}
-    monkeypatch.setattr(common, "PIPELINE_VERSION", common.GRANDFATHER_VERSION + 1)
+    monkeypatch.setattr(common, "TEXT_VERSION", common.GRANDFATHER_VERSION + 1)
     assert not common.stamp_valid(old, str(v))
 
 
@@ -348,7 +353,7 @@ def test_stamp_valid_tolerates_a_string_version(tmp_path):
     v.write_bytes(b"x" * 100)
     st = v.stat()
     assert common.stamp_valid(
-        {"size": st.st_size, "mtime": st.st_mtime, "muxed": True, "version": str(common.PIPELINE_VERSION)}, str(v)
+        {"size": st.st_size, "mtime": st.st_mtime, "muxed": True, "version": str(common.TEXT_VERSION)}, str(v)
     )
 
 
@@ -371,15 +376,15 @@ def _stamp_for(video, version):
 def test_stale_version_stamp_true_for_our_own_older_output(tmp_path, monkeypatch):
     v = str(tmp_path / "ep.mkv")
     open(v, "wb").write(b"x" * 100)
-    stamp = _stamp_for(v, common.PIPELINE_VERSION)
-    monkeypatch.setattr(common, "PIPELINE_VERSION", common.PIPELINE_VERSION + 1)
+    stamp = _stamp_for(v, common.TEXT_VERSION)
+    monkeypatch.setattr(common, "TEXT_VERSION", common.TEXT_VERSION + 1)
     assert common.stale_version_stamp(stamp, v)
 
 
 def test_stale_version_stamp_false_for_current_version(tmp_path):
     v = str(tmp_path / "ep.mkv")
     open(v, "wb").write(b"x" * 100)
-    assert not common.stale_version_stamp(_stamp_for(v, common.PIPELINE_VERSION), v)
+    assert not common.stale_version_stamp(_stamp_for(v, common.TEXT_VERSION), v)
 
 
 def test_stale_version_stamp_false_when_the_file_no_longer_matches(tmp_path, monkeypatch):
@@ -387,9 +392,9 @@ def test_stale_version_stamp_false_when_the_file_no_longer_matches(tmp_path, mon
     so nothing beside it can be attributed to a superseded pipeline run."""
     v = str(tmp_path / "ep.mkv")
     open(v, "wb").write(b"x" * 100)
-    stamp = _stamp_for(v, common.PIPELINE_VERSION)
+    stamp = _stamp_for(v, common.TEXT_VERSION)
     open(v, "wb").write(b"y" * 250)
-    monkeypatch.setattr(common, "PIPELINE_VERSION", common.PIPELINE_VERSION + 1)
+    monkeypatch.setattr(common, "TEXT_VERSION", common.TEXT_VERSION + 1)
     assert not common.stale_version_stamp(stamp, v)
 
 
@@ -580,7 +585,7 @@ def test_old_stamp_without_stages_is_still_valid(tmp_path):
     v = tmp_path / "ep.mkv"
     v.write_bytes(b"x" * 10)
     st = os.stat(v)
-    old = {"size": st.st_size, "mtime": st.st_mtime, "muxed": True, "version": common.PIPELINE_VERSION}
+    old = {"size": st.st_size, "mtime": st.st_mtime, "muxed": True, "version": common.TEXT_VERSION}
     assert common.stamp_valid(old, str(v)) is True
 
 
@@ -596,7 +601,7 @@ def test_stamp_records_which_stages_ran(tmp_path):
     d = json.load(open(p))
     assert d["stages"]["repair"] is False
     assert d["stages"]["signs_merge"] is True
-    assert d["version"] == common.PIPELINE_VERSION  # everything else unchanged
+    assert d["version"] == common.TEXT_VERSION  # everything else unchanged
 
 
 def test_stages_is_optional_and_omitted_when_absent(tmp_path):
@@ -608,3 +613,87 @@ def test_stages_is_optional_and_omitted_when_absent(tmp_path):
     d = json.load(open(p))
     assert "stages" not in d
     assert common.stamp_valid(d, str(v)) is True
+
+
+# --- two-tier idempotency (spec v5-two-tier-idempotency, S-1) ------------------
+
+
+def _tier_stamp(tmp_path, **extra):
+    """A stamp that matches its video exactly, so the tier read is what's under test."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 100)
+    st = v.stat()
+    stamp = {"size": st.st_size, "mtime": st.st_mtime, "muxed": True}
+    stamp.update(extra)
+    return stamp, str(v)
+
+
+def test_a_legacy_stamp_reads_both_tiers_from_its_single_version(tmp_path):
+    """All 813 live stamps predate tiers. A stamp carrying only `version` must read as
+    both tiers equal to it and must not raise -- if a legacy stamp stopped parsing, the
+    whole library would read as unprocessed and be fully re-transcribed."""
+    stamp, video = _tier_stamp(tmp_path, version=4)
+    assert common.stale_tiers(stamp, video) == {"text"}
+
+
+def test_adoption_constants_do_not_retranscribe_the_library():
+    """TRANSCRIBE_VERSION adopts at 4, not 5: the 576 live v4 stamps are transcribe-fresh
+    and only text-stale, so they migrate at watch-gated pace. Setting both to 5 would
+    re-transcribe them all -- roughly two GPU-days for a bookkeeping change. Asserted on
+    the real constants so that mistake cannot land quietly."""
+    assert common.TRANSCRIBE_VERSION == 4
+    assert common.TEXT_VERSION == 5
+
+
+def test_a_v2_stamp_is_stale_in_both_tiers(tmp_path):
+    """The 236 episodes still at v2 were decoded by an older pipeline: both tiers behind."""
+    stamp, video = _tier_stamp(tmp_path, version=2)
+    assert common.stale_tiers(stamp, video) == {"transcribe", "text"}
+
+
+def test_bumping_text_alone_never_marks_the_transcribe_tier(tmp_path, monkeypatch):
+    """The whole point of the split: a text-only change must not reach the GPU."""
+    stamp, video = _tier_stamp(tmp_path, transcribe_version=common.TRANSCRIBE_VERSION, text_version=common.TEXT_VERSION)
+    monkeypatch.setattr(common, "TEXT_VERSION", common.TEXT_VERSION + 1)
+    assert common.stale_tiers(stamp, video) == {"text"}
+
+
+def test_bumping_transcribe_marks_both_tiers(tmp_path, monkeypatch):
+    """New words invalidate everything derived from them."""
+    stamp, video = _tier_stamp(tmp_path, transcribe_version=common.TRANSCRIBE_VERSION, text_version=common.TEXT_VERSION)
+    monkeypatch.setattr(common, "TRANSCRIBE_VERSION", common.TRANSCRIBE_VERSION + 1)
+    assert common.stale_tiers(stamp, video) == {"transcribe", "text"}
+
+
+def test_a_stamp_describing_another_file_is_stale_in_both_tiers(tmp_path):
+    """size/mtime mismatch outranks the tier read: this stamp is not about this video."""
+    stamp, video = _tier_stamp(tmp_path, transcribe_version=common.TRANSCRIBE_VERSION, text_version=common.TEXT_VERSION)
+    stamp["size"] = stamp["size"] + 1
+    assert common.stale_tiers(stamp, video) == {"transcribe", "text"}
+
+
+def test_a_corrupt_tier_value_is_stale_not_an_exception(tmp_path):
+    """A hand-edited stamp must not abort a sweep over hundreds of episodes."""
+    stamp, video = _tier_stamp(tmp_path, transcribe_version="four", text_version=None)
+    assert common.stale_tiers(stamp, video) == {"transcribe", "text"}
+
+
+def test_stamp_valid_is_exactly_nothing_stale(tmp_path):
+    """stamp_valid keeps its meaning -- everything current -- so no caller changes."""
+    stamp, video = _tier_stamp(tmp_path, transcribe_version=common.TRANSCRIBE_VERSION, text_version=common.TEXT_VERSION)
+    assert common.stamp_valid(stamp, video)
+    assert not common.stale_tiers(stamp, video)
+
+
+def test_write_stamp_still_records_a_legacy_version_key(tmp_path):
+    """An older build of the pipeline, and scripts/migrate_write_v1_stamps.py, read
+    `version`. Dropping it would make every new stamp read as pre-versioning
+    (GRANDFATHER_VERSION=1) to them, i.e. stale, i.e. a full re-transcribe."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 100)
+    sp = str(tmp_path / ("ep" + common.STAMP_SUFFIX))
+    common.write_stamp(sp, str(v))
+    doc = common.read_stamp(sp)
+    assert doc["transcribe_version"] == common.TRANSCRIBE_VERSION
+    assert doc["text_version"] == common.TEXT_VERSION
+    assert doc["version"] == common.TEXT_VERSION

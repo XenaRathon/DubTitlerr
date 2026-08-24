@@ -639,7 +639,7 @@ def process(video):
     # The version-aware stamp (common.stamp_valid) is the ONLY "already muxed" guard.
     # The old SKIP_IF_MUXED ffprobe backstop is retired: an embedded Dubtitles track no
     # longer means "done", because mux.py now drops-and-replaces that track, so a
-    # PIPELINE_VERSION bump must be able to regenerate an already-dubbed episode.
+    # version bump must be able to regenerate an already-dubbed episode.
     stamp = read_stamp(stem + STAMP_SUFFIX)
     if stamp_valid(stamp, video):  # muxed, current version -> skip
         return "already-muxed"

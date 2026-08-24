@@ -6,7 +6,7 @@ render in their correct typeface.
 
 Per video that has a sibling dubtitle sidecar (``.eng.dubtitles.ass`` for an mkv with
 signs/songs, else ``.eng.dubtitles.srt`` for an mp4 dialogue-only episode):
-  * SKIP if already muxed — a valid, current-``PIPELINE_VERSION`` ``.dubtitles.done``
+  * SKIP if already muxed — a valid, current-in-both-tiers ``.dubtitles.done``
     stamp (stat-only). This is the ONLY skip guard: the old "embedded Dubtitles track"
     ffprobe backstop is gone, because a re-mux now REPLACES the old track rather than
     duplicating it, so re-running is idempotent and self-healing,

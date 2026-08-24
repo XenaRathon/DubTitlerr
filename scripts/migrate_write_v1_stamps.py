@@ -6,12 +6,12 @@ Why this exists: the strip-at-mux change made the version-aware stamp the ONLY "
 muxed" guard. generate.py and mux.py used to fall back on an ffprobe check ("this file
 has a Dubtitles track, so it's done"); that backstop is gone, because a re-mux now
 REPLACES the old track instead of refusing to touch the file — which is exactly what
-lets a PIPELINE_VERSION bump regenerate an already-dubbed episode. The side effect is
+lets a version bump regenerate an already-dubbed episode. The side effect is
 that a file muxed before stamps existed (or one whose stamp was lost) reads as STALE and
 would be re-transcribed + re-muxed on the next sweep. Running this first turns that
 mass regeneration back into the intended no-op rollout.
 
-The stamp it writes records ``GRANDFATHER_VERSION``, not ``PIPELINE_VERSION``: it is
+The stamp it writes records ``GRANDFATHER_VERSION``, not the current tiers: it is
 recording what actually produced the file (pre-versioning output = v1). So running this
 AFTER a deliberate version bump correctly leaves those files stale rather than falsely
 marking last version's output as current.
