@@ -717,6 +717,21 @@ def process_episode(
 # ============================================================================
 
 
+# The nsp cutpoints, and the logprob DROP cutpoint, are HISTORICAL as of 2026-08-24.
+# hallucination.py's `music` and `maybe_silence` rules were deleted that day (ADR 0002:
+# music caught 0 of 353,879 cards and cannot fire even on a model with live nsp, because
+# no segment clearing nsp>0.95 also has logprob<-2.0). This tool reads conf.json sidecars
+# that were WRITTEN while those rules were in force, so the buckets must keep describing
+# the thresholds that actually decided drop/flag/keep for that data. They live here now
+# because they are facts about the archive, not live gate configuration.
+#
+# LP_FLAG is deliberately NOT copied: `low_conf` is still a live rule, so it is read from
+# hallucination.py and must keep tracking it.
+HIST_NSP_FLAG = 0.5
+HIST_NSP_DROP = 0.95
+HIST_LP_DROP = -2.0
+
+
 def bucket_nsp(nsp: float) -> str:
     """Bucket a kept card's no_speech_prob against hallucination.py's NSP_FLAG/NSP_DROP,
     STRICT per spec-v3.md: <=0.5 clean, >0.5 and <=0.95 flag, >0.95 drop."""
@@ -724,7 +739,7 @@ def bucket_nsp(nsp: float) -> str:
     # while the comparisons read hallucination.py -- so when NSP_DROP moved 0.95 -> 0.90
     # (2026-08-21) the logic followed but every label kept claiming 0.95, i.e. the exact
     # hardcoded-copy drift test_bucket_cutpoints_match_hallucination_constants guards against.
-    f, d = hallucination.NSP_FLAG, hallucination.NSP_DROP
+    f, d = HIST_NSP_FLAG, HIST_NSP_DROP
     if nsp <= f:
         return f"clean_le_{f:g}"
     if nsp <= d:
@@ -735,7 +750,7 @@ def bucket_nsp(nsp: float) -> str:
 def bucket_lp(lp: float) -> str:
     """Bucket a kept card's avg_logprob against hallucination.py's LP_FLAG/LP_DROP, STRICT
     per spec-v3.md: >=-0.6 clean, <-0.6 and >=-2.0 flag, <-2.0 drop."""
-    f, d = hallucination.LP_FLAG, hallucination.LP_DROP  # labels derived, see bucket_nsp
+    f, d = hallucination.LP_FLAG, HIST_LP_DROP  # labels derived, see bucket_nsp
     if lp >= f:
         return f"clean_ge_{f:g}"
     if lp >= d:
@@ -747,13 +762,13 @@ def nsp_bucket_labels() -> list[str]:
     """The three bucket_nsp labels, in order. Callers must seed counters from THIS, never
     from literals -- a hand-written {"drop_gt_0.95": 0} silently KeyErrors (or worse, counts
     into a stale key) the moment a threshold moves."""
-    f, d = hallucination.NSP_FLAG, hallucination.NSP_DROP
+    f, d = HIST_NSP_FLAG, HIST_NSP_DROP
     return [f"clean_le_{f:g}", f"flag_gt_{f:g}_le_{d:g}", f"drop_gt_{d:g}"]
 
 
 def lp_bucket_labels() -> list[str]:
     """The three bucket_lp labels, in order. See nsp_bucket_labels()."""
-    f, d = hallucination.LP_FLAG, hallucination.LP_DROP
+    f, d = hallucination.LP_FLAG, HIST_LP_DROP
     return [f"clean_ge_{f:g}", f"flag_lt_{f:g}_ge_{d:g}", f"drop_lt_{d:g}"]
 
 

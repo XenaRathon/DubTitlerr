@@ -55,6 +55,17 @@ import hallucination  # noqa: E402
 # importable (and testable) on a machine with no CUDA stack.
 
 
+# The thresholds the deleted `music` and `maybe_silence` rules used, kept HERE because
+# ADR 0002 removed them from hallucination.py on 2026-08-24. This tool's job is to answer
+# "would that rule have fired on this model's output" -- which is exactly the measurement
+# that justified deleting it, and the measurement to repeat if a future decoder is
+# proposed. Reading them from the gate is no longer possible, and re-adding them there to
+# satisfy a report would resurrect the dead rule by the back door.
+HIST_NSP_DROP = 0.95
+HIST_LP_DROP = -2.0
+HIST_NSP_FLAG = 0.5
+
+
 def vram_used_mib() -> int | None:
     """Currently used VRAM, or None where nvidia-smi is unavailable (dev machines)."""
     try:
@@ -85,8 +96,8 @@ def summarise(nsps: list[float], lps: list[float], texts: list[str]) -> dict:
     # a perfectly live nsp and still never fire it, if the segments with high nsp are not
     # the same segments with terrible logprob. Counting each condition separately would
     # imply a revival that may not exist.
-    both = sum(1 for nsp, lp in zip(nsps, lps) if nsp > hallucination.NSP_DROP and lp < hallucination.LP_DROP)
-    silence = sum(1 for n in nsps if n > hallucination.NSP_FLAG) if hasattr(hallucination, "NSP_FLAG") else None
+    both = sum(1 for nsp, lp in zip(nsps, lps) if nsp > HIST_NSP_DROP and lp < HIST_LP_DROP)
+    silence = sum(1 for n in nsps if n > HIST_NSP_FLAG)
     return {
         "music_rule_would_fire": both,
         "maybe_silence_would_fire": silence,

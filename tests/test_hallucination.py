@@ -11,7 +11,7 @@ def card(text, lp=-0.2, nsp=0.1, start=0.0, end=2.0):
 
 
 def test_constants_and_blocklist():
-    assert h.NSP_DROP == 0.95 and h.LP_DROP == -2.0 and h.RUN_COLLAPSE == 4
+    assert h.LP_FLAG == -0.6 and h.RUN_COLLAPSE == 4
     assert h.BLOCKLIST.search("Subtitles by the community")
     assert h.BLOCKLIST.search("please subscribe to our channel")
     assert not h.BLOCKLIST.search("I subscribe to that philosophy of life")
@@ -43,12 +43,6 @@ def test_drop_reason_repetition():
     assert h.drop_reason(card("la la la la la la")) == "repetition"
 
 
-def test_drop_reason_music_requires_both_signals():
-    assert h.drop_reason(card("mmm", lp=-2.5, nsp=0.97)) == "music"
-    assert h.drop_reason(card("a real quiet line", lp=-1.5, nsp=0.5)) is None  # nsp not high
-    assert h.drop_reason(card("a real quiet line", lp=-0.5, nsp=0.9)) is None  # lp not low
-
-
 def test_drop_reason_keeps_normal_line():
     assert h.drop_reason(card("Don't let your guard down")) is None
 
@@ -58,10 +52,6 @@ def test_drop_reason_keeps_normal_line():
 
 def test_flag_reason_low_confidence():
     assert h.flag_reason(card("mumbled bit", lp=-0.8, nsp=0.2)) == "low_conf"
-
-
-def test_flag_reason_maybe_silence():
-    assert h.flag_reason(card("faint line", lp=-0.3, nsp=0.6)) == "maybe_silence"
 
 
 def test_flag_reason_none_for_clean_line():
@@ -136,9 +126,10 @@ def test_blocklist_data_file_comments_and_blanks_are_skipped(tmp_path):
 
 
 def test_drop_reason_records_evaluated_and_activated():
-    """A rule that never fires must be distinguishable from a rule never reached.
-    hallucination.music fired 0 times across 353,879 cards and nothing noticed, because
-    a successful episode with zero drops looks identical to one where the rule is dead."""
+    """A rule that never fires must be distinguishable from a rule never reached: a
+    successful episode with zero drops looks identical to one where the rule is dead.
+    This instrument is what proved `music` could never fire, which is why ADR 0002 deleted
+    it rather than tuning it -- so the counters must keep working for what remains."""
     import qc
 
     rec = qc.Recorder()
@@ -146,13 +137,13 @@ def test_drop_reason_records_evaluated_and_activated():
     assert h.drop_reason(speech, rec=rec) is None
     assert rec.counters["rule_blocklist_evaluated"] == 1
     assert rec.counters["rule_blocklist_activated"] == 0
-    assert rec.counters["rule_music_evaluated"] == 1
-    assert rec.counters["rule_music_activated"] == 0
+    assert rec.counters["rule_repetition_evaluated"] == 1
+    assert rec.counters["rule_repetition_activated"] == 0
 
     assert h.drop_reason({"text": "To be continued...", "no_speech_prob": 0.1, "avg_logprob": -0.2}, rec=rec) == "blocklist"
     assert rec.counters["rule_blocklist_activated"] == 1
     # short-circuit: later rules are NOT evaluated once one fires
-    assert rec.counters["rule_music_evaluated"] == 1
+    assert rec.counters["rule_repetition_evaluated"] == 1
 
 
 def test_flag_reason_records_liveness():
@@ -162,7 +153,6 @@ def test_flag_reason_records_liveness():
     h.flag_reason({"avg_logprob": -0.2, "no_speech_prob": 0.1}, rec=rec)
     assert rec.counters["rule_low_conf_evaluated"] == 1
     assert rec.counters["rule_low_conf_activated"] == 0
-    assert rec.counters["rule_maybe_silence_evaluated"] == 1
     h.flag_reason({"avg_logprob": -9.0, "no_speech_prob": 0.1}, rec=rec)
     assert rec.counters["rule_low_conf_activated"] == 1
 
@@ -243,3 +233,46 @@ def test_a_card_with_no_source_fields_records_no_activation():
     rec = qc.Recorder()
     h.bad_source_window(_card("it"), rec=rec)
     assert rec.counters["rule_source_window_activated"] == 0
+
+
+# --- the nsp-gated rules are gone (ADR 0002) ----------------------------------
+
+
+def test_the_nsp_gated_rules_are_not_reintroduced():
+    """`music` and `maybe_silence` were deleted 2026-08-24, not tuned. Measured: `music`
+    caught 0 of 353,879 cards, and it stays at 0 even on large-v3, whose nsp IS live --
+    none of its 6 segments over nsp 0.95 also has avg_logprob < -2.0. The conjunction does
+    not occur in this material, so no model change revives it, and every reachable
+    relaxation destroys more real dialogue than it saves (precision peaks near 20%).
+
+    If this test fails, someone re-added a rule on the intuition that an unreachable
+    threshold is a bug. Read .procoder/adr/0002 before changing it: the precision ceiling
+    is the thing to beat, not the threshold."""
+    import hallucination as h
+
+    assert not hasattr(h, "NSP_DROP"), "the music rule was re-added; see ADR 0002"
+    assert not hasattr(h, "LP_DROP"), "the music rule was re-added; see ADR 0002"
+    assert not hasattr(h, "NSP_FLAG"), "maybe_silence was re-added; see ADR 0002"
+
+
+def test_drop_reason_no_longer_reads_no_speech_prob():
+    """The production decoder returns nsp of exactly 0.0, so a gate that consults it is
+    deciding on a field nothing populates."""
+    import hallucination as h
+
+    assert h.drop_reason({"text": "a real line", "no_speech_prob": 0.99, "avg_logprob": -9.0}) is None
+
+
+def test_the_surviving_rules_still_fire():
+    """Deleting the dead ones must not disturb the live ones."""
+    import hallucination as h
+
+    assert h.drop_reason({"text": "To be continued...", "avg_logprob": -0.2}) == "blocklist"
+    assert h.flag_reason({"avg_logprob": -0.9}) == "low_conf"
+    assert h.flag_reason({"avg_logprob": -0.1}) is None
+
+
+def test_a_high_nsp_card_is_no_longer_flagged():
+    import hallucination as h
+
+    assert h.flag_reason({"avg_logprob": -0.1, "no_speech_prob": 0.99}) is None
