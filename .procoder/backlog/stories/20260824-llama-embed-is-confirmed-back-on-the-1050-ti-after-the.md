@@ -1,6 +1,6 @@
 # `llama-embed` is confirmed back on the 1050 Ti after the sweep, by recorded `nvidia-smi` output.
 
-Status: open
+Status: done 2026-08-25
 Created: 2026-08-24
 Epic: v5-two-tier-idempotency
 Sprint: -
@@ -16,10 +16,20 @@ llama-embed is evicted from the 1050 Ti so large-v3 gets the full 4 GB during th
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `llama-embed` is confirmed back on the 1050 Ti after the sweep, by recorded `nvidia-smi` output.
+- [x] `llama-embed` is confirmed back on the 1050 Ti after the sweep, by recorded `nvidia-smi` output.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- Evicted for the duration so `large-v3` had the whole card:
+
+      after eviction:  0 MiB used, 4032 MiB free   (no compute apps)
+
+- Restored after the last run, confirmed by `nvidia-smi` and `docker ps`:
+
+      llama-embed   Up 7 seconds
+      compute apps: 90914  /app/llama-server  44 MiB
+      gpu: 47 MiB used, 3986 MiB free
+
+- `dubtitle-builder` deliberately left `Exited (137)` — production stays stopped per the
+  owner's decision until every change from this week is committed.
 
