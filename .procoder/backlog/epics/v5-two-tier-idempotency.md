@@ -1,8 +1,8 @@
 # v5-two-tier-idempotency
 
-Status: open
+Status: done 2026-08-25
 Created: 2026-08-24
-Spec: v5-two-tier-idempotency @ dc3bd3468c2e
+Spec: v5-two-tier-idempotency @ 0ce0f5713ee2
 
 ## Description
 

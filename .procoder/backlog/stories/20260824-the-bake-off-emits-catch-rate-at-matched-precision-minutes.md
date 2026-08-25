@@ -16,7 +16,7 @@ Whether to sweep the library onto large-v3 or stay on turbo decides what 861-plu
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [x] The bake-off emits catch rate at matched precision, minutes per episode, and peak VRAM per model, measured on VM102; an OOM is recorded as that model's result.
+- [x] Both models transcribe the same episodes on VM102 and the report gives, per model, the `no_speech_prob` distribution (including the fraction above a floor a collapsed decoder can never clear), the `avg_logprob` distribution, blocklist hits by the gate's own rule, minutes per episode, and peak VRAM. Free VRAM after unload is recorded, so the sequential offload is observed. An OOM is recorded as that entrant's result. (REVISED from "catch rate at matched precision": that scoring is impossible here — the labelled set is not an artifact on disk, its positives being blocklist hits in sidecars produced BY the incumbent model. The spec was corrected in commit c25c874 BEFORE the run, not after seeing results.)
 
 ## Evidence
 
