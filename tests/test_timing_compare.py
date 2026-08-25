@@ -604,11 +604,10 @@ def test_covered_cue_count_in_gap_cards_contribute_nothing():
 
 
 def test_bucket_nsp_boundaries():
-    """Boundaries are derived from hallucination.py, not pinned to literals -- the labels
-    themselves used to be literals and went stale when NSP_DROP moved (2026-08-21)."""
-    import hallucination as h
-
-    f, d = h.NSP_FLAG, h.NSP_DROP
+    """Boundaries are derived from the module's own constants, not pinned to literals --
+    the labels themselves used to be literals and went stale when NSP_DROP moved
+    (2026-08-21). The nsp cutpoints became historical when ADR 0002 deleted the rules."""
+    f, d = tc.HIST_NSP_FLAG, tc.HIST_NSP_DROP
     assert tc.bucket_nsp(0.0) == f"clean_le_{f:g}"
     assert tc.bucket_nsp(f) == f"clean_le_{f:g}"  # <=NSP_FLAG inclusive
     assert tc.bucket_nsp(f + 1e-6) == f"flag_gt_{f:g}_le_{d:g}"
@@ -620,7 +619,7 @@ def test_bucket_nsp_boundaries():
 def test_bucket_lp_boundaries():
     import hallucination as h
 
-    f, d = h.LP_FLAG, h.LP_DROP
+    f, d = h.LP_FLAG, tc.HIST_LP_DROP  # low_conf is live; the DROP cutpoint is historical
     assert tc.bucket_lp(0.0) == f"clean_ge_{f:g}"
     assert tc.bucket_lp(f) == f"clean_ge_{f:g}"  # >=LP_FLAG inclusive
     assert tc.bucket_lp(f - 1e-6) == f"flag_lt_{f:g}_ge_{d:g}"
@@ -629,15 +628,21 @@ def test_bucket_lp_boundaries():
     assert tc.bucket_lp(-10.0) == f"drop_lt_{d:g}"
 
 
-def test_bucket_cutpoints_match_hallucination_constants():
-    """Regression guard: the bucket cutpoints must track hallucination.py's actual B1
-    thresholds, not a hardcoded copy that could drift."""
+def test_bucket_cutpoints_track_the_live_rule_and_pin_the_historical_ones():
+    """The drift guard, split by what is still live.
+
+    `low_conf` is a live rule, so its cutpoint must keep tracking hallucination.py rather
+    than a hardcoded copy. The nsp cutpoints and the logprob DROP cutpoint are HISTORICAL
+    (ADR 0002 deleted `music` and `maybe_silence` on 2026-08-24): this tool reads sidecars
+    written while those rules were in force, so the buckets must keep describing the
+    thresholds that actually decided that archive."""
     import hallucination
 
-    assert hallucination.NSP_FLAG == 0.5
-    assert hallucination.NSP_DROP == 0.95
-    assert hallucination.LP_FLAG == -0.6
-    assert hallucination.LP_DROP == -2.0
+    assert tc.HIST_NSP_FLAG == 0.5
+    assert tc.HIST_NSP_DROP == 0.95
+    assert tc.HIST_LP_DROP == -2.0
+    assert hallucination.LP_FLAG == -0.6, "the live low_conf cutpoint moved; buckets follow it"
+    assert not hasattr(hallucination, "NSP_DROP"), "the deleted rule came back; see ADR 0002"
 
 
 # ============================================================================
