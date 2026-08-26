@@ -48,6 +48,8 @@ REASONS = {
     "repair": (
         "no_reference",  # no fansub anchor overlapped this card's source window
         "rejected_guard",  # the model proposed an edit; accept_repair() refused it
+        "rejected_name_invented",  # the model substituted a proper noun that is in
+        # neither the glossary nor the original -- the phonetic name guard refused it
         "llm_empty",
     ),  # the backend returned nothing (transport failure or timeout)
     "punctuation": (
@@ -155,6 +157,7 @@ _EVIDENCE = {
     # what a human needs to see to settle each reason, in the order it helps
     "no_reference": ("original_text", "source_start", "source_end", "avg_logprob"),
     "rejected_guard": ("original_text", "proposed_text", "reference", "avg_logprob", "words"),
+    "rejected_name_invented": ("original_text", "proposed_text", "reference", "avg_logprob", "words"),
     "llm_empty": ("original_text", "segments", "words"),
 }
 

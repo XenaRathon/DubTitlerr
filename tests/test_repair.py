@@ -12,6 +12,7 @@ import common
 import glossary
 import reflow
 import repair
+import unresolved
 
 # --- T1 hoist: dialogue_intervals now lives in common.py --------------------
 
@@ -795,7 +796,9 @@ def test_borrowed_from_ref_ignores_new_words_absent_from_the_reference():
 
 
 def test_accept_rejects_a_wholesale_substitution_from_the_reference():
-    assert not repair.accept_repair("That's enough of that, idiots!", "Hold it, you brats!", "Hold it, you brats!", dur=6.0)
+    assert not repair.accept_repair(
+        "That's enough of that, idiots!", "Hold it, you brats!", "Hold it, you brats!", dur=6.0, gloss=gl()
+    )
 
 
 def test_accept_rejects_an_appended_clause_lifted_from_the_reference():
@@ -804,13 +807,21 @@ def test_accept_rejects_an_appended_clause_lifted_from_the_reference():
         "It's a bunch of baby snowbirds. So, if we close the door, they'll fall.",
         "They're snowbird hatchlings.\nSo, if we close the door, they'll fall.",
         dur=6.0,
+        gloss=gl(),
     )
 
 
 def test_accept_keeps_a_single_word_name_fix():
-    """The whole point of having a reference: one wrong proper noun, corrected from it."""
+    """The whole point of having a reference: one wrong proper noun, corrected from it.
+    Glossary carries Spandam -- the destination of the fix is a real glossary name, so the
+    phonetic-name-guard (invents_name) recognises it as a genuine correction, not a
+    fabrication, and lets it through."""
     assert repair.accept_repair(
-        "Spondum drew his blade.", "Spandam drew his blade.", "Spandam drew his blade, sneering.", dur=6.0
+        "Spondum drew his blade.",
+        "Spandam drew his blade.",
+        "Spandam drew his blade, sneering.",
+        dur=6.0,
+        gloss=gl(names=["Spandam"]),
     )
 
 
@@ -820,6 +831,7 @@ def test_accept_keeps_a_punctuation_only_repair():
         "He's just a reindeer with a blue nose. That's all.",
         "He's just a reindeer with a blue nose. That's all.",
         dur=6.0,
+        gloss=gl(),
     )
 
 
@@ -830,29 +842,30 @@ def test_accept_keeps_a_garbled_line_rebuilt_from_its_own_words():
         "Human human fruit, a Devil Fruit, right? That's right.",
         "The Human-Human Fruit, a Devil Fruit.",
         dur=6.0,
+        gloss=gl(),
     )
 
 
 def test_accept_rejects_a_line_that_more_than_doubles():
     """ "Huh?" -> "Huh? Help!" passed the old 2.5 band exactly. Adding dialogue the dub
     never spoke is the failure mode, regardless of where the word came from."""
-    assert not repair.accept_repair("Huh?", "Huh? Help!", "Huh? Help!", dur=6.0)
+    assert not repair.accept_repair("Huh?", "Huh? Help!", "Huh? Help!", dur=6.0, gloss=gl())
 
 
 def test_accept_rejects_a_line_that_collapses():
     assert not repair.accept_repair(
-        "I'll be taking fifty percent of this restaurant.", "Fifty percent.", "Fifty percent.", dur=6.0
+        "I'll be taking fifty percent of this restaurant.", "Fifty percent.", "Fifty percent.", dur=6.0, gloss=gl()
     )
 
 
 def test_accept_rejects_an_unchanged_line():
     """Nothing to write, and it must not be counted as a repair."""
-    assert not repair.accept_repair("Same line.", "Same line.", "some reference", dur=6.0)
-    assert not repair.accept_repair("Same line.", "same LINE.", "some reference", dur=6.0)
+    assert not repair.accept_repair("Same line.", "Same line.", "some reference", dur=6.0, gloss=gl())
+    assert not repair.accept_repair("Same line.", "same LINE.", "some reference", dur=6.0, gloss=gl())
 
 
 def test_accept_rejects_empty_output():
-    assert not repair.accept_repair("A line.", "", "ref", dur=6.0)
+    assert not repair.accept_repair("A line.", "", "ref", dur=6.0, gloss=gl())
 
 
 def test_borrow_limit_is_configurable(monkeypatch):
@@ -862,9 +875,9 @@ def test_borrow_limit_is_configurable(monkeypatch):
     orig, new, ref = "the small cat sat down", "the small cat sat here", "it sat here"
     assert len(new) == len(orig)  # the length gate cannot be what fires
     monkeypatch.setattr(repair, "MAX_REF_BORROW", 1)
-    assert not repair.accept_repair(orig, new, ref, dur=6.0)
+    assert not repair.accept_repair(orig, new, ref, dur=6.0, gloss=gl())
     monkeypatch.setattr(repair, "MAX_REF_BORROW", 99)
-    assert repair.accept_repair(orig, new, ref, dur=6.0)
+    assert repair.accept_repair(orig, new, ref, dur=6.0, gloss=gl())
 
 
 # --- C2/C4/C5: the acceptance gate knows the card it is repairing ---------------
@@ -877,14 +890,14 @@ def test_accept_rejects_a_repair_that_breaches_cps_for_this_cards_duration():
     orig, new = "We need to get back to the ship.", "We really need to get back to the ship now."
     assert repair.LEN_RATIO_MIN <= len(new) / len(orig) <= repair.LEN_RATIO_MAX  # ratio 1.34: in band
     assert reflow.card_cps(new, 2.0) > reflow.MAX_CPS  # 21.5 cps -- unreadable
-    assert not repair.accept_repair(orig, new, "", dur=2.0)
+    assert not repair.accept_repair(orig, new, "", dur=2.0, gloss=gl())
     assert reflow.card_cps(new, 3.0) < reflow.MAX_CPS  # 14.3 cps -- fine
-    assert repair.accept_repair(orig, new, "", dur=3.0)
+    assert repair.accept_repair(orig, new, "", dur=3.0, gloss=gl())
 
 
 def test_accept_rejects_the_fifty_percent_growth_the_ratio_band_allows():
     """The brief's worked example: 40 chars at 3.0s is 13 cps, 58 chars is 19.3."""
-    assert not repair.accept_repair("a" * 40, "b" * 58, ref="", dur=3.0)
+    assert not repair.accept_repair("a" * 40, "b" * 58, ref="", dur=3.0, gloss=gl())
 
 
 def test_accept_rejects_a_repair_valid_in_total_but_unwrappable_per_line():
@@ -896,7 +909,7 @@ def test_accept_rejects_a_repair_valid_in_total_but_unwrappable_per_line():
     assert len(new) <= reflow.MAX_CHARS  # total is legal ...
     assert reflow.card_cps(new, 6.0) < reflow.MAX_CPS  # ... and so is the density
     assert max(len(ln) for ln in reflow.wrap_balance(new).split("\n")) > reflow.MAX_LINE
-    assert not repair.accept_repair(orig, new, "", dur=6.0)
+    assert not repair.accept_repair(orig, new, "", dur=6.0, gloss=gl())
 
 
 def test_accept_rejects_a_repair_over_max_chars_even_when_every_line_fits():
@@ -907,27 +920,33 @@ def test_accept_rejects_a_repair_over_max_chars_even_when_every_line_fits():
     lines = reflow.wrap_balance(new).split("\n")
     assert len(lines) == reflow.MAX_LINES and max(len(ln) for ln in lines) <= reflow.MAX_LINE
     assert len(new) > reflow.MAX_CHARS
-    assert not repair.accept_repair(orig, new, "", dur=10.0)
+    assert not repair.accept_repair(orig, new, "", dur=10.0, gloss=gl())
 
 
 def test_accept_keeps_a_name_only_repair_at_its_cards_duration():
-    """The case repair exists to serve. If the card-aware gate rejects this it is wrong."""
-    assert repair.accept_repair("Hi Zorro", "Hi Zoro", ref="", dur=2.0)
+    """The case repair exists to serve. If the card-aware gate rejects this it is wrong.
+    Glossary carries Zoro -- the destination is a real glossary name, so the
+    phonetic-name-guard recognises this as a genuine correction rather than a fabrication."""
+    assert repair.accept_repair("Hi Zorro", "Hi Zoro", ref="", dur=2.0, gloss=gl(names=["Zoro"]))
 
 
 def test_accept_keeps_a_name_only_repair_on_a_dense_but_legal_card():
     """Permissiveness has to survive a tight card, not just a roomy one: 40 chars at
-    2.5s is 16 cps -- under the ceiling, and the repair does not move it."""
+    2.5s is 16 cps -- under the ceiling, and the repair does not move it. Glossary carries
+    Spandam -- the destination is a real glossary name, so the phonetic-name-guard lets
+    this through as a genuine correction."""
     orig = "Spondum drew his blade and stepped back."
     new = "Spandam drew his blade and stepped back."
     assert len(new) == len(orig) and reflow.card_cps(new, 2.5) < reflow.MAX_CPS
-    assert repair.accept_repair(orig, new, "Spandam drew his blade, sneering.", dur=2.5)
+    assert repair.accept_repair(orig, new, "Spandam drew his blade, sneering.", dur=2.5, gloss=gl(names=["Spandam"]))
 
 
 def test_accept_still_rejects_reference_borrowing_on_a_card_with_room():
     """The C2/C4 additions must not become an escape hatch: a long card cannot buy a
     wholesale lift from the reference."""
-    assert not repair.accept_repair("That's enough of that, idiots!", "Hold it, you brats!", "Hold it, you brats!", dur=7.0)
+    assert not repair.accept_repair(
+        "That's enough of that, idiots!", "Hold it, you brats!", "Hold it, you brats!", dur=7.0, gloss=gl()
+    )
 
 
 def _conf_row(start, end, text, **extra):
@@ -1222,3 +1241,174 @@ def test_process_still_anchors_a_plausible_window(tmp_path, monkeypatch):
     assert summary["skipped_no_ref"] == 0
     assert summary["rules"]["rule_source_window_activated"] == 0
     assert summary["rules"]["rule_source_window_evaluated"] == 1
+
+
+# --- phonetic name guard (ISSUE-phonetic-name-guard.md) -------------------------
+#
+# glossary.correct(new, gloss) already ran on every LLM output before accept_repair sees
+# it (repair.py:449), snapping any token the deterministic tiers can match to a glossary
+# name -- exact, hard-fix, or guarded-fuzzy/metaphone. invents_name() judges only the
+# residue: tokens matching no glossary name by any tier. Measured on One Pace S29E08 (40
+# targets, temperature 0), prompt tuning could not close this -- see the file above.
+
+
+def _pin_words(monkeypatch, words=()):
+    """Pin glossary._WORDS so is_english is deterministic regardless of the host's
+    wordlist (see tests/test_glossary.py:112) -- this dev box falls back to a 233-word
+    bundle when /usr/share/dict/american-english is absent, production has wamerican, and
+    either could accidentally contain one of the invented tokens below."""
+    monkeypatch.setattr(glossary, "_WORDS", set(words))
+
+
+def test_invents_name_sees_a_substitution_masked_by_a_repeated_name(monkeypatch):
+    """Garnus appears twice in orig (vocative, then reference) and only the first occurrence
+    is mangled to the invented Garnel; the second survives untouched -- ordinary dialogue,
+    not evidence of anything. A SET-based comparison of lowercase cores still finds 'garnus'
+    present somewhere in new_lower and concludes nothing was lost, so it never inspects the
+    invented Garnel at all -- exactly the case this guard exists to catch. Multiset (Counter)
+    semantics see that one occurrence of Garnus went missing regardless of the other
+    surviving."""
+    _pin_words(monkeypatch)
+    g = gl()
+    assert repair.invents_name("Garnus fought Garnus again", "Garnel fought Garnus again", g)
+
+
+def test_invents_name_rejects_an_unknown_phonetic_substitute(monkeypatch):
+    """Syrahose -> Shyarros: Shyarros matches no glossary name by any tier, so this is the
+    invented-name failure the guard exists to catch."""
+    _pin_words(monkeypatch)
+    g = gl(names=["Shirahoshi"])
+    assert repair.invents_name(
+        "You're about to be a big, beautiful corpse, Syrahose!",
+        "You're about to be a big, beautiful corpse, Shyarros!",
+        g,
+    )
+
+
+def test_invents_name_accepts_a_known_glossary_correction(monkeypatch):
+    """Syrahose -> Shirahoshi: the SAME original token as the test above, but this time
+    the substitute IS a glossary name (glossary.correct() already made this exact swap
+    upstream) -- the guard must not undo a correct repair."""
+    _pin_words(monkeypatch)
+    g = gl(names=["Shirahoshi"])
+    assert not repair.invents_name(
+        "Van Der Decken is going to capture my precious Syrahose!",
+        "Van Der Decken is going to capture my precious Shirahoshi!",
+        g,
+    )
+
+
+def test_invents_name_rejects_deccan_to_decman(monkeypatch):
+    """A two-character substitution is still a fabrication. Decman is close enough to
+    Deccan that any edit-distance escape hatch would wave it through -- which is exactly
+    why the guard has none, and why breaking that rule would break this test."""
+    _pin_words(monkeypatch)
+    g = gl()
+    assert repair.invents_name("Just let me go after Deccan.", "Just let me go after Decman.", g)
+
+
+def test_invents_name_rejects_hirohoshi_mangled_to_hihohi(monkeypatch):
+    """The worst observed case: a name already close to correct was destroyed into a
+    non-word."""
+    _pin_words(monkeypatch)
+    g = gl()
+    assert repair.invents_name("I can't let that beast catch Hirohoshi.", "I can't let that beast catch Hihohi.", g)
+
+
+def test_invents_name_rejects_garnus_to_garnel(monkeypatch):
+    """The name-only half of the mixed card below, isolated: with no genuine fix riding
+    along, the substitution alone must still be refused."""
+    _pin_words(monkeypatch)
+    g = gl()
+    assert repair.invents_name("Garnus charged forward.", "Garnel charged forward.", g)
+
+
+def test_invents_name_accepts_zolo_to_zoro(monkeypatch):
+    """zolo -> Zoro: the lowercase original is not itself proper-noun-ish (it never had a
+    capitalised core to lose), and the gained Zoro IS a known glossary name -- both halves
+    of the guard have to agree for this to pass."""
+    _pin_words(monkeypatch)
+    g = gl(names=["Zoro"])
+    assert not repair.invents_name("zolo drew his blade", "Zoro drew his blade", g)
+
+
+def test_invents_name_polices_a_four_char_core_at_the_min_fuzzy_len_floor(monkeypatch):
+    """MIN_FUZZY_LEN is 4, and the guard requires len(core) >= MIN_FUZZY_LEN -- so a
+    4-character invented substitution sits exactly on the boundary and must still be
+    caught. No shipped glossary fixture exercises this: the only 4-char name in the
+    fixtures (Zoro) is always KNOWN, so its classification never turns on this floor."""
+    _pin_words(monkeypatch)
+    g = gl()
+    assert repair.invents_name("Nami waited.", "Nima waited.", g)
+
+
+def test_invents_name_does_not_police_a_three_char_core_below_the_floor(monkeypatch):
+    """The mirror of the test above: a 3-character core sits just under MIN_FUZZY_LEN and
+    must NOT be policed -- too short for the fuzzy/metaphone tiers upstream to have judged
+    with any precision either, so this guard doesn't try."""
+    _pin_words(monkeypatch)
+    g = gl()
+    assert not repair.invents_name("Nam waited.", "Nim waited.", g)
+
+
+def test_invents_name_ignores_punctuation_only_change(monkeypatch):
+    """human -centric -> human-centric: no capitalised token is gained at all, so this
+    must not be policed as a name change."""
+    _pin_words(monkeypatch)
+    g = gl()
+    assert not repair.invents_name("a human -centric approach", "a human-centric approach", g)
+
+
+def test_invents_name_rejects_the_mixed_card_even_with_a_genuine_fix_inside(monkeypatch):
+    """Garnel is invented AND `Is -> if` is a genuine punctuation/casing fix in the SAME
+    line. Owner's decision: the whole card is rejected regardless -- assert that
+    explicitly so a future change that tries to salvage the genuine fix has to notice it
+    is reversing this call."""
+    _pin_words(monkeypatch)
+    g = gl()
+    assert repair.invents_name(
+        "Garnus, too far away to tell Is something wrong?",
+        "Garnel, too far away to tell if something wrong?",
+        g,
+    )
+
+
+def test_invents_name_ignores_a_bare_addition_that_loses_nothing(monkeypatch):
+    """NEW introduces a capitalised, non-glossary token but ORIG loses none of its own --
+    proves the `lost` requirement: this guard polices substitutions, not additions."""
+    _pin_words(monkeypatch)
+    g = gl()
+    assert not repair.invents_name("He looked around.", "He looked around, Garnus.", g)
+
+
+def test_invents_name_ignores_a_token_reached_only_via_trailing_punctuation(monkeypatch):
+    """Garnus, -> Garnus: the bare core is identical once trailing punctuation is
+    stripped, so this is not a substitution -- proves the punctuation escape is
+    deliberate, not a gap."""
+    _pin_words(monkeypatch)
+    g = gl()
+    assert not repair.invents_name("Garnus, look out!", "Garnus look out!", g)
+
+
+def test_process_records_rejected_name_invented_reason(tmp_path, monkeypatch):
+    """The unresolved reason string must switch to "rejected_name_invented" specifically
+    when the guard rejected because a name was invented -- not for e.g. a length/cps
+    failure -- or the guard's hit rate is unmeasurable. (unresolved.record is monkeypatched
+    only to capture its call; unresolved.py's REASONS table is owned by another agent and
+    not touched here.)"""
+    stem = str(tmp_path / "ep_invented")
+    g = gl(names=["Shirahoshi"])
+    conf_path = _repair_env(
+        tmp_path,
+        monkeypatch,
+        stem,
+        [_conf_row(0.0, 6.0, "You're about to be a big, beautiful corpse, Syrahose!")],
+        "You're about to be a big, beautiful corpse, Shyarros!",
+        g=g,
+    )
+    _pin_words(monkeypatch)
+    captured = []
+    monkeypatch.setattr(unresolved, "record", lambda *a, **kw: captured.append((a, kw)))
+    assert repair.process(conf_path) == "repaired"
+    reasons = [a[2] for a, kw in captured]
+    assert "rejected_name_invented" in reasons
