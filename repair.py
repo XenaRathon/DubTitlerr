@@ -60,7 +60,6 @@ import re
 import sys
 import time
 import urllib.parse
-from collections import Counter
 
 import glossary
 import hallucination
@@ -302,9 +301,13 @@ def invents_name(orig, new, gloss):
     casing/punctuation escape hatch, on purpose: ``Garnus,`` -> ``Garnus`` or ``Garnus`` ->
     ``garnus`` reads as the same token, not a substitution.
 
-    Scoped to SUBSTITUTIONS only: a card that merely ADDS a capitalised token, losing none
-    of the original's, is not policed here -- that is new information heard, not evidence
-    a name was swapped for a fake one.
+    Judged on what is GAINED, whether or not anything was lost. A card that conjures a
+    capitalised non-English token the glossary does not know is refused even if it replaced
+    nothing: `jester` -> `Dester` is a fabrication exactly as much as `Deccan` -> `Decman`,
+    and the lowercase original meant the substitution rule could not see it. The cost of
+    this width is a repair that legitimately ADDS an unknown name is refused too; that is
+    accepted deliberately, because an added name has no original to fall back on and a
+    wrong one is indistinguishable from a right one once written.
     """
 
     def proper_cores(text):
@@ -318,15 +321,21 @@ def invents_name(orig, new, gloss):
                 out.append(core)
         return out
 
-    orig_cores, new_cores = proper_cores(orig), proper_cores(new)
-    orig_counts = Counter(c.lower() for c in orig_cores)
-    new_counts = Counter(c.lower() for c in new_cores)
-    lost = orig_counts - new_counts  # multiset difference: only the positive (missing) part
-    if not lost:
-        return False
-    gained = new_counts - orig_counts
+    # Scope widened 2026-08-26: a gained name is judged on its own, whether or not one was
+    # LOST. The original rule required a SUBSTITUTION, which made a name conjured from
+    # nothing invisible -- measured on the hotwords spike, where `jester` became `Dester`
+    # and neither direction fired, because a lowercase word is not a proper noun to lose.
+    #
+    # GAINED is measured against every core in ORIG, not only its capitalised ones. A word
+    # merely RE-CAPITALISED was not conjured, and punctuation restoration re-capitalises
+    # constantly: `that's` -> `That's` after a new sentence boundary, `human` -> `Human`
+    # rebuilding a garbled line. Comparing against the capitalised cores alone reported both
+    # as fabricated names -- two real repairs refused, caught by the existing suite.
+    # (`that's` is doubly exposed: _read_words drops every wordlist entry containing an
+    # apostrophe, so is_english() can never be True for a contraction.)
+    orig_all = {m.group(2).lower() for m in (glossary._TOKEN_RE.match(t) for t in (orig or "").split()) if m}
     known = {n.lower() for n in gloss["names"]} | {v.lower() for v in gloss["token_fixes"].values()}
-    return any(c not in known for c in gained)
+    return any(c.lower() not in orig_all and c.lower() not in known for c in proper_cores(new))
 
 
 def accept_repair(orig, new, ref, dur, gloss):

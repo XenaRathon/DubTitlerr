@@ -637,13 +637,13 @@ def test_a_legacy_stamp_reads_both_tiers_from_its_single_version(tmp_path):
 
 
 def test_adoption_constants_do_not_retranscribe_the_library():
-    """TRANSCRIBE_VERSION adopts at 4, not 6: the 576 live v4 stamps are transcribe-fresh
-    and only text-stale, so they migrate at watch-gated pace. Setting both to 6 would
+    """TRANSCRIBE_VERSION adopts at 4, not 7: the 576 live v4 stamps are transcribe-fresh
+    and only text-stale, so they migrate at watch-gated pace. Setting both to 7 would
     re-transcribe them all -- roughly two GPU-days for a bookkeeping change. Asserted on
     the real constants so that mistake cannot land quietly. TEXT_VERSION rises with every
-    text-tier change (6 = the phonetic name guard); TRANSCRIBE_VERSION must NOT follow it."""
+    text-tier change (7 = the guard widened to gained names); TRANSCRIBE_VERSION must NOT follow it."""
     assert common.TRANSCRIBE_VERSION == 4
-    assert common.TEXT_VERSION == 6
+    assert common.TEXT_VERSION == 7
 
 
 def test_a_v2_stamp_is_stale_in_both_tiers(tmp_path):
