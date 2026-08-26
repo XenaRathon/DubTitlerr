@@ -60,6 +60,7 @@ import re
 import sys
 import time
 import urllib.parse
+from collections import Counter
 
 import glossary
 import hallucination
@@ -272,7 +273,63 @@ def fits_card(text, dur, orig=None):
     return all(a <= b + reflow.EPS for a, b in zip(after, before))
 
 
-def accept_repair(orig, new, ref, dur):
+def invents_name(orig, new, gloss):
+    """True if ``new`` substitutes an INVENTED proper noun for one that was in ``orig``.
+
+    By the time this runs, ``glossary.correct(new, gloss)`` has already executed (see the
+    call site in process(), repair.py:513): any token the deterministic tiers can match to
+    a glossary name -- exact, hard-fix, or guarded-fuzzy/metaphone -- is already snapped to
+    its canonical spelling. So ``Syrahose -> Shirahoshi`` is handled upstream and never
+    reaches here. What this function judges is the residue prompt tuning could not close
+    (ISSUE-phonetic-name-guard.md, measured on One Pace S29E08, 40 targets, temperature 0):
+
+        Syrahose  -> Shyarros    (the SAME token got the right answer elsewhere in the
+                                   same episode -- the model is guessing phonetically
+                                   per-call, not recalling a name it recognises)
+        Deccan    -> Decman
+        Hirohoshi -> Hihohi      (a name already close to correct, destroyed into a
+                                   non-word)
+        Garnus    -> Garnel
+
+    None of these are reachable from the glossary by any tier the deterministic corrector
+    runs, so they ship as fabricated proper nouns. There is deliberately no edit-distance
+    or phonetic comparison here -- that is what the fuzzy and metaphone tiers upstream
+    already tried, and it is exactly what let a wrong guess through as "close enough" in
+    the failures above. The only signal left that is both cheap and precise: did a
+    capitalised, non-English, glossary-shaped token DISAPPEAR, and did a token no tier
+    recognises take its place. Comparison is on the bare core (glossary._TOKEN_RE, which
+    strips leading/trailing punctuation) and case-insensitive -- that is the whole
+    casing/punctuation escape hatch, on purpose: ``Garnus,`` -> ``Garnus`` or ``Garnus`` ->
+    ``garnus`` reads as the same token, not a substitution.
+
+    Scoped to SUBSTITUTIONS only: a card that merely ADDS a capitalised token, losing none
+    of the original's, is not policed here -- that is new information heard, not evidence
+    a name was swapped for a fake one.
+    """
+
+    def proper_cores(text):
+        out = []
+        for tok in (text or "").split():
+            m = glossary._TOKEN_RE.match(tok)
+            if not m:
+                continue
+            core = m.group(2)
+            if core[:1].isupper() and len(core) >= glossary.MIN_FUZZY_LEN and not glossary.is_english(core):
+                out.append(core)
+        return out
+
+    orig_cores, new_cores = proper_cores(orig), proper_cores(new)
+    orig_counts = Counter(c.lower() for c in orig_cores)
+    new_counts = Counter(c.lower() for c in new_cores)
+    lost = orig_counts - new_counts  # multiset difference: only the positive (missing) part
+    if not lost:
+        return False
+    gained = new_counts - orig_counts
+    known = {n.lower() for n in gloss["names"]} | {v.lower() for v in gloss["token_fixes"].values()}
+    return any(c not in known for c in gained)
+
+
+def accept_repair(orig, new, ref, dur, gloss):
     """Whether to write ``new`` over ``orig`` on a card lasting ``dur`` seconds.
 
     A dubtitle must match the DUB AUDIO. The reference is a different translation of the
@@ -292,11 +349,18 @@ def accept_repair(orig, new, ref, dur):
     optional: a caller that does not know the card cannot be allowed to skip the check.
 
     Kept deliberately permissive for the case the reference exists to serve: a single
-    misheard proper noun corrected from it."""
+    misheard proper noun corrected from it.
+
+    ``gloss`` is required for the same reason ``dur`` is: the phonetic-name-guard
+    (``invents_name``, below) needs to know what the show's names ARE to tell a real
+    correction from a fabricated one, so a caller that cannot say what those names are
+    must not be allowed to silently skip the check by omitting the argument."""
     if not new:
         return False
     if new.lower() == (orig or "").lower():
         return False  # nothing changed
+    if invents_name(orig, new, gloss):
+        return False  # phonetic-name-guard: fabricated proper noun, not a real correction
     ratio = len(new) / max(1, len(orig))
     if not (LEN_RATIO_MIN <= ratio <= LEN_RATIO_MAX):
         return False  # added or dropped a clause
@@ -461,15 +525,16 @@ def process(conf_path):
                 stem, "repair", "llm_empty", original_text=c["text"], reference=ref[:120], avg_logprob=c.get("avg_logprob")
             )
             continue
-        if not accept_repair(c["text"], new, ref, dur):
+        if not accept_repair(c["text"], new, ref, dur, gloss):
             if new and new.lower() != c["text"].lower():
                 rejected += 1  # surfaced in the summary so the guard stays visible
                 # ...but the PROPOSAL was discarded, and it is the whole evidence a human
                 # needs to judge whether the guard was right or overzealous.
+                reason = "rejected_name_invented" if invents_name(c["text"], new, gloss) else "rejected_guard"
                 unresolved.record(
                     stem,
                     "repair",
-                    "rejected_guard",
+                    reason,
                     original_text=c["text"],
                     proposed_text=new,
                     reference=ref[:120],
@@ -488,7 +553,7 @@ def process(conf_path):
                     # the first pass with no validation at all -- same gate, same card. When
                     # it fails, the already-accepted first-pass repair stands rather than the
                     # card being left garbled.
-                    if new2 and accept_repair(c["text"], new2, ref, dur):
+                    if new2 and accept_repair(c["text"], new2, ref, dur, gloss):
                         new = new2
                     elif new2 and new2.lower() != new.lower():
                         rejected_secondary += 1

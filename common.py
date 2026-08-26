@@ -130,6 +130,10 @@ TRACK_NAME = "Dubtitles"
 # v5 (2026-08-24): the single version becomes TWO, because one number made a glossary
 # fix cost the same as a decoder change -- a full re-transcribe of the library. See
 # .procoder/adr/0001-idempotency-is-keyed-on-two-tiers-not-one-version.md.
+# v6 (2026-08-26): repair.py gained the phonetic name guard -- it rejects an LLM repair
+# that substitutes a proper noun found in neither the glossary nor the original
+# (Syrahose -> Shyarros, Hirohoshi -> Hihohi). Text produced before it can carry names
+# the guard would now refuse, so the whole text tier is stale.
 #
 # TRANSCRIBE_VERSION covers audio -> words. Bump it for ANY decoder-affecting change:
 #   the whisper model, WHISPER_BEAM_SIZE, the compute type, whisper's own thresholds,
@@ -139,11 +143,11 @@ TRACK_NAME = "Dubtitles"
 # TEXT_VERSION covers everything downstream of the word list: punctuation, reflow,
 #   glossary correction, repair, the merge, the mux.
 #
-# Adoption is 4/5, NOT 5/5. The 576 stamps live at v4 were produced by the current
+# Adoption is 4/6, NOT 6/6. The 576 stamps live at v4 were produced by the current
 # decoder, so they are transcribe-fresh and only text-stale: they migrate at
 # watch-gated pace instead of burning ~2 GPU-days to record a bookkeeping change.
 TRANSCRIBE_VERSION = 4
-TEXT_VERSION = 5
+TEXT_VERSION = 6
 # GRANDFATHER_VERSION: fixed constant, never changes. The version assumed for a stamp
 # written before versioning existed (no "version" key). At introduction it equalled
 # the pipeline version, so that rollout regenerated nothing.
