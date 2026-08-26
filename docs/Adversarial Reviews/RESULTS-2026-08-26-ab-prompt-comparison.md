@@ -76,6 +76,24 @@ Arm B's prompt named every term below. Arm A's named none of them.
 
 **Arc terms whose count differs between arms: 0 of 15.**
 
+**How much weight this table carries.** Less than the word-level comparison above it, and
+the Luna rebuttal is right that leading with it overstated its strength. Count equality is
+weak evidence on its own: a name misheard identically in BOTH arms produces identical
+counts, so this table cannot by itself distinguish "both arms got it right" from "both arms
+got it wrong the same way". It is corroboration, not the finding.
+
+The load-bearing evidence is the `SequenceMatcher` opcode comparison, which IS
+position-level — 5 differing runs located in the token stream, each inspected, none a name.
+A name misheard in different positions between arms would appear there as a `replace` run
+even where counts matched. That is what makes the null a null.
+
+Two things the table genuinely cannot answer, stated so nobody reads more into it: whether
+both arms share the same mishears (they do — `Dothamingo` appears in both, which is a
+same-failure case the counts alone would have hidden), and whether the wrong-arc prompt
+CAN inject wrong names. The Enies Lobby names appear in neither transcript, but this audio
+never offered an acoustically ambiguous position for one to compete at, so the injection
+hypothesis was not exercised — only unsupported by opportunity.
+
 Conversely, none of arm A's Enies Lobby names (Spandam, Lucci, Kaku, Kalifa, Blueno,
 Jabra, Iceburg, Enies, Ohara, Pluton, Merry) appeared in EITHER transcript. The wrong-arc
 prompt did not inject wrong names.
@@ -98,9 +116,25 @@ first-window-only; consequences cascade.
 
 That cascade is why the two results are consistent rather than contradictory. On a clip
 starting at 600 s the first window is dialogue, so there is something for the prompt to
-change and the cascade starts. On a real episode the first window is the OPENING THEME —
-sung, no character names — so nothing is primed, nothing cascades, and three full episodes
-show zero name differences.
+change and the cascade starts. On a real episode the first window is the opening theme, so
+nothing is primed and nothing cascades.
+
+**The episode geometry was ASSERTED in an earlier version of this file. It is now measured**
+(both reviewers were right to refuse it as a premise). Every card decoded before 30 s in
+arm A, all three episodes:
+
+    S31E01  8 cards   1.3s "Come on, we're shining, running, forever!"
+                      4.3s "The sea is calling out, so ride the waves!"
+                      9.9s "All our dreams are never ending, so let's wake up..."
+                     15.2s "Heartbeat, we will be one! Go ahead!"
+                     23.7s "Even though our hearts have traveled different paths."
+    S31E02  8 cards   same opening, near-identical text
+    S31E03  8 cards   same opening, near-identical text
+
+Sung lyrics, no character names, in all three. The premise holds. Note the corollary: this
+is a property of THIS show's episode geometry, not of whisper. A show whose first 30 s is
+dialogue — a cold open or a recap — has a primed first window and the cascade is available
+to it. The null result here should not be generalised to such a show without measuring it.
 
 `condition_on_previous_text` cannot simply be flipped back: `generate.py:897` records that
 `True` OOMs the card, measured 2026-08-20 on a 6 GB 1060 with the GPU otherwise idle. This
@@ -135,11 +169,34 @@ REGRESSION:
     C:  "The Genius Dester, Bucky"      <- "Dester" is not a word or a name
 
 `hotwords` biased the decoder toward name-shaped tokens and corrupted a correct English
-word into a capitalised non-word. That token would then read as a proper noun to
-`glossary.name_suspect` and to `repair.invents_name`, and `glossary.correct()` cannot
-repair it because it is near no glossary name. Also observed: `going to` -> `gonna`, and
-capitalised-token count rising 71 (A) -> 84 (B) -> 96 (C), though much of that rise is
-legitimate title-casing ("The Heavenly Demon" is a title).
+word into a capitalised non-word. Also observed: `going to` -> `gonna`, and capitalised-token
+count rising 71 (A) -> 84 (B) -> 96 (C), though much of that rise is legitimate title-casing
+("The Heavenly Demon" is a title).
+
+**CORRECTION — repairability.** An earlier version of this file said no later stage can
+repair `Dester`. That is too broad, and both the GLM review and the Luna rebuttal caught it
+independently. Verified here:
+
+    invents_name("The Genius Dester, Bucky", "the genius jester, Bucky")  -> False
+
+The guard does NOT block the fix, so on an ANCHORED card the LLM repair can undo it. The
+claim is true only for `glossary.correct()` (which cannot reach it — `Dester` is near no
+glossary name) and for the 6,492 `no_reference` cards, which never reach the LLM at all
+(`repair.py:493`). Repairability therefore differs by an order of magnitude between
+anchored and unanchored cards, and any hotwords regression count must record which class
+each regression landed in.
+
+**A second correction, found while checking the first.** At the time of the spike the guard
+was scoped to substitutions, so it also returned False in the FABRICATION direction —
+`jester` -> `Dester` gained a capitalised non-word but lost nothing, and the rule required
+a loss before it inspected the gain. That gap was closed the same day (`TEXT_VERSION` 7,
+commit `01382a8`): the guard now judges a gained name on its own.
+
+That widening does NOT mitigate the hotwords risk, and must not be read as doing so.
+`invents_name` polices LLM REPAIR PROPOSALS, not decoder output. A `Dester` produced by
+whisper under hotwords priming is in the transcript before any repair stage runs and is
+never shown to the guard. The widening protects against an LLM inventing such a token; it
+does nothing about the decoder inventing one.
 
 **One fix and one regression in 180 seconds of audio.** `hotwords` is a real mechanism, not
 a free win, and the fix/regression ratio has to be measured at scale before it is adopted.
@@ -163,5 +220,37 @@ Arm B's prompt listed `Donquixote Doflamingo` explicitly. Arm B still produced t
 
 and `repair.py:493` skips the card because it has no fansub anchor — one of S31's 6,492
 `no_reference` cards. So no stage in the pipeline can fix a name whose correct spelling was
-already in the glossary. That is a near-miss in the correction tiers with no fallback on
-non-fansub releases, and it is the defect this evidence actually supports acting on.
+already in the glossary.
+
+**Scope of this claim.** This is ONE demonstrated instance, not a measured prevalence. There
+is no miss-rate denominator here: no count of how many glossary names fall in the
+0.80–0.84 near-miss band, no sample of other names' distances, no per-episode rate. The
+Luna rebuttal is right that "the defect that IS demonstrated" overstated it. What is
+established is that the failure CLASS is real and reachable — name in glossary, name in
+prompt, still misheard, no tier can repair, no LLM fallback — not that it is common. A
+prevalence measurement is the next thing this line of work needs.
+
+
+## Appendix — the acquire admission evidence, anchored
+
+The GLM review correctly flagged the `Samji -> Sanji` datum as hearsay: it was quoted in the
+review brief with no source anywhere in this repo. It is real, and this is where it comes
+from. Verbatim from the `ACQUIRE --apply` stage of the 2026-08-26 evaluation run over 461
+One Pace episodes (`~/dubtitle-eval.log` on VM102, which is not in this repo — hence this
+transcription):
+
+    known Padlet     -> Paulie      seen 1/23   sim 0.822  bound 0.798  context-distinct
+    flag  Samji      -> Sanji       seen 1/721  sim 0.913  bound 0.992  below-floor
+    flag  Shadron    -> Shandora    seen 1/42   sim 0.938  bound 0.000  sentence-initial-only
+    flag  Uggh       -> Buggy       seen 1/152  sim 0.783  bound 0.000  sentence-initial-only
+
+Stage summary for the same run: `proposed 20, applied 0, known 1, flagged 19, dry_run false,
+scope 461`. The glossary was unchanged by it — names 92 -> 92, hard_fixes 77 -> 77,
+verified 130 -> 130 — confirmed by diffing against a pre-run snapshot.
+
+The repository owner confirmed the three flagged entries above are CORRECT corrections that
+the gates refused. That makes them false negatives, and it is what [S-9] exists to measure.
+Note `Samji -> Sanji` carries `bound 0.992` against a `below-floor` refusal at `seen 1/721`:
+the denominator is show-wide across 461 episodes, which is exactly the number [S-4]'s scope
+narrowing changes. Whether narrowing alone admits them is unmeasured — [S-9] forbids
+changing a threshold before that measurement exists.
