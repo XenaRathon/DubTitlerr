@@ -1373,12 +1373,35 @@ def test_invents_name_rejects_the_mixed_card_even_with_a_genuine_fix_inside(monk
     )
 
 
-def test_invents_name_ignores_a_bare_addition_that_loses_nothing(monkeypatch):
-    """NEW introduces a capitalised, non-glossary token but ORIG loses none of its own --
-    proves the `lost` requirement: this guard polices substitutions, not additions."""
+def test_invents_name_rejects_a_bare_addition_that_loses_nothing(monkeypatch):
+    """NEW conjures a capitalised, non-glossary token while ORIG loses none of its own.
+
+    Scope widened 2026-08-26: the guard originally policed substitutions only, so a name
+    invented from nothing was invisible to it. The hotwords spike produced exactly that
+    shape -- `jester` -> `Dester`, a correct English word turned into a capitalised
+    non-word -- and the substitution rule could not see it in either direction, because
+    the lowercase `jester` was never a proper noun to lose."""
     _pin_words(monkeypatch)
     g = gl()
-    assert not repair.invents_name("He looked around.", "He looked around, Garnus.", g)
+    assert repair.invents_name("He looked around.", "He looked around, Garnus.", g)
+
+
+def test_invents_name_rejects_the_dester_shape_from_the_hotwords_spike(monkeypatch):
+    """The measured regression: a real English word decoded as a capitalised non-word.
+
+    `jester` is lowercase so nothing is LOST; only `Dester` is gained. Under the original
+    substitutions-only rule this returned False and the fabrication shipped."""
+    _pin_words(monkeypatch, words=("the", "genius", "jester"))
+    g = gl(names=["Buggy"])
+    assert repair.invents_name("the genius jester, Buggy", "The Genius Dester, Buggy", g)
+
+
+def test_invents_name_accepts_an_addition_that_is_a_known_name(monkeypatch):
+    """Widening to additions must not refuse a name the glossary already knows: the
+    reference-anchored repair that ADDS `Zoro` is the case repair exists to serve."""
+    _pin_words(monkeypatch)
+    g = gl(names=["Zoro"])
+    assert not repair.invents_name("He looked around.", "He looked around, Zoro.", g)
 
 
 def test_invents_name_ignores_a_token_reached_only_via_trailing_punctuation(monkeypatch):

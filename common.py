@@ -143,11 +143,16 @@ TRACK_NAME = "Dubtitles"
 # TEXT_VERSION covers everything downstream of the word list: punctuation, reflow,
 #   glossary correction, repair, the merge, the mux.
 #
-# Adoption is 4/6, NOT 6/6. The 576 stamps live at v4 were produced by the current
+# v7 (2026-08-26): the phonetic name guard widens from substitutions to any GAINED name.
+# A fabrication conjured from nothing was invisible to it -- measured on the hotwords spike,
+# where `jester` became `Dester` and neither direction fired. See
+# docs/Adversarial Reviews/RESULTS-2026-08-26-ab-prompt-comparison.md.
+#
+# Adoption is 4/7, NOT 7/7. The 576 stamps live at v4 were produced by the current
 # decoder, so they are transcribe-fresh and only text-stale: they migrate at
 # watch-gated pace instead of burning ~2 GPU-days to record a bookkeeping change.
 TRANSCRIBE_VERSION = 4
-TEXT_VERSION = 6
+TEXT_VERSION = 7
 # GRANDFATHER_VERSION: fixed constant, never changes. The version assumed for a stamp
 # written before versioning existed (no "version" key). At introduction it equalled
 # the pipeline version, so that rollout regenerated nothing.
