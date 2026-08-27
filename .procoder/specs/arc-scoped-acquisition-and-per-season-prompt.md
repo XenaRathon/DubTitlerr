@@ -83,14 +83,33 @@ Machine) THREE have no glossary at all and run on the neutral fallback prompt wi
 - [S-3] WITHDRAWN 2026-08-26 — building a per-season `initial_prompt` was measured to
   change nothing. Replaced by [S-10]. Retained as an id so the withdrawal is on the record
   rather than silently vanishing.
-- [S-10] Deliver arc vocabulary through `hotwords` instead, selected per season from the
-  glossary's season tags ([S-11]), sized small, and ordered most-important-FIRST because
-  `hotwords_tokens[: max_length // 2 - 1]` (`transcribe.py:1547`) keeps the FRONT — the
-  opposite of `initial_prompt`.
-- [S-11] Tag each acquired glossary name with the season/arc that produced it, and use
-  those tags to select that season's hotwords. The `names` list itself stays SHOW-WIDE and
-  unchanged, so `glossary.correct()` and `repair.invents_name` keep recognising recurring
-  characters everywhere; only the per-season hotwords selection is narrow.
+- [S-10] CUT 2026-08-26 after measurement. Delivering arc vocabulary through `hotwords` was
+  measured over three full episodes at four list sizes and compositions. It corrupts
+  phonetically adjacent names it does NOT list (`Kin'emon` listed -> `Kanjuro` becomes
+  `Kanjudo`), and it introduces repetition runs the baseline never produces (baseline 0,
+  every derived arm 3-5). Neither is tunable: the 223-token budget forces a subset of any
+  real cast, and listing a subset is what damages the rest. Retained as an id so the cut is
+  on the record. Evidence:
+  `docs/Adversarial Reviews/RESULTS-2026-08-26-hotwords-full-episode.md`.
+- [S-11] Tag each acquired glossary name with the arc(s) it belongs to. The `names` list
+  itself stays SHOW-WIDE and unchanged, so `glossary.correct()` and `repair.invents_name`
+  keep recognising recurring characters everywhere. The tags' consumer is [S-13], not the
+  cut [S-10]: they weight the glossary handed to the repair LLM, which is where arc scope
+  survives contact with measurement.
+- [S-12] Let cards with NO fansub anchor reach the LLM repair stage, using the surrounding
+  cards as context in place of a reference. `repair.py:515-517` already builds `prev_text`
+  and `next_text` and passes them to `build_prompt`; unanchored cards simply never reach
+  that code, hitting the `continue` at `repair.py:512`. The gate becomes conditional rather
+  than removed, so today's behaviour stays reachable.
+- [S-13] Weight the glossary terms handed to the repair prompt by the current episode's
+  season, using [S-11]'s arc tags. This is what makes the documented failure implausible:
+  `Oimo` is an Enies Lobby giant, so in a Dressrosa episode a proposed `Oimo -> Zoro` has
+  the arc against it.
+- [S-14] Refuse a repair that substitutes one KNOWN glossary name for another. Verified
+  2026-08-26 that the v7 guard permits exactly this -- `invents_name` returns False for
+  `Oimo -> Zoro` because the gained name IS known -- which is the precise failure that got
+  unanchored repair disabled. The glossary already vouched for the original; a model with
+  no reference has no standing to overrule it.
 - [S-4] Narrow acquisition's transcript scope to the season(s) actually queued for
   transcription rather than the whole show.
 - [S-5] Consolidate the prompt build and the raw acquire into ONE stage that fetches the
@@ -178,6 +197,7 @@ defect in the rule, not evidence about hotwords. The replacement weighs severity
 compares against the baseline, and it is written before the deciding numbers arrive:
 
 **SEVERE regressions — any single one blocks adoption.**
+
 - A card whose duration breaks the display profile (arm E produced a 30-second card
   reading "Grr!" after a runaway repeat run). A viewer sees this; a mis-spelled name they
   may not.
@@ -187,11 +207,13 @@ compares against the baseline, and it is written before the deciding numbers arr
   `glossary.correct()` cannot repair and which on an unanchored card nothing can.
 
 **ORDINARY regressions — counted, and weighed against fixes.**
+
 - A name rendered less correctly than the baseline rendered it.
 - Adoption requires ordinary fixes to exceed ordinary regressions by a clear margin, not a
   coin-flip one, counted per name occurrence across all measured episodes.
 
 **NOT regressions — do not count these.**
+
 - Punctuation and casing differences. `punctuation.py` calls an LLM, so two runs differ
   with no help from hotwords; counting them inflates both columns with noise.
 - Canonical spelling changes that match the glossary or wiki title (`Coliseum` ->
@@ -347,75 +369,61 @@ why, so a re-transcribe always has a traceable cause.
 
 ## Acceptance criteria
 
-- [ ] [S-1] Given `One Pace/Season 31/season.nfo` containing `<title>Dressrosa</title>`,
-      the resolver returns the arc name "Dressrosa"; given a season directory with no
-      `season.nfo`, it returns None without raising.
-- [ ] [S-2] For arc "Dressrosa" the arc-scoped fetch returns a title set containing
-      Rebecca, Kyros, Pica, Cavendish, Viola and Trebol, and its size is at least an order
-      of magnitude smaller than the 8,109-title show-wide list.
-- [ ] [S-2] A SECOND arc is exercised, not just Dressrosa — `Romance Dawn` (season 1), which
-      sits in the S01-S04 range where `season.nfo` titles are least reliable as arc keys.
-      Category discovery either returns that arc's cast or returns nothing; returning some
-      other page's cast is a failure, not a pass.
-- [ ] [S-7] A `season.nfo` title that resolves to a non-arc wiki page (`Gaimon`, a
-      character) falls back to today's behaviour rather than priming with that page's
-      categories.
-- [ ] [S-6] When a wiki change alters a season's derived prompt or hotwords between runs,
-      the difference is logged with what changed; no re-transcribe is ever triggered by a
-      third-party edit without a traceable record of it.
-- [ ] [S-3] The generated Season 31 prompt encodes to <= 223 tokens using whisper's own
-      tokenizer, and when the candidate list exceeds the budget the highest-ranked terms
-      are the ones retained at the END of the string.
-- [ ] [S-4] Acquisition run for a single queued season reads only that season's transcripts;
-      the reported scope count equals that season's episode count, not the show's.
-- [ ] [S-5] One invocation produces both outputs and fetches the arc title set once --
-      demonstrated by a single fetch recorded for two consumers.
-- [ ] [S-6] Changing Season 31's prompt marks Season 31's episodes transcribe-stale and
-      leaves every other One Pace season's staleness unchanged.
-- [ ] [S-6] A glossary carrying a `season_hotwords` entry for season 31 only leaves every
-      other season decoding with no hotwords, so their stored decoder inputs still compare
-      equal and no episode outside season 31 is queued for the GPU.
-- [ ] [S-6] Editing the show-level `initial_prompt` still stales the whole show, and the
-      spec records that this is a cost with no measured quality benefit — so the One Pace
-      prompt is left untouched rather than corrected.
+- [ ] [S-1] Given `One Pace/Season 31/season.nfo` containing `<title>Dressrosa</title>`, the
+      resolver returns "Dressrosa"; a season directory with no `season.nfo` returns None
+      without raising.
+- [ ] [S-2] For arc "Dressrosa" the arc-scoped fetch returns a title set containing Rebecca,
+      Kyros, Pica, Cavendish, Viola and Trebol, at least an order of magnitude smaller than
+      the 8,109-title show-wide list.
+- [ ] [S-2] A SECOND arc is exercised — `Romance Dawn` (season 1), in the S01-S04 range where
+      `season.nfo` titles are least reliable as arc keys. Category discovery returns that
+      arc's cast or nothing; returning some other page's cast is a failure.
+- [ ] [S-3] WITHDRAWN with [S-10]. No per-season `initial_prompt` is built; the show keeps
+      one broad stable prompt, and editing it is recorded as a cost with no measured
+      quality benefit.
+- [ ] [S-4] Acquisition for a single queued season reads only that season's transcripts; the
+      reported scope count equals that season's episode count, not the show's.
+- [ ] [S-4] An acquired name carries the arc(s) it belongs to, and removing one season's
+      contributions leaves names acquired from other seasons intact.
+- [ ] [S-5] One invocation fetches the arc title set once and uses it for both consumers,
+      demonstrated by a single fetch recorded for two readers.
+- [ ] [S-6] MOOT with [S-10]. Nothing season-scoped reaches the decoder any more, so there
+      is no per-season transcribe-tier staleness to model. The repair changes ([S-12]-[S-14])
+      are TEXT tier and carry a `TEXT_VERSION` bump instead; the criterion is that no
+      season-scoped decoder input exists to go stale.
 - [ ] [S-7] With the wiki unreachable, the stage exits non-fatally, leaves the glossary
-      byte-identical, and `gen_loop.sh` proceeds to the GENERATE stage.
-- [ ] [S-7] A show with no glossary file and no `season.nfo` transcribes exactly as it does
-      today, with no new failure and no empty prompt written.
+      byte-identical, and `gen_loop.sh` proceeds to GENERATE.
+- [ ] [S-7] A `season.nfo` title resolving to a non-arc wiki page (`Gaimon`, a character)
+      falls back to today's behaviour rather than tagging from that page's categories.
+- [ ] [S-7] A show with no glossary file and no `season.nfo` behaves exactly as today.
 - [ ] [S-8] `glossary_verify` fetches titles through the shared wiki module and no longer
-      defines its own fetch; the existing verify behaviour is unchanged, demonstrated by its
-      current tests passing untouched.
-- [ ] [S-9] The three known cases are re-measured with season-scoped denominators and the
-      result recorded: for each of `Samji -> Sanji` (seen 1/721, sim 0.913, refused
-      below-floor), `Shadron -> Shandora` (1/42) and `Uggh -> Buggy` (1/152), both refused
-      sentence-initial-only -- transcribed verbatim in the results file's appendix,
-      whether the existing gates admit it once scope is one season. No threshold constant is
-      changed unless that measurement shows narrowing alone is insufficient.
-- [ ] [S-4] An acquired name carries the season that produced it as provenance, and removing
-      one season's contributions leaves names acquired from other seasons intact.
-- [ ] [S-11] A name tagged to season 31 appears in season 31's hotwords selection AND is
-      still corrected by `glossary.correct()` in a season-29 episode — breadth for
-      correction, narrowness for priming, from one tagged list.
-- [ ] [S-11] The push-OUT direction is tested, which is the one that can contradict the
-      cross-arc edge case: a name belonging to two arcs (Caesar Clown, in both Punk Hazard
-      and `Category:Dressrosa Saga Antagonists`) appears in BOTH seasons' hotwords, and a
-      legacy untagged name appears in every season's selection rather than none.
-- [ ] [S-10] Over one FULL episode transcribed with season 31's hotwords, every arc-name
-      occurrence is classified against the un-primed baseline: fixed, unchanged, or
-      regressed. The criterion is the whole class, not one position — a check that only
-      asserts "Donquixote Doflamingo at 657.3s" can pass while the same episode ships
-      `Dothamingo` elsewhere.
-- [ ] [S-10] Each regression is recorded with its anchorability: a card with a fansub
-      reference can be repaired by the LLM (verified: `invents_name` returns False for
-      `Dester` -> `jester`, so the guard does not block the fix), while one of the 6,492
-      `no_reference` cards cannot be repaired by anything.
-- [ ] [S-10] The fix/regression ratio is measured over at least one full episode before
-      hotwords is enabled by default: the 180s spike produced one fix (`do Flamingo` ->
-      `Doflamingo`) AND one regression (`jester` -> `Dester`), so a net benefit is not yet
-      established. Enabling by default requires that number, not this criterion's absence.
-- [ ] [S-10] VRAM is recorded at the chosen hotwords size on the 4 GB card. The spike showed
-      923 MiB at 12 terms, unchanged from baseline; the ceiling that OOMed
-      `condition_on_previous_text=True` must not be approached.
+      defines its own fetch; its existing tests pass untouched.
+- [ ] [S-9] `Samji -> Sanji` (seen 1/721), `Shadron -> Shandora` (1/42) and `Uggh -> Buggy`
+      (1/152) are re-measured with season-scoped denominators and the result recorded. No
+      threshold constant changes unless that measurement shows narrowing is insufficient.
+- [ ] [S-10] The cut is recorded with its evidence and NO arc machinery is built to feed it:
+      no `season_hotwords`, no `hotwords` argument to `transcribe()`, nothing selecting terms
+      for the decoder.
+- [ ] [S-11] A name tagged to season 31 weights that season's repair glossary AND is still
+      corrected by `glossary.correct()` in a season-29 episode — breadth for correction,
+      narrowness for weighting, from one tagged list.
+- [ ] [S-11] The push-OUT direction is tested: a name belonging to two arcs (Caesar Clown, in
+      both Punk Hazard and `Category:Dressrosa Saga Antagonists`) weights BOTH seasons, and a
+      legacy untagged name weights every season rather than none.
+- [ ] [S-12] An episode with zero fansub anchors reaches the LLM repair stage. Measured
+      2026-08-26 on S31E01: `targets=161 repaired=0`, every target refused at
+      `repair.py:512`. After [S-12] that episode reports a non-zero repaired count, and the
+      reference-anchored path is unchanged.
+- [ ] [S-12] The gate is conditional, not deleted: with the new path disabled the same
+      episode reproduces `targets=161 repaired=0` exactly.
+- [ ] [S-13] With season weighting applied to a Dressrosa episode, a proposed `Oimo -> Zoro`
+      is not accepted, while `Dothamingo -> Doflamingo` still is.
+- [ ] [S-14] `invents_name` refuses a substitution whose ORIGINAL is a glossary name, in both
+      directions: `Oimo -> Zoro` refused (both known), `Dothamingo -> Doflamingo` accepted
+      (original unknown), `zolo -> Zoro` accepted.
+- [ ] [S-12] [S-13] [S-14] Measured on the ~161 targets per episode already on disk, on CPU,
+      against the arms captured 2026-08-26, counted by the same symmetric defect shapes that
+      cut [S-10] — repetition runs, gibberish cards, cards over 12s, capitalised
+      non-dictionary tokens absent from the baseline — not by a name list chosen afterwards.
 
 ## Open questions
-
