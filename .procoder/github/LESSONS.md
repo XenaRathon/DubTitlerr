@@ -229,3 +229,19 @@ git config commit.template .procoder/github/COMMIT_TEMPLATE.md
 - Adaptation: when a test file states what it does not cover, treat that sentence as a
   to-do. Ask whether the stated reason actually forces the exclusion — here a handler can be
   driven with fake streams and no socket at all, so it never did.
+
+## 2026-08-27 self — a test that checked the dependencies of a list but never its membership
+
+- Class: test-quality
+- Missed by: rubric
+- Finding: `tests/test_dockerfile_copy.py` exists because `qc.py` passed 987 tests and
+  ImportError'd on container start, having never been added to the image. Its check walks
+  what each entrypoint IMPORTS and asserts each import is COPY'd — and never asks whether
+  the entrypoint itself is. Removing `review_server.py` from the COPY line broke no test.
+  The exact failure the file was written to prevent survived inside it, for every entrypoint
+  added since it was written.
+- Missed because: the test's name and docstring describe the qc.py incident convincingly, so
+  it reads as covering that class. It covers one half of it.
+- Adaptation: when a test enforces a rule over a LIST, assert the list's own membership as
+  well as the per-item property. "Is everything X depends on present" is not "is X present".
+  Worth sweeping wherever a test iterates a registry.
