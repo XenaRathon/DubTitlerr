@@ -189,7 +189,6 @@ decision rule should be rewritten to a weighted comparison before it is applied.
 loses Kanjuro again, coverage and perturbation are in direct conflict at this budget and
 [S-10] should be cut.
 
-
 ## CORRECTION — arm D's regression was a malformed term I introduced
 
 Arm F (72 tokens, DERIVED, 16 terms) does not contain Kanjuro either, and gets him right:
@@ -237,7 +236,6 @@ not explain but term quality does:
     D 72 hand-picked      32         18    -0.16
     E 150 derived         30         24    -0.18
 
-
 ## Arm F (72 tokens, derived) and the symmetric defect count
 
 Arm F looked clean on the pipeline's own counters -- `collapsed=0` on all three episodes,
@@ -279,15 +277,17 @@ tokens than the baseline.
 ### What hotwords actually trades
 
 For, measured on arm F against baseline:
-  - canonical spelling the pipeline cannot otherwise reach: Colosseum 3 -> 14 occurrences
-    in canonical form (`glossary.correct()` is blocked by the `is_english` gate here)
-  - Doflamingo +5, Dressrosa +6, Kanjuro +2 in canonical form
-  - `Dothamingo`, `do Flamingo` and `Kanjino` all eliminated
+
+- canonical spelling the pipeline cannot otherwise reach: Colosseum 3 -> 14 occurrences
+  in canonical form (`glossary.correct()` is blocked by the `is_english` gate here)
+- Doflamingo +5, Dressrosa +6, Kanjuro +2 in canonical form
+- `Dothamingo`, `do Flamingo` and `Kanjino` all eliminated
 
 Against:
-  - 3 repetition runs and 4 gibberish cards where the baseline had 0 and 1
-  - `jester` -> `Dester`, `Dellinger` -> `Dallinger`: correct baseline output destroyed
-  - ~5 more non-dictionary capitalised tokens
+
+- 3 repetition runs and 4 gibberish cards where the baseline had 0 and 1
+- `jester` -> `Dester`, `Dellinger` -> `Dallinger`: correct baseline output destroyed
+- ~5 more non-dictionary capitalised tokens
 
 Per the rewritten decision rule, repetition runs where the baseline produced none are
 SEVERE and block adoption on their own. **Arms D, E and F all fail. On this evidence
