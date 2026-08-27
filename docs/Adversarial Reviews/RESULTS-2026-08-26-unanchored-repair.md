@@ -91,3 +91,18 @@ is really a GLOSSARY COVERAGE gap: "Vivre Card" is a real One Piece term absent 
 That is the concrete job left for [S-2]'s arc-scoped acquisition after [S-10] was cut:
 not priming the decoder, but giving the repair LLM the right target to reach for.
 "Vivre Card" appeared in the Dressrosa wiki extraction made earlier the same day.
+
+## CORRECTION 2026-08-27 — the coverage explanation above is FALSIFIED
+
+This file blamed `VIVRA -> Vivi` on glossary coverage: `Vivre Card` is a real term absent
+from the 92 names, so the model reached for the nearest name present. The round-2 review
+called that an excuse as a general defence and named the falsifying test.
+
+The test was run. Adding `Vivre Card` to the glossary and re-running S31E01 on the real
+code produced **21 repairs in both arms, an identical set, and the same
+`"It's a VIVRA card?" -> "It's a Vivi card?"` repair**. The model did not reach for the
+correct term when it was available, so its absence was never the cause.
+
+`VIVRA -> Vivi` is therefore an OPEN regression with no assigned cure, and the routing of
+it to [S-2]'s arc coverage in this file and in the spec was wrong. Full result:
+`RESULTS-2026-08-27-s16-coverage-falsified.md`.

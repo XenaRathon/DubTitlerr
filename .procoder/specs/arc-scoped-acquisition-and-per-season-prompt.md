@@ -161,13 +161,17 @@ kept only so the decision is on the record.
   0.893, `zolo -> zoro` 0.867 and `syrahose -> shirahoshi` 0.755, and blocks `oimo -> zoro`
   0.667. It is KNOWINGLY imperfect -- `vivra -> vivi` scores 0.848 and passes -- and no
   threshold can separate that case, because the genuine syrahose fix scores LOWER than it.
-  Metaphone cannot discriminate either: False for every pair. That residue is a glossary
-  COVERAGE gap, and [S-16] is the test that decides whether "coverage" is an explanation or
-  an excuse.
-- [S-16] Falsify the coverage defence. Add `Vivre Card` to the One Pace glossary and re-run
-  the S31E01 measurement. If `VIVRA -> Vivi` is still proposed AND admitted, the coverage
-  story is dead and [S-15] needs a different mechanism. If it disappears, the gate is
-  exactly as good as its coverage, which is [S-2]/[S-11]'s job.
+  Metaphone cannot discriminate either: False for every pair. That residue was attributed
+  to glossary COVERAGE; [S-16] tested that and FALSIFIED it 2026-08-27 -- adding
+  `Vivre Card` changed nothing, the same repair was proposed and admitted. So the gap is
+  [S-15]'s own and has no assigned cure; it must not be routed to [S-2].
+- [S-16] DONE 2026-08-27, and the answer is the unwelcome one. Adding `Vivre Card` to the
+  glossary and re-running S31E01 on the real code produced an IDENTICAL set of 21 repairs,
+  `VIVRA -> Vivi` among them. The coverage story is dead: the model did not reach for the
+  correct term when it was present. [S-15] needs a different mechanism, and the three
+  untested candidates -- a frequency prior over the reference list, the prompt's
+  person-name framing, or `VIVRA` simply being nearer `Vivi` internally -- are recorded in
+  `docs/Adversarial Reviews/RESULTS-2026-08-27-s16-coverage-falsified.md`.
 - [S-4] Narrow acquisition's transcript scope to the season(s) actually queued for
   transcription rather than the whole show.
 - [S-5] Consolidate the prompt build and the raw acquire into ONE stage that fetches the
