@@ -161,7 +161,11 @@ makes it correctable per line.
                                                     # PUNCTUATION PRESERVED
 
 `decisions_for(path)` mirrors `repair.glossary_for()`: walk up to the first ancestor
-directory with a matching `<Show>.json`, and take show identity from `gloss["show"]`.
+directory with a matching `<Show>.json`. Show identity is that DIRECTORY'S BASENAME, not
+`gloss["show"]` -- corrected 2026-08-27 during implementation. `gloss["show"]` is a display
+name: `glossaries/Cowboy Bebop (1998) {tvdb-76885}.json` carries `show == "Cowboy Bebop"`.
+Keyed on the display name, a show's decision store and its glossary would be two
+differently named artifacts for one show and every lookup would miss without ever erroring.
 
 ### `review_apply.py`
 
@@ -200,14 +204,14 @@ directory with a matching `<Show>.json`, and take show identity from `gloss["sho
           "proposed": "we're looking for a needle.",
           "verdict": "reject",
           "note": "different referent",
-          "run": "review", "by": "xenarathon", "at": "2026-08-27" },
+          "run": "review" },
 
         { "orig": "i relied on the brave assistance of my fellow samadai,",
           "proposed": "i relied on the brave assistance of my fellow samadai.",
           "verdict": "correct",
           "text": "I relied on the brave assistance of my fellow Samurai.",
           "promoted": { "hard_fix": { "Samadai": "Samurai" } },
-          "run": "review", "by": "xenarathon", "at": "2026-08-27" }
+          "run": "review" }
       ]
     }
 
@@ -274,6 +278,11 @@ unanchored card, nothing downstream can reach it either.
 
 `run: "review"` mirrors `glossary_acquire`'s R4: a human's decision is durable and is never
 reverted by an automated sweep.
+
+No `by` or `at` provenance in phase 1 -- an earlier draft of this example showed both and
+nothing implemented or tested them. Authorship matters when a store is merged with someone
+else's, which is the contribution channel, so those fields belong to phase 2 and will be
+specified there rather than half-carried here.
 
 Queue entries live where they already do -- `<stem>.dubtitles.unresolved.jsonl`, owned by
 `unresolved.py`, per-episode, JSONL, resolved entries retained as an audit trail.

@@ -58,7 +58,7 @@ Interfaces produced, consumed by tasks 2, 4, 5 and 7:
     key(text) -> str                      # lowercase, collapse whitespace, KEEP punctuation
     load(show, dir=DECISIONS_DIR) -> dict # {} when absent, unreadable, or corrupt
     lookup(store, orig, proposed) -> dict | None
-    record(store, orig, proposed, verdict, text="", note="", promoted=None, by="") -> dict
+    record(store, orig, proposed, verdict, text="", note="", promoted=None) -> dict
     save(store, show, dir=DECISIONS_DIR) -> bool   # atomic mkstemp + os.replace
     decisions_for(path, dir=DECISIONS_DIR) -> tuple[dict, str]   # (store, show)
 
@@ -88,8 +88,9 @@ Interfaces produced, consumed by tasks 2, 4, 5 and 7:
 - [ ] RED: `test_decisions_for_walks_up_like_glossary_for` — an episode nested under a
       show directory resolves that show's store; a missing `DECISIONS_DIR` yields `({}, "")`.
 - [ ] GREEN: implement `decisions_for()` as the same ancestor walk as
-      `repair.glossary_for` (`repair.py:88`), taking show identity from the glossary's
-      `show` key.
+      `repair.glossary_for` (`repair.py:88`), taking show identity from the show DIRECTORY'S
+      basename -- the name its glossary file is named for -- and NOT from `gloss["show"]`,
+      which is a display name and would produce a store the glossary never agrees with.
 - [ ] `procoder test` green, `procoder check` 0 blocking, evidence recorded.
 
 ## Task 2: promotion into the show glossary
