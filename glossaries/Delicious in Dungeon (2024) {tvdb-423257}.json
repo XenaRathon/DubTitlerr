@@ -2,20 +2,48 @@
   "show": "Delicious in Dungeon",
   "initial_prompt": "This is Delicious in Dungeon (Dungeon Meshi). Spell names correctly: Laios, Marcille, Chilchuck, Senshi, Falin, Touden, dungeon, golden kingdom.",
   "names": [
+    "Changeling",
+    "Chilchuck",
+    "Dungeon",
+    "Falin",
+    "Kabru",
     "Laios",
     "Marcille",
-    "Chilchuck",
-    "Senshi",
-    "Falin",
-    "Touden",
-    "Namari",
-    "Shuro",
-    "Kabru",
     "Mithrun",
+    "Namari",
+    "Senshi",
+    "Shuro",
+    "Touden",
     "dungeon",
-    "monster",
-    "halfling"
+    "halfling",
+    "monster"
   ],
   "hard_fixes": {},
-  "_curated": true
+  "_curated": true,
+  "phrases": ["Chilchuck Tims", "Laios Touden", "Marcille Donato"],
+  "verified": [
+    "Changeling",
+    "Chilchuck",
+    "Chilchuck Tims",
+    "Dungeon",
+    "Falin",
+    "Kabru",
+    "Laios",
+    "Laios Touden",
+    "Marcille",
+    "Marcille Donato",
+    "Mithrun",
+    "Namari",
+    "Senshi",
+    "Shuro",
+    "Touden",
+    "dungeon",
+    "halfling",
+    "monster"
+  ],
+  "flagged": {
+    "Laios": "no-match",
+    "monster": "no-match"
+  },
+  "wiki": "https://delicious-in-dungeon.fandom.com/api.php"
 }

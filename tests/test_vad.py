@@ -20,6 +20,7 @@ Coverage map (see the U3 report for the authoritative PENDING list):
     machine's PATH) -- only reached via the `duration is None` early-return guard and the
     pure `parse_silencedetect_output` parser it feeds into.
 """
+
 import types
 import wave
 
@@ -39,6 +40,7 @@ def _write_wav(path, pcm_bytes, rate=16000, channels=1, width=2):
 # ============================================================================
 # voiced_ratio_to_verdict -- pure, no I/O
 # ============================================================================
+
 
 def test_voiced_ratio_to_verdict_empty_is_none():
     assert vad.voiced_ratio_to_verdict([]) is None
@@ -65,7 +67,7 @@ def test_voiced_ratio_to_verdict_just_below_threshold_is_false():
 
 
 def test_voiced_ratio_to_verdict_custom_ratio():
-    frames = [True, False, False, False]   # 0.25
+    frames = [True, False, False, False]  # 0.25
     assert vad.voiced_ratio_to_verdict(frames, min_voiced_ratio=0.5) is False
     assert vad.voiced_ratio_to_verdict(frames, min_voiced_ratio=0.25) is True
 
@@ -74,8 +76,9 @@ def test_voiced_ratio_to_verdict_custom_ratio():
 # frame_pcm -- pure byte-slicer, no I/O
 # ============================================================================
 
+
 def test_frame_pcm_exact_multiple_no_remainder():
-    frame_bytes = int(16000 * 0.03 * 2)   # 960 -- 30ms @ 16kHz/16-bit mono
+    frame_bytes = int(16000 * 0.03 * 2)  # 960 -- 30ms @ 16kHz/16-bit mono
     pcm = b"\x01" * (frame_bytes * 4)
     frames = vad.frame_pcm(pcm, sample_rate=16000, frame_ms=30, sample_width=2)
     assert len(frames) == 4
@@ -84,7 +87,7 @@ def test_frame_pcm_exact_multiple_no_remainder():
 
 def test_frame_pcm_drops_trailing_partial_frame():
     frame_bytes = int(16000 * 0.03 * 2)
-    pcm = b"\x01" * (frame_bytes * 2 + 100)   # 100 leftover bytes, not a full frame
+    pcm = b"\x01" * (frame_bytes * 2 + 100)  # 100 leftover bytes, not a full frame
     frames = vad.frame_pcm(pcm, sample_rate=16000, frame_ms=30, sample_width=2)
     assert len(frames) == 2
 
@@ -112,13 +115,14 @@ def test_frame_pcm_all_valid_webrtcvad_durations(frame_ms):
 # parse_silencedetect_output -- pure text parser, no subprocess
 # ============================================================================
 
+
 def test_parse_silencedetect_output_sums_completed_intervals():
     text = (
         "[silencedetect @ 0x1] silence_start: 0.0132\n"
         "[silencedetect @ 0x1] silence_end: 1.503 | silence_duration: 1.4898\n"
         "[silencedetect @ 0x1] silence_start: 2.1\n"
         "[silencedetect @ 0x1] silence_end: 2.6 | silence_duration: 0.5\n"
-        "[silencedetect @ 0x1] silence_start: 4.9\n"    # still-open interval at EOF, no duration
+        "[silencedetect @ 0x1] silence_start: 4.9\n"  # still-open interval at EOF, no duration
     )
     assert vad.parse_silencedetect_output(text) == pytest.approx(1.9898)
 
@@ -136,9 +140,10 @@ def test_parse_silencedetect_output_empty_string_is_zero():
 # no webrtcvad needed to build or read a valid 16k mono pcm_s16le wav).
 # ============================================================================
 
+
 def test_read_wav_pcm_roundtrips_matching_format(tmp_path):
     path = str(tmp_path / "gap.wav")
-    pcm = b"\x11\x22" * 480   # 960 bytes -- one 30ms frame at 16k/16-bit mono
+    pcm = b"\x11\x22" * 480  # 960 bytes -- one 30ms frame at 16k/16-bit mono
     _write_wav(path, pcm)
     assert vad.read_wav_pcm(path) == pcm
 
@@ -167,7 +172,7 @@ def test_read_wav_pcm_not_a_wav_is_none(tmp_path):
 
 def test_wav_duration_s_matches_frames_over_rate(tmp_path):
     path = str(tmp_path / "gap.wav")
-    _write_wav(path, b"\x00" * (16000 * 2 * 2))   # 2 seconds @ 16k/16-bit mono
+    _write_wav(path, b"\x00" * (16000 * 2 * 2))  # 2 seconds @ 16k/16-bit mono
     assert vad.wav_duration_s(path) == pytest.approx(2.0)
 
 
@@ -182,10 +187,12 @@ def test_wav_duration_s_missing_file_is_none(tmp_path):
 # tests/test_generate.py faster_whisper-stub pattern.
 # ============================================================================
 
+
 class _FakeVad:
     """Stand-in for webrtcvad.Vad: flags a frame 'voiced' iff it contains any non-zero
     byte, so the synthetic wav's actual silence/tone frame layout drives the verdict --
     same shape as a real VAD's frame-in/bool-out contract, without the real algorithm."""
+
     def __init__(self, mode):
         self.mode = mode
         self.calls = []
@@ -219,7 +226,7 @@ def test_vad_probe_webrtcvad_stub_speech_present(tmp_path, monkeypatch):
     frame_bytes = int(16000 * 0.03 * 2)
     silence = b"\x00" * frame_bytes
     tone = b"\x10\x00" * (frame_bytes // 2)
-    pcm = silence * 5 + tone * 5   # 10 frames, 5 voiced -> ratio 0.5 >= default 0.3
+    pcm = silence * 5 + tone * 5  # 10 frames, 5 voiced -> ratio 0.5 >= default 0.3
     wav_path = str(tmp_path / "gap.wav")
     _write_wav(wav_path, pcm)
 
@@ -232,7 +239,7 @@ def test_vad_probe_webrtcvad_stub_speech_absent_below_threshold(tmp_path, monkey
     frame_bytes = int(16000 * 0.03 * 2)
     silence = b"\x00" * frame_bytes
     tone = b"\x10\x00" * (frame_bytes // 2)
-    pcm = silence * 8 + tone * 2   # 10 frames, 2 voiced -> ratio 0.2 < default 0.3
+    pcm = silence * 8 + tone * 2  # 10 frames, 2 voiced -> ratio 0.2 < default 0.3
     wav_path = str(tmp_path / "gap.wav")
     _write_wav(wav_path, pcm)
 
@@ -298,13 +305,14 @@ def test_vad_probe_webrtcvad_unframeable_window_is_none(tmp_path, monkeypatch):
     voiced_ratio_to_verdict(([])) is None -> in_gap_vad_error, not a guessed False."""
     _install_fake_webrtcvad(monkeypatch)
     wav_path = str(tmp_path / "gap.wav")
-    _write_wav(wav_path, b"\x00\x00")   # far shorter than one 960-byte frame
+    _write_wav(wav_path, b"\x00\x00")  # far shorter than one 960-byte frame
     assert vad._vad_probe_webrtcvad(wav_path, aggressiveness=2) is None
 
 
 # ============================================================================
 # vad_probe -- top-level dispatcher
 # ============================================================================
+
 
 def test_vad_probe_unknown_backend_is_none():
     assert vad.vad_probe("/x.wav", backend="not-a-real-backend") is None
@@ -324,7 +332,7 @@ def test_vad_probe_ffmpeg_silencedetect_missing_file_is_none():
 def test_vad_probe_dispatches_to_webrtcvad_stub(tmp_path, monkeypatch):
     _install_fake_webrtcvad(monkeypatch)
     frame_bytes = int(16000 * 0.03 * 2)
-    pcm = (b"\x10\x00" * (frame_bytes // 2)) * 10   # all voiced
+    pcm = (b"\x10\x00" * (frame_bytes // 2)) * 10  # all voiced
     wav_path = str(tmp_path / "gap.wav")
     _write_wav(wav_path, pcm)
     assert vad.vad_probe(wav_path, aggressiveness=2, backend="webrtcvad") is True
@@ -333,6 +341,7 @@ def test_vad_probe_dispatches_to_webrtcvad_stub(tmp_path, monkeypatch):
 def test_vad_probe_never_raises_on_unexpected_backend_error(monkeypatch):
     """Belt-and-suspenders: even if a backend function itself raised (shouldn't, given its
     own internal guards), vad_probe's outer try/except must still degrade to None."""
+
     def boom(*a, **kw):
         raise RuntimeError("simulated unexpected failure")
 

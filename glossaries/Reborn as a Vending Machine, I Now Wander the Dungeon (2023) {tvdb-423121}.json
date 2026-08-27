@@ -2,17 +2,42 @@
   "show": "Reborn as a Vending Machine",
   "initial_prompt": "This is Reborn as a Vending Machine, I Now Wander the Dungeon. Spell names correctly: Boxxo, Lammis, Hulemy, Shui, Mishel, Kerrioll, Clearflow Lake, Hunters Association.",
   "names": [
-    "Boxxo",
-    "Lammis",
-    "Hulemy",
-    "Shui",
-    "Mishel",
-    "Kerrioll",
-    "Clearflow",
-    "Hunters",
     "Association",
+    "Boxxo",
+    "Clearflow",
+    "Dungeon",
+    "Hulemy",
+    "Hunters",
+    "Kerioyl",
+    "Kerrioll",
+    "Lammis",
+    "Mishel",
+    "Mishuel",
+    "Shui",
     "dungeon"
   ],
   "hard_fixes": {},
-  "_curated": true
+  "_curated": true,
+  "phrases": ["Hunter Association"],
+  "verified": [
+    "Association",
+    "Boxxo",
+    "Clearflow",
+    "Dungeon",
+    "Hulemy",
+    "Hunter Association",
+    "Hunters",
+    "Kerioyl",
+    "Kerrioll",
+    "Lammis",
+    "Mishel",
+    "Mishuel",
+    "Shui",
+    "dungeon"
+  ],
+  "flagged": {
+    "Clearflow": "no-match",
+    "Hunters": "no-match"
+  },
+  "wiki": "https://reborn-as-a-vending-machine.fandom.com/api.php"
 }

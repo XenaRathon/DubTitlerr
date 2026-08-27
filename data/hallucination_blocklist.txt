@@ -18,3 +18,14 @@ translated by
 copyright
 www\.
 http
+# --- 2026-08-21: added from a 862-episode library scan (positions + confidence measured,
+# not guessed). Both are on-screen cards / eyecatches that are never spoken dub dialogue.
+# "to be continued": 35 hits, median position 0.56 (MID-episode, not the end), mean
+#   avg_logprob -1.88, mean no_speech_prob 0.758. Only 4/35 fell in the last 5% of an episode.
+# "we'll be right back": 345 hits across 227 episodes, mean no_speech_prob 0.818 -- the
+#   commercial-break eyecatch. Too systematic across unrelated shows to be dialogue.
+# Deliberately NOT added: "thank you" (708 hits but genuinely spoken), "next time"
+# (60 hits, mean logprob -0.12 -- real lines like "Next time I'm gonna take your head off"),
+# and "the end" (21 hits, mixed). Those need a confidence/position rule, not a hard drop.
+to be continued
+we.?ll be right back

@@ -13,6 +13,7 @@ Reusable module + CLI — called by the mining hook in gen_loop, a standalone co
 future community-repo front-ends. Source of truth = wiki/publisher (dub-preferred). See
 specs/glossary-wiki-verify/spec.md.  Built with help of Claude (Anthropic).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,18 +27,32 @@ import time
 import urllib.parse
 import urllib.request
 
+from common import llm_chat
+
 
 def log(*a):
     print(*a, flush=True)
 
-TOPK = 6                  # candidate titles per term handed to the LLM
-CAND_CUTOFF = 0.62        # min similarity for a candidate (0.5 let junk like blarghxyzqq->Largo in)
+
+TOPK = 6  # candidate titles per term handed to the LLM
+CAND_CUTOFF = 0.62  # min similarity for a candidate (0.5 let junk like blarghxyzqq->Largo in)
 VERIFY_MODEL = os.environ.get("VERIFY_MODEL", "qwen3:8b")
 OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
+# VERIFY_BACKEND (ollama|llamacpp) lets adjudication run on the same server as repair, so
+# the whole pipeline can sit on one model instead of keeping a second one resident on a
+# shared 8 GB GPU. Defaults follow REPAIR_* so setting the repair backend moves this too,
+# unless it is overridden explicitly.
+VERIFY_BACKEND = os.environ.get("VERIFY_BACKEND", os.environ.get("REPAIR_BACKEND", "ollama"))
+VERIFY_LLAMACPP_URL = os.environ.get(
+    "VERIFY_LLAMACPP_URL", os.environ.get("REPAIR_LLAMACPP_URL", "http://127.0.0.1:8080/v1/chat/completions")
+)
+# Adjudication returns a JSON object, not a subtitle line: it needs a real token budget and
+# must not be truncated to its first line.
+VERIFY_MAX_TOKENS = int(os.environ.get("VERIFY_MAX_TOKENS", "512"))
 CACHE_DIR = os.environ.get("WIKI_CACHE_DIR", "/config/wiki_cache")
 HTTP_TIMEOUT = int(os.environ.get("WIKI_HTTP_TIMEOUT", "20"))
-WIKI_TTL = int(os.environ.get("WIKI_CACHE_TTL", str(30 * 24 * 3600)))   # refresh index monthly
-VERIFY_WORKERS = int(os.environ.get("VERIFY_WORKERS", "4"))   # V2 C2: concurrent adjudicate() calls
+WIKI_TTL = int(os.environ.get("WIKI_CACHE_TTL", str(30 * 24 * 3600)))  # refresh index monthly
+VERIFY_WORKERS = int(os.environ.get("VERIFY_WORKERS", "4"))  # V2 C2: concurrent adjudicate() calls
 
 
 def candidates(term: str, titles: list[str], k: int = TOPK) -> list[str]:
@@ -75,7 +90,8 @@ def build_adjudication_prompt(term: str, cands: list[str], show: str) -> str:
         "or no candidate is clearly the same entity, return confidence 'none' and empty canonical. "
         "Do NOT guess.\n"
         'Reply ONLY as JSON: {"canonical": "<spelling or empty>", '
-        '"confidence": "high|low|none", "dub_note": "<short or empty>"}')
+        '"confidence": "high|low|none", "dub_note": "<short or empty>"}'
+    )
 
 
 def parse_adjudication(text: str) -> dict:
@@ -91,30 +107,65 @@ def parse_adjudication(text: str) -> dict:
     conf = str(d.get("confidence", "none")).lower()
     if conf not in ("high", "low", "none"):
         conf = "low"
-    return {"canonical": str(d.get("canonical", "") or ""), "confidence": conf,
-            "dub_note": str(d.get("dub_note", "") or "")}
+    return {"canonical": str(d.get("canonical", "") or ""), "confidence": conf, "dub_note": str(d.get("dub_note", "") or "")}
 
 
 def adjudicate(term: str, cands: list[str], show: str) -> dict:
     """LLM pick -> {'canonical': str, 'confidence': 'high'|'low'|'none', 'dub_note': str}."""
     if not cands:
         return {"canonical": "", "confidence": "none", "dub_note": ""}
-    body = {"model": VERIFY_MODEL, "prompt": build_adjudication_prompt(term, cands, show),
-            "stream": False, "think": False, "options": {"temperature": 0}}
-    try:
-        req = urllib.request.Request(OLLAMA, data=json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=120) as r:
-            return parse_adjudication(json.loads(r.read()).get("response", ""))
-    except Exception as e:
-        log("  adjudicate fail:", term, e)
+    out = llm_chat(
+        build_adjudication_prompt(term, cands, show),
+        backend=VERIFY_BACKEND,
+        ollama_url=OLLAMA,
+        llamacpp_url=VERIFY_LLAMACPP_URL,
+        model=VERIFY_MODEL,
+        max_tokens=VERIFY_MAX_TOKENS,
+        first_line=False,
+    )
+    if not out:
         return {"canonical": "", "confidence": "none", "dub_note": ""}
+    return parse_adjudication(out)
+
+
+def _shape_list(names: list, phrases: list, term: str) -> list:
+    """Which list a term belongs in BY SHAPE. `names` feeds glossary.correct()'s per-token
+    tiers (`_TOKEN_RE` matches one token), so a multi-word string there can never match; the
+    multi-word path is `phrases`, which feeds repair's term list."""
+    return phrases if " " in term.strip() else names
 
 
 def apply_results(gloss: dict, results: dict) -> dict:
-    """Apply per-term adjudications: write high-confidence canonical (dub-preferred) spellings into
-    names/phrases, flag low/no-match, mark every processed term `verified`. Pure; preserves unknown
-    fields (curated hard_fixes, initial_prompt, wiki, …) by deep-copying the input."""
+    """Apply per-term adjudications. Pure; preserves unknown fields (curated hard_fixes,
+    initial_prompt, wiki, …) by deep-copying the input.
+
+    NEVER REPLACES A TERM IN PLACE. Until 2026-08-21 a high-confidence canonical was written
+    over the existing entry (`lst[i] = canon`). That deleted 17 names and 6 phrases from the
+    live One Pace glossary -- `Doflamingo`, `Hancock`, `Lucci`, `Rayleigh`, `Kaido`,
+    `Trafalgar` and more -- leaving them only in `verified`, which nothing reads at runtime.
+    The short form is what the fuzzy and Metaphone tiers match a mishear against; the long
+    canonical is what the repair LLM needs. They are not alternatives.
+
+    So the original term ALWAYS survives, and the canonical is handled by kind:
+
+      EXPANSION  (`Doflamingo` -> `Donquixote Doflamingo`): the same entity written longer.
+                 Added alongside, routed by shape. Additive and safe -- worst case is one
+                 unused phrase, never a lost correction.
+      RESPELLING (`Raftel` -> `Ratel`, `Jabra` -> `Jabari`): different letters for what may
+                 be a different entity. This is the class that goes wrong, so it is never
+                 auto-applied -- it is flagged for `glossary_acquire.py --review`.
+
+    That split is measured, not assumed. Over the 12 canonicals the 2026-08-21 verify run
+    produced for One Pace, judged against the dub: every one of the four WRONG respellings
+    (`Arabasta`, `Ratel`, `Jabari`, and `Kaidou`'s wiki-over-dub form) is a respelling, and
+    six of six correct expansions are expansions. Auto-applying respellings had a measured
+    error rate above half.
+
+    A corpus-corroboration guard was designed and REJECTED for this: scored against the real
+    463-episode transcript corpus it lands 2 of 8, and it fails toward APPLYing wrong names
+    (`Arabasta` outnumbers `Alabasta` 108 to 35 in the transcripts). The corpus is Whisper's
+    own output, so it votes for its own mishearing. See
+    docs/superpowers/specs/2026-08-21-glossary-integrity-design.md."""
     g = json.loads(json.dumps(gloss))
     names, phrases = g.setdefault("names", []), g.setdefault("phrases", [])
     verified = set(g.get("verified", []))
@@ -124,10 +175,18 @@ def apply_results(gloss: dict, results: dict) -> dict:
         canon = (adj or {}).get("canonical") or ""
         conf = (adj or {}).get("confidence", "none")
         if conf == "high" and canon and canon != term:
-            for lst in (names, phrases):
-                for i, x in enumerate(lst):
-                    if x == term:
-                        lst[i] = canon
+            # Imported at call time, NOT at module scope: glossary_acquire imports this
+            # module, so a top-level import is a hard cycle (ImportError on the
+            # acquire-first order only -- verify-first appears to work, which is exactly
+            # how it would reach production unnoticed).
+            from glossary_acquire import is_expansion
+
+            if is_expansion(term, canon):
+                dest = _shape_list(names, phrases, canon)
+                if canon not in dest:
+                    dest.append(canon)  # ADD -- the term itself is left in place
+            else:
+                flagged[term] = {"reason": "respelling-needs-review", "canonical": canon}
         elif conf != "high" or not canon:
             flagged[term] = "low-confidence" if (conf == "low" and canon) else "no-match"
     g["verified"] = sorted(verified)
@@ -161,8 +220,7 @@ def normalize_api(url: str) -> str:
 
 
 def allpages_url(api: str, apcontinue: str | None = None) -> str:
-    u = (api + "?action=query&list=allpages&apnamespace=0&aplimit=500"
-         "&apfilterredir=nonredirects&format=json")
+    u = api + "?action=query&list=allpages&apnamespace=0&aplimit=500&apfilterredir=nonredirects&format=json"
     if apcontinue:
         u += "&apcontinue=" + urllib.parse.quote(apcontinue)
     return u
@@ -193,6 +251,113 @@ def resolve_wiki(title: str, override: str | None = None) -> str | None:
     return None
 
 
+def arc_categories(wiki_api: str, arc: str) -> list[str]:
+    """Category pages that scope an arc, DISCOVERED rather than guessed.
+
+    S-2. Arc category naming is not uniform and cannot be derived from the arc name:
+    measured 2026-08-26 on the One Piece wiki, `Category:Dressrosa Arc` does not exist,
+    while `Dressrosa Residents`, `Dressrosa Locations` and `Dressrosa Saga Antagonists` do.
+    A search of namespace 14 finds whatever that wiki actually calls them.
+
+    Non-canon categories are excluded: this feeds canonical spellings, and `Non-Canon
+    Dressrosa Residents` is exactly the material that must not become one.
+
+    Returns [] on any failure. Emptiness is the [S-7] fallback trigger -- a `season.nfo`
+    title that is not an arc at all (`Gaimon` is a character) finds no arc categories, and
+    the caller must degrade rather than tag from some unrelated page's cast."""
+    url = wiki_api + "?action=query&list=search&srnamespace=14&srlimit=25&format=json&srsearch=" + urllib.parse.quote(arc)
+    try:
+        resp = _http_json(url)
+    except Exception:
+        return []
+    out = []
+    for hit in resp.get("query", {}).get("search", []):
+        title = hit.get("title", "")
+        low = title.lower()
+        if "non-canon" in low:
+            continue
+        # Episode/Chapter/Volume categories hold NUMBERED PAGES, not names. Measured
+        # 2026-08-26: including `Dressrosa Arc Episodes` and `Arc Chapters` took the union
+        # from 96 entries to 294, the excess being `Episode 629`-shaped noise.
+        if any(w in low for w in ("episode", "chapter", "volume")):
+            continue
+        if arc.lower() in low:
+            out.append(title)
+    return out
+
+
+def arc_page_links(wiki_api: str, arc: str) -> set[str]:
+    """Entities linked from the arc page's PROSE.
+
+    The primary arc source, because categories provably miss the leads: measured
+    2026-08-26, neither `Rebecca` nor `Kyros` -- the arc's two most-mentioned characters --
+    appears in any `Dressrosa *` category. Rebecca is filed under `Riku Family` and
+    `Former Princesses`, which no arc-name search can reach.
+
+    Read from the wikitext with templates and refs stripped, NOT from `prop=links`: that
+    API returns the page's navboxes too, which on this wiki means 500 alphabetical
+    franchise-wide entries (`100% Island`, `Abdullah`, ...) and is unusable as an arc
+    signal. Verified 2026-08-26.
+
+    Returns an empty set on any failure; this runs inside the sweep."""
+    url = wiki_api + "?action=parse&prop=wikitext&format=json&page=" + urllib.parse.quote(arc + " Arc")
+    # ONLY the "<arc> Arc" page. Falling back to the bare title resolves a page that is not
+    # an arc at all and harvests its links: measured 2026-08-26, `Gaimon` -- a season.nfo
+    # title that names a CHARACTER -- returned 48 entities that way, which [S-7] requires be
+    # treated as no resolution rather than a plausible-looking cast.
+    try:
+        wt = _http_json(url)["parse"]["wikitext"]["*"]
+    except Exception:
+        return set()
+    for _ in range(4):  # nested templates
+        wt = re.sub(r"\{\{[^{}]*\}\}", " ", wt)
+    wt = re.sub(r"<ref[^>]*>.*?</ref>", " ", wt, flags=re.S)
+    wt = re.sub(r"<[^>]+>", " ", wt)
+    out = set()
+    for link in re.findall(r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]", wt):
+        link = link.strip()
+        if not link or link[:1].islower():
+            continue
+        if link.startswith(("Category:", "File:", "Image:", "w:")):
+            continue
+        if re.match(r"^(Chapter|Episode|Volume)\s+\d+$", link):
+            continue
+        out.add(link)
+    return out
+
+
+def fetch_arc_titles(wiki_api: str, arc: str) -> set[str]:
+    """Every ns0 page belonging to an arc, unioned across its categories.
+
+    Members come back paged, so continuation is followed -- a truncated union would
+    silently under-tag an arc, which is worse than not tagging it at all because the gap
+    would be invisible. Bounded at 6 pages per category (3,000 titles), far above the 96
+    measured for Dressrosa, so a runaway cannot stall a sweep.
+
+    Returns an empty set on any failure, including an unreachable wiki. This runs inside
+    the sweep and must never stall or fail it."""
+    titles: set[str] = arc_page_links(wiki_api, arc)
+    for cat in arc_categories(wiki_api, arc):
+        cont = None
+        for _ in range(6):
+            url = (
+                wiki_api
+                + "?action=query&list=categorymembers&cmnamespace=0&cmlimit=500&format=json&cmtitle="
+                + urllib.parse.quote(cat)
+            )
+            if cont:
+                url += "&cmcontinue=" + urllib.parse.quote(cont)
+            try:
+                resp = _http_json(url)
+            except Exception:
+                break
+            titles |= {m["title"] for m in resp.get("query", {}).get("categorymembers", [])}
+            cont = resp.get("continue", {}).get("cmcontinue")
+            if not cont:
+                break
+    return titles
+
+
 def fetch_titles(wiki_api: str, show_key: str) -> list[str]:
     """Cached main-namespace (ns=0) page-title list for the wiki."""
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -205,7 +370,7 @@ def fetch_titles(wiki_api: str, show_key: str) -> list[str]:
         pass
     titles: list[str] = []
     cont = None
-    for _ in range(40):                          # page cap (40 * 500 = 20k titles)
+    for _ in range(40):  # page cap (40 * 500 = 20k titles)
         try:
             resp = _http_json(allpages_url(wiki_api, cont))
         except Exception:
@@ -257,13 +422,27 @@ def verify(gloss_path: str, override: str | None = None, force: bool = False) ->
     new = apply_results(gloss, results)
     new.setdefault("wiki", api)
     try:
-        json.dump(new, open(gloss_path, "w"), indent=2, ensure_ascii=False)
+        with open(gloss_path, "w", encoding="utf-8") as f:
+            json.dump(new, f, indent=2, ensure_ascii=False)
+            f.write("\n")  # POSIX line: prettier flags a glossary without it
     except OSError as e:
         return {**rep, "wiki": api, "note": f"write-failed: {e}"}
-    applied = sum(1 for t, a in results.items()
-                  if a["confidence"] == "high" and a["canonical"] and a["canonical"] != t)
-    return {"show": show, "wiki": api, "checked": len(terms),
-            "applied": applied, "flagged": len(new.get("flagged", {}))}
+    # Count what ACTUALLY happened, not what was proposed. Before 2026-08-21 every
+    # high-confidence changed term was written straight into names/phrases, so "proposed"
+    # and "applied" were the same number. They no longer are: a respelling is escalated,
+    # not applied, and reporting it as applied would hide the escalation entirely.
+    from glossary_acquire import is_expansion
+
+    changed = [t for t, a in results.items() if a["confidence"] == "high" and a["canonical"] and a["canonical"] != t]
+    applied = sum(1 for t in changed if is_expansion(t, results[t]["canonical"]))
+    return {
+        "show": show,
+        "wiki": api,
+        "checked": len(terms),
+        "applied": applied,
+        "escalated": len(changed) - applied,
+        "flagged": len(new.get("flagged", {})),
+    }
 
 
 def main():

@@ -99,27 +99,27 @@ and how big is the leaked-hallucination opportunity. This tool produces that evi
 
 ## Edge cases and failure modes
 
-| Case | Expected behavior |
-|---|---|
-| Episode has no `.dubtitles.conf.json` | Report `no-conf`, skip (not an error) |
-| No embedded English sub track (e.g. dub-only mp4) | Report `no-reference`, skip |
-| Only sub track is signs/songs-only | Dialogue-density scorer rejects it → `no-reference`, skip |
-| Multiple English sub tracks | Pick the highest dialogue-density one; record which was used |
-| `conf.json` present but empty (no kept cards) | Report `analyzed` with 0 cards; coverage undefined → report `null`, not a crash |
+| Case                                              | Expected behavior                                                                                                       |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Episode has no `.dubtitles.conf.json`             | Report `no-conf`, skip (not an error)                                                                                   |
+| No embedded English sub track (e.g. dub-only mp4) | Report `no-reference`, skip                                                                                             |
+| Only sub track is signs/songs-only                | Dialogue-density scorer rejects it → `no-reference`, skip                                                               |
+| Multiple English sub tracks                       | Pick the highest dialogue-density one; record which was used                                                            |
+| `conf.json` present but empty (no kept cards)     | Report `analyzed` with 0 cards; coverage undefined → report `null`, not a crash                                         |
 | Large constant offset (dub lead/lag or framerate) | Captured as `global_offset_s`; residual spread still measured after correction — the offset is a finding, not a failure |
-| Sub cues include non-dialogue events mixed in | Dialogue selection filters to plain dialogue events before building cue intervals |
-| Card overlaps two adjacent cues | `on-cue` if it overlaps any; matched-pair onset-delta uses the nearest cue |
+| Sub cues include non-dialogue events mixed in     | Dialogue selection filters to plain dialogue events before building cue intervals                                       |
+| Card overlaps two adjacent cues                   | `on-cue` if it overlaps any; matched-pair onset-delta uses the nearest cue                                              |
 
 ## Decisions taken
 
-| Decision | Rejected alternative | Why |
-|---|---|---|
-| Offset-corrected overlap (estimate + report a per-episode global offset, then classify) | Raw overlap with no offset correction | A constant dub-vs-sub offset (common; also framerate/version) would smear alignment and coverage into noise. The offset is itself an actionable finding. |
-| Single global offset per episode | DTW / drift-aware alignment | Phase-0 wants a cheap, interpretable first signal. DTW is a later refinement if residual spread shows real drift. |
-| conf.json-only (kept cards) | Also raw-dump every episode for false-drops | GPU-free, seconds over a couple shows, uses existing sidecars. The leaked-hallucination direction (kept cards in gaps) is the primary silence failure users see; false-drops need raw dumps and are deferred. |
-| Auto-detect the dialogue reference track by density/style | Require the user to name the track | Track layout varies per release; auto-detect also *measures* library applicability (the `no-reference` count) as a side effect. |
-| Standalone script, runs on the server against show dirs | A mode inside generate.py / the container loops | Analysis is offline and non-invasive; keeping it out of the live pipeline matches the `dump_whisper.py`/`bakeoff.py` tooling pattern. |
-| Reuse `eng_sub_streams`/`extract_sub`/style classification | Reimplement extraction | Same plumbing `repair.dialogue_intervals` already uses; single source of truth, no drift. |
+| Decision                                                                                | Rejected alternative                            | Why                                                                                                                                                                                                           |
+| --------------------------------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Offset-corrected overlap (estimate + report a per-episode global offset, then classify) | Raw overlap with no offset correction           | A constant dub-vs-sub offset (common; also framerate/version) would smear alignment and coverage into noise. The offset is itself an actionable finding.                                                      |
+| Single global offset per episode                                                        | DTW / drift-aware alignment                     | Phase-0 wants a cheap, interpretable first signal. DTW is a later refinement if residual spread shows real drift.                                                                                             |
+| conf.json-only (kept cards)                                                             | Also raw-dump every episode for false-drops     | GPU-free, seconds over a couple shows, uses existing sidecars. The leaked-hallucination direction (kept cards in gaps) is the primary silence failure users see; false-drops need raw dumps and are deferred. |
+| Auto-detect the dialogue reference track by density/style                               | Require the user to name the track              | Track layout varies per release; auto-detect also _measures_ library applicability (the `no-reference` count) as a side effect.                                                                               |
+| Standalone script, runs on the server against show dirs                                 | A mode inside generate.py / the container loops | Analysis is offline and non-invasive; keeping it out of the live pipeline matches the `dump_whisper.py`/`bakeoff.py` tooling pattern.                                                                         |
+| Reuse `eng_sub_streams`/`extract_sub`/style classification                              | Reimplement extraction                          | Same plumbing `repair.dialogue_intervals` already uses; single source of truth, no drift.                                                                                                                     |
 
 ## Constraints
 

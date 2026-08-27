@@ -1,4 +1,5 @@
 """Unit tests for glossary_verify.py pure core (wiki HTTP + LLM are integration)."""
+
 import json
 import threading
 import time
@@ -21,40 +22,82 @@ def test_constants_present():
 
 # --- T2: candidates ----------------------------------------------------------
 
+
 def test_candidates_topk_and_cutoff():
     titles = ["Spandam", "Enies Lobby", "Going Merry", "Monkey D. Luffy", "Roronoa Zoro"]
     c = gv.candidates("spandom", titles, k=3)
     assert "Spandam" in c
     assert len(c) <= 3
-    assert gv.candidates("zzzzxxxxqq", titles) == []      # nothing similar -> empty
+    assert gv.candidates("zzzzxxxxqq", titles) == []  # nothing similar -> empty
 
 
 # --- T3: apply_results -------------------------------------------------------
 
-def test_apply_high_confidence_corrects_name_and_marks_verified():
+
+def test_apply_never_deletes_the_original_term():
+    """The 2026-08-21 bug: `lst[i] = canon` replaced in place, deleting 17 names and 6
+    phrases from the live One Pace glossary into `verified`, which nothing reads."""
     g = gl(names=["Spandom", "Luffy"])
-    res = {"Spandom": {"canonical": "Spandam", "confidence": "high", "dub_note": ""},
-           "Luffy": {"canonical": "Luffy", "confidence": "high", "dub_note": ""}}
+    res = {
+        "Spandom": {"canonical": "Spandam", "confidence": "high", "dub_note": ""},
+        "Luffy": {"canonical": "Luffy", "confidence": "high", "dub_note": ""},
+    }
     out = gv.apply_results(g, res)
-    assert "Spandam" in out["names"] and "Spandom" not in out["names"]
+    assert "Spandom" in out["names"]  # <- the whole point
     assert set(out["verified"]) >= {"Spandom", "Luffy"}
-    assert out["initial_prompt"] == "P"                   # curated prompt preserved
+    assert out["initial_prompt"] == "P"  # curated prompt preserved
+
+
+def test_apply_adds_an_expansion_alongside_routed_by_shape():
+    """`Doflamingo` -> `Donquixote Doflamingo` is the same entity written longer: additive,
+    and multi-word so it belongs in `phrases` -- `names` feeds a per-TOKEN matcher."""
+    g = gl(names=["Doflamingo"])
+    out = gv.apply_results(g, {"Doflamingo": {"canonical": "Donquixote Doflamingo", "confidence": "high", "dub_note": ""}})
+    assert out["names"] == ["Doflamingo"]
+    assert out["phrases"] == ["Donquixote Doflamingo"]
+
+
+def test_apply_flags_a_respelling_instead_of_applying_it():
+    """The dangerous class. Measured on One Pace, every wrong high-confidence canonical was
+    a respelling: Raftel->Ratel, Jabra->Jabari, Alabasta->Arabasta, Kaido->Kaidou."""
+    g = gl(names=["Raftel", "Jabra"])
+    out = gv.apply_results(
+        g, {"Raftel": {"canonical": "Ratel", "confidence": "high"}, "Jabra": {"canonical": "Jabari", "confidence": "high"}}
+    )
+    assert out["names"] == ["Raftel", "Jabra"]  # neither applied
+    assert "Ratel" not in out["names"] and "Jabari" not in out["names"]
+    assert out["flagged"]["Raftel"] == {"reason": "respelling-needs-review", "canonical": "Ratel"}
+
+
+def test_apply_is_idempotent_on_a_second_run():
+    g = gl(names=["Doflamingo"])
+    res = {"Doflamingo": {"canonical": "Donquixote Doflamingo", "confidence": "high"}}
+    once = gv.apply_results(g, res)
+    twice = gv.apply_results(once, res)
+    assert twice["phrases"] == ["Donquixote Doflamingo"]  # not appended again
+    assert twice["names"] == ["Doflamingo"]
 
 
 def test_apply_flags_low_and_no_match_without_changing():
     g = gl(names=["Krieg", "Blarg"])
-    res = {"Krieg": {"canonical": "Don Krieg", "confidence": "low", "dub_note": ""},
-           "Blarg": {"canonical": "", "confidence": "none", "dub_note": ""}}
+    res = {
+        "Krieg": {"canonical": "Don Krieg", "confidence": "low", "dub_note": ""},
+        "Blarg": {"canonical": "", "confidence": "none", "dub_note": ""},
+    }
     out = gv.apply_results(g, res)
     assert "Krieg" in out["names"] and "Blarg" in out["names"]
     assert "Krieg" in out["flagged"] and "Blarg" in out["flagged"]
 
 
-def test_apply_prefers_dub_form():
+def test_apply_routes_a_dub_form_respelling_to_review():
+    """`Water Seven` -> `Water 7` is a respelling, not an expansion, so it is no longer
+    auto-applied. The dub form is still the right answer -- a human confirms it, and the
+    original is never lost in the meantime."""
     g = gl(phrases=["Water Seven"])
     res = {"Water Seven": {"canonical": "Water 7", "confidence": "high", "dub_note": "numeral"}}
     out = gv.apply_results(g, res)
-    assert "Water 7" in out["phrases"] and "Water Seven" not in out["phrases"]
+    assert "Water Seven" in out["phrases"]
+    assert out["flagged"]["Water Seven"]["canonical"] == "Water 7"
 
 
 def test_apply_preserves_unknown_fields():
@@ -65,6 +108,7 @@ def test_apply_preserves_unknown_fields():
 
 # --- T4: pending_terms (incremental) -----------------------------------------
 
+
 def test_pending_terms_skips_verified():
     g = gl(names=["Luffy", "Zoro"], phrases=["Grand Line"], verified=["Luffy"])
     p = gv.pending_terms(g)
@@ -72,6 +116,7 @@ def test_pending_terms_skips_verified():
 
 
 # --- T5: build_adjudication_prompt -------------------------------------------
+
 
 def test_prompt_has_term_candidates_and_dub_rule():
     p = gv.build_adjudication_prompt("spandom", ["Spandam", "Spandine"], "One Piece")
@@ -81,6 +126,7 @@ def test_prompt_has_term_candidates_and_dub_rule():
 
 
 # --- T6: wiki I/O pure helpers -----------------------------------------------
+
 
 def test_wiki_candidates_from_messy_title():
     cands = gv.wiki_candidates("One Piece (1999) {tvdb-81797}")
@@ -98,14 +144,15 @@ def test_allpages_url_and_parse():
     u = gv.allpages_url("https://x.fandom.com/api.php")
     assert "list=allpages" in u and "apnamespace=0" in u
     titles, cont = gv.parse_allpages(
-        {"query": {"allpages": [{"title": "Spandam"}, {"title": "Enies Lobby"}]},
-         "continue": {"apcontinue": "Foo"}})
+        {"query": {"allpages": [{"title": "Spandam"}, {"title": "Enies Lobby"}]}, "continue": {"apcontinue": "Foo"}}
+    )
     assert titles == ["Spandam", "Enies Lobby"] and cont == "Foo"
     t2, c2 = gv.parse_allpages({"query": {"allpages": [{"title": "A"}]}})
     assert t2 == ["A"] and c2 is None
 
 
 # --- T7: LLM reply parsing ---------------------------------------------------
+
 
 def test_parse_adjudication_clean_json():
     d = gv.parse_adjudication('{"canonical": "Spandam", "confidence": "high", "dub_note": ""}')
@@ -127,6 +174,7 @@ def test_parse_adjudication_bad_confidence_defaults_low():
 
 
 # --- V2 C2: verify() parallelizes adjudicate() with ThreadPoolExecutor -----------------
+
 
 def test_verify_adjudicates_terms_concurrently(monkeypatch, tmp_path):
     """4 pending terms with VERIFY_WORKERS=4 (default) must all be IN FLIGHT
@@ -166,13 +214,149 @@ def test_verify_preserves_term_result_pairing_despite_completion_order(monkeypat
     monkeypatch.setattr(gv, "candidates", lambda term, titles, k=gv.TOPK: [canon[term]])
 
     def fake_adjudicate(term, cands, show):
-        if term == "Spandom":              # submitted first, finishes LAST
+        if term == "Spandom":  # submitted first, finishes LAST
             time.sleep(0.05)
         return {"canonical": cands[0], "confidence": "high", "dub_note": ""}
 
     monkeypatch.setattr(gv, "adjudicate", fake_adjudicate)
     rep = gv.verify(str(gloss_path))
-    assert rep["applied"] == 2
+    # Both are RESPELLINGS, so both escalate rather than apply -- and that tests the
+    # pairing harder than the old assertion did: a swapped result would put Luffy under
+    # Spandom, which the canonical check below catches directly.
+    assert rep["applied"] == 0 and rep["escalated"] == 2
     new = json.load(open(gloss_path))
-    assert "Spandam" in new["names"] and "Luffy" in new["names"]
-    assert "Spandom" not in new["names"] and "Ruffy" not in new["names"]
+    assert "Spandom" in new["names"] and "Ruffy" in new["names"]
+    assert new["flagged"]["Spandom"]["canonical"] == "Spandam"
+    assert new["flagged"]["Ruffy"]["canonical"] == "Luffy"
+
+
+def test_arc_categories_are_discovered_by_search(monkeypatch):
+    """[S-2] Arc category naming is NOT uniform: measured 2026-08-26, `Category:Dressrosa
+    Arc` does not exist, while `Dressrosa Residents`, `Dressrosa Locations` and `Dressrosa
+    Saga Antagonists` do. So the categories are discovered by search, never guessed."""
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return {
+            "query": {
+                "search": [
+                    {"title": "Category:Dressrosa Residents"},
+                    {"title": "Category:Dressrosa Locations"},
+                    {"title": "Category:Non-Canon Dressrosa Residents"},
+                ]
+            }
+        }
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    cats = gv.arc_categories("https://x/api.php", "Dressrosa")
+    assert "Category:Dressrosa Residents" in cats
+    assert "Category:Dressrosa Locations" in cats
+    # non-canon material must not become canonical spellings
+    assert not any("Non-Canon" in c for c in cats)
+    assert "srnamespace=14" in calls[0]
+
+
+def test_arc_titles_unions_the_categories_and_follows_continuation(monkeypatch):
+    """Members come back paged. A truncated union would silently under-tag an arc."""
+    pages = {
+        "one": {"query": {"categorymembers": [{"title": "Rebecca"}, {"title": "Kyros"}]}, "continue": {"cmcontinue": "MORE"}},
+        "two": {"query": {"categorymembers": [{"title": "Pica"}]}},
+    }
+    seen = []
+
+    def fake(url):
+        seen.append(url)
+        return pages["two"] if "MORE" in url else pages["one"]
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    monkeypatch.setattr(gv, "arc_categories", lambda a, b: ["Category:Dressrosa Residents"])
+    titles = gv.fetch_arc_titles("https://x/api.php", "Dressrosa")
+    assert titles == {"Kyros", "Pica", "Rebecca"}
+
+
+def test_arc_titles_is_empty_when_discovery_finds_nothing(monkeypatch):
+    """[S-7] A season.nfo title that is not an arc -- `Gaimon` is a character -- must yield
+    NOTHING rather than some other page's cast. Emptiness is the fallback trigger."""
+    monkeypatch.setattr(gv, "arc_categories", lambda a, b: [])
+    assert gv.fetch_arc_titles("https://x/api.php", "Gaimon") == set()
+
+
+def test_arc_titles_survives_an_unreachable_wiki(monkeypatch):
+    """The wiki must never stall or fail a sweep."""
+
+    def boom(url):
+        raise OSError("network down")
+
+    monkeypatch.setattr(gv, "_http_json", boom)
+    assert gv.fetch_arc_titles("https://x/api.php", "Dressrosa") == set()
+
+
+def test_arc_categories_exclude_episode_and_chapter_listings(monkeypatch):
+    """Measured against the live wiki 2026-08-26: searching `Dressrosa` in namespace 14
+    returns `Dressrosa Arc Episodes` and `Dressrosa Arc Chapters` alongside the cast
+    categories. Those hold episode and chapter PAGES, not names -- including them took the
+    union from 96 to 294 entries of mostly `Episode 629`-shaped noise."""
+    monkeypatch.setattr(
+        gv,
+        "_http_json",
+        lambda url: {
+            "query": {
+                "search": [
+                    {"title": "Category:Dressrosa Residents"},
+                    {"title": "Category:Dressrosa Arc Episodes"},
+                    {"title": "Category:Dressrosa Arc Chapters"},
+                    {"title": "Category:Dressrosa Saga Antagonists"},
+                ]
+            }
+        },
+    )
+    cats = gv.arc_categories("https://x/api.php", "Dressrosa")
+    assert "Category:Dressrosa Residents" in cats
+    assert "Category:Dressrosa Saga Antagonists" in cats
+    assert not any("Episodes" in c or "Chapters" in c for c in cats)
+
+
+def test_arc_page_links_supply_the_names_categories_miss(monkeypatch):
+    """Categories alone are not sufficient and this is measured, not theoretical: neither
+    `Rebecca` nor `Kyros` -- the arc's two most-mentioned characters -- appears in ANY
+    `Dressrosa *` category. Rebecca is filed under `Riku Family` and `Former Princesses`.
+    The arc PAGE's prose links carry them, so they are the primary source and categories
+    are the supplement."""
+    wikitext = (
+        "{{Infobox|junk=[[Navbox Junk]]}}\n"
+        "The [[Straw Hat Pirates]] arrive. [[Rebecca]] fights, and [[Kyros]] watches.\n"
+        "<ref>[[Reference Junk]]</ref>\n"
+    )
+    monkeypatch.setattr(gv, "_http_json", lambda url: {"parse": {"wikitext": {"*": wikitext}}})
+    names = gv.arc_page_links("https://x/api.php", "Dressrosa")
+    assert {"Rebecca", "Kyros", "Straw Hat Pirates"} <= names
+    # templates and refs are stripped: navbox pollution made prop=links unusable
+    assert "Navbox Junk" not in names
+    assert "Reference Junk" not in names
+
+
+def test_arc_page_links_is_empty_when_the_page_is_missing(monkeypatch):
+    def boom(url):
+        raise OSError("no such page")
+
+    monkeypatch.setattr(gv, "_http_json", boom)
+    assert gv.arc_page_links("https://x/api.php", "Nonesuch") == set()
+
+
+def test_a_character_named_season_resolves_to_nothing(monkeypatch):
+    """[S-7], measured: `Gaimon` is a One Pace season.nfo title AND a character page. An
+    earlier cut fell back to the bare title when `<arc> Arc` was missing, resolved the
+    character page, and harvested 48 entities from it -- a wrong-but-resolved page passing
+    as a cast. Only `<arc> Arc` counts; anything else is no resolution."""
+    seen = []
+
+    def fake(url):
+        seen.append(url)
+        if "Gaimon%20Arc" in url or "Gaimon+Arc" in url:
+            raise OSError("no such page")
+        raise AssertionError("must not fall back to the bare title")
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    assert gv.arc_page_links("https://x/api.php", "Gaimon") == set()
+    assert len(seen) == 1

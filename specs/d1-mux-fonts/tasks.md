@@ -32,7 +32,7 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
       — done when: full pytest green, generate.py parses.
 - [x] **T9 — `Dockerfile.builder` `mkvtoolnix`.** — done when: grep shows it.
 
-## Closing (the *close* phase — always keep last)
+## Closing (the _close_ phase — always keep last)
 
 - [x] **FULL A1→D1 end-to-end on the server** (the user's requirement): a random episode each from
       **One Pace, Reborn as a Vending Machine, JoJo (2012), Fullmetal Alchemist Brotherhood, + 1–2
@@ -44,4 +44,5 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
       mux/regenerate library) — tracked in [[project_dubtitle_builder]], separate from D1.
 
 ## Done
+
 <move [x] tasks here, preserving the done criterion>

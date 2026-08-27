@@ -129,40 +129,40 @@ and how big is the leaked-hallucination opportunity. This tool produces that evi
 
 ## Edge cases and failure modes
 
-| Case | Expected behavior |
-|---|---|
-| Episode has no `.dubtitles.conf.json` | Report `no-conf`, skip (not an error) |
-| `conf.json` is mid-write or malformed JSON | Catch `json.JSONDecodeError`, report `bad-conf`, skip, count |
-| `conf.json` row has `start >= end` or negative `start` | Drop the row, continue with the rest |
-| No embedded English sub track (e.g. dub-only mp4) | Report `no-reference`, skip |
-| Only sub track is signs/songs-only | Dialogue-density scorer rejects it → `no-reference`, skip |
-| Multiple English sub tracks | Pick the highest dialogue-density one; record which was used; ties → lower index |
-| All episodes in a show are `no-reference` | Per-show aggregate coverage/offset fields are `null`; status counts are still reported |
-| `conf.json` present but empty (no kept cards) | Report `analyzed` with 0 cards; coverage undefined → report `null`, not a crash |
-| Large constant offset (dub lead/lag or framerate) | Captured as `global_offset_s`; residual spread still measured after correction — the offset is a finding, not a failure |
-| Sub cues include non-dialogue events mixed in | Dialogue selection filters to plain dialogue events before building cue intervals |
-| Card overlaps two adjacent cues | `on-cue` if it overlaps any; matched-pair onset-delta uses the nearest cue |
+| Case                                                   | Expected behavior                                                                                                       |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| Episode has no `.dubtitles.conf.json`                  | Report `no-conf`, skip (not an error)                                                                                   |
+| `conf.json` is mid-write or malformed JSON             | Catch `json.JSONDecodeError`, report `bad-conf`, skip, count                                                            |
+| `conf.json` row has `start >= end` or negative `start` | Drop the row, continue with the rest                                                                                    |
+| No embedded English sub track (e.g. dub-only mp4)      | Report `no-reference`, skip                                                                                             |
+| Only sub track is signs/songs-only                     | Dialogue-density scorer rejects it → `no-reference`, skip                                                               |
+| Multiple English sub tracks                            | Pick the highest dialogue-density one; record which was used; ties → lower index                                        |
+| All episodes in a show are `no-reference`              | Per-show aggregate coverage/offset fields are `null`; status counts are still reported                                  |
+| `conf.json` present but empty (no kept cards)          | Report `analyzed` with 0 cards; coverage undefined → report `null`, not a crash                                         |
+| Large constant offset (dub lead/lag or framerate)      | Captured as `global_offset_s`; residual spread still measured after correction — the offset is a finding, not a failure |
+| Sub cues include non-dialogue events mixed in          | Dialogue selection filters to plain dialogue events before building cue intervals                                       |
+| Card overlaps two adjacent cues                        | `on-cue` if it overlaps any; matched-pair onset-delta uses the nearest cue                                              |
 
 ## Components / changes
 
-| Layer | File | Change |
-|---|---|---|
-| Analytics (new) | `tools/timing_compare.py` | CLI, report builder, human summary. |
-| Tests (new) | `tests/test_timing_compare.py` | Unit tests for pure functions. |
-| Common (refactor) | `common.py` | Hoist `dialogue_intervals(video, stream_indices=None)` from `repair.py`; add `dialogue_event_count` and `dialogue_density_score`. |
-| Repair (refactor) | `repair.py` | Replace local `dialogue_intervals` with `from common import dialogue_intervals` (no behavior change). |
+| Layer             | File                           | Change                                                                                                                            |
+| ----------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| Analytics (new)   | `tools/timing_compare.py`      | CLI, report builder, human summary.                                                                                               |
+| Tests (new)       | `tests/test_timing_compare.py` | Unit tests for pure functions.                                                                                                    |
+| Common (refactor) | `common.py`                    | Hoist `dialogue_intervals(video, stream_indices=None)` from `repair.py`; add `dialogue_event_count` and `dialogue_density_score`. |
+| Repair (refactor) | `repair.py`                    | Replace local `dialogue_intervals` with `from common import dialogue_intervals` (no behavior change).                             |
 
 ## Decisions taken
 
-| Decision | Rejected alternative | Why |
-|---|---|---|
-| Offset-corrected overlap (estimate + report a per-episode global offset, then classify) | Raw overlap with no offset correction | A constant dub-vs-sub offset would smear alignment and coverage into noise. The offset itself is an actionable finding. |
-| Single global offset per episode | DTW / drift-aware alignment | Phase-0 wants a cheap, interpretable first signal. Drift handling is a later refinement if residual spread shows real drift. |
-| conf.json-only (kept cards) | Also raw-dump every episode for false-drops | GPU-free, seconds over a couple shows, uses existing sidecars. The leaked-hallucination direction is the primary silence failure users see; false-drops need raw dumps and are deferred. |
-| Auto-detect the dialogue reference track by density/style | Require the user to name the track | Track layout varies per release. Auto-detect effectively measures the `applicability_ratio`. |
-| Standalone script in `tools/` | A mode inside `generate.py` / the container loops | Analysis is offline and non-invasive; keeping it out of the live pipeline matches the `dump_whisper.py`/`bakeoff.py` tooling pattern. |
-| Reuse `common.dialogue_intervals` / style classification | Reimplement extraction in `timing_compare.py` | Same plumbing `repair.py` already uses; single source of truth, no drift. |
-| Extract `.ass` files to a temp directory | Extract next to source media | Preserves the read-only, non-invasive constraint on the live media tree. |
+| Decision                                                                                | Rejected alternative                              | Why                                                                                                                                                                                      |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Offset-corrected overlap (estimate + report a per-episode global offset, then classify) | Raw overlap with no offset correction             | A constant dub-vs-sub offset would smear alignment and coverage into noise. The offset itself is an actionable finding.                                                                  |
+| Single global offset per episode                                                        | DTW / drift-aware alignment                       | Phase-0 wants a cheap, interpretable first signal. Drift handling is a later refinement if residual spread shows real drift.                                                             |
+| conf.json-only (kept cards)                                                             | Also raw-dump every episode for false-drops       | GPU-free, seconds over a couple shows, uses existing sidecars. The leaked-hallucination direction is the primary silence failure users see; false-drops need raw dumps and are deferred. |
+| Auto-detect the dialogue reference track by density/style                               | Require the user to name the track                | Track layout varies per release. Auto-detect effectively measures the `applicability_ratio`.                                                                                             |
+| Standalone script in `tools/`                                                           | A mode inside `generate.py` / the container loops | Analysis is offline and non-invasive; keeping it out of the live pipeline matches the `dump_whisper.py`/`bakeoff.py` tooling pattern.                                                    |
+| Reuse `common.dialogue_intervals` / style classification                                | Reimplement extraction in `timing_compare.py`     | Same plumbing `repair.py` already uses; single source of truth, no drift.                                                                                                                |
+| Extract `.ass` files to a temp directory                                                | Extract next to source media                      | Preserves the read-only, non-invasive constraint on the live media tree.                                                                                                                 |
 
 ## Constraints
 
@@ -179,13 +179,9 @@ and how big is the leaked-hallucination opportunity. This tool produces that evi
 
 ## Open questions (risks / tuning knobs)
 
-- [ ] **Initial values (binding for Phase 0).**
-      - Dialogue-track threshold: `min_cues=50`, `min_plain_share=0.70` (env-overridable by
-        `TIMING_COMPARE_MIN_CUES` and `TIMING_COMPARE_MIN_PLAIN_SHARE`).
-      - Offset pairing radius: `5.0 s` (env-overridable by `TIMING_COMPARE_PAIR_RADIUS_S`).
-      - `--tolerance` default `0.30 s`, range `[0.0, 2.0]`.
-      - Phase-1 trigger: at least **3 shows** with `pct_cards_on_cue ≥ 0.80` and
-        `no-reference` rate ≤ 30% before any gating spec is opened.
+- [ ] **Initial values (binding for Phase 0).** - Dialogue-track threshold: `min_cues=50`, `min_plain_share=0.70` (env-overridable by
+      `TIMING_COMPARE_MIN_CUES` and `TIMING_COMPARE_MIN_PLAIN_SHARE`). - Offset pairing radius: `5.0 s` (env-overridable by `TIMING_COMPARE_PAIR_RADIUS_S`). - `--tolerance` default `0.30 s`, range `[0.0, 2.0]`. - Phase-1 trigger: at least **3 shows** with `pct_cards_on_cue ≥ 0.80` and
+      `no-reference` rate ≤ 30% before any gating spec is opened.
 - [ ] **Runtime knobs (not decisions).** Show selection for the first run is the user's call — the
       tool accepts any show dirs. Names are decoded from `os.walk`; the tool does not case-fold.
 - [ ] **Translation-style handling.** If a release uses a fansub-`Translation`-style track as its

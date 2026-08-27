@@ -1,3 +1,4 @@
+# shellcheck shell=sh  # sourced by merge_pass.sh, which is #!/bin/sh
 # Shared shell helpers for the DubTitlerr pipeline stages (merge_pass.sh, post_show.sh).
 # The Python-side single source of truth is common.py::load_extras(); this is its shell
 # counterpart, both reading data/extras.txt (see specs/v2-models-ops/spec.md, "EXTRA_DIRS
@@ -16,10 +17,10 @@
 # detect the failure via `||` on the command substitution -- see B9 in
 # specs/v2-models-ops/tasks.md for the source/fallback pattern this is designed for.
 extras_grep_pattern() {
-    dir="${1:-data/extras.txt}"
-    pattern=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$dir" 2>/dev/null \
-        | awk '{for (i = 1; i <= NF; i++) $i = toupper(substr($i, 1, 1)) substr($i, 2); print}' \
-        | paste -sd'|' -)
-    [ -z "$pattern" ] && return 1
-    printf '(%s)' "$pattern"
+	dir="${1:-data/extras.txt}"
+	pattern=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$dir" 2>/dev/null |
+		awk '{for (i = 1; i <= NF; i++) $i = toupper(substr($i, 1, 1)) substr($i, 2); print}' |
+		paste -sd'|' -)
+	[ -z "$pattern" ] && return 1
+	printf '(%s)' "$pattern"
 }

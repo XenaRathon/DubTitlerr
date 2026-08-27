@@ -76,29 +76,29 @@ muxed file (whose sidecar is gone) is never re-transcribed.
 
 ## Edge cases and failure modes
 
-| Case | Expected |
-|---|---|
-| mkv has no fonts (plain) | Still muxes the `.ass`; nothing to carry — fine. |
-| mp4 with an `.ass` (had signs somehow) | Treat like mkv embed into the new mkv. |
-| File replaced after stamp (new download) | mtime mismatch → stamp stale → re-process. |
-| Pool too full for temp | Skip + log; retry next pass / after reaper. |
-| mkvmerge fails / verify fails | Leave original untouched; remove temp; log; retry later. |
+| Case                                       | Expected                                                                            |
+| ------------------------------------------ | ----------------------------------------------------------------------------------- |
+| mkv has no fonts (plain)                   | Still muxes the `.ass`; nothing to carry — fine.                                    |
+| mp4 with an `.ass` (had signs somehow)     | Treat like mkv embed into the new mkv.                                              |
+| File replaced after stamp (new download)   | mtime mismatch → stamp stale → re-process.                                          |
+| Pool too full for temp                     | Skip + log; retry next pass / after reaper.                                         |
+| mkvmerge fails / verify fails              | Leave original untouched; remove temp; log; retry later.                            |
 | EXDEV on finalize (temp on another branch) | Fall back to same-branch temp / safe move; never leave a half-written library file. |
-| Still-seeding partner | Never deleted (DELETE_BROKEN_HARDLINKS=0). |
-| arrs see mp4→mkv rename | Accepted (user chose uniform mkv); note in rollout. |
+| Still-seeding partner                      | Never deleted (DELETE_BROKEN_HARDLINKS=0).                                          |
+| arrs see mp4→mkv rename                    | Accepted (user chose uniform mkv); note in rollout.                                 |
 
 ## Decisions taken
 
-| Decision | Rejected | Why |
-|---|---|---|
-| Mux (.ass + fonts) | Restyle to safe fonts; extract fonts beside | Only muxing carries fonts → correct signs/karaoke. |
-| Per-episode in merge loop | Separate loop; manual | Immediate per-episode availability, simplest. |
-| Don't delete partner hardlinks | Delete always; delete-outside-torrent | Seed-until-orphan policy; reaper owns deletion. |
-| mp4 → remux to mkv + embed | Keep .srt sidecar; mov_text | User wants a uniform, sidecar-free mkv library. |
-| Free-space pre-check, skip+log | Pin temp branch; just-run | No ENOSPC crashes; self-throttles on the near-full pool. |
-| `.dubtitles.done` stamp (size+mtime) + ffprobe backstop | ffprobe-only; ledger | Stat-only fast skip that survives sidecar deletion; handles replaced files. |
-| Eng audio default; keep eng+nld+und+orig; drop other dubs | JP default; keep all; eng-only | Dub-subtitle intent; small files; keep the original for choice. |
-| Keep signs/songs subs (mul/name) | Strict language drop | Don't lose weird JoJo signs/songs tracks. |
+| Decision                                                  | Rejected                                    | Why                                                                         |
+| --------------------------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------- |
+| Mux (.ass + fonts)                                        | Restyle to safe fonts; extract fonts beside | Only muxing carries fonts → correct signs/karaoke.                          |
+| Per-episode in merge loop                                 | Separate loop; manual                       | Immediate per-episode availability, simplest.                               |
+| Don't delete partner hardlinks                            | Delete always; delete-outside-torrent       | Seed-until-orphan policy; reaper owns deletion.                             |
+| mp4 → remux to mkv + embed                                | Keep .srt sidecar; mov_text                 | User wants a uniform, sidecar-free mkv library.                             |
+| Free-space pre-check, skip+log                            | Pin temp branch; just-run                   | No ENOSPC crashes; self-throttles on the near-full pool.                    |
+| `.dubtitles.done` stamp (size+mtime) + ffprobe backstop   | ffprobe-only; ledger                        | Stat-only fast skip that survives sidecar deletion; handles replaced files. |
+| Eng audio default; keep eng+nld+und+orig; drop other dubs | JP default; keep all; eng-only              | Dub-subtitle intent; small files; keep the original for choice.             |
+| Keep signs/songs subs (mul/name)                          | Strict language drop                        | Don't lose weird JoJo signs/songs tracks.                                   |
 
 ## Constraints
 
