@@ -1,6 +1,6 @@
 # `review_apply.py` on an episode with a stored `reject` rewrites the `.srt` with the ASR text restored and invalidates the `.dubtitles.done` stamp, WITHOUT invoking the LLM -- it rebuilds from `conf.json` the way `recreate_srt.py` does. Asserted on the backend never being called, because re-running `repair.py` also rebuilds the srt from `conf.json` and would otherwise satisfy this criterion.
 
-Status: open
+Status: done 2026-08-27
 Created: 2026-08-27
 Epic: repair-review-and-decision-store
 Sprint: 005-task-5-review-apply-py-rebuild-an-episode-s-srt-from-conf

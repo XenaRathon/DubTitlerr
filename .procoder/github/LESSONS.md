@@ -126,3 +126,38 @@ git config commit.template .procoder/github/COMMIT_TEMPLATE.md
 - Adaptation: a mock keyed on the content of a real payload must be checked against what that
   payload actually contains. Prefer keying on call ORDER when the sequence is deterministic —
   it cannot be fooled by context the mock's author did not know was there.
+
+## 2026-08-27 self — a fixture that described a world the pipeline never produces
+
+- Class: test-quality
+- Missed by: rubric
+- Finding: `review_apply.py` was designed and fully tested against a fixture that hand-wrote
+  `conf.json`, `.eng.dubtitles.srt` and `.dubtitles.done` together. That combination cannot
+  exist: `mux.py:367-371` removes both sidecars immediately after writing the stamp, and
+  `dub_signs_merge.py:188` removes the srt earlier still. The module read the srt to learn
+  what had shipped, so against the real library it would have refused every episode it was
+  written for. Five green tests proved nothing, because all five described the same
+  non-existent world.
+- Missed because: the fixture was built from what the module needed to read, not from what
+  the pipeline actually leaves behind. Nothing in a green suite can contradict that — the
+  fixture IS the claim being tested against.
+- Adaptation: before the first test of a module that touches existing files, write down the
+  on-disk state of a REAL instance and verify each file against the code that creates and
+  deletes it. The sidecar lifecycle was one grep away in `mux.py` and never read.
+
+## 2026-08-27 self — reasoning forward from an unchecked premise to a confident wrong claim
+
+- Class: correctness
+- Missed by: rubric
+- Finding: I observed correctly that `conf.json` holds pristine ASR text (repair never
+  writes it back) and inferred that `[S-5]`'s "rebuild from conf.json" would revert every
+  LLM repair in the library. I reported that to the owner as a defect in the plan. It was
+  wrong: `merge_pass.sh:59` re-runs `repair.py` whenever an srt exists with no ass, which
+  re-derives the repairs and applies the stored verdicts on the same pass. The observation
+  was true; the inference was not; the plan was right.
+- Missed because: I traced the code I was WRITING and not the code that runs after it —
+  the identical failure the previous lesson names, applied to `fits_card` and then missed
+  for the pipeline itself. A correct observation made the conclusion feel verified.
+- Adaptation: when a finding contradicts the spec, treat the spec as the stronger prior
+  until the contradiction is traced end to end. Say "observed X, therefore suspect Y,
+  tracing now" rather than reporting Y as established. Three greps separated the two here.
