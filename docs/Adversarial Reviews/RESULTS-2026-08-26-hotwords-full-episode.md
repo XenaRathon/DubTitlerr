@@ -236,3 +236,65 @@ not explain but term quality does:
     F 72 derived          24         15    -0.13
     D 72 hand-picked      32         18    -0.16
     E 150 derived         30         24    -0.18
+
+
+## Arm F (72 tokens, derived) and the symmetric defect count
+
+Arm F looked clean on the pipeline's own counters -- `collapsed=0` on all three episodes,
+no card over 6.9s, and a name tally of +32 occurrences gained against 0 lost. Both of those
+readings were wrong, for the same reason: they measured what I had chosen to count.
+
+The name tally counted only names on MY list, and it counted OCCURRENCES rather than
+correctness. `Dellinger`, which the BASELINE rendered correctly, was broken to `Dallinger`
+by arm F and never appeared in the tally because I had not listed it.
+
+Inspecting what each arm introduced that the baseline did not:
+
+    693.7s   A: "The genius jester, Bucky."       F: "The Genius Dester Bucky."
+    230.8s   A: "It's"                            F: "Badabada Badabada Badabada Badabada Badabada"
+    234.4s   A: (no card)                         F: "Badabada Badabada Badabada Badabada Badabada."
+    591.5s   A: "Senor Pink, then Dellinger,"     F: "Dan Dallinger."
+    290.2s   A: "I accept the duel and I look..." F: "Shuswinawano to the place it rightfully belongs!"
+
+`jester` -> `Dester` is the severe class exactly. The two `Badabada` cards are repetition
+runs that the hallucination gate did NOT collapse (`collapsed=0`), so unlike arm E's loop
+they shipped verbatim.
+
+Counting defect SHAPES symmetrically across arms, with no arm privileged as the reference
+(cards containing a token repeated 4+ times and making up 60%+ of the card; cards whose
+long tokens are all non-dictionary; cards over 12s; distinct capitalised non-dictionary
+tokens):
+
+    arm   cards   repetition   gibberish   12s+ cards   non-dict caps
+    A      1479            0           1            0              43
+    D      1428            0           3            0              51
+    F      1455            3           4            0              48
+    E      1501            5           1            1              55
+
+**The baseline produces zero repetition runs. Every derived-hotwords arm produces them.**
+F at 72 tokens and E at 150 both do, so this is not a size artifact and cannot be tuned
+away by shrinking the list. All hotwords arms also carry more non-dictionary capitalised
+tokens than the baseline.
+
+### What hotwords actually trades
+
+For, measured on arm F against baseline:
+  - canonical spelling the pipeline cannot otherwise reach: Colosseum 3 -> 14 occurrences
+    in canonical form (`glossary.correct()` is blocked by the `is_english` gate here)
+  - Doflamingo +5, Dressrosa +6, Kanjuro +2 in canonical form
+  - `Dothamingo`, `do Flamingo` and `Kanjino` all eliminated
+
+Against:
+  - 3 repetition runs and 4 gibberish cards where the baseline had 0 and 1
+  - `jester` -> `Dester`, `Dellinger` -> `Dallinger`: correct baseline output destroyed
+  - ~5 more non-dictionary capitalised tokens
+
+Per the rewritten decision rule, repetition runs where the baseline produced none are
+SEVERE and block adoption on their own. **Arms D, E and F all fail. On this evidence
+hotwords should not be enabled**, and the honest summary is that it buys name accuracy and
+pays in hallucination, consistently, at every size tested.
+
+Arms G138 (138 tokens, the smallest that covers Kanjuro) and H (arm F plus a correctly
+apostrophised `Kin'emon`, isolating the malformed-term question) were still running when
+this was written. Neither can overturn the repetition finding, which is present at both 72
+and 150 tokens; they can only refine it.
