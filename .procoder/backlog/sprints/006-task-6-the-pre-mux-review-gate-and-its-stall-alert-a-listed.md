@@ -1,6 +1,6 @@
 # Task 6: the pre-mux review gate and its stall alert -- a listed show holds an episode with pending accepted repairs, and a hold is never auto-released
 
-Status: active
+Status: closed 2026-08-27
 Created: 2026-08-27
 
 ## Goal
@@ -60,3 +60,9 @@ queue was never read twice. Holding an episode turned a harmless re-append into 
 growth AND disarmed the alert meant to surface it. A feature that makes an existing state
 last longer will find every bug that assumed the state was transient -- worth asking
 directly, of any new hold/pause/gate: what did the old code assume would end soon?
+
+## Result
+
+committed: 2
+done: 2 (20260827-an-episode-held-longer-than-review-gate-stale-days-is, 20260827-with-a-show-listed-in-review-gate-shows-mux-py-skips-an)
+carried: 0
