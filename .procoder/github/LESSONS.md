@@ -161,3 +161,36 @@ git config commit.template .procoder/github/COMMIT_TEMPLATE.md
 - Adaptation: when a finding contradicts the spec, treat the spec as the stronger prior
   until the contradiction is traced end to end. Say "observed X, therefore suspect Y,
   tracing now" rather than reporting Y as established. Three greps separated the two here.
+
+## 2026-08-27 self — read the function from its def line, not from the interesting part
+
+- Class: correctness
+- Missed by: rubric
+- Finding: checking whether `dub_signs_merge` always writes an `.ass` (which decides whether
+  `merge_pass.sh` re-runs repair on a held episode), I read from line 160, saw
+  `base.save(out_ass)`, and reported that repair never re-runs. `build()` returns
+  `"no-signs", 0, 0` at line 126 for any episode with no signs track — the ordinary case for
+  every dialogue-only episode. Repair therefore re-ran every 600s on a held episode,
+  appending a duplicate queue row each time and refreshing the mtime the [S-6] stall alert
+  uses as its clock, so that alert could never fire for exactly the stuck episodes.
+- Missed because: I started reading where the relevant code appeared to be. An early return
+  is invisible from below, and control flow is precisely what the question was about. Worse,
+  I had suspected this exact failure, "checked" it, and reported the suspicion refuted.
+- Adaptation: for any control-flow claim about a function, read from its `def` line. A
+  function too long to read whole is itself a finding, not a licence to skim.
+
+## 2026-08-27 subagent review — a hold finds every bug that assumed a state was transient
+
+- Class: correctness
+- Missed by: plan
+- Finding: `repair.py` re-queueing an already-queued line on every merge sweep was always
+  true, and always harmless: episodes were muxed promptly, their sidecars removed, and the
+  queue never read twice. The [S-6] gate holds an episode indefinitely, and the same
+  re-append became unbounded queue growth (~144 copies/day at the default MERGE_INTERVAL),
+  a reviewer seeing one line repeatedly, and a disarmed stall alert.
+- Missed because: the defect was not in the new code and not in the diff. It was a
+  pre-existing assumption — "this state does not last" — that the new feature falsified.
+- Adaptation: of any new hold, pause, gate or retry, ask directly: what did the surrounding
+  code assume would end soon? Then check each of those assumptions against an indefinite
+  duration. Also worth pairing with the sprint-004 lesson: enumerate what else writes the
+  value, AND what else assumed the state was brief.

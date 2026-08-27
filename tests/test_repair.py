@@ -7,6 +7,7 @@ llama.cpp integration is PENDING manual verification on real hardware."""
 
 import csv
 import json
+import os
 
 import common
 import decisions
@@ -1989,3 +1990,35 @@ def test_the_summary_still_accounts_for_every_target_once_verdicts_fire(tmp_path
         s["repaired"] + s["skipped_no_ref"] + s["llm_empty"] + s["rejected_guard"] + s["verdict_reject"] + s["verdict_unfittable"]
     )
     assert counted == s["targets"], f"targets {s['targets']} != sum of buckets {counted}"
+
+
+def test_a_second_repair_pass_does_not_re_queue_a_line_already_in_the_queue(tmp_path, monkeypatch):
+    """merge_pass.sh runs repair on EVERY sweep for an episode that still has an srt.
+
+    An episode held by the [S-6] review gate never gets muxed, so its srt is never removed;
+    and `dub_signs_merge.build()` returns "no-signs" before writing any .ass for a
+    dialogue-only episode (dub_signs_merge.py:126-127), so merge_pass's
+    `! -f .ass && -f .srt` assemble condition stays true forever. repair.py therefore
+    re-runs every MERGE_INTERVAL (default 600s) and, without this, appends another
+    `repair_applied` row for the same line each time: ~144 copies a day, growing without
+    bound, and the reviewer sees one line over and over.
+
+    It also disarms the gate's own stall alert. That alert reads the queue file's mtime,
+    and an append refreshes it, so `STALLED` could never fire for exactly the episodes that
+    are stuck. Keyed on the (original, proposed) PAIR against every entry in the file,
+    resolved or not: keying on pending-only would re-append the moment a human resolved one
+    through the --review CLI, which is the deadlock inverted."""
+    stem, conf_path = _one_target(tmp_path, "ep_twice")
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_twice.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"], hard_fixes={"Spandom": "Spandam"}))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "I saw Spandom")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: ({}, "Show"))
+
+    repair.process(conf_path)
+    first = os.path.getmtime(unresolved.path_for(stem))
+    repair.process(conf_path)
+
+    queued = [e for e in unresolved.items(stem) if e["stage"] == "repair_applied"]
+    assert len(queued) == 1, "a second sweep must not re-queue a line the reviewer already has"
+    assert os.path.getmtime(unresolved.path_for(stem)) == first, "and must not refresh the staleness clock"

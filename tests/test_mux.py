@@ -1,5 +1,8 @@
 """Unit tests for mux.py pure helpers (D1). mkvmerge/ffprobe calls are integration."""
 
+import os
+import time
+
 import mux
 
 
@@ -413,3 +416,188 @@ def test_stages_ran_omits_what_it_cannot_determine(tmp_path):
     assert got["repair"] is False  # summary absent: repair demonstrably did not run
     assert got["signs_merge"] is False  # muxed from .srt
     assert "punctuation" not in got  # unknowable -> omitted
+
+
+# --- [S-6] the pre-mux review gate -------------------------------------------
+# A repair `accept_repair` ADMITTED is a change nothing checked the meaning of. For a show
+# the operator has opted in, the episode waits for a human rather than shipping.
+
+
+def _gated(tmp_path, monkeypatch, show="Gated Show", entries=1):
+    """A muxable episode whose queue holds `entries` pending accepted repairs."""
+    import unresolved
+
+    v = _muxable(tmp_path, monkeypatch, [aud(0, "eng"), subt(1, "eng", mux.TRACK_NAME)])
+    stem = str(tmp_path / "ep")
+    for i in range(entries):
+        unresolved.record(stem, "repair_applied", "accepted", original_text=f"asr {i}", proposed_text=f"fix {i}")
+    monkeypatch.setattr(mux, "show_for", lambda p: show)
+    return v, stem
+
+
+def test_a_gated_show_holds_an_episode_with_a_pending_accepted_repair(tmp_path, monkeypatch):
+    """Three halves, and the last two are what stop this being vacuous: an UNLISTED show
+    must mux exactly as today (the default for every install), and resolving the entry must
+    release the episode -- otherwise a gate that simply never muxed anything would pass."""
+    v, stem = _gated(tmp_path, monkeypatch)
+    import unresolved
+
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["Gated Show"])
+    assert mux.process(v, apply=False) == "held-for-review"
+
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", [])
+    assert mux.process(v, apply=False) == "plan", "an unlisted show behaves exactly as today"
+
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["Gated Show"])
+    unresolved.resolve(stem, 0, accept=True)
+    assert mux.process(v, apply=False) == "plan", "resolving the entry releases the episode"
+
+
+def test_a_gate_holds_only_on_accepted_repairs_not_on_guard_rejections(tmp_path, monkeypatch):
+    """A REJECTED repair means the ASR text shipped -- the safe outcome, and nothing a
+    viewer sees that a human has not effectively approved by default. The unchecked change
+    is the ACCEPTED one, which is the only thing worth stopping a release for."""
+    import unresolved
+
+    v = _muxable(tmp_path, monkeypatch, [aud(0, "eng"), subt(1, "eng", mux.TRACK_NAME)])
+    stem = str(tmp_path / "ep")
+    unresolved.record(stem, "repair", "rejected_guard", original_text="asr", proposed_text="fix")
+    monkeypatch.setattr(mux, "show_for", lambda p: "Gated Show")
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["Gated Show"])
+
+    assert mux.process(v, apply=False) == "plan"
+
+
+def test_a_stale_hold_is_reported_loudly_and_is_still_not_released(tmp_path, monkeypatch, capsys):
+    """The alert must never become a release.
+
+    Written after the branch existed, so it is held by the mutation check rather than by a
+    red run: making the stale path return False (an "auto-release after N days") passes the
+    logging half and fails the second assertion. That is the whole point of the story --
+    releasing unreviewed repairs on a timer is the failure this spec exists to prevent, and
+    an alert that quietly releases is worse than none because it reads as supervision."""
+    import unresolved
+
+    v, stem = _gated(tmp_path, monkeypatch)
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["Gated Show"])
+    monkeypatch.setattr(mux, "REVIEW_GATE_STALE_DAYS", 7.0)
+    old = time.time() - 30 * 86400
+    os.utime(unresolved.path_for(stem), (old, old))
+
+    verdict = mux.process(v, apply=False)
+    out = capsys.readouterr().out
+
+    assert "STALLED" in out and "30d" in out, "a backlog must be visible, not silent"
+    assert "NOT released" in out
+    assert verdict == "held-for-review", "the alert reports the stall; it does not end it"
+
+
+def test_a_fresh_hold_is_silent(tmp_path, monkeypatch, capsys):
+    """The counterpart: a hold inside the window is normal operation, not an incident.
+    Without this, the STALLED line could fire on every held episode and mean nothing."""
+    v, _ = _gated(tmp_path, monkeypatch)
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["Gated Show"])
+    monkeypatch.setattr(mux, "REVIEW_GATE_STALE_DAYS", 7.0)
+
+    assert mux.process(v, apply=False) == "held-for-review"
+    assert "STALLED" not in capsys.readouterr().out
+
+
+def test_the_sweep_summary_carries_the_held_count(tmp_path, monkeypatch, capsys):
+    """A backlog has to be countable from the sweep's own output, or a gated show silently
+    stops producing episodes and nothing says why. process() returns a distinct status, so
+    main()'s existing counts dict carries it with no new plumbing."""
+    v, _ = _gated(tmp_path, monkeypatch)
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["Gated Show"])
+
+    mux.main([v])
+    out = capsys.readouterr().out
+
+    assert "held-for-review" in out and "SUMMARY" in out
+
+
+def test_an_already_muxed_episode_reports_already_muxed_not_held(tmp_path, monkeypatch):
+    """The gate sits AFTER the stamp check, and this is what says so.
+
+    The plan sketched the reverse order. An episode that already shipped cannot be held
+    back: reporting a hold for it would inflate the backlog with episodes no review can
+    affect, and would hide "already-muxed" behind a status the operator is meant to act on.
+    Added because a mutation that moved the gate above the stamp check passed the whole
+    suite -- a design decision taken deliberately and pinned by nothing."""
+    v, _ = _gated(tmp_path, monkeypatch)
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["Gated Show"])
+    mux.write_stamp(str(tmp_path / ("ep" + mux.STAMP_SUFFIX)), v)
+
+    assert mux.process(v, apply=False) == "already-muxed"
+
+
+def test_an_opted_in_operator_is_told_when_a_show_cannot_be_resolved(tmp_path, monkeypatch, capsys):
+    """Listing a show whose glossary is missing or misnamed turns the gate OFF in silence.
+
+    `show_for` returns "" when no glossary ancestor matches, "" is never in
+    REVIEW_GATE_SHOWS, and the episode muxes exactly as if the operator had never opted in.
+    They would believe unreviewed repairs were being held while every one of them shipped.
+    Only fires when the operator HAS opted in, so an install with the gate off stays silent.
+    Same failure class the sprint-005 review found in review_apply's sweep."""
+    v, _ = _gated(tmp_path, monkeypatch)
+    monkeypatch.setattr(mux, "show_for", lambda p: "")
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["Gated Show"])
+    monkeypatch.setattr(mux, "_warned_unresolved", set())
+
+    assert mux.process(v, apply=False) == "plan", "it still muxes -- the gate genuinely is off"
+    assert "cannot resolve a show" in capsys.readouterr().out.lower()
+
+
+def test_the_unresolved_warning_is_not_repeated_per_episode(tmp_path, monkeypatch, capsys):
+    """A whole season of a misconfigured show would otherwise print one line per episode
+    every sweep, which is how a real warning becomes background noise."""
+    v, _ = _gated(tmp_path, monkeypatch)
+    monkeypatch.setattr(mux, "show_for", lambda p: "")
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["Gated Show"])
+    monkeypatch.setattr(mux, "_warned_unresolved", set())
+
+    mux.process(v, apply=False)
+    capsys.readouterr()
+    mux.process(v, apply=False)
+
+    assert "cannot resolve a show" not in capsys.readouterr().out.lower()
+
+
+def test_a_listed_show_that_never_matches_anything_is_reported(tmp_path, monkeypatch, capsys):
+    """REVIEW_GATE_SHOWS must carry the DIRECTORY BASENAME, not the show's common name.
+
+    decisions.show_for resolves to the directory basename on purpose -- "Cowboy Bebop (1998)
+    {tvdb-76885}", not gloss["show"] == "Cowboy Bebop" -- and that distinction already cost
+    one design bug in sprint 002. An operator naturally writes the display name. show_for
+    then returns a NON-empty string that simply is not in the list, so the earlier
+    "cannot resolve a show" warning does not fire, every episode ships unreviewed, and the
+    operator believes the gate is holding them."""
+    v, _ = _gated(tmp_path, monkeypatch)
+    monkeypatch.setattr(mux, "show_for", lambda p: "Cowboy Bebop (1998) {tvdb-76885}")
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["Cowboy Bebop"])
+
+    mux.main([v])
+    out = capsys.readouterr().out
+
+    assert "never matched" in out.lower(), "a gate that matches nothing must say so"
+    assert "Cowboy Bebop (1998) {tvdb-76885}" in out, "and name what it DID see, so the fix is obvious"
+
+
+def test_a_queued_line_that_already_has_a_verdict_does_not_hold_the_episode(tmp_path, monkeypatch):
+    """`unresolved.resolve()` and `decisions.record()` are two independent write paths.
+
+    The one that stops repair re-queueing a line is the DECISION (repair.py consults the
+    store); the one the queue's own --review CLI writes is the RESOLVED flag. If the gate
+    trusted only the flag, a line settled by a verdict -- recorded by hand, by a future
+    sync, or by a server whose resolve() write failed -- would hold the episode forever
+    while the pipeline itself considered it decided. The verdict is the authority."""
+    import decisions as dec
+
+    v, stem = _gated(tmp_path, monkeypatch)
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["Gated Show"])
+    assert mux.process(v, apply=False) == "held-for-review"
+
+    store = dec.record({}, "asr 0", "fix 0", "accept")
+    monkeypatch.setattr(mux, "decisions_for", lambda p: (store, "Gated Show"))
+
+    assert mux.process(v, apply=False) == "plan", "a decided line is settled however it was settled"
