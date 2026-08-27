@@ -53,7 +53,7 @@ from common import MEDIA_GID, MEDIA_UID, STAMP_SUFFIX, TRACK_NAME, is_our_track,
 # Imported as a NAME so "which show is this path in" has exactly one definition, shared
 # with the decision store. A second answer here would gate one show while storing verdicts
 # under another, and the two would only disagree for the shows an operator actually listed.
-from decisions import decisions_for, lookup, show_for
+from decisions import decisions_for, key, lookup, show_for
 
 ROOTS = os.environ.get("MUX_ROOTS", "/data/Media/Anime Library").split(":")
 # [S-6] Shows whose episodes wait for a human before they are released. Colon list, the
@@ -365,6 +365,25 @@ def held_for_review(stem):
     store, _ = decisions_for(stem)
     if store:
         pend = [e for e in pend if not lookup(store, e.get("original_text", ""), e.get("proposed_text", ""))]
+        if not pend:
+            return False
+    # Entries orphaned by a version bump. The queue is NOT in generate.SIDECAR_SUFFIXES, so
+    # park_stale_sidecars leaves it across a re-transcription and its rows can describe text
+    # the episode no longer contains. Nothing will re-queue those lines, so nothing will ever
+    # resolve them, and they would hold the episode forever. Owner's decision 2026-08-27:
+    # keep the history -- it is what a human already judged, and the input to the later
+    # accept_repair tightening -- and ignore the orphans here.
+    #
+    # FAILS CLOSED. An unreadable conf.json means we cannot tell an orphan from a live entry,
+    # and the alternative to holding is releasing unreviewed repairs. Normalised with
+    # decisions.key so a doubled space cannot orphan a live entry.
+    try:
+        with open(stem + ".dubtitles.conf.json", encoding="utf-8") as f:
+            live = {key(c.get("text", "")) for c in json.load(f) if isinstance(c, dict)}
+    except (OSError, ValueError, TypeError):
+        live = None
+    if live is not None:
+        pend = [e for e in pend if key(e.get("original_text", "")) in live]
         if not pend:
             return False
     # Entries carry no timestamp, so the sidecar's mtime is the only staleness signal

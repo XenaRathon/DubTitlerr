@@ -3,7 +3,7 @@
 Status: open
 Created: 2026-08-27
 Epic: repair-review-and-decision-store
-Sprint: -
+Sprint: 007-task-7-the-review-server-plus-the-orphan-entry-fix-the
 
 ## Description
 
