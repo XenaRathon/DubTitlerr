@@ -298,3 +298,60 @@ Arms G138 (138 tokens, the smallest that covers Kanjuro) and H (arm F plus a cor
 apostrophised `Kin'emon`, isolating the malformed-term question) were still running when
 this was written. Neither can overturn the repetition finding, which is present at both 72
 and 150 tokens; they can only refine it.
+
+## Arm H — the malformed-term hypothesis is dead, and the real mechanism is worse
+
+Arm H = arm F plus one term: a correctly apostrophised `Kin'emon`. Nothing else differs.
+
+    S31E01 @589s
+      A  baseline               "You're a real bro, Kanjuro."  |  "Kanjuro!"
+      F  no Kin'emon listed     "You're a real pro, Kanjuro! Kanjuro!"      correct
+      H  correct Kin'emon       "You're a real pro, Kanjudo! Kanjudo!"      CORRUPTED
+      D  malformed "Kin emon"   "Kajudo Kajudo!"                            CORRUPTED
+
+    arm                     Kanjuro  Kajudo  Kanjino  Dester  Badabada
+    A  baseline                   2       0        1       0         0
+    D  72 malformed               0       2        1       0         0
+    F  72 no Kin'emon             3       0        0       1        10
+    H  76 correct Kin'emon        0       0        0       1         0
+
+A correctly formed `Kin'emon` destroys `Kanjuro` as thoroughly as the malformed one --
+more thoroughly, since D at least produced a token twice while H produced the name zero
+times. **The malformed-term diagnosis recorded above is REFUTED.** Term formatting was
+never the cause, and the [S-10] validation rule proposed on the strength of it, while still
+good hygiene, does not address this.
+
+The actual mechanism: **listing a name in hotwords corrupts phonetically adjacent names
+that are NOT listed.** `Kin'emon` and `Kanjuro` are both Wano names sharing an onset;
+priming the first pulls the second toward it (`Kanjuro` -> `Kanjudo`). `Kin'emon` itself
+never appears in H's output at all, so the term delivered no benefit and real harm.
+
+This is structural, not tunable:
+
+- The 223-token budget forces a SUBSET of any real cast (this arc has 96+ entities, and 138
+  tokens buys 34 terms).
+- Choosing a subset therefore always leaves phonetic neighbours unlisted.
+- Listing some names actively damages those neighbours, so hotwords does not simply "help
+  listed names" -- it trades listed names against unlisted ones.
+
+Sensitivity is also extreme and unpredictable. F and H differ by exactly ONE term. F has ten
+`Badabada` repetition cards and correct Kanjuro; H has zero `Badabada` and no Kanjuro. One
+added term eliminated a hallucination ~350 s away and destroyed a name elsewhere. A
+mechanism this sensitive to list composition cannot be tuned by adding terms, because each
+addition perturbs the whole episode in ways the addition does not predict.
+
+`Dester` appears in BOTH F and H (once each) and in neither A nor D, so it is caused by the
+shared derived 16-term list rather than by `Kin'emon`.
+
+### Consequence for [S-10]
+
+Combined with the repetition finding (baseline 0, every derived arm 3-5), this is
+sufficient to CUT [S-10]. Hotwords buys canonical spelling and some name recall that
+nothing else in the pipeline can reach, and pays for it in hallucinated repetition and in
+corruption of the names it was not told about. There is no list size or composition that
+avoids the second cost, because the cost arises from listing a subset at all.
+
+Arm G138 remains interesting for one narrow reason: at 138 tokens BOTH `Kin'emon` and
+`Kurozumi Kanjuro` are on the list. If listing both neighbours together restores `Kanjuro`,
+the failure is specifically about unlisted neighbours; if it does not, hotwords damages
+names even when they ARE listed.
