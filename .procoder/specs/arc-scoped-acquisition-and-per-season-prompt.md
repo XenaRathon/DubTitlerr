@@ -172,6 +172,32 @@ Season scoping survives ONLY where it reaches the decoder on every window — th
 `hotwords` ([S-10]) and the tags that select it ([S-11]). Where this spec still says
 "per-season prompt", read "per-season hotwords".
 
+## What counts as an acceptable repair — owner's bar, 2026-08-26
+
+Perfect output is not reachable without human intervention, so the standard is not
+fidelity to the audio's exact wording. **A deviation that still carries the same meaning is
+acceptable; one that changes the meaning is not.**
+
+    ACCEPTABLE
+      "Hawkeye Dracule Mihawk."  ->  "Mihawk."
+        Shorter than what the dub speaks, and `accept_repair`'s docstring does say a
+        dubtitle must match the DUB AUDIO -- but the referent is unchanged and a viewer
+        gets the same information. Owner's explicit call.
+      punctuation, capitalisation, run-together splits, phrasing that preserves sense.
+
+    REGRESSION
+      "looking for a factory."   ->  "looking for a needle."      meaning destroyed
+      "It's a VIVRA card?"       ->  "It's a Vivi card?"          wrong referent -- Vivi is
+        a character, a Vivre Card is an item. Not a near-miss, a different thing.
+      any correct word decoded into a non-word.
+
+The distinction is REFERENT AND SENSE, not word-for-word match. This bar applies to repair
+output; it does not license the decoder-level hallucination that cut [S-10], where the
+failures were repetition runs and invented non-words rather than looser phrasing.
+
+Measured against this bar on S31E01 ([S-12], 161 targets, 21 repairs): 18 acceptable,
+3 regressions, of which one is a glossary coverage gap rather than a repair defect.
+
 ## Build order and the decision rule
 
 **This is a sequencing constraint, not advice. [S-10] is measured FIRST.**
