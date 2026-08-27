@@ -228,3 +228,135 @@ def test_verify_preserves_term_result_pairing_despite_completion_order(monkeypat
     assert "Spandom" in new["names"] and "Ruffy" in new["names"]
     assert new["flagged"]["Spandom"]["canonical"] == "Spandam"
     assert new["flagged"]["Ruffy"]["canonical"] == "Luffy"
+
+
+def test_arc_categories_are_discovered_by_search(monkeypatch):
+    """[S-2] Arc category naming is NOT uniform: measured 2026-08-26, `Category:Dressrosa
+    Arc` does not exist, while `Dressrosa Residents`, `Dressrosa Locations` and `Dressrosa
+    Saga Antagonists` do. So the categories are discovered by search, never guessed."""
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return {
+            "query": {
+                "search": [
+                    {"title": "Category:Dressrosa Residents"},
+                    {"title": "Category:Dressrosa Locations"},
+                    {"title": "Category:Non-Canon Dressrosa Residents"},
+                ]
+            }
+        }
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    cats = gv.arc_categories("https://x/api.php", "Dressrosa")
+    assert "Category:Dressrosa Residents" in cats
+    assert "Category:Dressrosa Locations" in cats
+    # non-canon material must not become canonical spellings
+    assert not any("Non-Canon" in c for c in cats)
+    assert "srnamespace=14" in calls[0]
+
+
+def test_arc_titles_unions_the_categories_and_follows_continuation(monkeypatch):
+    """Members come back paged. A truncated union would silently under-tag an arc."""
+    pages = {
+        "one": {"query": {"categorymembers": [{"title": "Rebecca"}, {"title": "Kyros"}]}, "continue": {"cmcontinue": "MORE"}},
+        "two": {"query": {"categorymembers": [{"title": "Pica"}]}},
+    }
+    seen = []
+
+    def fake(url):
+        seen.append(url)
+        return pages["two"] if "MORE" in url else pages["one"]
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    monkeypatch.setattr(gv, "arc_categories", lambda a, b: ["Category:Dressrosa Residents"])
+    titles = gv.fetch_arc_titles("https://x/api.php", "Dressrosa")
+    assert titles == {"Kyros", "Pica", "Rebecca"}
+
+
+def test_arc_titles_is_empty_when_discovery_finds_nothing(monkeypatch):
+    """[S-7] A season.nfo title that is not an arc -- `Gaimon` is a character -- must yield
+    NOTHING rather than some other page's cast. Emptiness is the fallback trigger."""
+    monkeypatch.setattr(gv, "arc_categories", lambda a, b: [])
+    assert gv.fetch_arc_titles("https://x/api.php", "Gaimon") == set()
+
+
+def test_arc_titles_survives_an_unreachable_wiki(monkeypatch):
+    """The wiki must never stall or fail a sweep."""
+
+    def boom(url):
+        raise OSError("network down")
+
+    monkeypatch.setattr(gv, "_http_json", boom)
+    assert gv.fetch_arc_titles("https://x/api.php", "Dressrosa") == set()
+
+
+def test_arc_categories_exclude_episode_and_chapter_listings(monkeypatch):
+    """Measured against the live wiki 2026-08-26: searching `Dressrosa` in namespace 14
+    returns `Dressrosa Arc Episodes` and `Dressrosa Arc Chapters` alongside the cast
+    categories. Those hold episode and chapter PAGES, not names -- including them took the
+    union from 96 to 294 entries of mostly `Episode 629`-shaped noise."""
+    monkeypatch.setattr(
+        gv,
+        "_http_json",
+        lambda url: {
+            "query": {
+                "search": [
+                    {"title": "Category:Dressrosa Residents"},
+                    {"title": "Category:Dressrosa Arc Episodes"},
+                    {"title": "Category:Dressrosa Arc Chapters"},
+                    {"title": "Category:Dressrosa Saga Antagonists"},
+                ]
+            }
+        },
+    )
+    cats = gv.arc_categories("https://x/api.php", "Dressrosa")
+    assert "Category:Dressrosa Residents" in cats
+    assert "Category:Dressrosa Saga Antagonists" in cats
+    assert not any("Episodes" in c or "Chapters" in c for c in cats)
+
+
+def test_arc_page_links_supply_the_names_categories_miss(monkeypatch):
+    """Categories alone are not sufficient and this is measured, not theoretical: neither
+    `Rebecca` nor `Kyros` -- the arc's two most-mentioned characters -- appears in ANY
+    `Dressrosa *` category. Rebecca is filed under `Riku Family` and `Former Princesses`.
+    The arc PAGE's prose links carry them, so they are the primary source and categories
+    are the supplement."""
+    wikitext = (
+        "{{Infobox|junk=[[Navbox Junk]]}}\n"
+        "The [[Straw Hat Pirates]] arrive. [[Rebecca]] fights, and [[Kyros]] watches.\n"
+        "<ref>[[Reference Junk]]</ref>\n"
+    )
+    monkeypatch.setattr(gv, "_http_json", lambda url: {"parse": {"wikitext": {"*": wikitext}}})
+    names = gv.arc_page_links("https://x/api.php", "Dressrosa")
+    assert {"Rebecca", "Kyros", "Straw Hat Pirates"} <= names
+    # templates and refs are stripped: navbox pollution made prop=links unusable
+    assert "Navbox Junk" not in names
+    assert "Reference Junk" not in names
+
+
+def test_arc_page_links_is_empty_when_the_page_is_missing(monkeypatch):
+    def boom(url):
+        raise OSError("no such page")
+
+    monkeypatch.setattr(gv, "_http_json", boom)
+    assert gv.arc_page_links("https://x/api.php", "Nonesuch") == set()
+
+
+def test_a_character_named_season_resolves_to_nothing(monkeypatch):
+    """[S-7], measured: `Gaimon` is a One Pace season.nfo title AND a character page. An
+    earlier cut fell back to the bare title when `<arc> Arc` was missing, resolved the
+    character page, and harvested 48 entities from it -- a wrong-but-resolved page passing
+    as a cast. Only `<arc> Arc` counts; anything else is no resolution."""
+    seen = []
+
+    def fake(url):
+        seen.append(url)
+        if "Gaimon%20Arc" in url or "Gaimon+Arc" in url:
+            raise OSError("no such page")
+        raise AssertionError("must not fall back to the bare title")
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    assert gv.arc_page_links("https://x/api.php", "Gaimon") == set()
+    assert len(seen) == 1
