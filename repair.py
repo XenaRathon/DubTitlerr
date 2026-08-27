@@ -680,6 +680,26 @@ def process(conf_path):
                         rejected_secondary += 1
             audit.append((c["text"], new, ref[:80], latency_ms))
             repaired_lines.append({"orig": c["text"], "repaired": new, "ref": ref[:80], "latency_ms": latency_ms})
+            # The human rung of the ladder, for the branch that had none. accept_repair
+            # ADMITTED this repair and its own docstring says nothing below it checked the
+            # meaning -- `factory -> needle` passes every gate. So the admitted line is
+            # queued for the one reviewer who can judge it.
+            #
+            # MUST stay above `c["text"] = new`. Below the assignment, `original_text` would
+            # be the REPAIRED text and every entry would compare a line against itself --
+            # a queue that always looks unanimous.
+            #
+            # Also below the secondary-model block above, so `new` is the text actually
+            # applied rather than the first pass's proposal.
+            unresolved.record(
+                stem,
+                "repair_applied",
+                "accepted",
+                original_text=c["text"],
+                proposed_text=new,
+                reference=ref[:120] or None,
+                avg_logprob=c.get("avg_logprob"),
+            )
             c["text"] = new
             fixed += 1
     # rewrite srt from (possibly repaired) conf rows. conf.json stores text FLATTENED

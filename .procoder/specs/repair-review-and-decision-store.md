@@ -311,6 +311,16 @@ theirs, and nothing leaves their machine in this phase.
   invalidates only the episodes that actually change.
 - **Two shows whose directories share a basename.** Resolved the way `glossary_for()`
   already resolves it -- nearest ancestor wins.
+- **Repair re-runs over an episode that was already repaired.** `merge_pass.sh` calls
+  `repair.py` unconditionally and `conf.json` is never rewritten, so a second pass re-reads
+  the ORIGINAL text and re-selects the same targets -- `is_target()` keys on `avg_logprob`
+  and name-suspicion, neither of which a repair updates. Each pass therefore appends another
+  `repair_applied` entry for the same line. `unresolved.record` is an O(1) append by design
+  (the array version was O(n^2) I/O on a path firing ~86x per episode), so de-duplicating
+  inside it would reintroduce exactly what that note warns against. The de-duplication
+  belongs where the pair is already the key: once [S-4] consults the store, a settled line
+  is suppressed. Between shipping [S-1] and [S-4] a re-run can show a reviewer the same line
+  twice -- noisy, never wrong. Surfaced by the fifth-round review's Task 3 pass.
 - **`repair.py` reading the store while the server writes it.** Atomic temp + `os.replace`,
   so a reader sees the old file or the new one, never a partial.
 
