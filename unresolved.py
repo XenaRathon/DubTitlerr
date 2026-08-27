@@ -157,6 +157,33 @@ def pending(stem: str, primary_only: bool = False) -> list:
     return out
 
 
+CONF_SUFFIX = ".dubtitles.conf.json"
+
+
+def live_only(stem: str, entries: list) -> list:
+    """The entries still describing a line this episode actually contains.
+
+    A re-transcription replaces conf.json, and every queue entry written against the old
+    text is then about something that no longer exists: nothing will re-queue it, so nothing
+    will ever resolve it. Measured on the live library 2026-08-27 -- 6,364 One Pace entries
+    orphaned this way, against 0 that still matched.
+
+    FAILS OPEN, and deliberately opposite to the mux gate. Without conf.json neither can
+    tell an orphan from a live entry, and there the cost of guessing wrong is shipping an
+    unreviewed repair, so it holds everything; here the cost is hiding a question a human
+    could have answered, so it shows everything. Same ignorance, opposite safe direction.
+
+    Shared with mux.held_for_review rather than reimplemented -- two answers to "is this
+    entry still live" would drift, and the drift would be invisible until a reviewer was
+    shown a queue the gate disagreed with."""
+    try:
+        with open(out_for(stem + CONF_SUFFIX), encoding="utf-8") as f:
+            live = {decisions.key(c.get("text", "")) for c in json.load(f) if isinstance(c, dict)}
+    except (OSError, ValueError, TypeError):
+        return list(entries)
+    return [e for e in entries if decisions.key(e.get("original_text", "")) in live]
+
+
 def _rewrite(stem: str, doc: list) -> bool:
     """Whole-file replace, used only by resolve(). Atomic via temp + os.replace."""
     path = path_for(stem)

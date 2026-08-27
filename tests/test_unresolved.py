@@ -262,3 +262,55 @@ def test_a_store_write_failure_is_reported_not_swallowed(tmp_path, monkeypatch, 
 
     assert "not saved" in capsys.readouterr().out.lower()
     assert u.items(stem)[0].get("resolved") is False, "an unsaved verdict must stay in the queue"
+
+
+# --- live vs orphaned entries ------------------------------------------------
+# mux.held_for_review already had to answer this; the review page needs the same answer, and
+# two implementations of "is this entry still about a line the episode contains" would drift.
+
+
+def test_live_only_drops_entries_whose_original_is_gone(tmp_path):
+    """An entry orphaned by a re-transcription describes text the episode no longer has.
+    Nothing will re-queue it, so nothing will ever resolve it -- it is not a question anyone
+    can answer, and showing it is how a review queue of 6,000 dead items happens."""
+    import json as _j
+
+    import unresolved as u
+
+    stem = str(tmp_path / "ep")
+    with open(stem + ".dubtitles.conf.json", "w") as f:
+        _j.dump([{"start": 0.0, "end": 2.0, "text": "a line the episode still has"}], f)
+    entries = [
+        {"stage": "repair_applied", "reason": "accepted", "original_text": "a line the episode still has"},
+        {"stage": "repair_applied", "reason": "accepted", "original_text": "text from an OLD transcript"},
+    ]
+
+    live = u.live_only(stem, entries)
+
+    assert [e["original_text"] for e in live] == ["a line the episode still has"]
+
+
+def test_live_only_normalises_like_the_decision_store(tmp_path):
+    """Matched through decisions.key, so whitespace or case cannot orphan a live entry."""
+    import json as _j
+
+    import unresolved as u
+
+    stem = str(tmp_path / "ep_ws")
+    with open(stem + ".dubtitles.conf.json", "w") as f:
+        _j.dump([{"start": 0.0, "end": 2.0, "text": "I saw spondum"}], f)
+
+    assert len(u.live_only(stem, [{"stage": "repair_applied", "original_text": "  I saw   SPONDUM "}])) == 1
+
+
+def test_live_only_keeps_everything_when_conf_is_unreadable(tmp_path):
+    """Without conf.json an orphan cannot be told from a live entry. The mux gate fails
+    CLOSED there (holds everything) because the cost of guessing wrong is shipping an
+    unreviewed repair; the review page fails OPEN for the same reason inverted -- hiding a
+    live question is worse than showing a dead one."""
+    import unresolved as u
+
+    stem = str(tmp_path / "ep_noconf")
+    entries = [{"stage": "repair_applied", "original_text": "anything"}]
+
+    assert u.live_only(stem, entries) == entries

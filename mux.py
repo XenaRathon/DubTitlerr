@@ -53,7 +53,7 @@ from common import MEDIA_GID, MEDIA_UID, STAMP_SUFFIX, TRACK_NAME, is_our_track,
 # Imported as a NAME so "which show is this path in" has exactly one definition, shared
 # with the decision store. A second answer here would gate one show while storing verdicts
 # under another, and the two would only disagree for the shows an operator actually listed.
-from decisions import decisions_for, key, lookup, show_for
+from decisions import decisions_for, lookup, show_for
 
 ROOTS = os.environ.get("MUX_ROOTS", "/data/Media/Anime Library").split(":")
 # [S-6] Shows whose episodes wait for a human before they are released. Colon list, the
@@ -377,13 +377,12 @@ def held_for_review(stem):
     # FAILS CLOSED. An unreadable conf.json means we cannot tell an orphan from a live entry,
     # and the alternative to holding is releasing unreviewed repairs. Normalised with
     # decisions.key so a doubled space cannot orphan a live entry.
-    try:
-        with open(stem + ".dubtitles.conf.json", encoding="utf-8") as f:
-            live = {key(c.get("text", "")) for c in json.load(f) if isinstance(c, dict)}
-    except (OSError, ValueError, TypeError):
-        live = None
-    if live is not None:
-        pend = [e for e in pend if key(e.get("original_text", "")) in live]
+    # unresolved.live_only answers the same question for the review page, and it fails OPEN
+    # where this must fail CLOSED -- so the SET is shared and the direction is not. An
+    # unreadable conf.json means an orphan cannot be told from a live entry, and here the
+    # cost of guessing wrong is releasing an unreviewed repair.
+    if os.path.exists(stem + unresolved.CONF_SUFFIX):
+        pend = unresolved.live_only(stem, pend)
         if not pend:
             return False
     # Entries carry no timestamp, so the sidecar's mtime is the only staleness signal

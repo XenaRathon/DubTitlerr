@@ -152,6 +152,21 @@ def resolve_token(token_dir: str = "") -> str:
     return tok
 
 
+def announce_token(token_dir: str = "") -> None:
+    """Say WHERE the token is on every start; say what it IS only when it is new.
+
+    resolve_token prints the value at the moment it generates one, and never again -- so an
+    operator returning after the container log had rotated had no way to find it short of
+    knowing the docker exec incantation. A path and a command are not a credential."""
+    d = token_dir or TOKEN_DIR
+    if "REVIEW_TOKEN" in os.environ:
+        log("review server: using REVIEW_TOKEN from the environment")
+        return
+    path = os.path.join(d, "review_token")
+    log(f"review server: token file {path} (0600, root) — read it with:")
+    log("review server:   docker exec <container> cat " + path)
+
+
 def authorised(method: str, presented) -> bool:
     """Write routes require the token; read routes never do."""
     if method.upper() in ("GET", "HEAD"):
@@ -200,12 +215,30 @@ def _resolve(stem: str):
 
 
 def handle_index() -> dict:
-    """Every episode with something pending, and how much."""
+    """Every episode with something pending, split by what kind of question it is.
+
+    ADMITTED and REFUSED are not the same job and one number for both misleads. An admitted
+    repair is a change nothing checked the meaning of -- it SHIPPED, and `factory -> needle`
+    passes every gate; that is the reason this whole loop exists. A refusal means the ASR
+    text shipped, which is the safe outcome, and reviewing it asks the audit question of
+    whether the guard was too strict. Measured on the live library 2026-08-27: 8,662 pending
+    items, every one of them a refusal and none an admitted repair -- a single count read as
+    thousands of the urgent kind."""
     out = []
     for stem in known_stems():
-        n = len([e for e in unresolved.pending(stem, primary_only=True)])
-        if n:
-            out.append({"stem": stem, "name": os.path.basename(stem), "pending": n})
+        live = unresolved.live_only(stem, unresolved.pending(stem, primary_only=True))
+        if not live:
+            continue
+        admitted = sum(1 for e in live if e.get("stage") == "repair_applied")
+        out.append(
+            {
+                "stem": stem,
+                "name": os.path.basename(stem),
+                "pending": len(live),
+                "admitted": admitted,
+                "refused": len(live) - admitted,
+            }
+        )
     return {"episodes": out}
 
 
@@ -227,7 +260,10 @@ def handle_episode(stem: str, all_reasons: bool = False) -> dict:
     if ep is None:
         return {"error": "unknown episode"}
     items = unresolved.items(ep)
-    wanted = unresolved.pending(ep, primary_only=not all_reasons)
+    # Entries orphaned by a re-transcription describe text this episode no longer contains.
+    # Nothing will re-queue them so nothing will ever resolve them; the mux gate has ignored
+    # them since [S-6] and the page was still listing them.
+    wanted = unresolved.live_only(ep, unresolved.pending(ep, primary_only=not all_reasons))
     entries = [_decorate(ep, e, items.index(e)) for e in wanted]
     return {"stem": ep, "name": os.path.basename(ep), "entries": entries}
 
@@ -357,7 +393,10 @@ def render_page(stem: str = "") -> str:
         # leaves a raw `&`, which terminates the parameter -- an ordinary thing to have in a
         # show's directory name.
         href = "/?stem=" + html.escape(quote(ep["stem"], safe="/"))
-        rows.append(f'<li><a href="{href}">{html.escape(ep["name"])}</a> — {ep["pending"]}</li>')
+        rows.append(
+            f'<li><a href="{href}">{html.escape(ep["name"])}</a> — '
+            f"<b>{ep['admitted']} admitted</b> (shipped unchecked), {ep['refused']} refused by the guard</li>"
+        )
     # Only on an episode page. A verdict already changes what the NEXT repair run ships;
     # this is for an episode that has ALREADY been muxed, where nothing would re-trigger it.
     # It costs a re-mux of a multi-GB file, so the button says so rather than just doing it.
@@ -378,8 +417,13 @@ def render_page(stem: str = "") -> str:
         f"{apply_html}"
         "<script>"
         f"const STEM={_js(doc.get('stem', ''))};"
+        # Restored on load and saved on every edit. The server never renders the value --
+        # the browser holds it, which is where it already was the moment it was pasted.
+        "const TOK=document.getElementById('tok');"
+        "try{TOK.value=localStorage.getItem('dubtitlerr_token')||''}catch(e){}"
+        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}});"
         "async function post(p,b){return (await fetch(p,{method:'POST',headers:{'Content-Type':'application/json',"
-        f"'{TOKEN_HEADER}':document.getElementById('tok').value}},"
+        f"'{TOKEN_HEADER}':TOK.value}},"
         "body:JSON.stringify(b)})).json()}"
         "async function decide(i,v){const t=document.getElementById('t'+i).value;"
         "const r=await post('/api/decide',{stem:STEM,index:i,verdict:v,text:t});"
@@ -487,7 +531,8 @@ class BoundedHTTPServer(http.server.ThreadingHTTPServer):
 
 
 def serve(port: int = 0):
-    resolve_token()  # generates and prints on first start, before anything can be served
+    resolve_token()  # generates and prints the VALUE on first start, before anything is served
+    announce_token()  # and on every start, says where to find it
     srv = BoundedHTTPServer((REVIEW_BIND, port or REVIEW_PORT), Handler)
     log(f"review server: listening on {REVIEW_BIND}:{port or REVIEW_PORT}")
     srv.serve_forever()

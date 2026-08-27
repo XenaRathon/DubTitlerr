@@ -131,8 +131,11 @@ def test_forcing_an_unanchored_card_is_labelled_permanent(tmp_path, monkeypatch)
     force there is unrecoverable. Every S31 card is unanchored, which is why this warning
     exists rather than being a nicety."""
     stem = str(tmp_path / "ep_unanch")
+    # BOTH originals are real cards of this episode. An entry whose text is not in conf.json
+    # is an orphan and is now filtered out of the view, so a fixture that invents originals
+    # would silently test an empty list.
     with open(stem + ".dubtitles.conf.json", "w") as f:
-        json.dump([{"start": 0.0, "end": 2.0, "text": "x"}], f)
+        json.dump([{"start": 0.0, "end": 2.0, "text": "x"}, {"start": 2.0, "end": 4.0, "text": "p"}], f)
     unresolved.record(stem, "repair", "rejected_guard", original_text="x", proposed_text="y", reference="the fansub line")
     unresolved.record(stem, "repair", "rejected_guard", original_text="p", proposed_text="q")
     monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
@@ -245,8 +248,10 @@ def test_episode_text_is_escaped_into_the_page(tmp_path, monkeypatch):
     a page served by a root process. An episode whose dialogue happens to contain markup
     would otherwise execute in the reviewer's browser."""
     stem = str(tmp_path / "ep_xss")
+    # The hostile text is the CARD's text, which is the realistic shape: original_text comes
+    # from conf.json, so a card whose dialogue contains markup is how this actually arrives.
     with open(stem + ".dubtitles.conf.json", "w") as f:
-        json.dump([{"start": 0.0, "end": 2.0, "text": "x"}], f)
+        json.dump([{"start": 0.0, "end": 2.0, "text": "<script>alert(1)</script>"}], f)
     unresolved.record(stem, "repair_applied", "accepted", original_text="<script>alert(1)</script>", proposed_text="a & b")
     monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
 
@@ -664,3 +669,87 @@ def test_the_page_offers_a_way_to_apply_decisions_to_an_episode(tmp_path, monkey
     assert 'id="apply"' in page, "an episode page needs a control that applies its decisions"
     assert "/api/apply" in page, "wired to the route, not just present"
     assert "re-mux" in page.lower(), "and it says what it costs before you press it"
+
+
+def test_every_start_says_where_the_token_is_even_when_it_is_not_new(tmp_path, monkeypatch, capsys):
+    """The value is printed only when GENERATED. On every later start the token is read from
+    the file and nothing was logged, so an operator coming back a week later -- after the log
+    rotated -- had no way to find it short of knowing the docker exec incantation.
+
+    The value still appears once and only once. What every start gets is the PATH and how to
+    read it, which is not a credential."""
+    monkeypatch.delenv("REVIEW_TOKEN", raising=False)
+    monkeypatch.setattr(review_server, "_GENERATED", None)
+    first = review_server.resolve_token(str(tmp_path))
+    out_new = capsys.readouterr().out
+    assert first in out_new, "a newly generated token is shown once, or nobody can ever use it"
+
+    monkeypatch.setattr(review_server, "_GENERATED", None)
+    review_server.announce_token(str(tmp_path))
+    out_again = capsys.readouterr().out
+
+    assert first not in out_again, "the value is not re-printed on a restart"
+    assert "review_token" in out_again and "docker exec" in out_again, "but where to find it is"
+
+
+def test_the_episode_view_hides_entries_orphaned_by_a_re_transcription(tmp_path, monkeypatch):
+    """Measured on the live library 2026-08-27: 6,364 One Pace entries describe text no
+    episode contains any more, against 0 that still matched. Nothing will re-queue them, so
+    nothing will ever resolve them -- they are not questions a human can answer, and showing
+    them is how a queue of thousands of dead items happens. The mux gate already ignores
+    them; the page was still listing them."""
+    stem = str(tmp_path / "ep_orph")
+    with open(stem + ".dubtitles.conf.json", "w") as f:
+        json.dump([{"start": 0.0, "end": 2.0, "text": "a line the episode still has"}], f)
+    unresolved.record(stem, "repair_applied", "accepted", original_text="a line the episode still has", proposed_text="fix")
+    unresolved.record(stem, "repair_applied", "accepted", original_text="text from an OLD transcript", proposed_text="fix2")
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    entries = review_server.handle_episode(stem)["entries"]
+
+    assert [e["original_text"] for e in entries] == ["a line the episode still has"]
+
+
+def test_the_index_separates_admitted_repairs_from_refusals(tmp_path, monkeypatch):
+    """One number for both was misleading in exactly the way that matters.
+
+    An ADMITTED repair is a change nothing checked the meaning of -- it shipped, and
+    `factory -> needle` passes every gate. A REFUSAL means the ASR text shipped, which is the
+    safe outcome; reviewing it asks whether the guard was too strict. The first is the reason
+    this loop exists, the second is an audit. A single "pending: 23" told the operator they
+    had 23 of the first when they had 0."""
+    stem = _episode(tmp_path)  # 1 accepted + 1 rejected_guard, both live against its conf
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    ep = review_server.handle_index()["episodes"][0]
+
+    assert ep["admitted"] == 1, "repairs that shipped unchecked"
+    assert ep["refused"] == 1, "repairs the gate turned down"
+    assert ep["pending"] == 2, "and the total still adds up"
+
+
+def test_the_index_page_shows_both_counts(tmp_path, monkeypatch):
+    """The split has to reach the page, or it is a field nobody sees."""
+    stem = _episode(tmp_path)
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    page = review_server.render_page()
+
+    assert "admitted" in page.lower() and "refused" in page.lower()
+
+
+def test_the_page_remembers_the_token_in_the_browser(tmp_path, monkeypatch):
+    """Paste it once per browser, not once per visit.
+
+    The token is generated, 0600 and root-owned, so retrieving it means a docker exec
+    incantation nobody should be expected to remember. It is already in the reviewer's
+    browser the moment they paste it, so keeping it in localStorage gives up nothing and
+    removes the only genuinely annoying step. It is NEVER rendered into the page by the
+    server -- the browser puts it there, which is a different thing."""
+    stem = _episode(tmp_path)
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    page = review_server.render_page(stem)
+
+    assert "localStorage" in page, "the token must survive a reload"
+    assert "dubtitlerr_token" in page, "under a name that will not collide"
