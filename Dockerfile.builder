@@ -34,15 +34,23 @@ RUN apt-get update \
 # model generate.py asks for cannot drift apart. A mismatch is not an error — faster-whisper
 # would silently re-download the missing model into /models on every container start.
 #
-#   large-v3       (default, ~3GB)   -- the 1060 6GB box; fits at the default beam_size=7.
-#   large-v3-turbo (~1.5GB)          -- the 3500g node's 1050ti 4GB, where large-v3 OOMs at
-#                                       beam 7 and only fits forced down to greedy, which is
-#                                       measurably worse than turbo at the full beam.
-#                                       Build it with:
+#   large-v3-turbo (default, ~1.5GB) -- fits every card this runs on at the full
+#                                       beam_size=7, including the 3500g node's 1050ti 4GB
+#                                       where large-v3 OOMs at beam 7 and only fits forced
+#                                       down to greedy -- measurably worse there than turbo
+#                                       at the full beam (flagged=76/over_cps=111 vs
+#                                       flagged=35/over_cps=98, peak 1405 MiB).
+#   large-v3       (~3GB)            -- the 1060 6GB box, where it fits at beam 7. Opt back
+#                                       in with:
 #                                         docker build -f Dockerfile.builder \
-#                                           --build-arg WHISPER_MODEL=large-v3-turbo \
+#                                           --build-arg WHISPER_MODEL=large-v3 \
 #                                           -t dubtitle-builder:latest .
-ARG WHISPER_MODEL=large-v3
+#
+# Turbo became the default 2026-08-27: it is what the production image has been built with
+# since the 1050ti swap, so the default now matches the artifact that actually ships. Its
+# known quality regression is on *translation*, and REQUIRE_ENG=1 means this pipeline only
+# ever transcribes English audio to English text -- it never translates.
+ARG WHISPER_MODEL=large-v3-turbo
 ENV WHISPER_MODEL=${WHISPER_MODEL}
 ENV MODEL_DIR=/models
 RUN python3 -c "import os; from faster_whisper import WhisperModel; WhisperModel(os.environ['WHISPER_MODEL'], device='cpu', compute_type='int8', download_root='/models')"

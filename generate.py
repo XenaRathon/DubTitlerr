@@ -10,7 +10,7 @@ faster_whisper already present).
 
 Per video:
   1. pick the English audio stream (by language tag) and extract 16k mono wav,
-  2. faster-whisper (large-v3, or turbo on small-VRAM cards -- see WHISPER_MODEL below),
+  2. faster-whisper (large-v3-turbo, or large-v3 on 6GB+ cards -- see WHISPER_MODEL below),
      task=transcribe (English dub -> English text),
      word_timestamps + vad_filter + initial_prompt glossary,
   3. conservative name-correction sweep against the franchise glossary,
@@ -22,7 +22,7 @@ Usage:
   python3 generate.py --root "/media/Anime Library/One Pace/Season 15"  # walk dir
 
 Env:
-  WHISPER_MODEL   default large-v3  (in the container this is set FOR you by the image --
+  WHISPER_MODEL   default large-v3-turbo  (in the container this is set FOR you by the image --
                   Dockerfile.builder bakes a model and exports its name as this var, so the
                   default below only applies to a bare checkout. See the MODEL comment.)
   COMPUTE_TYPE    default int8  (Pascal-friendly, fits 6GB; try float16 for max quality)
@@ -84,14 +84,24 @@ GLOSS_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
 # exports the same name as a container ENV, which wins over this default; the value here
 # only decides what a bare checkout (or a container run with the ENV cleared) loads.
 #
-# large-v3 stays the fallback because it is what the 6GB 1060 runs, and it fits there at
-# the default beam_size=7. On the 3500g node's 4GB 1050ti it does not: benched on a real
-# episode it OOM'd at beam 7 and only fit forced down to greedy, where it came out WORSE
-# (flagged=76, over_cps=111) than large-v3-turbo at the full beam (flagged=35, over_cps=98,
-# peak 1405 MiB). Turbo is safe to reach for there because its known quality regression is
-# on *translation*, and REQUIRE_ENG=1 means this pipeline only ever transcribes English
-# audio to English text -- it never translates.
-MODEL = os.environ.get("WHISPER_MODEL", "large-v3")
+# large-v3-turbo is the fallback because it fits EVERY card this runs on at the default
+# beam_size=7, and because it is what the production image has been built with since the
+# 1050ti swap -- the default now names the artifact that actually ships. large-v3 does not
+# fit the 3500g node's 4GB 1050ti: benched on a real episode it OOM'd at beam 7 and only
+# fit forced down to greedy, where it came out WORSE (flagged=76, over_cps=111) than turbo
+# at the full beam (flagged=35, over_cps=98, peak 1405 MiB). It still fits the 6GB 1060 at
+# beam 7, which is what the build-arg is for. Turbo is safe to default to because its known
+# quality regression is on *translation*, and REQUIRE_ENG=1 means this pipeline only ever
+# transcribes English audio to English text -- it never translates.
+#
+# NOT a TRANSCRIBE_VERSION bump. common.py names the whisper model as decoder-affecting and
+# says nothing detects it mechanically -- but the library's 576 v4 stamps were produced by
+# THIS decoder (the image has been turbo-built since the swap), so they are transcribe-fresh
+# already. Bumping would burn ~2 GPU-days to record a bookkeeping change, which is the exact
+# trade common.py's 4/7 adoption note declines. A downstream install that built with the old
+# large-v3 default and then rebuilds DOES change decoder without a bump; the drift test in
+# tests/test_dockerfile_copy.py cannot see that, and it is recorded here as the known gap.
+MODEL = os.environ.get("WHISPER_MODEL", "large-v3-turbo")
 COMPUTE = os.environ.get("COMPUTE_TYPE", "int8")
 MODEL_DIR = os.environ.get("MODEL_DIR", "/subgen/models")
 # V2 A8: optional pre-transcription audio cleanup (default highpass + dynamic-range
