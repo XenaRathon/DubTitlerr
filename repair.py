@@ -146,7 +146,12 @@ def _glossary_terms(gloss, arc=None):
     tags = gloss.get("arc_tags") or {}
     if arc and tags:
         # stable partition: in-arc terms keep their relative order, then the rest
-        in_arc = [t for t in out if arc in (tags.get(t.lower()) or ())]
+        # An UNTAGGED name defaults IN. The 92 names already in the library predate
+        # tagging; reading "no tags" as "not this arc" would demote the whole existing
+        # glossary behind a handful of newly tagged ones, making the first weighted run a
+        # strict subset of what the model already had. Only a name KNOWN to belong to other
+        # arcs is demoted.
+        in_arc = [t for t in out if arc in (tags.get(t.lower()) or (arc,))]
         out = in_arc + [t for t in out if t not in set(in_arc)]
     # C12: cap the prompt size on WHOLE-TERM boundaries -- a raw [:1000] slice can cut a
     # name in half mid-word, which would feed the model a garbled "canonical spelling".

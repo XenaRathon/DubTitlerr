@@ -1566,3 +1566,23 @@ def test_unanchored_cards_reach_the_llm_when_enabled(monkeypatch):
     monkeypatch.setattr(repair, "REPAIR_UNANCHORED", True)
     assert repair.skips_unanchored("") is False
     assert repair.skips_unanchored("some fansub line") is False
+
+
+def test_an_untagged_legacy_name_is_never_demoted(monkeypatch):
+    """[S-11] The 92 names already in the library predate tagging. Treating "no tags" as
+    "not in this arc" would demote the entire existing glossary behind a handful of newly
+    tagged names -- making the first weighted run a strict SUBSET of what the model already
+    had. Untagged means unknown, and unknown defaults IN."""
+    g = gl(names=["Doflamingo", "Luffy", "Zoro"])
+    g["arc_tags"] = {"doflamingo": ["Dressrosa"]}  # only one name tagged
+    terms = repair._glossary_terms(g, arc="Dressrosa").split(", ")
+    assert set(terms[:3]) == {"Doflamingo", "Luffy", "Zoro"}
+
+
+def test_a_name_tagged_to_another_arc_sorts_after_the_current_one(monkeypatch):
+    """A name KNOWN to belong elsewhere is the only thing weighting demotes."""
+    g = gl(names=["Doflamingo", "Spandam", "Luffy"])
+    g["arc_tags"] = {"doflamingo": ["Dressrosa"], "spandam": ["Enies Lobby"]}
+    terms = repair._glossary_terms(g, arc="Dressrosa").split(", ")
+    assert terms.index("Doflamingo") < terms.index("Spandam")
+    assert terms.index("Luffy") < terms.index("Spandam")

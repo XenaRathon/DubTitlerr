@@ -90,6 +90,51 @@ def load(path: str) -> dict:
     return load_dict({})
 
 
+def tag_names_by_arc(gloss: dict, arc: str, arc_titles: set) -> int:
+    """Tag this glossary's names with an arc they belong to. Returns how many were tagged.
+
+    S-11. The tag is a SET of arcs, not one season, and it comes from wiki MEMBERSHIP
+    rather than from which season's transcript happened to produce the name. Recording a
+    single "the season that acquired it" contradicts the cross-arc case the spec already
+    documents: Caesar Clown is a Punk Hazard antagonist who appears in Dressrosa, so a
+    single-valued tag would demote him in one of the two arcs he is genuinely in.
+
+    Matching is on the REDUCED form, so the glossary's short name matches the wiki's full
+    title -- `Doflamingo` against `Donquixote Doflamingo`, `Luffy` against
+    `Monkey D. Luffy`. A name the arc does not contain is left UNTAGGED rather than tagged
+    falsely: untagged defaults IN at the consumer, whereas a wrong tag actively demotes a
+    name in the arcs where it belongs.
+
+    An empty ``arc_titles`` changes nothing. That is the [S-7] path -- an arc that would
+    not resolve must not be able to clear tags that other arcs established."""
+    if not arc_titles:
+        return 0
+    # Index the whole title AND each of its words, so a glossary short name matches a
+    # fuller wiki title from either end: `Caesar` -> `Caesar Clown`, `Doflamingo` ->
+    # `Donquixote Doflamingo`, `Luffy` -> `Monkey D. Luffy`. Words shorter than
+    # MIN_FUZZY_LEN are skipped for the same reason the fuzzy tier skips them -- `D.` in
+    # `Monkey D. Luffy` would match anything.
+    reduced = set()
+    for t in arc_titles:
+        reduced.add(re.sub(r"[^a-z0-9]", "", t.lower()))
+        for word in t.split():
+            w = re.sub(r"[^a-z0-9]", "", word.lower())
+            if len(w) >= MIN_FUZZY_LEN:
+                reduced.add(w)
+    tags = gloss.setdefault("arc_tags", {})
+    tagged = 0
+    for name in gloss.get("names") or []:
+        key = re.sub(r"[^a-z0-9]", "", name.lower())
+        if not key or key not in reduced:
+            continue
+        arcs = tags.setdefault(name.lower(), [])
+        if arc not in arcs:
+            arcs.append(arc)
+            arcs.sort()
+        tagged += 1
+    return tagged
+
+
 def arc_for(video_path: str) -> str | None:
     """The arc name for an episode, from its season's ``season.nfo`` ``<title>``.
 
