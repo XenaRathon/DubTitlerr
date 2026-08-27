@@ -433,9 +433,21 @@ def substitutes_a_vouched_name(orig, new, gloss):
 def accept_repair(orig, new, ref, dur, gloss):
     """Whether to write ``new`` over ``orig`` on a card lasting ``dur`` seconds.
 
-    A dubtitle must match the DUB AUDIO. The reference is a different translation of the
-    same scene, so lifting its phrasing produces a subtitle that reads well and is wrong
-    against the sound — the worst kind of error here, because it looks correct.
+    A dubtitle must carry what the DUB AUDIO says. The reference is a different translation
+    of the same scene, so lifting its phrasing produces a subtitle that reads well and is
+    wrong against the sound — the worst kind of error here, because it looks correct.
+
+    The standard is REFERENT AND SENSE, not word-for-word fidelity (owner's bar,
+    2026-08-26). A deviation carrying the same meaning is acceptable -- `Hawkeye Dracule
+    Mihawk` shortened to `Mihawk` was ruled acceptable explicitly, being the same character
+    and the same information. A deviation changing the meaning is not: `factory` -> `needle`
+    destroys it, `VIVRA card` -> `Vivi card` swaps an item for a character.
+
+    NOTHING BELOW ENFORCES THAT. The checks here are mechanical -- length ratio, card fit,
+    reference borrowing, invented names -- and none can tell "same meaning" from "meaning
+    destroyed"; both examples above pass this function today, verified 2026-08-26. The bar
+    is enforced by human review of the repaired lines, which is why the spec makes that
+    review a required step of accepting a measured episode rather than an optional one.
 
     Measured over every repair the library had accumulated before this guard: qwen3:8b
     imported reference words in 84.1% of its repairs (29.2% imported three or more),
