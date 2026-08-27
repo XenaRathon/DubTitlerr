@@ -46,7 +46,12 @@ import json
 import os
 import tempfile
 
+import decisions
 from common import SIDECAR_MODE, out_for
+
+# Imported as a NAME so the CLI resolves a show exactly the way the store and the mux gate
+# do. decisions.py imports only stdlib, so this cannot cycle back through here.
+from decisions import show_for
 
 SUFFIX = ".dubtitles.unresolved.jsonl"
 
@@ -240,6 +245,50 @@ def _render(i: int, e: dict) -> str:
     return "\n".join(lines)
 
 
+# What a CLI answer MEANS, per stage. "keep as-is" is about the CARD, not the proposal, and
+# the card shows different things depending on why the entry was queued:
+#
+#   repair_applied/accepted -- the repair SHIPPED, so the card shows it. Keeping it as-is
+#       endorses the repair (`accept`); needing fixing rejects it.
+#   repair/rejected_guard, rejected_name_invented -- the repair was REFUSED, so the card
+#       shows the ASR text. Keeping it as-is endorses the refusal (`reject` of the
+#       proposal); needing fixing says the ASR is wrong and the refused proposal should
+#       stand, which is `force`.
+#
+# Recording `reject` for a "needs fixing" on both stages would silently invert the
+# reviewer's meaning on half of them.
+_CLI_VERDICT = {
+    ("repair_applied", "accepted"): {"k": "accept", "f": "reject"},
+    ("repair", "rejected_guard"): {"k": "reject", "f": "force"},
+    ("repair", "rejected_name_invented"): {"k": "reject", "f": "force"},
+    ("repair", "decision_unfittable"): {"k": "reject", "f": "reject"},
+}
+
+
+def _record_verdict(stem: str, e: dict, ans: str, note: str) -> bool:
+    """Persist the CLI's answer as a real verdict. True when it is safely stored.
+
+    Returns True for an entry there is nothing to store -- `no_reference` and `llm_empty`
+    carry no proposal, so they have no pair to key on and were never decisions in the first
+    place. False means a verdict was WANTED and could not be written, which must stop the
+    entry being marked resolved: a review that silently discards the human's decision is
+    worse than one that errors, because the human believes the line is settled."""
+    verdict = _CLI_VERDICT.get((str(e.get("stage", "")), str(e.get("reason", ""))), {}).get(ans)
+    if not verdict or not e.get("proposed_text"):
+        return True
+    show = show_for(stem)
+    if not show:
+        print("  NOT SAVED: cannot resolve a show for this episode — check GLOSSARY_DIR")
+        return False
+    ddir = decisions.DECISIONS_DIR
+    store = decisions.record(decisions.load(show, ddir), e.get("original_text", ""), e["proposed_text"], verdict, note=note)
+    if not decisions.save(store, show, ddir):
+        print(f"  NOT SAVED: the verdict for this line could not be written to {ddir}")
+        return False
+    print(f"  recorded {verdict} for {show}")
+    return True
+
+
 def main(argv=None):
     import argparse
     import glob as _glob
@@ -273,7 +322,12 @@ def main(argv=None):
                 return 0
             if ans in ("k", "f"):
                 note = input("  note (optional): ").strip()
-                resolve(stem, idx, accept=(ans == "k"), note=note)
+                # The VERDICT first, then the flag. The verdict is what repair.py consults
+                # and what the mux gate treats as the hold's authority; the flag only empties
+                # this queue. Marking the entry resolved on an unsaved verdict would hide the
+                # loss from the next walk, which is the one place it would still be visible.
+                if _record_verdict(stem, e, ans, note):
+                    resolve(stem, idx, accept=(ans == "k"), note=note)
     print(f"\n{total} pending across {len(stems)} episode(s)." if total else "\nNothing pending.")
     return 0
 

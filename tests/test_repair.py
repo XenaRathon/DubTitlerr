@@ -2022,3 +2022,39 @@ def test_a_second_repair_pass_does_not_re_queue_a_line_already_in_the_queue(tmp_
     queued = [e for e in unresolved.items(stem) if e["stage"] == "repair_applied"]
     assert len(queued) == 1, "a second sweep must not re-queue a line the reviewer already has"
     assert os.path.getmtime(unresolved.path_for(stem)) == first, "and must not refresh the staleness clock"
+
+
+def test_a_changed_proposal_supersedes_the_pending_one_for_that_line(tmp_path, monkeypatch):
+    """[F-2]. The re-queue suppression keys on the (original, proposed) PAIR, which is right
+    for an identical re-run and wrong for a proposal that changes.
+
+    Change the model, the glossary or the reference and the same ASR line yields Y where it
+    yielded X. `(orig, X)` is queued, so `(orig, Y)` is appended alongside it: the reviewer
+    sees one card twice with two different proposals, and a verdict on either leaves the
+    other pending -- which for a gated show keeps the episode held on a proposal nobody is
+    going to ship.
+
+    The superseded entry is RESOLVED rather than deleted. The queue is the audit trail, not
+    a worklist that shrinks (`unresolved.resolve`'s docstring), and what the model proposed
+    before is exactly the evidence for whether the gate is drifting."""
+    stem, conf_path = _one_target(tmp_path, "ep_superseded")
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_superseded.mkv"))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: ({}, "Show"))
+
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"], hard_fixes={"Spandom": "Spandam"}))
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "I saw Spandom")
+    repair.process(conf_path)
+
+    # the glossary changes, so the same line now yields a different proposal
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"], hard_fixes={"Spandom": "Spandam there"}))
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "I saw Spandom")
+    repair.process(conf_path)
+
+    applied = [e for e in unresolved.items(stem) if e["stage"] == "repair_applied"]
+    pending_now = [e for e in applied if not e.get("resolved")]
+    assert len(applied) == 2, "both proposals stay in the audit trail"
+    assert len(pending_now) == 1, "but the reviewer is asked about the card ONCE"
+    assert pending_now[0]["proposed_text"] == "I saw Spandam there", "and about the proposal that would ship"
+    superseded = [e for e in applied if e.get("resolved")]
+    assert superseded[0]["note"].startswith("superseded"), "the older one says why it left the queue"

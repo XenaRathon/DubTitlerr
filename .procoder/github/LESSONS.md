@@ -245,3 +245,36 @@ git config commit.template .procoder/github/COMMIT_TEMPLATE.md
 - Adaptation: when a test enforces a rule over a LIST, assert the list's own membership as
   well as the per-item property. "Is everything X depends on present" is not "is X present".
   Worth sweeping wherever a test iterates a registry.
+
+## 2026-08-27 external review — the oldest entry point was the one nobody checked
+
+- Class: correctness
+- Missed by: rubric
+- Finding: five internal review rounds examined the decision store, the repair consult, the
+  write-back, the mux gate and the HTTP server. None looked at `unresolved.py --review`, the
+  CLI that predates all of them. It does not import `decisions` at all, so a human answering
+  "needs fixing" set a flag, wrote nothing durable, and had the repair re-applied on the next
+  run and suppressed from the queue — their judgement dropped in silence while the audit
+  trail recorded that they had made one. The CLI's reject was indistinguishable from its
+  accept.
+- Missed because: every internal round reviewed the code that had just changed. The CLI had
+  not changed, so nothing drew attention to it — but the NEW concept (a durable verdict)
+  changed what the old code was required to do.
+- Adaptation: when a change introduces a durable concept, list every existing entry point
+  that produces the same KIND of decision and check each one writes it. This is the
+  sprint-004 lesson (enumerate the other actors) applied to inputs rather than to writes.
+
+## 2026-08-27 self — a mutation that changes nothing may be pointing at dead code
+
+- Class: code-quality
+- Missed by: rubric
+- Finding: `repair.py`'s supersession loop was written with an `if prop_old != pair[1]`
+  guard. A mutation flipping it to `if True` changed no test result. The reflex is "a test is
+  missing"; the truth was that an identical pair can never reach that line, because
+  `pair not in queued_pairs` already skipped it and `queued_pairs` includes pending entries.
+  The condition could never be false.
+- Missed because: an uncaught mutation is habitually read as a coverage gap, and that reading
+  is usually right — so the other possibility does not get considered.
+- Adaptation: when a mutation changes no behaviour, check whether the mutated line is
+  reachable in the false case before writing a test for it. Dead code is worth deleting, not
+  covering, and a test written for it would have asserted something that cannot happen.
