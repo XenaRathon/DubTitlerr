@@ -62,22 +62,22 @@ dialogue.
 
 ## Edge cases and failure modes
 
-| Case | Expected |
-|---|---|
-| Genuinely repetitive real line ("No no no no") | Within-card: only dropped if it's *almost entirely* the repeat; tune so short emphatic repeats survive. Across-card: ≤3 survive. |
-| Low-conf but real quiet line (single weak signal) | Kept + flagged, never dropped. |
-| Near-identical (punctuation/case differ) consecutive cards | Counted as duplicates for the run collapse (normalized compare). |
-| Collapsed run timing | Keep the first card's start; extend its end to the run's last end. |
-| Empty after drops | Fine (SRT may be short); never error. |
+| Case                                                       | Expected                                                                                                                         |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Genuinely repetitive real line ("No no no no")             | Within-card: only dropped if it's _almost entirely_ the repeat; tune so short emphatic repeats survive. Across-card: ≤3 survive. |
+| Low-conf but real quiet line (single weak signal)          | Kept + flagged, never dropped.                                                                                                   |
+| Near-identical (punctuation/case differ) consecutive cards | Counted as duplicates for the run collapse (normalized compare).                                                                 |
+| Collapsed run timing                                       | Keep the first card's start; extend its end to the run's last end.                                                               |
+| Empty after drops                                          | Fine (SRT may be short); never error.                                                                                            |
 
 ## Decisions taken
 
-| Decision | Rejected | Why |
-|---|---|---|
-| Conservative drop (multi-signal) + flag weaker | Aggressive single-signal; flag-only | Definitive: don't delete real lines; still kill certain garbage. |
-| Drop = blocklist ∨ repetition ∨ (nsp>0.8 ∧ lp<-1.0) | + compression-ratio gate | Three strong/combined signals; avoid over-dropping repetitive real lines. |
-| Collapse runs of ≥4 identical | ≥2 (any dup) | Protects deliberate ≤3 repeats; still kills runaway loops. |
-| `hallucination_silence_threshold` only | tune no_speech/log_prob; disable condition_on_previous_text | "Slight B2"; preserve context/name coherence. |
+| Decision                                            | Rejected                                                    | Why                                                                       |
+| --------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Conservative drop (multi-signal) + flag weaker      | Aggressive single-signal; flag-only                         | Definitive: don't delete real lines; still kill certain garbage.          |
+| Drop = blocklist ∨ repetition ∨ (nsp>0.8 ∧ lp<-1.0) | + compression-ratio gate                                    | Three strong/combined signals; avoid over-dropping repetitive real lines. |
+| Collapse runs of ≥4 identical                       | ≥2 (any dup)                                                | Protects deliberate ≤3 repeats; still kills runaway loops.                |
+| `hallucination_silence_threshold` only              | tune no_speech/log_prob; disable condition_on_previous_text | "Slight B2"; preserve context/name coherence.                             |
 
 ## Constraints
 

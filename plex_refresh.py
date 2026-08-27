@@ -2,6 +2,7 @@
 """Trigger a targeted Plex library folder refresh so a newly-written sidecar/track
 is picked up. Env: PLEX_URL, PLEX_TOKEN, PLEX_SECTION (default 7), PLEX_PATH
 (the Plex-side folder path to rescan).  Built with help of Claude (Anthropic)."""
+
 import os
 import sys
 import urllib.parse

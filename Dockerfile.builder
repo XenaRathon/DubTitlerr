@@ -15,17 +15,45 @@ FROM mccloud/subgen:2026.06.2
 # wheel for it (unlike the repo's py3.14 dev venv -- see tools/vad.py's module docstring);
 # if that ever regresses, drop this line and use `--vad ffmpeg-silencedetect` instead
 # (dep-free, ffmpeg is already in this image).
+# Versions deliberately unpinned: Debian rotates its package pool, so a pinned
+# apt version stops resolving within weeks and breaks every rebuild. pip is left
+# to pyproject.toml, which is where this project declares its ranges.
+# hadolint ignore=DL3008,DL3013
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-pip wamerican mkvtoolnix \
     && python3 -m pip install --no-cache-dir pysubs2 jellyfish \
     && (python3 -m pip install --no-cache-dir webrtcvad || echo "webrtcvad install failed -- analytics-only, use --vad ffmpeg-silencedetect; NOT fatal for generation") \
     && rm -rf /var/lib/apt/lists/*
 
-# Bake the Whisper large-v3 model into the image (~3GB) so the container is fully
-# self-contained — no dependency on an external models bind-mount. Fetched once at build
-# time (CPU, just to download the files). MODEL_DIR points generate.py at it.
+# Bake one Whisper model into the image so the container is fully self-contained — no
+# dependency on an external models bind-mount. Fetched once at build time (CPU, just to
+# download the files). MODEL_DIR points generate.py at it.
+#
+# WHISPER_MODEL is an ARG *and* an ENV on purpose: the build bakes the model this names,
+# and the same value becomes the container's runtime default, so the baked model and the
+# model generate.py asks for cannot drift apart. A mismatch is not an error — faster-whisper
+# would silently re-download the missing model into /models on every container start.
+#
+#   large-v3-turbo (default, ~1.5GB) -- fits every card this runs on at the full
+#                                       beam_size=7, including the 3500g node's 1050ti 4GB
+#                                       where large-v3 OOMs at beam 7 and only fits forced
+#                                       down to greedy -- measurably worse there than turbo
+#                                       at the full beam (flagged=76/over_cps=111 vs
+#                                       flagged=35/over_cps=98, peak 1405 MiB).
+#   large-v3       (~3GB)            -- the 1060 6GB box, where it fits at beam 7. Opt back
+#                                       in with:
+#                                         docker build -f Dockerfile.builder \
+#                                           --build-arg WHISPER_MODEL=large-v3 \
+#                                           -t dubtitle-builder:latest .
+#
+# Turbo became the default 2026-08-27: it is what the production image has been built with
+# since the 1050ti swap, so the default now matches the artifact that actually ships. Its
+# known quality regression is on *translation*, and REQUIRE_ENG=1 means this pipeline only
+# ever transcribes English audio to English text -- it never translates.
+ARG WHISPER_MODEL=large-v3-turbo
+ENV WHISPER_MODEL=${WHISPER_MODEL}
 ENV MODEL_DIR=/models
-RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('large-v3', device='cpu', compute_type='int8', download_root='/models')"
+RUN python3 -c "import os; from faster_whisper import WhisperModel; WhisperModel(os.environ['WHISPER_MODEL'], device='cpu', compute_type='int8', download_root='/models')"
 
 WORKDIR /app
 # NOTE (V2-U3 B7/B9): common.py was missing from this COPY list since V1 introduced it --
@@ -33,11 +61,20 @@ WORKDIR /app
 # dub_signs_merge.py) would ImportError at container start. Added here alongside the new
 # data/ (EXTRA_DIRS data file) and shell/ (extras_grep_pattern lib) directories that
 # merge_pass.sh now sources from $APP/shell/lib.sh + $APP/data/extras.txt.
-COPY generate.py reflow.py glossary.py glossary_verify.py hallucination.py ordering.py common.py common_words.txt \
-     repair.py dub_signs_merge.py mux.py plex_refresh.py mine_glossary.py merge_pass.sh \
-     gen_loop.sh container_run.sh /app/
+# recreate_srt.py added: it rebuilds <stem>.eng.dubtitles.srt from the conf.json when the
+# srt has already been consumed (mux removes sidecars on success). That is the ONLY way to
+# re-run repair on an already-muxed episode without re-transcribing it -- repair.py returns
+# "skip" when the srt is absent -- so a model/prompt change cannot be rolled out to the
+# existing library without this in the image.
+COPY generate.py reflow.py glossary.py glossary_verify.py glossary_acquire.py hallucination.py ordering.py common.py common_words.txt \
+     repair.py dub_signs_merge.py mux.py plex_refresh.py mine_glossary.py recreate_srt.py merge_pass.sh \
+     qc.py punctuation.py unresolved.py decisions.py review_apply.py review_server.py watch_queue.py acquire_cache.py gen_loop.sh container_run.sh /app/
 COPY data/ /app/data/
 COPY shell/ /app/shell/
+# tools/ ships for the same reason recreate_srt.py does: recover_dub_srt.py rebuilds the
+# srt from the already-muxed Dubtitles track, which is the only way to regenerate an
+# episode whose conf.json is gone without sending it back through Whisper.
+COPY tools/ /app/tools/
 RUN chmod +x /app/*.sh
 
 # Bypass subgen's init (we only want its runtime); run our two-loop supervisor as root so

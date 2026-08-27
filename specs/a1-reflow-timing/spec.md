@@ -10,7 +10,7 @@
 Whisper emits multi-sentence, multi-speaker mega-segments: on `One Pace S19E16`
 single cards run 7+ seconds and span 4 sentences / 2 speakers, and in noisy
 stretches punctuation collapses into a run-on wall that breaks **mid-sentence
-across segment boundaries** (e.g. *"everyone is going / to die"*). The result is
+across segment boundaries** (e.g. _"everyone is going / to die"_). The result is
 unreadable, mistimed cards. A1 restructures whisper's word-level output into
 clean, well-timed subtitle cards before the name/hallucination/mux steps run.
 
@@ -29,7 +29,7 @@ Every card written to the `.srt` MUST satisfy:
 - [ ] No card contains two words separated by > 0.5 s of silence.
 - [ ] `conf.json` has exactly one entry per emitted card, in time order.
 - [ ] Verifiable on a re-run of `S19E16`: zero cards > 7 s; the
-      *"everyone is going / to die"* class of mid-sentence break is gone.
+      _"everyone is going / to die"_ class of mid-sentence break is gone.
 
 ## Out of scope (explicit)
 
@@ -64,7 +64,7 @@ Every card written to the `.srt` MUST satisfy:
 1. **Flatten:** collect all words (text, start, end, probability) across all
    segments in order; remember which source segment each word came from (for
    `no_speech_prob`).
-1a. **De-jitter (verification finding):** faster-whisper sometimes pins a segment's
+   1a. **De-jitter (verification finding):** faster-whisper sometimes pins a segment's
    leading word(s) to the segment's too-early start while the real speech is 0.5–104 s
    later (observed in 28/204 segments of S19E16). Within a segment those words are one
    continuous utterance, so any gap is an alignment artifact, not silence — close it
@@ -92,27 +92,27 @@ Every card written to the `.srt` MUST satisfy:
 
 ## Edge cases and failure modes
 
-| Case | Expected behavior |
-|---|---|
-| Word with `None` start/end | Interpolate from adjacent words / segment bounds; never crash, never drop the word silently. |
+| Case                                                                                     | Expected behavior                                                                                    |
+| ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Word with `None` start/end                                                               | Interpolate from adjacent words / segment bounds; never crash, never drop the word silently.         |
 | Leading word(s) mis-timed seconds/minutes before the segment body (whisper DTW artifact) | De-jitter: pull the early cluster forward to the body so it isn't an orphan card; never shown early. |
-| Card text empty after strip | Skip the card (no SRT entry, no conf entry). |
-| Single sentence > 7 s with no internal gap/punctuation | Force a break by largest micro-gap → clause → word-wrap; each card still ≤ 7 s and ≤ 2 lines. |
-| Sung dub lyrics (whisper transcribes songs as dialogue) | Treated identically; the > 0.5 s gap rule naturally breaks lyric lines at musical pauses. |
-| Segment with no words | Skipped. |
-| Last card of file (no "next card") | Hold-time extension capped only by 7 s. |
-| Trailing silence shorter than needed | Extend as far as it allows, then accept residual overspeed. |
+| Card text empty after strip                                                              | Skip the card (no SRT entry, no conf entry).                                                         |
+| Single sentence > 7 s with no internal gap/punctuation                                   | Force a break by largest micro-gap → clause → word-wrap; each card still ≤ 7 s and ≤ 2 lines.        |
+| Sung dub lyrics (whisper transcribes songs as dialogue)                                  | Treated identically; the > 0.5 s gap rule naturally breaks lyric lines at musical pauses.            |
+| Segment with no words                                                                    | Skipped.                                                                                             |
+| Last card of file (no "next card")                                                       | Hold-time extension capped only by 7 s.                                                              |
+| Trailing silence shorter than needed                                                     | Extend as far as it allows, then accept residual overspeed.                                          |
 
 ## Decisions taken
 
-| Decision | Rejected alternative | Why |
-|---|---|---|
-| Netflix profile (42×2, 17 cps, 0.83–7 s, 2-frame gap) | Looser / tighter | Proven pro-subtitle norms; matches player/user expectations. |
-| Full reflow (discard whisper boundaries, re-segment) | Split-only; reflow-within-pauses | Only full reflow fixes mid-sentence cross-boundary breaks. |
-| Hard break at gap > 0.5 s | > 1.0 s / > 2.0 s | Keeps cards tight to delivery; avoids revealing a punchline/spoiler before it's spoken. |
-| Overflow cut: largest pause → clause punct → word-wrap | Clause-first; plain wrap | Consistent with timing-preservation; degrades gracefully. |
-| Hold time: extend END into trailing silence only | Accept as-is; extend both ways | Improves readability without moving the start (no early reveal). |
-| Recompute confidence per card | Inherit from source segment; drop it | Precise per-card signal for B1/C3; serves the "definitive dubtitles" bar. |
+| Decision                                               | Rejected alternative                 | Why                                                                                     |
+| ------------------------------------------------------ | ------------------------------------ | --------------------------------------------------------------------------------------- |
+| Netflix profile (42×2, 17 cps, 0.83–7 s, 2-frame gap)  | Looser / tighter                     | Proven pro-subtitle norms; matches player/user expectations.                            |
+| Full reflow (discard whisper boundaries, re-segment)   | Split-only; reflow-within-pauses     | Only full reflow fixes mid-sentence cross-boundary breaks.                              |
+| Hard break at gap > 0.5 s                              | > 1.0 s / > 2.0 s                    | Keeps cards tight to delivery; avoids revealing a punchline/spoiler before it's spoken. |
+| Overflow cut: largest pause → clause punct → word-wrap | Clause-first; plain wrap             | Consistent with timing-preservation; degrades gracefully.                               |
+| Hold time: extend END into trailing silence only       | Accept as-is; extend both ways       | Improves readability without moving the start (no early reveal).                        |
+| Recompute confidence per card                          | Inherit from source segment; drop it | Precise per-card signal for B1/C3; serves the "definitive dubtitles" bar.               |
 
 ## Constraints
 

@@ -4,7 +4,7 @@ A review of the DubTitlerr pipeline (transcribe → repair → assemble → mux)
 
 ## Overall
 
-Unusually well-engineered for a one-author self-hosted tool. The spec/plan/tasks discipline in `specs/` is more rigorous than most open-source projects at this size — you can trace *why* `MIN_FREE_GB=5` or `vad_filter=False` exists. The acceptance criteria are encoded as testable invariants (`max(line_len) <= 42`, gap > 0.5 s splits, mkvmerge keep-list). Idempotency is layered (`.done` stamp, ffprobe backstop, in-flight `.fail` marker, crash-resume in `gen_loop`). The **defensive conservatism** in the C1/B1 logic (English-word gate, one-indel rejection, both-signals-must-hold for drops, LLM-only-with-fansub-anchor) is the right shape for ad-hoc-correcting a 4 GB Whisper model.
+Unusually well-engineered for a one-author self-hosted tool. The spec/plan/tasks discipline in `specs/` is more rigorous than most open-source projects at this size — you can trace _why_ `MIN_FREE_GB=5` or `vad_filter=False` exists. The acceptance criteria are encoded as testable invariants (`max(line_len) <= 42`, gap > 0.5 s splits, mkvmerge keep-list). Idempotency is layered (`.done` stamp, ffprobe backstop, in-flight `.fail` marker, crash-resume in `gen_loop`). The **defensive conservatism** in the C1/B1 logic (English-word gate, one-indel rejection, both-signals-must-hold for drops, LLM-only-with-fansub-anchor) is the right shape for ad-hoc-correcting a 4 GB Whisper model.
 
 Where it stumbles is in the **seams between stages** — env-var sprawl, duplicated helpers, swallowed exceptions, no per-stage run summaries, and minimal integration tests. The dependencies aren't even declared.
 
@@ -29,17 +29,17 @@ Where it stumbles is in the **seams between stages** — env-var sprawl, duplica
 
 Multiple files redefine the same helpers, with **subtle drift already present**:
 
-| Helper / constant | Defined in |
-|---|---|
-| `out_for()` | `generate.py`, `repair.py` — slightly different `MEDIA_ROOT` fallback in `repair.py` |
-| `MEDIA_UID` / `MEDIA_GID` | `generate.py`, `mux.py`, `repair.py`, `merge_pass.sh` |
-| `SUB_LANGS` | `mux.py`, `repair.py`, `dub_signs_merge.py` |
-| `ts()` (SRT timestamp) | `generate.py`, `repair.py`, `recreate_srt.py` |
-| `VIDEO_EXTS` | `mux.py` (`,m4v`), `generate.py` (no `m4v`), `repair.py` (`,m4v`) — **out of sync** |
-| `find_video()` | `repair.py`, `dub_signs_merge.py` |
-| `eng_sub_streams()`, `extract()` | duplicated between `repair.py` and `dub_signs_merge.py` |
-| `KARAOKE`, `POSITIONED`, `KEEP_STYLE`, `DROP_STYLE` | duplicated identically between `repair.py` and `dub_signs_merge.py` |
-| `EXTRA_DIRS` | `generate.py`, `mine_glossary.py`, hardcoded regex in `post_show.sh` |
+| Helper / constant                                   | Defined in                                                                           |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `out_for()`                                         | `generate.py`, `repair.py` — slightly different `MEDIA_ROOT` fallback in `repair.py` |
+| `MEDIA_UID` / `MEDIA_GID`                           | `generate.py`, `mux.py`, `repair.py`, `merge_pass.sh`                                |
+| `SUB_LANGS`                                         | `mux.py`, `repair.py`, `dub_signs_merge.py`                                          |
+| `ts()` (SRT timestamp)                              | `generate.py`, `repair.py`, `recreate_srt.py`                                        |
+| `VIDEO_EXTS`                                        | `mux.py` (`,m4v`), `generate.py` (no `m4v`), `repair.py` (`,m4v`) — **out of sync**  |
+| `find_video()`                                      | `repair.py`, `dub_signs_merge.py`                                                    |
+| `eng_sub_streams()`, `extract()`                    | duplicated between `repair.py` and `dub_signs_merge.py`                              |
+| `KARAOKE`, `POSITIONED`, `KEEP_STYLE`, `DROP_STYLE` | duplicated identically between `repair.py` and `dub_signs_merge.py`                  |
+| `EXTRA_DIRS`                                        | `generate.py`, `mine_glossary.py`, hardcoded regex in `post_show.sh`                 |
 
 **Fix:** single `common.py` with `env_int`, `find_video`, `eng_sub_streams`, `ass_event_keep`, `out_for`, `ts_srt`, `EXTS_AV`, `EXTRA_DIRS`. Move `for e in VIDEO_EXTS` and `out_for` once, import everywhere.
 
@@ -47,7 +47,7 @@ Multiple files redefine the same helpers, with **subtle drift already present**:
 
 `generate.py:198` exits with code 3 if the error message contains `"cuda"`. Practical risk: `ZeroDivisionError` raised inside a CUDA context can produce messages with `cuda` substrings from ctranslate2's stacktrace. Episodes that legitimately could be retried (extract failure, pysubs2 corrupt subs) will get a `.fail` marker and be skipped across all retries in the sweep — even though the GPU context is fine.
 
-**Fix:** gate on the *exception type* (`RuntimeError` from ctranslate2 specifically), not substring match. Persist a JSON log of each retried episode (`{path, exc_type, msg}`) for ops triage.
+**Fix:** gate on the _exception type_ (`RuntimeError` from ctranslate2 specifically), not substring match. Persist a JSON log of each retried episode (`{path, exc_type, msg}`) for ops triage.
 
 ### 3. Declare Python dependencies in `pyproject.toml`
 
@@ -72,9 +72,10 @@ Add a `requirements.txt` (runtime) and `requirements-dev.txt` for the subgen ima
 
 ### 4. Make the LLM HTTP call observable & cancellable
 
-`repair.llm()` uses `urllib.request.urlopen` with `timeout=120`. A **slow Ollama** that streams nothing for >120 s returns the same as a network hang. There's no partial-progress visibility and no way to cancel. The full `srt` rewrite happens *after* the loop completes.
+`repair.llm()` uses `urllib.request.urlopen` with `timeout=120`. A **slow Ollama** that streams nothing for >120 s returns the same as a network hang. There's no partial-progress visibility and no way to cancel. The full `srt` rewrite happens _after_ the loop completes.
 
 **Fix:**
+
 - Use `requests` library with explicit `connect=` and `read=` timeouts (env: `REPAIR_TIMEOUT`)
 - Emit per-line latency into the existing `<stem>.dubtitles.repair.csv`
 - Write a `repair-summary.json` per show with totals + p95 latency
@@ -112,12 +113,12 @@ For a 200-name show, that's 200 HTTP calls at ~2 s each = 7 min of dead CPU/LLM 
 
 ### 9. Add tests for the load-bearing bits not covered
 
-| What's missing | Importance | When to write |
-|---|---|---|
-| `test_recreate_srt.py` | minor | whenever you touch the file |
-| `test_dub_signs_merge.py` — `keep_event()` classifier | **high** | the regex/silhouette logic has zero tests, the KEEP/DROP regexes (`karaoke`, `translat`, `romaji`, `caption`, `title`, `credit`, `note`, `lyric`, `kashi`, `insert`) **overlap** in subtle ways |
-| `test_generate_needs_work.py` — the cheap pre-filter matrix | **high** | this gate stops the LLM from wasting 30 min discovering an already-muxed library |
-| Wiki-resolve integration with monkeypatched HTTP | low | dispatchable later |
+| What's missing                                              | Importance | When to write                                                                                                                                                                                   |
+| ----------------------------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test_recreate_srt.py`                                      | minor      | whenever you touch the file                                                                                                                                                                     |
+| `test_dub_signs_merge.py` — `keep_event()` classifier       | **high**   | the regex/silhouette logic has zero tests, the KEEP/DROP regexes (`karaoke`, `translat`, `romaji`, `caption`, `title`, `credit`, `note`, `lyric`, `kashi`, `insert`) **overlap** in subtle ways |
+| `test_generate_needs_work.py` — the cheap pre-filter matrix | **high**   | this gate stops the LLM from wasting 30 min discovering an already-muxed library                                                                                                                |
+| Wiki-resolve integration with monkeypatched HTTP            | low        | dispatchable later                                                                                                                                                                              |
 
 ### 10. `ordering.read_start()` default-fallback path is silently wrong
 
@@ -136,12 +137,13 @@ Defined in `generate.py:60` and `mine_glossary.py:13`, plus hardcoded regex in `
 ### 12. Web UI: build the data layer first, the UI last
 
 The roadmap lists Web UI for "watch progress, queue, edit glossaries." To support it, you need:
+
 - `state.json` (#6)
 - A glossary JSON schema + validator
 
 Build the data layer first; the UI is straightforward once both exist.
 
-### 13. `verify()` calls `identify(out)` *and* `identify(orig)` — two `mkvmerge -J` per file
+### 13. `verify()` calls `identify(out)` _and_ `identify(orig)` — two `mkvmerge -J` per file
 
 For a 600-episode library run, that's ~120 s extra process overhead. Cache the original's `identify()` in the function entry.
 
@@ -156,13 +158,13 @@ HL_ROOTS = val.split(":") if val else ROOTS
 
 ### 15. `--dry-run` mode for `anime_library.sh`
 
-First-time users want to *see* what the builder would do, not commit a 4 GB Whisper load and 12-hour sweep. Print "would generate N, repair M, mux K" and exit.
+First-time users want to _see_ what the builder would do, not commit a 4 GB Whisper load and 12-hour sweep. Print "would generate N, repair M, mux K" and exit.
 
 ### 16. Move hardcoded patterns into data files
 
-| Currently inline | File |
-|---|---|
-| `mine_glossary.COMMON` — ~200 English words | `mine_glossary.py:14` |
+| Currently inline                                 | File                  |
+| ------------------------------------------------ | --------------------- |
+| `mine_glossary.COMMON` — ~200 English words      | `mine_glossary.py:14` |
 | `hallucination.BLOCKLIST` — YouTube-UGC patterns | `hallucination.py:25` |
 
 Replace with `data/common_proper_noun_deny.txt` and `data/hallucination_blocklist.txt`. Easy to extend without code change.
@@ -247,7 +249,7 @@ strengths. Neither is a confident match for the digarr weak spot. **But
 this is speculation, not evidence** -- and this project's own standard
 is exactly the opposite of speculation (that's why the original bake-off
 exists at all, and why unanchored-line repair was explicitly disabled
-after it *proved* hallucination risk, not assumed it).
+after it _proved_ hallucination risk, not assumed it).
 
 **Recommendation**: before touching `REPAIR_MODEL`/`VERIFY_MODEL`, run a
 small bake-off reusing `boxxo-model-bench`'s harness (or a similarly
@@ -267,8 +269,8 @@ not a config flip.
 
 ## DeepSeek v4 Pro Review (2026-07-24) — Shell, Ops, Architecture & Deep-Dive
 
-A second pass covering the shell orchestration layer, container architecture, 
-shell↔Python seams, test coverage gaps in detail, and operational gotchas 
+A second pass covering the shell orchestration layer, container architecture,
+shell↔Python seams, test coverage gaps in detail, and operational gotchas
 the first review left untouched.
 
 ---
@@ -279,11 +281,11 @@ the first review left untouched.
 
 The project has **three distinct orchestration strategies** coexisting:
 
-| Script | Pattern | Model Loads | Status |
-|---|---|---|---|
-| `container_run.sh` + `gen_loop.sh` | One long-lived container, two loops (GPU gen + CPU merge) | Once | **The intended current path** (Dockerfile.builder) |
-| `anime_library.sh` | Host-side `docker run` per show for generate, per show for post | Per show (~40s × N shows) | Legacy, superseded by container_run |
-| `all_seasons.sh` | Host-side `docker run` per season (One Pace hardcoded) | Per season | Even older, One Pace-specific |
+| Script                             | Pattern                                                         | Model Loads               | Status                                             |
+| ---------------------------------- | --------------------------------------------------------------- | ------------------------- | -------------------------------------------------- |
+| `container_run.sh` + `gen_loop.sh` | One long-lived container, two loops (GPU gen + CPU merge)       | Once                      | **The intended current path** (Dockerfile.builder) |
+| `anime_library.sh`                 | Host-side `docker run` per show for generate, per show for post | Per show (~40s × N shows) | Legacy, superseded by container_run                |
+| `all_seasons.sh`                   | Host-side `docker run` per season (One Pace hardcoded)          | Per season                | Even older, One Pace-specific                      |
 
 `anime_library.sh` and `all_seasons.sh` still exist in the repo and work, but they
 reload the Whisper model for every show/season — on a library of 65+ shows, that's
@@ -344,6 +346,7 @@ fail loudly. The image build is the right place to guarantee dependencies.
 #### 25. Shell↔Python EXTRA_DIRS drift (already noted in #11, but worse than described)
 
 The extras-directory exclusion is implemented in **three different ways**:
+
 - `generate.py`: Python set lookup (`d.lower() not in EXTRA_DIRS`)
 - `merge_pass.sh`: inline grep regex (`grep -ivE '/(Behind The Scenes|...)`)
 - `post_show.sh`: identical inline grep regex
@@ -465,22 +468,23 @@ instead of re-parsing. Cache `identify()` with an LRU or simple dict keyed by pa
 
 #### 33. Detailed test coverage audit
 
-| Module | Pure helpers tested | Integration bits tested | Verdict |
-|---|---|---|---|
-| `reflow.py` | ✅ All public functions + edge cases (dejitter, clamp, missing timestamps) | N/A (pure) | **Excellent** |
-| `glossary.py` | ✅ load_dict, correct (tiered), name_suspect, is_english | ❌ load() from file | **Excellent** |
-| `hallucination.py` | ✅ drop_reason, flag_reason, is_repetition, collapse_runs | N/A (pure) | **Excellent** |
-| `ordering.py` | ✅ order_files, read_start, season_ep | N/A (pure) | **Good** |
-| `mux.py` | ✅ stamp helpers, has_room, keep_sub, build_cmd flags, sub_source | ❌ identify, duration, partners, verify, process, _finalize | **Partial** — the mux command builder is tested but the actual mkvmerge/ffprobe integration path is not |
-| `repair.py` | ✅ is_target, build_prompt, glossary_for | ❌ dialogue_intervals, overlap_ref, llm, process | **Partial** — targets + prompts tested; extraction + LLM call are integration |
-| `glossary_verify.py` | ✅ candidates, apply_results, pending_terms, build_adjudication_prompt, parse_adjudication, wiki_candidates, normalize_api, allpages_url, parse_allpages | ❌ adjudicate, resolve_wiki, fetch_titles, verify | **Good** — pure core well-tested; HTTP + LLM integration is integration-only |
-| `generate.py` | ❌ NOTHING | ❌ NOTHING | **Zero coverage** — the needs_work() matrix, eng_audio_index, has_dubtitles_track, extract_wav, process are all untested |
-| `dub_signs_merge.py` | ❌ NOTHING | ❌ NOTHING | **Zero coverage** — keep_event() classifier, build(), process_one all untested |
-| `mine_glossary.py` | ❌ NOTHING | ❌ NOTHING | **Zero coverage** — eng_sub_text, mine_text, main all untested |
-| `recreate_srt.py` | ❌ NOTHING | N/A | **Zero coverage** — single-purpose rebuild tool, easy to test |
-| `plex_refresh.py` | ❌ NOTHING | ❌ NOTHING | **Zero coverage** — tiny script but untested |
+| Module               | Pure helpers tested                                                                                                                                      | Integration bits tested                                     | Verdict                                                                                                                  |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `reflow.py`          | ✅ All public functions + edge cases (dejitter, clamp, missing timestamps)                                                                               | N/A (pure)                                                  | **Excellent**                                                                                                            |
+| `glossary.py`        | ✅ load_dict, correct (tiered), name_suspect, is_english                                                                                                 | ❌ load() from file                                         | **Excellent**                                                                                                            |
+| `hallucination.py`   | ✅ drop_reason, flag_reason, is_repetition, collapse_runs                                                                                                | N/A (pure)                                                  | **Excellent**                                                                                                            |
+| `ordering.py`        | ✅ order_files, read_start, season_ep                                                                                                                    | N/A (pure)                                                  | **Good**                                                                                                                 |
+| `mux.py`             | ✅ stamp helpers, has_room, keep_sub, build_cmd flags, sub_source                                                                                        | ❌ identify, duration, partners, verify, process, _finalize | **Partial** — the mux command builder is tested but the actual mkvmerge/ffprobe integration path is not                  |
+| `repair.py`          | ✅ is_target, build_prompt, glossary_for                                                                                                                 | ❌ dialogue_intervals, overlap_ref, llm, process            | **Partial** — targets + prompts tested; extraction + LLM call are integration                                            |
+| `glossary_verify.py` | ✅ candidates, apply_results, pending_terms, build_adjudication_prompt, parse_adjudication, wiki_candidates, normalize_api, allpages_url, parse_allpages | ❌ adjudicate, resolve_wiki, fetch_titles, verify           | **Good** — pure core well-tested; HTTP + LLM integration is integration-only                                             |
+| `generate.py`        | ❌ NOTHING                                                                                                                                               | ❌ NOTHING                                                  | **Zero coverage** — the needs_work() matrix, eng_audio_index, has_dubtitles_track, extract_wav, process are all untested |
+| `dub_signs_merge.py` | ❌ NOTHING                                                                                                                                               | ❌ NOTHING                                                  | **Zero coverage** — keep_event() classifier, build(), process_one all untested                                           |
+| `mine_glossary.py`   | ❌ NOTHING                                                                                                                                               | ❌ NOTHING                                                  | **Zero coverage** — eng_sub_text, mine_text, main all untested                                                           |
+| `recreate_srt.py`    | ❌ NOTHING                                                                                                                                               | N/A                                                         | **Zero coverage** — single-purpose rebuild tool, easy to test                                                            |
+| `plex_refresh.py`    | ❌ NOTHING                                                                                                                                               | ❌ NOTHING                                                  | **Zero coverage** — tiny script but untested                                                                             |
 
 **Highest priority additions** beyond what #9 already listed:
+
 - `test_dub_signs_merge.py::test_keep_event_matrix` — the full style×positioning decision table
 - `test_mine_glossary.py::test_mine_text` — counter + midsentence tracking
 - `test_generate.py::test_needs_work_matrix` — the pre-filter gate (already recommended in the first review)
@@ -492,6 +496,7 @@ instead of re-parsing. Cache `identify()` with an LRU or simple dict keyed by pa
 #### 34. `.gitignore` doesn't exclude pipeline artefacts
 
 The following files are generated at runtime and should be gitignored:
+
 ```
 *.eng.dubtitles.srt
 *.eng.dubtitles.ass
@@ -502,6 +507,7 @@ The following files are generated at runtime and should be gitignored:
 *.dubtitles.mux.log
 *.muxtmp.mkv
 ```
+
 If someone runs the pipeline from within the repo directory (unlikely in prod but
 possible during development), these files pollute `git status`.
 
@@ -538,6 +544,7 @@ this is called from shell scripts that may or may not have these set, a clear er
 message would help debugging.
 
 **Fix:** Use `os.environ.get()` with a clear error message:
+
 ```python
 base = os.environ.get("PLEX_URL", "").rstrip("/")
 if not base: sys.exit("PLEX_URL not set")
@@ -613,7 +620,7 @@ by bumping beam size (see #42).
 **Change:** Set `WHISPER_MODEL=large-v3-turbo` env var. Test on one episode
 first — the model needs download (~1.5 GB cached to `/subgen/models`).
 
-**Effort:** Env-var change  |  **Impact:** Medium — speed-for-quality trade
+**Effort:** Env-var change | **Impact:** Medium — speed-for-quality trade
 
 ### 42. Bump beam size from 5 → 7 (or make it configurable)
 
@@ -628,7 +635,7 @@ highest-impact accuracy knob.
 **Change:** Make it an env var `WHISPER_BEAM_SIZE` defaulting to 7, or at minimum
 change the hardcoded `5` → `7`. Add `best_of=beam_size` for consistency.
 
-**Effort:** 1 line + env var  |  **Impact:** High — directly improves word accuracy
+**Effort:** 1 line + env var | **Impact:** High — directly improves word accuracy
 
 ### 43. Context-aware LLM repair — send surrounding lines
 
@@ -653,7 +660,7 @@ target.
 **Change:** Add `prev_text` and `next_text` parameters to `build_prompt()`, pass
 them from `process()` using the target's index in the conf list.
 
-**Effort:** ~25 lines  |  **Impact:** High — resolves the common ambiguity case
+**Effort:** ~25 lines | **Impact:** High — resolves the common ambiguity case
 
 ### 44. Use Qwen3.6-35B-A3B for repair via the R520 VM102
 
@@ -667,6 +674,7 @@ background batch process. The quality jump from 8B → 35B (MoE) on this
 constrained, rules-heavy task would be substantial.
 
 **Caveat:** The llama.cpp API is not Ollama-compatible. You'd need either:
+
 - An adapter translating Ollama-format requests to llama.cpp's `/completion`
   endpoint, or
 - A new `REPAIR_BACKEND` env var (`REPAIR_BACKEND=llamacpp` vs `ollama`)
@@ -676,7 +684,7 @@ Nanbeige4.2-3B (from the earlier addendum) also requires
 `"chat_template_kwargs": {"enable_thinking": false}` — same may apply to
 Qwen3.6-35B-A3B. Test with `"think": false` or the llama.cpp equivalent.
 
-**Effort:** ~60 lines + API adapter  |  **Impact:** High — biggest quality jump available
+**Effort:** ~60 lines + API adapter | **Impact:** High — biggest quality jump available
 
 ### 45. Phonetic matching layer in deterministic correction
 
@@ -684,7 +692,7 @@ Qwen3.6-35B-A3B. Test with `"think": false` or the llama.cpp equivalent.
 (2) exact token hard_fixes, (3) difflib fuzzy on non-English tokens (guarded:
 no one-indel edits).
 
-**Suggestion:** Add a Soundex or Double-Metaphone layer *after* the fuzzy tier.
+**Suggestion:** Add a Soundex or Double-Metaphone layer _after_ the fuzzy tier.
 Many whisper mishears are phonetic: "spondum" → "Spandam" is caught by
 hard_fixes, but "spandim", "spandum", "spandeem" are all missed. A phonetic
 hash match against the glossary names list would catch these without an LLM
@@ -695,7 +703,7 @@ the phonetic codes match AND the original token is NOT a known English word.
 Candidate library: `jellyfish` (pure Python, `jellyfish.metaphone()`). Only
 needed at generation time (not in Dockerfile.builder which has no pip).
 
-**Effort:** ~30 lines  |  **Impact:** Medium — catches variants without LLM cost
+**Effort:** ~30 lines | **Impact:** Medium — catches variants without LLM cost
 
 ### 46. Per-word confidence for repair targeting
 
@@ -705,7 +713,7 @@ confident words (prob=0.9) averages to -0.25 — above the threshold, skipped.
 
 **Suggestion:** The `dubtitles.conf.json` currently records per-card aggregate
 confidence. Add a `word_probs` field (list of per-word probabilities from
-faster-whisper) so `is_target()` can check for *any* word below a threshold
+faster-whisper) so `is_target()` can check for _any_ word below a threshold
 (e.g., `prob < 0.25`). This catches cards where most words are fine but one
 is wrong.
 
@@ -713,17 +721,18 @@ is wrong.
 JSON. In `repair.py`, add a `has_low_prob_word(c)` check alongside the existing
 `avg_logprob` check.
 
-**Effort:** ~40 lines across two files  |  **Impact:** Low-Medium — catches edge cases
+**Effort:** ~40 lines across two files | **Impact:** Low-Medium — catches edge cases
 
 ### 47. Two-pass repair: fast model first, slow-verify ambiguities
 
 **Suggestion:** Run `qwen3:8b` first on all targets. For lines where the 8B
 model's output differs significantly from the original (length ratio < 0.6 or
-> 1.5, or the output contains glossary names not in the original), re-ask the
-35B-A3B model as a "second opinion" verifier. This keeps 90% of repairs fast
-and only invokes the slow model for the truly ambiguous cases.
 
-**Effort:** ~50 lines  |  **Impact:** Medium — best of both worlds
+> 1.5, or the output contains glossary names not in the original), re-ask the
+> 35B-A3B model as a "second opinion" verifier. This keeps 90% of repairs fast
+> and only invokes the slow model for the truly ambiguous cases.
+
+**Effort:** ~50 lines | **Impact:** Medium — best of both worlds
 
 ### 48. Better audio preprocessing — high-pass filter for noisy sources
 
@@ -741,7 +750,7 @@ ffmpeg ... -af "highpass=f=80,compand=attacks=0.001:decays=0.2:points=-80/-80|-3
 This is cheap (CPU, not GPU) and improves whisper's ability to distinguish
 speech from action SFX in the low-frequency range.
 
-**Effort:** 1 line in ffmpeg call  |  **Impact:** Low-Medium — helps action-heavy episodes
+**Effort:** 1 line in ffmpeg call | **Impact:** Low-Medium — helps action-heavy episodes
 
 ---
 
@@ -776,7 +785,7 @@ if HAS_DRAWING.search(t):
 This is a one-regex addition with near-zero false-positive risk — dialogue never
 uses drawing commands.
 
-**Effort:** 2 lines  |  **Impact:** 🔴 High — fixes silent sign loss
+**Effort:** 2 lines | **Impact:** 🔴 High — fixes silent sign loss
 
 ### 50. Keep events with animation tags (`\t`, `\fade`, `\fad`)
 
@@ -792,7 +801,7 @@ transitions (always a designed sign, never dialogue).
 ANIMATED = re.compile(r"\\t\(|\\fade?\(|\\move\(")
 ```
 
-**Effort:** 2 lines  |  **Impact:** Medium — catches animated sign overlays
+**Effort:** 2 lines | **Impact:** Medium — catches animated sign overlays
 
 ### 51. Explicit layer ordering: signs ABOVE dialogue
 
@@ -824,9 +833,9 @@ for ev in base.events:
 ```
 
 Note: ASS convention is that **higher** layer numbers render ON TOP. Dub dialogue
-must be on the *lowest* layer so positioned signs are always visible above it.
+must be on the _lowest_ layer so positioned signs are always visible above it.
 
-**Effort:** ~5 lines  |  **Impact:** 🔴 High — fixes visual z-order corruption
+**Effort:** ~5 lines | **Impact:** 🔴 High — fixes visual z-order corruption
 
 ### 52. Style resolution: warn on conflicts, don't silently lose variant styles
 
@@ -851,7 +860,7 @@ Better: for conflicts, rename the colliding style in the later track (e.g.,
 `Signs_Track2`) and update its events' `.style` field to match. This preserves
 both styles genuinely rather than silently degrading one.
 
-**Effort:** 3 lines (log) or ~20 lines (rename)  |  **Impact:** Low-Medium — rare but diagnostic
+**Effort:** 3 lines (log) or ~20 lines (rename) | **Impact:** Low-Medium — rare but diagnostic
 
 ### 53. Resolution normalization across subtitle tracks
 
@@ -863,6 +872,7 @@ coordinates reference 1080p but the canvas is 720p.
 
 **Suggestion:** Before merging, check if all tracks share the same
 `PlayResX`/`PlayResY`. If they differ, either:
+
 - Transform `\pos` coordinates from mismatched tracks to the base resolution, or
 - Log a loud warning and skip the mismatched track.
 
@@ -870,7 +880,7 @@ For the common case (all tracks share the same resolution, which is almost
 always true), this is a no-op. The check prevents silent corruption on the rare
 mismatch.
 
-**Effort:** ~30 lines  |  **Impact:** Low — rare mismatch, but catastrophic when it happens
+**Effort:** ~30 lines | **Impact:** Low — rare mismatch, but catastrophic when it happens
 
 ### 54. Font embedding audit step in mux verification
 
@@ -892,7 +902,7 @@ if len(src_fonts) != len(out_fonts):
 Even better: check that each font's MIME type is a font format (not
 `application/octet-stream`, which indicates a corrupt extraction).
 
-**Effort:** ~15 lines  |  **Impact:** Medium — prevents silent font loss
+**Effort:** ~15 lines | **Impact:** Medium — prevents silent font loss
 
 ### 55. Preserve `WrapStyle` and other ASS Format header lines
 
@@ -910,7 +920,7 @@ bottom line wider) in their `[Script Info]`. If the merged output inherits
 differ, prefer `WrapStyle: 2` (or the most common value across tracks). This
 is a one-line check during `build()`.
 
-**Effort:** ~5 lines  |  **Impact:** Low — subtle text wrapping difference
+**Effort:** ~5 lines | **Impact:** Low — subtle text wrapping difference
 
 ### 56. Carry `ScaledBorderAndShadow` consistently
 
@@ -924,30 +934,30 @@ rendering too thin or too thick depending on the player.
 **Suggestion:** After `base = subs`, force `ScaledBorderAndShadow: yes` in the
 Script Info to ensure consistent rendering across all players (Plex, mpv, VLC).
 
-**Effort:** 1 line  |  **Impact:** Low — consistency across renderers
+**Effort:** 1 line | **Impact:** Low — consistency across renderers
 
 ---
 
 ### Priority Triage (Accuracy + Signs/Songs)
 
-| # | Suggestion | Effort | Impact | Category |
-|---|---|---|---|---|
-| **#49** | Keep drawing commands (`\p`, `\clip`) | 2 lines | 🔴 High | Signs — bug fix |
-| **#51** | Layer ordering: signs above dialogue | 5 lines | 🔴 High | Signs — bug fix |
-| **#43** | Context-aware LLM repair | ~25 lines | 🔴 High | Accuracy — quality |
-| **#42** | Beam size 5→7, configurable | 1 line | 🟡 High | Accuracy — quality |
-| **#45** | Phonetic matching | ~30 lines | 🟡 Medium | Accuracy — deterministic |
-| **#44** | 35B MoE model for repair | ~60 lines | 🟡 High | Accuracy — quality |
-| **#50** | Keep animation tags (`\t`, `\fade`) | 2 lines | 🟡 Medium | Signs — enhancement |
-| **#54** | Font embedding audit in mux verify | ~15 lines | 🟡 Medium | Signs — verification |
-| **#41** | Try `large-v3-turbo` | env var | 🟡 Medium | Accuracy — speed trade |
-| **#46** | Per-word conf for targeting | ~40 lines | 🟢 Low-Med | Accuracy — edge cases |
-| **#47** | Two-pass repair (fast→slow) | ~50 lines | 🟢 Medium | Accuracy — optimization |
-| **#52** | Style conflict logging | 3 lines | 🟢 Low | Signs — diagnostics |
-| **#48** | High-pass audio filter | 1 line | 🟢 Low-Med | Accuracy — preprocessing |
-| **#55** | WrapStyle preservation | 5 lines | 🟢 Low | Signs — subtle |
-| **#56** | ScaledBorderAndShadow | 1 line | 🟢 Low | Signs — consistency |
-| **#53** | Resolution normalization | ~30 lines | 🟢 Low | Signs — edge case |
+| #       | Suggestion                            | Effort    | Impact     | Category                 |
+| ------- | ------------------------------------- | --------- | ---------- | ------------------------ |
+| **#49** | Keep drawing commands (`\p`, `\clip`) | 2 lines   | 🔴 High    | Signs — bug fix          |
+| **#51** | Layer ordering: signs above dialogue  | 5 lines   | 🔴 High    | Signs — bug fix          |
+| **#43** | Context-aware LLM repair              | ~25 lines | 🔴 High    | Accuracy — quality       |
+| **#42** | Beam size 5→7, configurable           | 1 line    | 🟡 High    | Accuracy — quality       |
+| **#45** | Phonetic matching                     | ~30 lines | 🟡 Medium  | Accuracy — deterministic |
+| **#44** | 35B MoE model for repair              | ~60 lines | 🟡 High    | Accuracy — quality       |
+| **#50** | Keep animation tags (`\t`, `\fade`)   | 2 lines   | 🟡 Medium  | Signs — enhancement      |
+| **#54** | Font embedding audit in mux verify    | ~15 lines | 🟡 Medium  | Signs — verification     |
+| **#41** | Try `large-v3-turbo`                  | env var   | 🟡 Medium  | Accuracy — speed trade   |
+| **#46** | Per-word conf for targeting           | ~40 lines | 🟢 Low-Med | Accuracy — edge cases    |
+| **#47** | Two-pass repair (fast→slow)           | ~50 lines | 🟢 Medium  | Accuracy — optimization  |
+| **#52** | Style conflict logging                | 3 lines   | 🟢 Low     | Signs — diagnostics      |
+| **#48** | High-pass audio filter                | 1 line    | 🟢 Low-Med | Accuracy — preprocessing |
+| **#55** | WrapStyle preservation                | 5 lines   | 🟢 Low     | Signs — subtle           |
+| **#56** | ScaledBorderAndShadow                 | 1 line    | 🟢 Low     | Signs — consistency      |
+| **#53** | Resolution normalization              | ~30 lines | 🟢 Low     | Signs — edge case        |
 
 The **highest-leverage pair** is #49 + #51 — ~7 lines of code that fix actual
 visual corruption cases (dropped drawing-based signs, dialogue covering
@@ -973,3 +983,146 @@ didn't already nail:
 5. **#33 (test_generate) — Write `needs_work()` tests** — echoed from the first
    review because it's THAT important: the pre-filter gate determines whether the
    entire library sweep is fast or wasteful.
+
+---
+
+## Addendum — Buffy Review (2026-07-27)
+
+A fresh pass over the current `feat/strip-and-isolate-old-dubtitles` branch, focused on
+what has changed since the earlier reviews and what is still outstanding.
+
+### Environment status (first thing that broke)
+
+- `pytest` cannot collect tests in this workspace: `ModuleNotFoundError: pysubs2`.
+- `ruff` is not installed.
+- `pyproject.toml` now declares dependencies and optional dev deps, but the current
+  environment has not installed them.
+
+This means local validation is currently unavailable; getting the test suite green is a
+prerequisite to almost any other change.
+
+### What has improved since the earlier review
+
+- `common.py` has been extracted and is the single source of truth for stamps, subtitle
+  stream extraction, dialogue detection, and path redirection. Much of the DRY drift
+  noted in the original review is now resolved.
+- `mux.py` no longer relies on the half-size heuristic; verification is duration/track
+  based.
+- `glossary._glossary_terms()` now truncates on whole-term boundaries rather than
+  mid-name.
+- `generate.py` has a per-show `lastrun.json` summary writer and improved CUDA error
+  handling (now gating on `RuntimeError` rather than the old substring match on
+  `"cuda"`).
+
+### Outstanding high-impact issues
+
+1. **Phonetic-name guard is documented but not implemented.**
+   `ISSUE-phonetic-name-guard.md` describes a deterministic post-LLM guard that
+   rejects repairs changing a capitalised token to something neither in the glossary
+   nor within a small edit distance of the original. `repair.py` still accepts raw
+   LLM output after only a length-ratio check and a pass through `glossary.correct()`.
+
+2. **`REPAIR_BACKEND_SECONDARY` is not implemented.**
+   `IMPROVEMENTS.md` recommends a separate backend for the secondary verification pass
+   (e.g., GPU primary / CPU secondary). `repair.py` dispatches both primary and
+   secondary through the same `REPAIR_BACKEND`, so a true two-backend setup is
+   impossible without code changes.
+
+3. **`generate.py` still imports `mux` just for stamp helpers.**
+   The stamp helpers now live in `common.py`, but `generate.py` still does `import mux`,
+   dragging in `argparse`, `subprocess`, and module-level env reads that `generate.py`
+   does not need. Removing this import is a pure cleanup.
+
+4. **`dub_signs_merge.keep_event()` is load-bearing and untested.**
+   The order of `DROP_STYLE` vs `KARAOKE` checks can drop a karaoke event if its
+   style also matches `DROP_STYLE` (e.g. `Translation`). There is no test matrix for
+   the style × positioning decision table.
+
+5. **Default-track flag logic in `mux.build_cmd()` may override user intent.**
+   The loop adds `--default-track-flag tid:no` for every kept subtitle track, not just
+   the old Dubtitles track. If the source had a signs/songs track the user wanted
+   default, this silently demotes it.
+
+6. **`generate.py` duplicates `needs_work()` logic already in `process()` and has no
+   tests.**
+   The pre-filter is the gate the whole sweep performance rests on, yet it is
+   uncovered.
+
+### Medium-impact polish
+
+7. **Legacy shell scripts still exist and can mislead new users.**
+   `anime_library.sh`, `all_seasons.sh`, and `merge_watcher.sh` reference old images
+   or per-show model loads. The README still points to `Dockerfile` rather than
+   `Dockerfile.builder` for the full pipeline.
+
+8. **Runtime artefacts are not in `.gitignore`.**
+   `.eng.dubtitles.srt`, `.dubtitles.done`, `.fail`, `.repair.csv`, etc. can pollute
+   `git status` during development.
+
+9. **`verify()` still performs extra `identify(orig)` work.**
+   `process()` already has the original's `identify()` result, but `verify()` calls
+   `identify(orig)` again for the font-count comparison. The cache helps within a
+   process but not across invocations.
+
+10. **`repair.is_target()` fencepost still present.**
+    The comparison remains `>= NSP_MAX`; a value exactly equal to `0.5` is classified
+    as non-speech. The earlier review recommended `>`.
+
+### Bottom line from this pass
+
+The codebase is in good shape after the `common.py` consolidation, but it currently
+ships two documented features (phonetic-name guard and `REPAIR_BACKEND_SECONDARY`)
+that are not actually implemented. Combined with the broken local test environment,
+that is the highest-value place to invest effort: install the dev dependencies, make
+`pytest` green, then land the missing guards and their tests before adding new
+features.
+
+---
+
+## Status pass (2026-07-27, post-signs-rebuild)
+
+Verified each outstanding item in the addendum above against the current branch. Most
+were already fixed in-tree; the addendum was written against an environment where the
+test suite could not run, so several "outstanding" items are stale.
+
+**Already done (verified in code, not assumed):**
+
+| Item                                 | State                                                                                                                                                       |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #10 `is_target()` NSP fencepost      | already `> NSP_MAX` (repair.py:101)                                                                                                                         |
+| #3 `generate.py` imports `mux`       | gone — stamp helpers come from `common`                                                                                                                     |
+| #8 runtime artefacts in `.gitignore` | present, with a comment pointing at the spec                                                                                                                |
+| #35 CI                               | `.github/workflows/ci.yml` + `test.yml` exist                                                                                                               |
+| #36 `plex_refresh.py` env vars       | uses `os.environ.get` with explicit exits                                                                                                                   |
+| #7 legacy shell scripts              | `anime_library.sh`, `all_seasons.sh`, `merge_watcher.sh` all carry deprecation headers                                                                      |
+| #22 misleading `Dockerfile`          | README's quick start points at `Dockerfile.builder`                                                                                                         |
+| #2 `REPAIR_BACKEND_SECONDARY`        | the two-pass re-check exists as `REPAIR_MODEL_SECONDARY` (a second _model_, not a second backend — a separate GPU/CPU backend split is still unimplemented) |
+| #4 `keep_event()` untested           | `tests/test_dub_signs_merge.py` has the style x positioning matrix                                                                                          |
+
+**Deliberate, not a defect:**
+
+- #5 `--default-track-flag tid:no` on every kept subtitle. Our own track takes `0:yes`;
+  leaving another track flagged default would produce two defaults. Demoting them is the
+  point.
+
+**Genuinely still open:**
+
+- #1 the phonetic-name guard. `ISSUE-phonetic-name-guard.md` describes rejecting a repair
+  that changes a capitalised token to something outside the glossary — but glossary
+  membership turned out to be _anti-correlated_ with correctness on real data (`Shanks` is
+  in the One Pace glossary, `Shirahoshi` is not), so the guard as specified would reject
+  good repairs and pass bad ones. The issue needs redesigning before implementing.
+
+**Found and fixed during this pass (not in any earlier review):**
+
+- `dub_signs_merge` deduplicated events on their _plaintext_, collapsing each stacked
+  typeset composition (black backing layer + white top layer) to the black one. Credits,
+  captions and titles rendered solid black. 31 of 83 shows affected.
+- The merge lifted signs from _every_ English track. 39 of 79 releases ship the same signs
+  in two or three tracks, so each rendered two or three times over.
+- Both are `PIPELINE_VERSION` 2; the library is being regenerated.
+- `#49`'s `HAS_DRAWING` and `#51`'s layer normalisation are implemented and tested. `#50`'s
+  `ANIMATED` matches `\fad(`, which ordinary dialogue uses constantly — it is only safe
+  because `DROP_STYLE` is checked first. A library-wide probe found no actual dialogue
+  leak (every flagged style was song lyrics, which the merge is meant to keep), but the
+  ordering is load-bearing and worth a comment if that regex is ever touched.

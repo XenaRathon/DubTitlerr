@@ -28,7 +28,7 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
 - [x] **T8 — `gen_loop.sh` hook.** run verifier after mine (timeout, swallow failure). — done when: grep shows it.
 - [x] **T9 — `Dockerfile.builder` COPY `glossary_verify.py`.** — done when: grep shows it.
 
-## Closing (the *close* phase — always keep last)
+## Closing (the _close_ phase — always keep last)
 
 - [x] **Integration (server):** verifier vs live Fandom + qwen3:8b — re-derive One Pace canon
       (Spandam/Enies Lobby/Water 7) + a fresh show (Reborn/JoJo) gets correct names; eyeball `flagged`.
@@ -36,4 +36,5 @@ Rules: ≤~1h each, dependency-ordered, verifiable, test-first, gates green (ruf
 - [x] Push `feat/glossary-wiki-verify`; merge to `main`. — done when: merged + pushed.
 
 ## Done
+
 <move [x] tasks here, preserving the done criterion>

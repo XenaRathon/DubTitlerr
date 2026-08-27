@@ -15,6 +15,7 @@ left to the C3 LLM repair stage. ``name_suspect`` flags lines the LLM should loo
 Pure stdlib + a wordlist file — unit-testable without CUDA/LLM. See
 specs/c1-glossary-precision/spec.md.  Built with help of Claude (Anthropic).
 """
+
 from __future__ import annotations
 
 import difflib
@@ -22,15 +23,18 @@ import json
 import os
 import re
 
-try:                     # V2 A4: tier-4 phonetic match. Optional dep -- degrade to the
+try:  # V2 A4: tier-4 phonetic match. Optional dep -- degrade to the
     import jellyfish  # existing 3-tier behavior if it isn't installed (see Dockerfile.builder).
 except ImportError:
     jellyfish = None
 
 # Guarded-fuzzy thresholds: short words demand near-identical matches.
 MIN_FUZZY_LEN = 4
+
+
 def fuzzy_cutoff(n: int) -> float:
     return 0.95 if n <= 5 else (0.90 if n <= 7 else 0.84)
+
 
 # Wordlist for the English-word gate: the apt `wamerican` dict in the image, plus a
 # bundled fallback shipped next to this module (also what the tests use).
@@ -86,13 +90,126 @@ def load(path: str) -> dict:
     return load_dict({})
 
 
+def tag_names_by_arc(gloss: dict, arc: str, arc_titles: set) -> int:
+    """Tag this glossary's names with an arc they belong to. Returns how many were tagged.
+
+    S-11. The tag is a SET of arcs, not one season, and it comes from wiki MEMBERSHIP
+    rather than from which season's transcript happened to produce the name. Recording a
+    single "the season that acquired it" contradicts the cross-arc case the spec already
+    documents: Caesar Clown is a Punk Hazard antagonist who appears in Dressrosa, so a
+    single-valued tag would demote him in one of the two arcs he is genuinely in.
+
+    Matching is on the REDUCED form, so the glossary's short name matches the wiki's full
+    title -- `Doflamingo` against `Donquixote Doflamingo`, `Luffy` against
+    `Monkey D. Luffy`. A name the arc does not contain is left UNTAGGED rather than tagged
+    falsely: untagged defaults IN at the consumer, whereas a wrong tag actively demotes a
+    name in the arcs where it belongs.
+
+    An empty ``arc_titles`` changes nothing. That is the [S-7] path -- an arc that would
+    not resolve must not be able to clear tags that other arcs established."""
+    if not arc_titles:
+        return 0
+    # Index the whole title AND each of its words, so a glossary short name matches a
+    # fuller wiki title from either end: `Caesar` -> `Caesar Clown`, `Doflamingo` ->
+    # `Donquixote Doflamingo`, `Luffy` -> `Monkey D. Luffy`. Words shorter than
+    # MIN_FUZZY_LEN are skipped for the same reason the fuzzy tier skips them -- `D.` in
+    # `Monkey D. Luffy` would match anything.
+    reduced = set()
+    for t in arc_titles:
+        reduced.add(re.sub(r"[^a-z0-9]", "", t.lower()))
+        for word in t.split():
+            w = re.sub(r"[^a-z0-9]", "", word.lower())
+            if len(w) >= MIN_FUZZY_LEN:
+                reduced.add(w)
+    tags = gloss.setdefault("arc_tags", {})
+    tagged = 0
+    for name in gloss.get("names") or []:
+        key = re.sub(r"[^a-z0-9]", "", name.lower())
+        if not key or key not in reduced:
+            continue
+        arcs = tags.setdefault(name.lower(), [])
+        if arc not in arcs:
+            arcs.append(arc)
+            arcs.sort()
+        tagged += 1
+    return tagged
+
+
+def arc_for(video_path: str) -> str | None:
+    """The arc name for an episode, from its season's ``season.nfo`` ``<title>``.
+
+    Plex, Jellyfin and Sonarr already write this file, so the mapping costs nothing to
+    obtain: verified 2026-08-26 across all 35 One Pace seasons, where Season 31 reads
+    ``<title>Dressrosa</title>``.
+
+    Returns None for anything it cannot answer -- no file, no title, unparseable content.
+    Most of the library has no ``season.nfo`` at all, so absence is the COMMON case and not
+    an error; the caller falls back to unweighted terms. A metadata file this pipeline does
+    not own must never be able to fail an episode, which is why every failure returns None
+    rather than raising.
+
+    Read with a regex rather than an XML parser ON PURPOSE. `.nfo` files ship inside
+    downloaded releases, so this is untrusted third-party input, and `xml.etree` is an XXE
+    and entity-expansion surface (the security gate blocks it outright). The file has one
+    fixed shape and one field is wanted from it, so a parser buys nothing and costs an
+    attack surface plus a dependency. Size-capped for the same reason: a crafted `.nfo`
+    must not be able to read a gigabyte into memory."""
+    nfo = os.path.join(os.path.dirname(os.path.abspath(video_path)), "season.nfo")
+    try:
+        with open(nfo, encoding="utf-8", errors="ignore") as f:
+            head = f.read(64 * 1024)
+    except OSError:
+        return None
+    m = re.search(r"<title>(.*?)</title>", head, re.S | re.I)
+    return (m.group(1).strip() or None) if m else None
+
+
+def prompt_for(gloss: dict, show: str = "") -> str:
+    """The exact ``initial_prompt`` this glossary and show hand whisper.
+
+    ONE derivation, used both by generate.load_glossary() when transcribing and by
+    stale_tier() when deciding whether a stored transcript is still current. Two copies
+    would drift, and the drift would read as "the prompt changed" on every episode of
+    every show -- a permanent, silent GPU queue.
+
+    ``show`` (generate's SHOW_NAME) wins over the glossary's own ``show`` key, matching
+    load_glossary()'s precedence."""
+    show = show or gloss.get("show", "")
+    return gloss.get("initial_prompt") or (
+        f"This is {show}, a Japanese anime (English dub). Transcribe the spoken English accurately, with natural punctuation."
+        if show
+        else "Japanese anime, English dub. Transcribe the spoken English accurately, with natural punctuation."
+    )
+
+
+def stale_tier(stored_prompt: str | None, gloss: dict, show: str = "") -> str | None:
+    """``"transcribe"`` if this glossary would now hand whisper a DIFFERENT prompt than
+    the one that produced the stored transcript, else ``None``.
+
+    The glossary reaches the decoder by exactly one route -- ``initial_prompt`` -- so
+    that string is the whole test. Everything else a glossary drives (``names``,
+    ``hard_fixes`` -> token/phrase fixes) is consumed by correct() at card level, long
+    after the words exist, and is therefore CPU work on the text tier.
+
+    This is why the comparison is on the prompt STRING and not on a hash of the glossary
+    file: mine_glossary.py appends hard_fixes on every sweep of a watched show, so a file
+    hash would mark every episode of that show transcription-stale for work that changed
+    nothing about audio -> words -- re-queueing a whole series for the GPU.
+
+    No stored prompt means no evidence the transcript matches this glossary, so it counts
+    as stale: unknown provenance is not evidence of freshness."""
+    if not stored_prompt:
+        return "transcribe"
+    return "transcribe" if stored_prompt != prompt_for(gloss, show) else None
+
+
 def _one_indel(a: str, b: str) -> bool:
     """True if a and b differ by exactly one inserted/deleted char (e.g. along/arlong,
     frank/franky). Such edits are too risky to auto-apply — left for the LLM."""
     if abs(len(a) - len(b)) != 1:
         return False
     short, lng = (a, b) if len(a) < len(b) else (b, a)
-    return any(lng[:i] + lng[i + 1:] == short for i in range(len(lng)))
+    return any(lng[:i] + lng[i + 1 :] == short for i in range(len(lng)))
 
 
 _TOKEN_RE = re.compile(r"^([^\w']*)([\w'][\w'-]*?)([^\w']*)$")
@@ -129,7 +246,7 @@ def _fix_token(tok: str, names: list[str], token_fixes: dict) -> tuple[str, int]
     low = core.lower()
     if low in token_fixes:
         return pre + token_fixes[low] + post, 1
-    if any(low == nm.lower() for nm in names):     # already a correct name -> leave
+    if any(low == nm.lower() for nm in names):  # already a correct name -> leave
         return tok, 0
     if len(core) < MIN_FUZZY_LEN or "'" in core or is_english(low):
         return tok, 0
@@ -149,9 +266,8 @@ def _fix_token(tok: str, names: list[str], token_fixes: dict) -> tuple[str, int]
 def correct(text: str, gloss: dict) -> tuple[str, int]:
     """Apply the tiered correction to one line; return (corrected, n_changes)."""
     n = 0
-    for key in sorted(gloss["phrase_fixes"], key=len, reverse=True):   # phrases first
-        text, c = re.compile(r"\b" + re.escape(key) + r"\b", re.I).subn(
-            gloss["phrase_fixes"][key], text)
+    for key in sorted(gloss["phrase_fixes"], key=len, reverse=True):  # phrases first
+        text, c = re.compile(r"\b" + re.escape(key) + r"\b", re.I).subn(gloss["phrase_fixes"][key], text)
         n += c
     out = []
     for tok in text.split():
@@ -174,8 +290,8 @@ def name_suspect(text: str, gloss: dict) -> bool:
         low = core.lower()
         if len(core) < MIN_FUZZY_LEN or low in names_lower or is_english(low):
             continue
-        if core[0].isupper():                                  # unknown proper noun
+        if core[0].isupper():  # unknown proper noun
             return True
         if names and difflib.get_close_matches(core.title(), names, n=1, cutoff=0.78):
-            return True                                        # lowercase near-name mishear
+            return True  # lowercase near-name mishear
     return False

@@ -45,7 +45,7 @@ Rules: each task ≤ ~1h, dependency-ordered, verifiable done criterion. Built
 - [x] **T8 — `Dockerfile.builder` COPY `reflow.py`.** — done when: grep shows the new
       module copied into `/app`.
 
-## Closing (the *close* phase of `dev-lifecycle` — always keep last)
+## Closing (the _close_ phase of `dev-lifecycle` — always keep last)
 
 - [x] **Integration verify (server):** stopped the live sweep, re-transcribed S19E16 with
       the new code, captured raw whisper output for offline iteration. Surfaced + fixed a

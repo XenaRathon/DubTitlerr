@@ -35,26 +35,26 @@
 
 ## Affected files (by layer)
 
-| Layer | File | Change |
-|---|---|---|
-| Analytics (new) | `tools/timing_compare.py` | CLI, RANSAC fit, overlap+VAD classification, JSON report, summary. |
-| Analytics (new) | `tools/vad.py` | `vad_probe()` — `webrtcvad` + `ffmpeg-silencedetect` backends. |
-| Tests (new) | `tests/test_timing_compare.py` | Pure-function unit tests (incl. RANSAC + VAD frame-decision). |
-| Common (refactor) | `common.py` | Hoist `dialogue_intervals`; add `dialogue_event_count`, `dialogue_density_score`. |
-| Repair (refactor) | `repair.py` | `from common import dialogue_intervals` (no behavior change). |
-| Deps | `pyproject.toml`, `Dockerfile.builder` | add `webrtcvad`. |
+| Layer             | File                                   | Change                                                                            |
+| ----------------- | -------------------------------------- | --------------------------------------------------------------------------------- |
+| Analytics (new)   | `tools/timing_compare.py`              | CLI, RANSAC fit, overlap+VAD classification, JSON report, summary.                |
+| Analytics (new)   | `tools/vad.py`                         | `vad_probe()` — `webrtcvad` + `ffmpeg-silencedetect` backends.                    |
+| Tests (new)       | `tests/test_timing_compare.py`         | Pure-function unit tests (incl. RANSAC + VAD frame-decision).                     |
+| Common (refactor) | `common.py`                            | Hoist `dialogue_intervals`; add `dialogue_event_count`, `dialogue_density_score`. |
+| Repair (refactor) | `repair.py`                            | `from common import dialogue_intervals` (no behavior change).                     |
+| Deps              | `pyproject.toml`, `Dockerfile.builder` | add `webrtcvad`.                                                                  |
 
 ## Risks and mitigation
 
-| Risk | Mitigation |
-|---|---|
-| Refactor changes `repair.py` behavior | Re-export via `common.py`; regression test pins `stream_indices=None` to current output; run repair tests before/after. |
-| Constant-offset error from PAL/framerate drift | RANSAC linear fit (intercept+slope); post-fit residual + `look_for_drift` flag surface any remaining drift. |
-| Sub gaps misread as hallucinations (real dub-only lines) | Independent VAD probe splits `in_gap_silent` vs `in_gap_speech`; `false_in_gap_rate` measures the real-speech-in-gap risk directly. |
-| `webrtcvad` won't build in the image | `--vad ffmpeg-silencedetect` dep-free fallback; if both fail, in-gap cards → `in_gap_vad_error` and `false_in_gap_rate` reported `null` (not a crash). |
-| Speech under loud music read as silent by VAD | Documented limitation; the `by_nsp`/`by_lp` cross-tab is the second view; aggressiveness tunable; calibrate on first run. |
-| Greedy nearest-onset mis-pairs on clustered cues | RANSAC inlier selection discards mis-pairs the plain median would absorb. |
-| Thresholds wrong for the actual library | All raw counts + `applicability_ratio` + `false_in_gap_rate` exposed; thresholds env-overridable; tune after first run. |
+| Risk                                                     | Mitigation                                                                                                                                             |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Refactor changes `repair.py` behavior                    | Re-export via `common.py`; regression test pins `stream_indices=None` to current output; run repair tests before/after.                                |
+| Constant-offset error from PAL/framerate drift           | RANSAC linear fit (intercept+slope); post-fit residual + `look_for_drift` flag surface any remaining drift.                                            |
+| Sub gaps misread as hallucinations (real dub-only lines) | Independent VAD probe splits `in_gap_silent` vs `in_gap_speech`; `false_in_gap_rate` measures the real-speech-in-gap risk directly.                    |
+| `webrtcvad` won't build in the image                     | `--vad ffmpeg-silencedetect` dep-free fallback; if both fail, in-gap cards → `in_gap_vad_error` and `false_in_gap_rate` reported `null` (not a crash). |
+| Speech under loud music read as silent by VAD            | Documented limitation; the `by_nsp`/`by_lp` cross-tab is the second view; aggressiveness tunable; calibrate on first run.                              |
+| Greedy nearest-onset mis-pairs on clustered cues         | RANSAC inlier selection discards mis-pairs the plain median would absorb.                                                                              |
+| Thresholds wrong for the actual library                  | All raw counts + `applicability_ratio` + `false_in_gap_rate` exposed; thresholds env-overridable; tune after first run.                                |
 
 ## Rollback and reversibility
 

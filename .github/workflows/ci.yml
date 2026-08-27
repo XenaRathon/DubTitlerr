@@ -1,16 +1,27 @@
 name: CI
 on: [push, pull_request]
 
+# Stacked pushes to the same ref waste runners on commits nobody will ship.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Without this a hung job holds a runner for GitHub's six-hour default.
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # Actions are pinned to commit SHAs: a tag can be silently repointed at
+      # new code, and these run with access to the checkout.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
-      - run: pip install ruff pytest
+      # pysubs2 and jellyfish are import-time dependencies of the suite; without
+      # them every test module fails at collection and this job never really ran.
+      - run: pip install ruff pytest pysubs2 jellyfish
       # Scoped to the reflow module + its tests (the quality-build surface);
       # the other legacy scripts are linted as later steps touch them.
-      - run: ruff check reflow.py generate.py glossary.py glossary_verify.py hallucination.py ordering.py repair.py mux.py tools/ tests/
+      - run: ruff check reflow.py generate.py glossary.py glossary_verify.py hallucination.py ordering.py repair.py mux.py common.py mine_glossary.py scripts/ tools/ tests/
       - run: pytest

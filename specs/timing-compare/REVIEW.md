@@ -22,7 +22,7 @@ are quality-of-spec improvements that make review and rollout smoother.
 
 1. **Reuse `repair.dialogue_intervals`, not `dub_signs_merge.keep_event`** — and put it in `common.py`.
    `repair.py:dialogue_intervals()` already returns exactly `(start_s, end_s, text)` per dialogue event
-   using the same regex set the spec wants. `dub_signs_merge.keep_event` is the *sign-vs-dialogue*
+   using the same regex set the spec wants. `dub_signs_merge.keep_event` is the _sign-vs-dialogue_
    predicate (inverted direction). Hoist `dialogue_intervals(video, stream_index)` to `common.py`
    with the parameterization the spec needs (single track, not "merge-all"), so both `repair.py`
    and `timing_compare.py` call the same function.
@@ -30,23 +30,23 @@ are quality-of-spec improvements that make review and rollout smoother.
 2. **Hardcode the band cutoffs that match `hallucination.py`.** The acceptance criterion asks for
    `kept_in_gap` bucketed by `nsp` / `logprob` bands but does not name them. Pin them in the spec
    to the existing `hallucination.py` constants so the report and the gate line up — using the
-   *strict* inequalities those constants use (`>` for `nsp`, `<` for `lp`), so a card whose raw
+   _strict_ inequalities those constants use (`>` for `nsp`, `<` for `lp`), so a card whose raw
    value lands exactly on a cutpoint goes to the right bucket:
    - `nsp` buckets (cutpoints `NSP_FLAG = 0.5`, `NSP_DROP = 0.95`):
-     - `clean_le_0.5`      — `\u2264 0.5`     (not flagged by `flag_reason`)
+     - `clean_le_0.5` — `\u2264 0.5` (not flagged by `flag_reason`)
      - `flag_gt_0.5_le_0.95` — `> 0.5 and \u2264 0.95` (`maybe_silence` flag; not yet dropped)
-     - `drop_gt_0.95`      — `> 0.95`         (would be dropped by `drop_reason`'s music combo)
+     - `drop_gt_0.95` — `> 0.95` (would be dropped by `drop_reason`'s music combo)
    - `lp` buckets (cutpoints `LP_DROP = -2.0`, `LP_FLAG = -0.6`):
-     - `clean_ge_-0.6`         — `\u2265 -0.6`     (not flagged)
-     - `flag_lt_-0.6_ge_-2.0`  — `\u2265 -2.0 and < -0.6` (`low_conf` flag; not yet dropped)
-     - `drop_lt_-2.0`          — `< -2.0`         (would be dropped)
-   Naming the buckets after the inequality (not the cutpoint) prevents the off-by-one at exact
-   boundaries — `nsp == 0.5` (not flagged) lands in `clean_le_0.5`, `nsp == 0.95` (flagged; not
-   dropped unless paired with very low `lp`) lands in `flag_gt_0.5_le_0.95`.
+     - `clean_ge_-0.6` — `\u2265 -0.6` (not flagged)
+     - `flag_lt_-0.6_ge_-2.0` — `\u2265 -2.0 and < -0.6` (`low_conf` flag; not yet dropped)
+     - `drop_lt_-2.0` — `< -2.0` (would be dropped)
+       Naming the buckets after the inequality (not the cutpoint) prevents the off-by-one at exact
+       boundaries — `nsp == 0.5` (not flagged) lands in `clean_le_0.5`, `nsp == 0.95` (flagged; not
+       dropped unless paired with very low `lp`) lands in `flag_gt_0.5_le_0.95`.
 
 3. **Define the `--tolerance` math, and the "nearest onset" tie-break.** The acceptance criterion
-   *"each kept card is classified on-cue or in-gap by overlap (after offset correction) within a
-   configurable tolerance (default ±0.30 s / any-overlap)"* is two different rules accidentally fused.
+   _"each kept card is classified on-cue or in-gap by overlap (after offset correction) within a
+   configurable tolerance (default ±0.30 s / any-overlap)"_ is two different rules accidentally fused.
    Specify one. Recommendation:
    - Treat `tolerance` as a **slack applied symmetrically to the cue interval**: a card overlaps
      a cue iff `max(0, min(card.end, cue.end + tol) - max(card.start, cue.start - tol)) > 0`.
@@ -56,7 +56,7 @@ are quality-of-spec improvements that make review and rollout smoother.
      nearby cue does not poison the median with an outlier — pair or skip, don't smear.
 
 4. **Move `timing_compare.py` to `tools/`.** The spec says `"A standalone script timing_compare.py
-   exists in the repo root"` and `"ruff check timing_compare.py tests/test_timing_compare.py"` —
+exists in the repo root"` and `"ruff check timing_compare.py tests/test_timing_compare.py"` —
    but `tools/` already houses the analytics-style scripts (`bakeoff.py`, the `dump_whisper.py`
    the spec itself references). Put it at `tools/timing_compare.py` and update the ruff line
    accordingly. Keeps the repo root limited to live pipeline stages (`generate`, `repair`,
@@ -79,19 +79,19 @@ are quality-of-spec improvements that make review and rollout smoother.
 
 ### 1. Correctness / scope
 
-- **Cite:** *"estimated globally for each episode (median of nearest-onset deltas between cards
-  and cues)"* → **Add a max pairing radius.** Without it, a sparse dub track where the nearest
+- **Cite:** _"estimated globally for each episode (median of nearest-onset deltas between cards
+  and cues)"_ → **Add a max pairing radius.** Without it, a sparse dub track where the nearest
   cue is e.g. 60 s away will pin the offset median to that delta. Specify e.g.
-  *"only card/cue pairs with `abs(card.start - cue.start) ≤ 5.0` s contribute to the offset
-  median; longer gaps are excluded and counted as `unpaired`."*
+  _"only card/cue pairs with `abs(card.start - cue.start) ≤ 5.0` s contribute to the offset
+  median; longer gaps are excluded and counted as `unpaired`."_
 
-- **Cite:** *"Offset correction is applied before overlap classification"* → **Specify the sign
+- **Cite:** _"Offset correction is applied before overlap classification"_ → **Specify the sign
   convention.** Recommendation: `effective_card_start = card.start - global_offset_s`,
   `effective_card_end = card.end - global_offset_s` (offset the dub forward into the sub
   timeline). Make the sign part of the schema (`global_offset_s` is the value to **subtract**
   from card times to align with cues).
 
-- **Cite:** *"Card overlaps two adjacent cues … matched-pair onset-delta uses the nearest cue"*
+- **Cite:** _"Card overlaps two adjacent cues … matched-pair onset-delta uses the nearest cue"_
   → **Tighten the pair selection.** Use `min |card.start - cue.start|` over cues that satisfy
   the absolute-time cap; ties broken per Top-Priority #3 above.
 
@@ -102,15 +102,15 @@ are quality-of-spec improvements that make review and rollout smoother.
 
 ### 2. Reuse / DRY
 
-The spec's *"reuse, don't duplicate"* line is good, but the *specific predicate* it points at
+The spec's _"reuse, don't duplicate"_ line is good, but the _specific predicate_ it points at
 is mildly wrong:
 
 - `dub_signs_merge.keep_event(ev)` returns `True` for **signs/songs/credits**, and `False` for
-  dialogue and warnings. The tool wants the *inverse* — *"this event is plain dialogue"* — and
+  dialogue and warnings. The tool wants the _inverse_ — _"this event is plain dialogue"_ — and
   the same regexes (`KARAOKE`, `POSITIONED`, `KEEP_STYLE`, `DROP_STYLE`).
 - `repair.dialogue_intervals(video)` already implements the exact selection the spec wants
   (returns `(start_s, end_s, text)` triples for the dialogue subset). It does, however,
-  *merge all English streams into one list*, which is not what `timing_compare` wants
+  _merge all English streams into one list_, which is not what `timing_compare` wants
   (it needs to score each stream independently to pick the dialogue-dense one).
 
   **Suggested diff**
@@ -127,22 +127,22 @@ is mildly wrong:
 
 ### 3. Acceptance criteria gaps
 
-- **Cite the spec:** *"breakdown by `no_speech_prob` band and `avg_logprob` band"* — bands are
+- **Cite the spec:** _"breakdown by `no_speech_prob` band and `avg_logprob` band"_ — bands are
   not named. **Replace with** the four-band bucket list in Top-Priority #2 above, naming
   each bucket after the `hallucination.flag_reason` / `hallucination.drop_reason` tier it
   maps to, so the report is symmetric with the gate.
 
-- **Cite the spec:** *"Start heuristic (e.g. ≥ N cues and ≥ X% plain bottom-position events)"*
+- **Cite the spec:** _"Start heuristic (e.g. ≥ N cues and ≥ X% plain bottom-position events)"_
   — this is a runtime tuning note masquerading as a criterion. **Replace with a binding
   initial value** and a one-line rationale:
-  - *"A track is treated as a dialogue reference iff its filtered dialogue-cue count is
+  - _"A track is treated as a dialogue reference iff its filtered dialogue-cue count is
     `≥ 50` AND the share of `plain` (no `\pos` / `\an N` / no `\k`-tag, style ∈ Default/Main)
     events among all dialogue events is `≥ 0.70`. Both thresholds are env-overridable
     (`TIMING_COMPARE_MIN_CUES`, `TIMING_COMPARE_MIN_PLAIN_SHARE`) so Phase 0's first-run
-    diagnostics can refine them without a code change."*
+    diagnostics can refine them without a code change."_
 
-- **Cite the spec:** *"Report (written as JSON + printed human summary) contains, per episode
-  and aggregated per show and overall: …"* — bullet list a schema but no shape. **Replace
+- **Cite the spec:** _"Report (written as JSON + printed human summary) contains, per episode
+  and aggregated per show and overall: …"_ — bullet list a schema but no shape. **Replace
   with** a concrete JSON skeleton, e.g.:
 
   ```jsonc
@@ -177,18 +177,18 @@ is mildly wrong:
   }
   ```
 
-- **Cite the spec:** *"`--tolerance` (s, default 0.30)"* — no bounds. Add min/max sanity
+- **Cite the spec:** _"`--tolerance` (s, default 0.30)"_ — no bounds. Add min/max sanity
   (recommend `--tolerance` clamped to `[0.0, 2.0]`; outside that range, print a warning but
   proceed, since some pathological shows genuinely need >1 s of slack).
 
 ### 4. Testability
 
-The spec lists *"offset estimation, overlap/on-cue classification, dialogue-density scoring,
-band bucketing"* as pure functions needing unit tests. Pin them with explicit signatures and
+The spec lists _"offset estimation, overlap/on-cue classification, dialogue-density scoring,
+band bucketing"_ as pure functions needing unit tests. Pin them with explicit signatures and
 fixture shapes so implementation can't drift:
 
 - `estimate_offset(card_starts: list[float], cue_starts: list[float],
-  max_pair_radius_s: float = 5.0) -> tuple[float | None, int, list[float]]`
+max_pair_radius_s: float = 5.0) -> tuple[float | None, int, list[float]]`
   — returns `(median_offset_or_None, matched_pairs_count, residual_deltas_post_correction)`.
 - `classify_overlap(card_start, card_end, cue_start, cue_end, tolerance_s) -> bool`
   — returns `True` iff the slack-aware interval intersection is positive; unit-testable with
@@ -198,7 +198,7 @@ fixture shapes so implementation can't drift:
   file path), so tests construct `SSAEvent` fixtures directly.
 - `bucket_nsp(nsp: float) -> Literal["clean_le_0.5", "flag_gt_0.5_le_0.95", "drop_gt_0.95"]`
   and the matching `bucket_lp(lp: float) -> Literal["drop_lt_-2.0", "flag_lt_-0.6_ge_-2.0",
-  "clean_ge_-0.6"]`. Trivial, but spec it so test count is dictated by the spec and to lock the
+"clean_ge_-0.6"]`. Trivial, but spec it so test count is dictated by the spec and to lock the
   cutpoint-vs-inequality naming decision.
 - `nearest_onset_pairs(card_starts, cue_starts, max_radius) -> list[tuple[int, int, float]]`
   — pure assignment function; tested with sorted-card / sorted-cue fixtures, ties, and the
@@ -207,12 +207,12 @@ fixture shapes so implementation can't drift:
 ### 5. Project-convention issues
 
 - **Missing `Authorization` section.** The template (`specs/_template/spec.md`) makes
-  *Authorization* a required section, and `b1-hallucination-gate/spec.md` has one even
+  _Authorization_ a required section, and `b1-hallucination-gate/spec.md` has one even
   though the gate is in-process. **Add an `## Authorization` subsection** that documents:
   - This is a read-only analytics tool with no auth boundary of its own.
   - It writes one file: `timing-compare.report.json` (location chosen by `--out`, default cwd).
   - It runs as the user invoking it (no privilege escalation, no chown, no setuid; unlike
-    live stages, ownership is *not* rewritten so it can run as an unprivileged user against
+    live stages, ownership is _not_ rewritten so it can run as an unprivileged user against
     the same media).
 
 - **`Components / changes` section missing.** The B1 spec has a "Components / changes"
@@ -226,8 +226,8 @@ fixture shapes so implementation can't drift:
   - Not modified: `generate.py`, `mux.py`, `dub_signs_merge.py`, `hallucination.py`,
     `Dockerfile.builder`, `pyproject.toml`.
 
-- **Acceptance criterion language:** *"ruff check timing_compare.py tests/test_timing_compare.py
-  clean; all existing tests still pass."* → **Update path** to
+- **Acceptance criterion language:** _"ruff check timing_compare.py tests/test_timing_compare.py
+  clean; all existing tests still pass."_ → **Update path** to
   `tools/timing_compare.py tests/test_timing_compare.py` after the file move.
 
 ### 6. Missing risks
@@ -239,11 +239,11 @@ fixture shapes so implementation can't drift:
   identical plain-share score → undefined choice. **Specify deterministic tie-break:**
   lower stream-index wins.
 - **`repair.dialogue_intervals`'s all-streams merge.** Reusing it naïvely in
-  `timing_compare.py` would defeat the purpose of measuring *track selection*. **Make the
+  `timing_compare.py` would defeat the purpose of measuring _track selection_. **Make the
   refactor explicit** (see §2 above): add a per-track variant before any reuse.
 - **Inverted selection with `dub_signs_merge`'s "Translation" tier.** `keep_event`
-  *drops* `style=Translation` as a song-translation; but for `timing_compare` you may
-  *want* to count `Translation` as dialogue if the release uses a translation-only track
+  _drops_ `style=Translation` as a song-translation; but for `timing_compare` you may
+  _want_ to count `Translation` as dialogue if the release uses a translation-only track
   with no `Default` style. **Add a rule** to the track-selection step: count an event as
   `plain dialogue` if `style ∈ {Default, Main, …}` **or** `style ∈ {Translation}` (with
   `Translation`-tier events weighted at e.g. `0.5` of an event, since the wording differs).
@@ -252,17 +252,17 @@ fixture shapes so implementation can't drift:
 
 ### 7. Ambiguity / weak wording
 
-- **Cite:** *"is very likely a hallucination / is very likely real"* — **Replace** the
-  qualitative *"very likely"* with a falsifiable hypothesis the report can test, e.g.
-  *"We expect ≥ 80% of `no_speech_prob` > 0.5 cards outside dialogue cues to be clear
+- **Cite:** _"is very likely a hallucination / is very likely real"_ — **Replace** the
+  qualitative _"very likely"_ with a falsifiable hypothesis the report can test, e.g.
+  _"We expect ≥ 80% of `no_speech_prob` > 0.5 cards outside dialogue cues to be clear
   hallucinations (blocklist / repetition / Whisper music framing); the report's
   `kept_in_gap.by_flag` row tells us if the in-gap set is concentrated in `maybe_silence`,
-  which is the actionable signal for Phase 1."*
-- **Cite:** *"e.g. ≥ N cues and ≥ X% plain"* → **Replace with concrete numbers** (see §3).
-- **Cite:** *"Start heuristic … tune on the first run's `reference_track` diagnostics"* — split
+  which is the actionable signal for Phase 1."_
+- **Cite:** _"e.g. ≥ N cues and ≥ X% plain"_ → **Replace with concrete numbers** (see §3).
+- **Cite:** _"Start heuristic … tune on the first run's `reference_track` diagnostics"_ — split
   into spec-time initial numbers and an Open Question about tuning based on the run.
-- **Cite:** *"... one or more show directory paths (walked for video files, same extension
-  set as `common.VIDEO_EXTS`)."* — **Add:** pruning for `EXTRA_DIRS` and walk behavior
+- **Cite:** _"... one or more show directory paths (walked for video files, same extension
+  set as `common.VIDEO_EXTS`)."_ — **Add:** pruning for `EXTRA_DIRS` and walk behavior
   (recursive, symlink-following, hidden-dir). Recommend matching `repair.py`'s behavior
   (`os.walk(root)` with no symlink argument → does not follow by default).
 
@@ -270,10 +270,10 @@ fixture shapes so implementation can't drift:
 
 - **Empty `conf.json` with valid rows but no overlap with any cue** → `pct_cards_on_cue = 0.0`,
   `pct_cues_covered = 0.0`, `kept_in_gap.total = N`. Already legal under existing spec, but
-  call out that `null` is reserved for *structural* impossibility (no cues at all → can't
-  compute), not for *zero* results.
+  call out that `null` is reserved for _structural_ impossibility (no cues at all → can't
+  compute), not for _zero_ results.
 - **`--out` writes into a path that lives on a different filesystem than the media.**
-  Forbidden by the *"read-only"* rule, but explicitly say the report write is the **only**
+  Forbidden by the _"read-only"_ rule, but explicitly say the report write is the **only**
   write and never touches `OUTPUT_ROOT` (this is analytics, not part of the media pipeline,
   so `output_for()` redirection doesn't apply).
 - **Show dir argument case.** Linux paths — `os.walk` is case-sensitive; mention that the
@@ -414,22 +414,22 @@ shows the **to** text.
 
 The current **Non-goals** section is solid. Two micro-tightenings:
 
-- **Re: "DTW / drift-aware sequence alignment"** — add a forward-pointing note: *"Phase 1 may
+- **Re: "DTW / drift-aware sequence alignment"** — add a forward-pointing note: _"Phase 1 may
   revisit per-episode global offset if any episode has `residual_iqr_s > 1.0`; treat that as
-  drift evidence, not as a spec violation."* Phase 0 then needs to *report* that flag (see
+  drift evidence, not as a spec violation."_ Phase 0 then needs to _report_ that flag (see
   Acceptance criteria above).
 - **Re: "fake drops / raw-dump every episode"** — note explicitly that this requires
-  `dump_whisper.py` to write *only* the post-A1+pre-drop card candidates, NOT the survivors;
+  `dump_whisper.py` to write _only_ the post-A1+pre-drop card candidates, NOT the survivors;
   otherwise the dump will reproduce post-B1 data and a future `dump_whisper.py`-driven mode
-  will not be able to measure false-drops. This is a constraint on a *future*, not-present
+  will not be able to measure false-drops. This is a constraint on a _future_, not-present
   tool, but pinning it now prevents silent breakage later.
 
 ---
 
 **Reviewed by:** `minimax/minimax-m3`
 **Date:** 2026-07-24 (matches this session's date)
-**Status:** *Review complete — recommendations above are concrete diffs; await author response
-on Top-Priority items 1–6 before implementation starts.*
+**Status:** _Review complete — recommendations above are concrete diffs; await author response
+on Top-Priority items 1–6 before implementation starts._
 
 ---
 
@@ -450,9 +450,9 @@ The first review already covers the core correctness, DRY, and acceptance-criter
    The spec explicitly walls off gating, snapping, and re-transcription. That is the correct way to introduce a new signal: measure first, gate later. Keep that framing prominent.
 
 2. **Subtitle extraction artifacts violate the read-only promise unless cleaned up.**
-   **Cite:** *"It extracts the embedded English subtitle stream(s) via the existing
-   `common.eng_sub_streams` + `extract_sub` helpers"* and *"No mutation of any media, sidecar,
-   or pipeline state."*
+   **Cite:** _"It extracts the embedded English subtitle stream(s) via the existing
+   `common.eng_sub_streams` + `extract_sub` helpers"_ and _"No mutation of any media, sidecar,
+   or pipeline state."_
    `common.extract_sub(video, idx, out)` writes an `.ass` file to the path given. If the
    implementation points `out` at the media directory, it creates sidecar clutter on a
    read-only filesystem. **Add a constraint:** extracted subtitle files must be written inside
@@ -465,10 +465,10 @@ The first review already covers the core correctness, DRY, and acceptance-criter
    - Add unit tests that pin the fallback `stream_indices=None` behavior to exactly the
      current `repair.py` output.
    - Only then merge `tools/timing_compare.py`.
-   This prevents a situation where the offline analytics PR breaks the repair stage.
+     This prevents a situation where the offline analytics PR breaks the repair stage.
 
 4. **CLI `--lang` default must mirror the live pipeline's env convention.**
-   **Cite:** *"`--lang` (sub language filter, default the pipeline's `SUB_LANGS`)."*
+   **Cite:** _"`--lang` (sub language filter, default the pipeline's `SUB_LANGS`)."_
    `common.py` does not export a unified `SUB_LANGS`; live modules load it locally as
    `os.environ.get("SUB_LANGS", "eng,en,und").split(",")`. To keep parity, `timing_compare.py`
    should use the exact same env default and the same parsing (comma-split, lowercased). Add
@@ -491,18 +491,17 @@ The first review already covers the core correctness, DRY, and acceptance-criter
 
 ## Suggested spec additions (small edits)
 
-- **Constraints / extraction:** *"Extracted subtitle files are written to a temporary directory
+- **Constraints / extraction:** _"Extracted subtitle files are written to a temporary directory
   and removed after the episode is processed; no `.ass` sidecar is left next to the source
-  media."*
-- **Inputs / `--lang`:** *"Default is `SUB_LANGS` env var, parsed as a comma-separated list and
-  lowercased, matching `repair.py` / `dub_signs_merge.py` conventions."*
-- **Outputs / printed summary:** *"The human-readable summary prints per-show and overall
+  media."_
+- **Inputs / `--lang`:** _"Default is `SUB_LANGS` env var, parsed as a comma-separated list and
+  lowercased, matching `repair.py` / `dub_signs_merge.py` conventions."_
+- **Outputs / printed summary:** _"The human-readable summary prints per-show and overall
   `applicability_ratio`, defined as `analyzed / (analyzed + no-reference)`, plus the
-  top-line `pct_cards_on_cue` and `kept_in_gap` totals."*
-- **Edge cases:** Add a row *"All episodes in a show are `no-reference`"* → *"Per-show
-  aggregate coverage/offset fields are `null`; status counts are still reported."*
+  top-line `pct_cards_on_cue` and `kept_in_gap` totals."_
+- **Edge cases:** Add a row _"All episodes in a show are `no-reference`"_ → _"Per-show
+  aggregate coverage/offset fields are `null`; status counts are still reported."_
 
 **Reviewed by:** `minimax/minimax-m3`
 **Date:** 2026-07-24
-**Status:** *Supplementary review complete — items 2 and 5 should be added to the spec; item 3 should be captured in the implementation plan (plan.md / tasks.md).*
-
+**Status:** _Supplementary review complete — items 2 and 5 should be added to the spec; item 3 should be captured in the implementation plan (plan.md / tasks.md)._

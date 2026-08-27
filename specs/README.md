@@ -19,11 +19,11 @@ pausing to ask. The source of these directives is the `dev-lifecycle` checkpoint
 
 ## The three artifacts
 
-| File | What it is | Who generates it |
-|---|---|---|
-| `spec.md` | The **what** and the **why**: problem, acceptance criteria, scope, contracts, edges. | `prompt-grill` skill |
-| `plan.md` | The **how**: architecture, affected files by layer, risks, testing strategy. | Technical discussion |
-| `tasks.md` | The **execution**: checklist of small tasks, ordered by dependency. | After the plan is approved |
+| File       | What it is                                                                           | Who generates it           |
+| ---------- | ------------------------------------------------------------------------------------ | -------------------------- |
+| `spec.md`  | The **what** and the **why**: problem, acceptance criteria, scope, contracts, edges. | `prompt-grill` skill       |
+| `plan.md`  | The **how**: architecture, affected files by layer, risks, testing strategy.         | Technical discussion       |
+| `tasks.md` | The **execution**: checklist of small tasks, ordered by dependency.                  | After the plan is approved |
 
 ## How to start a feature
 
