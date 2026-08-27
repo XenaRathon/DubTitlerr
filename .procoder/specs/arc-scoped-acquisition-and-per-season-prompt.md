@@ -36,28 +36,43 @@ Status: complete
 
 ## Problem
 
-A show's glossary carries exactly ONE `initial_prompt`, and that string is the only
-glossary-derived input whisper's decoder ever sees (`generate.py:893`). For One Pace the
-live prompt primes the decoder with the Enies Lobby / Water 7 cast -- Spandam, Lucci,
-Kaku, Kalifa, Blueno, Iceburg, CP9, Ohara, Pluton, Going Merry -- while Season 31 is the
-Dressrosa arc. Not one Dressrosa name is in it. So the decoder gets no priming for what it
-is about to hear AND is actively biased toward names that cannot occur, which is two
-distinct error sources manufacturing exactly the phonetic mishears the v6 name guard was
-built to reject after the fact.
+Names come out of this pipeline wrong, and on releases with no fansub track nothing can fix
+them. The exemplar, measured on One Pace S31E01: the dub says "Donquixote Doflamingo" and
+the transcript ships `Dothamingo`.
 
-The gap cannot close itself. `glossary_acquire.py` harvests candidate tokens FROM EXISTING
-TRANSCRIPTS and resolves them against wiki titles, so it can only ask the wiki about words
-whisper already emitted. Measured 2026-08-26 over 461 One Pace episodes with `--apply`: 20
-proposals, 0 applied, 19 flagged, and nothing resembling Rebecca, Kyros or Pica, because
-the wrong-arc prompt meant those names were never transcribed in the first place. Wrong
-prompt -> wrong transcript -> no arc tokens to harvest -> prompt never improves.
+`Doflamingo` IS in the glossary. `glossary.correct()` still cannot repair it -- the fuzzy
+tier scores difflib 0.800 against a 0.84 cutoff and the phonetic tier scores metaphone
+T0MNK against TFLMNK, so both miss by a margin. The LLM repair stage could fix it, but the
+card has no fansub anchor, and `repair.py` skips every such card. Season 31 carries 6,492 of
+them and accepted 0 repairs across all 48 episodes.
 
-The same run showed the cost of doing it show-wide: acquire's own docstring names its
-dominant cost as "8202 tokens x 8109 titles", and it re-walks all 461 episodes to learn
-about the 48 that are queued. Meanwhile most of the library is worse off than One Pace --
-of four sampled shows (Chainsaw Man, Chainsmoker Cat, MARRIAGETOXIN, Reborn as a Vending
-Machine) THREE have no glossary at all and run on the neutral fallback prompt with
-`glossary.correct()` a complete no-op.
+So the defect is a near-miss in the deterministic correction tiers with no fallback on
+non-fansub releases. That is what this leg is for.
+
+**Two mechanisms were tried against it and both failed, on measurement.** This section used
+to argue that a wrong-arc `initial_prompt` manufactured these mishears; that causal story is
+dead and is recorded here so nobody rebuilds it:
+
+- **Per-season prompts ([S-3], withdrawn).** Two sharply different prompts produced
+  word-identical transcripts over three episodes, with identical counts for all 15 arc
+  names. `initial_prompt` reaches only the first decoding window, which in this show is the
+  opening theme -- 8 cards of sung lyrics, no character names, verified on 10 of 10 sampled
+  episodes.
+- **Hotwords ([S-10], cut).** Measured at 72/110/138/150 tokens. It corrupts phonetically
+  adjacent names it does NOT list -- listing `Kin'emon` turns `Kanjuro` into `Kanjudo` --
+  and adds repetition runs the baseline never produces. Neither is tunable: the 223-token
+  budget forces a subset of any real cast, and listing a subset is what damages the rest.
+
+What survived is the repair stage itself, and it is TEXT tier, so experiments cost CPU
+minutes against a saved `words.json` instead of GPU hours. Ungating the unanchored path on
+S31E01 turned 161 refused targets into 21 repairs, 18 acceptable, `Dothamingo ->
+Doflamingo` among them.
+
+The remaining constraint is COVERAGE, not mechanism. The Dressrosa arc has 96 entities on
+the wiki; the entire show's glossary has 92 names. Of 17 Dressrosa names tagged for a test,
+4 existed in the glossary. That gap is why one measured regression happened at all --
+`VIVRA -> Vivi`, where the correct term `Vivre Card` is simply absent and the model reached
+for the nearest name present.
 
 ## Users
 
@@ -73,6 +88,27 @@ Machine) THREE have no glossary at all and run on the neutral fallback prompt wi
   prompt is currently the ONLY name signal available.
 
 ## In scope
+
+Status per item, so a cold reader can tell what exists. BUILT = in the tree and tested;
+MEASURED = evidence exists; SPECIFIED = designed, not built; CUT/WITHDRAWN/MOOT = dead,
+kept only so the decision is on the record.
+
+    [S-1]  BUILT      glossary.arc_for, season.nfo -> arc name
+    [S-2]  SPECIFIED  arc-scoped wiki fetch -- the binding constraint on the whole leg
+    [S-3]  WITHDRAWN  per-season initial_prompt: measured inert
+    [S-4]  SPECIFIED  narrow acquisition to the queued season
+    [S-5]  SPECIFIED  one stage, one arc fetch, two consumers
+    [S-6]  MOOT       season-aware decoder staleness: nothing season-scoped reaches the decoder
+    [S-7]  SPECIFIED  degrade to today's behaviour when the arc will not resolve
+    [S-8]  SPECIFIED  shared wiki layer (ordinary de-duplication only)
+    [S-9]  SPECIFIED  re-measure the three acquire false negatives
+    [S-10] CUT        hotwords: corrupts unlisted phonetic neighbours, adds repetition
+    [S-11] SPECIFIED  arc tags on glossary names -- feeds [S-13]
+    [S-12] BUILT      conditional unanchored repair, DEFAULT CLOSED
+    [S-13] BUILT      season-weighted repair glossary -- inert until [S-11]
+    [S-14] BUILT      refuse a vouched-name swap where there is no reference
+    [S-15] BUILT      phonetic-proximity gate on the unknown -> known path
+    [S-16] SPECIFIED  falsify the coverage defence (add Vivre Card, re-run)
 
 - [S-1] Resolve a season's arc name from `season.nfo` (`<title>`), the metadata Plex,
   Jellyfin and Sonarr already write. Verified present for all 35 One Pace seasons;
@@ -97,9 +133,9 @@ Machine) THREE have no glossary at all and run on the neutral fallback prompt wi
   cut [S-10]: they weight the glossary handed to the repair LLM, which is where arc scope
   survives contact with measurement.
 - [S-12] Let cards with NO fansub anchor reach the LLM repair stage, using the surrounding
-  cards as context in place of a reference. `repair.py:515-517` already builds `prev_text`
+  cards as context in place of a reference. `repair.py:622-624` already builds `prev_text`
   and `next_text` and passes them to `build_prompt`; unanchored cards simply never reach
-  that code, hitting the `continue` at `repair.py:512`. The gate becomes conditional rather
+  that code, hitting the `continue` at `repair.py:162 (skips_unanchored)`. The gate becomes conditional rather
   than removed, so today's behaviour stays reachable.
 - [S-13] Weight the glossary terms handed to the repair prompt by the current episode's
   arc, resolved from `season.nfo`. BUILT 2026-08-26. The earlier justification here was
@@ -110,16 +146,34 @@ Machine) THREE have no glossary at all and run on the neutral fallback prompt wi
   measured on the live One Pace glossary it holds 110 of 140 terms and silently discards 30,
   `Nico Robin` and `Rob Lucci` among them. Weighting REORDERS so the current arc's names win
   the budget; it never filters, and every term that still fits is still offered.
-- [S-14] Refuse a repair that substitutes one KNOWN glossary name for another. Verified
-  2026-08-26 that the v7 guard permits exactly this -- `invents_name` returns False for
-  `Oimo -> Zoro` because the gained name IS known -- which is the precise failure that got
-  unanchored repair disabled. The glossary already vouched for the original; a model with
-  no reference has no standing to overrule it.
+- [S-14] BUILT 2026-08-26 (`752dd15`). `repair.substitutes_a_vouched_name` refuses a
+  repair that replaces one KNOWN glossary name with another. Applied ONLY where the card
+  has no fansub reference: the bake-off failure it guards against (`Oimo -> Zoro`) was the
+  glossary-ONLY case, and a reference-backed swap is exactly the correction repair exists
+  to make -- refusing those everywhere would lose real anchored repairs library-wide.
+  The rule lives in its own function, NOT in `invents_name`, so the two name guards can be
+  reasoned about separately; an earlier criterion naming `invents_name` was wrong about its
+  own implementation and is corrected below.
+- [S-15] BUILT 2026-08-26 (`752dd15`). The phonetic-proximity gate, previously load-bearing
+  with no home in this spec -- the round-2 review's one surviving BLOCK. On the
+  UNKNOWN -> KNOWN path a substitution must clear `repair.PHONETIC_MIN` (jaro-winkler,
+  default 0.75, `REPAIR_PHONETIC_MIN`). Measured: it admits `dothamingo -> doflamingo`
+  0.893, `zolo -> zoro` 0.867 and `syrahose -> shirahoshi` 0.755, and blocks `oimo -> zoro`
+  0.667. It is KNOWINGLY imperfect -- `vivra -> vivi` scores 0.848 and passes -- and no
+  threshold can separate that case, because the genuine syrahose fix scores LOWER than it.
+  Metaphone cannot discriminate either: False for every pair. That residue is a glossary
+  COVERAGE gap, and [S-16] is the test that decides whether "coverage" is an explanation or
+  an excuse.
+- [S-16] Falsify the coverage defence. Add `Vivre Card` to the One Pace glossary and re-run
+  the S31E01 measurement. If `VIVRA -> Vivi` is still proposed AND admitted, the coverage
+  story is dead and [S-15] needs a different mechanism. If it disappears, the gate is
+  exactly as good as its coverage, which is [S-2]/[S-11]'s job.
 - [S-4] Narrow acquisition's transcript scope to the season(s) actually queued for
   transcription rather than the whole show.
 - [S-5] Consolidate the prompt build and the raw acquire into ONE stage that fetches the
   arc title set once and uses it for both outputs.
-- [S-6] Make decoder-input staleness season-aware so a per-season HOTWORDS string marks
+- [S-6] MOOT 2026-08-26, kept for the record. Was: make decoder-input staleness
+  season-aware so a per-season HOTWORDS string marks
   only that season's episodes transcribe-stale, never the whole show. Hotwords is a decoder
   input on every window, so it must be stored in `words.json` alongside `initial_prompt`
   and compared by `stale_tier` — today that comparison sees only the prompt, which is the
@@ -141,7 +195,7 @@ Machine) THREE have no glossary at all and run on the neutral fallback prompt wi
 
 - Changing the phonetic name guard (`repair.invents_name`) itself -- it ships at v6 and is
   unchanged by this leg.
-- Unanchored (no-fansub) LLM card repair. `repair.py:493` still skips cards with no fansub
+- Unanchored (no-fansub) LLM card repair. `repair.py:622` still skips cards with no fansub
   reference; making the LLM run there is a separate leg with its own risks.
 - Context-aware phonetic correction using surrounding cards.
 - Re-transcribing the existing library in one pass. Adoption is season-by-season -- see
@@ -173,9 +227,9 @@ what the first draft of this spec proposed:
   how a song is transcribed. Leave it. Accuracy of an inert string is worth less than not
   paying two GPU-days for it.
 
-Season scoping survives ONLY where it reaches the decoder on every window — that is
-`hotwords` ([S-10]) and the tags that select it ([S-11]). Where this spec still says
-"per-season prompt", read "per-season hotwords".
+Season scoping survives ONLY in the repair prompt ([S-13]) and the tags that weight it
+([S-11]). Nothing season-scoped reaches the DECODER any more: per-season `initial_prompt`
+was measured inert and hotwords was cut.
 
 ## What counts as an acceptable repair — owner's bar, 2026-08-26
 
@@ -203,15 +257,55 @@ failures were repetition runs and invented non-words rather than looser phrasing
 Measured against this bar on S31E01 ([S-12], 161 targets, 21 repairs): 18 acceptable,
 3 regressions, of which one is a glossary coverage gap rather than a repair defect.
 
+## The bar has no runtime enforcement — human review is a required step
+
+The round-2 review's deepest finding, verified on current code 2026-08-26: `accept_repair`
+admits BOTH of the acceptance bar's own regression examples.
+
+    accept_repair("We're looking for a factory.", "We're looking for a needle.", ...) -> True
+    accept_repair("It is a VIVRA card", "It is a Vivi card", ...)                     -> True
+
+The gate is mechanical -- length ratio, card fit, reference borrowing, invented names --
+and none of those can tell "same meaning" from "meaning destroyed". The owner's bar is a
+contract with NO runtime counterpart, and pretending otherwise is how a thousand quiet
+regressions ship.
+
+So the review step is part of the acceptance procedure, not an optional courtesy:
+
+**No measured episode is accepted until a human has read its repaired lines against the
+bar.** The measurement on S31E01 did exactly this -- 21 lines read, 18 acceptable, 3
+regressions identified, one of which turned out to be a coverage gap rather than a repair
+defect. That procedure is the enforcement mechanism; it is not scaffolding around one.
+
+The workload is bounded, and the arithmetic matters because the review got it wrong first:
+the burden is REPAIRED LINES, not targets. S31E01 produced 21 repairs from 161 targets, so
+a 48-episode season is roughly 1,000 lines to read, not 7,700. At the measured 3-in-21 rate
+that is ~144 regressions per season -- a real cost, an order of magnitude below the
+review's "roughly a thousand", and the arithmetic error was conceded in its own rebuttal.
+
+Recovery is MANUAL but it exists: the srt is regenerated from `conf.json` on every pass,
+every proposal is recorded to the unresolved queue with its text, and repair is text-tier,
+so a regression found in review is fixed by editing the glossary and re-running on CPU. The
+review's "no recovery path" was withdrawn; "no AUTOMATIC recovery path" is the accurate
+claim and is the reason the human step is mandatory rather than advisory.
+
+**The 21-sample result is a go/no-go for continuing the measurement sequence. It is not a
+ship signal**, and no S-item should be read as one.
+
 ## Build order and the decision rule
 
 **This is a sequencing constraint, not advice. [S-10] is measured FIRST.**
 
 Every arc-shaped item in this leg — [S-1] season resolution, [S-2] arc-scoped fetch,
-[S-5]'s arc fetch, [S-8] the wiki layer, [S-11] season tags — exists only to feed [S-10].
-[S-10] currently rests on one 180-second clip that produced one fix AND one regression.
-Building the arc machinery in parallel with the measurement that decides whether it should
-exist is how it gets built and then abandoned.
+[S-5]'s arc fetch, [S-8] the wiki layer, [S-11] arc tags — now feeds [S-13], the
+season-weighted repair glossary. [S-10] was its original consumer and is cut, so this rule
+was rewritten after the round-2 review pointed out it still named a dead item.
+
+The constraint it expresses is unchanged and still binds: [S-13] is BUILT and provably
+INERT — measured 2026-08-26, the term set did not move because only 4 of 17 tagged names
+exist in the glossary. So the arc machinery's whole remaining value is COVERAGE, and
+building more of it before [S-2]/[S-11] demonstrate coverage gain is how it gets built and
+then abandoned.
 
 Order:
 
@@ -443,15 +537,32 @@ why, so a re-transcribe always has a traceable cause.
       legacy untagged name weights every season rather than none.
 - [ ] [S-12] An episode with zero fansub anchors reaches the LLM repair stage. Measured
       2026-08-26 on S31E01: `targets=161 repaired=0`, every target refused at
-      `repair.py:512`. After [S-12] that episode reports a non-zero repaired count, and the
+      `repair.py:162 (skips_unanchored)`. After [S-12] that episode reports a non-zero repaired count, and the
       reference-anchored path is unchanged.
 - [ ] [S-12] The gate is conditional, not deleted: with the new path disabled the same
       episode reproduces `targets=161 repaired=0` exactly.
-- [ ] [S-13] With season weighting applied to a Dressrosa episode, a proposed `Oimo -> Zoro`
-      is not accepted, while `Dothamingo -> Doflamingo` still is.
-- [ ] [S-14] `invents_name` refuses a substitution whose ORIGINAL is a glossary name, in both
-      directions: `Oimo -> Zoro` refused (both known), `Dothamingo -> Doflamingo` accepted
-      (original unknown), `zolo -> Zoro` accepted.
+- [ ] [S-13] Measured on PROPOSAL QUALITY, not on the gate. The reorder refuses nothing --
+      it moves terms inside a 1000-char cap -- so an acceptance test phrased as "X is not
+      accepted" is vacuous for it and was rewritten after the round-2 review said so. The
+      test: a Dressrosa-weighted prompt makes the LLM propose fewer out-of-arc name
+      substitutions than the unweighted prompt on the same cards.
+- [ ] [S-13] Its effect is bounded by coverage and the spec says so: measured 2026-08-26,
+      the term set was UNCHANGED at 110 because only 4 of 17 tagged Dressrosa names exist
+      in the glossary. [S-13] is inert until [S-2]/[S-11] populate tags, and that -- not the
+      weighting -- is the gating constraint.
+- [ ] [S-14] `substitutes_a_vouched_name` refuses a substitution whose ORIGINAL is a
+      glossary name, and `accept_repair` applies it only when `ref` is empty. Unanchored
+      `Oimo -> Zoro` is refused; the same swap WITH a reference is accepted; and both
+      `Dothamingo -> Doflamingo` and `zolo -> Zoro` stay accepted, their originals unknown.
+- [ ] [S-14] The vouched-name rule still fires when `jellyfish` is absent. Only the [S-15]
+      half may degrade with the optional dependency; degrading both would let the exact
+      documented failure through on a box without it.
+- [ ] [S-15] The phonetic gate blocks `oimo -> zoro` at 0.667 and admits
+      `syrahose -> shirahoshi` at 0.755, the tightest genuine fix in the set. A threshold
+      that rejects the syrahose case is wrong regardless of what else it blocks.
+- [ ] [S-16] With `Vivre Card` added to the glossary, the S31E01 re-run either stops
+      proposing `VIVRA -> Vivi` (coverage confirmed) or still admits it (coverage defence
+      falsified, [S-15] needs rework). The result is recorded either way.
 - [ ] [S-12] [S-13] [S-14] Measured on the ~161 targets per episode already on disk, on CPU,
       against the arms captured 2026-08-26, counted by the same symmetric defect shapes that
       cut [S-10] — repetition runs, gibberish cards, cards over 12s, capitalised
