@@ -78,14 +78,26 @@ REASONS = {
 #   against ~86 recorded, and this module already refuses to queue the hallucination flag on
 #   the same grounds -- "a queue nobody can face is worse than no queue."
 #
-#   OUT OF SCOPE, not unjudgeable. `punctuation`/`rejected_guard` records `original_text` AND
+#   NO VERDICT TO GIVE. `punctuation`/`rejected_guard` records `original_text` AND
 #   `proposed_text` (punctuation.py:290-296) -- the identical two-text shape as the repair
-#   rejection that IS included, and just as judgeable by reading them. It is excluded only
-#   because [S-1] scopes this view to repair decisions. An earlier version of this comment
-#   claimed punctuation entries could not be judged that way; that was simply false, and an
-#   adversarial review caught it. Whether to widen PRIMARY is an open question for the owner,
-#   not a settled design point. Until then those entries remain reachable through the
-#   unfiltered walk and the --review CLI.
+#   rejection that IS included, and just as judgeable by reading them. An earlier version of
+#   this comment claimed otherwise; that was false and an adversarial review caught it. The
+#   real bar is that a reviewer's verdict has nowhere to go. accept_restoration() is not a
+#   judgement gate like accept_repair(): it is word-identity (punctuation.py:134-144), so a
+#   rejection means the model CHANGED A WORD, and applying it anyway breaks _apply()'s stated
+#   precondition that "past the guard the correspondence is exact" -- tokens would misalign
+#   across the run. Of the four verdicts only `reject` is implementable; `accept`/`force`
+#   are not, and `correct` only for text of identical token count. Restoration also runs on
+#   the word list BEFORE reflow (generate.py:944-951) while repair runs on cards after it,
+#   so [S-5]'s card write-back cannot apply a punctuation decision at all -- that needs a
+#   TEXT-tier replay.
+#
+#   OWNER DECISION 2026-08-27: widening waits until there is a way to ACT on a punctuation
+#   review, not merely display one. Until then those entries stay reachable through the
+#   unfiltered walk and the --review CLI. The per-episode volume has never been measured;
+#   the only sample is the 7 live rejections behind _split_dashes (punctuation.py:80-85),
+#   3 of which were false rejections from a guard bug -- found from the QC event channel,
+#   which already carries both texts, not from this queue.
 PRIMARY = (
     ("repair_applied", "accepted"),
     ("repair", "rejected_guard"),

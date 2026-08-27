@@ -98,10 +98,20 @@ makes it correctable per line.
   on an unmeasured hit rate would export a corpus nobody can be told the value of.
 - **Tightening `accept_repair`.** Deferred by the owner pending more human-reviewed data.
   This spec BUILDS the instrument that produces that data; it does not change the gate.
-- **Flipping `REPAIR_UNANCHORED`.** A separate decision, owned by the maintainer.
-- **Changing the baked `WHISPER_MODEL` default.** Raised in the same conversation; it
-  changes transcription and therefore stales the `TRANSCRIBE_VERSION` tier per ADR 0001.
-  Its own commit, its own decision about re-transcription.
+- **Flipping `REPAIR_UNANCHORED`.** A separate decision, owned by the maintainer. SEQUENCED
+  2026-08-27: it waits until every sprint in this epic is closed AND the epic is running in
+  production. The flip is what makes unanchored repairs reach viewers; the review loop this
+  spec builds is what catches the ones `accept_repair` admits wrongly. Flipping first would
+  ship the regressions before the instrument that finds them exists.
+- **Changing the baked `WHISPER_MODEL` default.** RESOLVED 2026-08-27 and no longer out of
+  scope: the default moved to `large-v3-turbo` in its own commit, WITHOUT a
+  `TRANSCRIBE_VERSION` bump. The tier is not stale here because the production image has
+  been turbo-built since the 1050ti swap, so the library's 576 v4 stamps were produced by
+  this decoder already -- the same reasoning `common.py`'s 4/7 adoption note uses to decline
+  ~2 GPU-days for a bookkeeping change. A `tests/test_dockerfile_copy.py` drift test now
+  pins the Dockerfile ARG default and `generate.py`'s fallback together; a downstream install
+  that rebuilds off the old default still changes decoder without a bump, recorded as the
+  known gap at `generate.py`'s MODEL comment.
 - **Re-evaluating the implementation language.** Parked by the owner as its own exercise.
 - **The hallucination `flag` queue.** Still deferred for the reason `unresolved.py` records:
   `maybe_silence` fires on 67% of real cards, and a queue nobody can face is worse than none.
