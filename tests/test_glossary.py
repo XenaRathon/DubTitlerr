@@ -253,3 +253,42 @@ def test_arc_for_survives_a_malformed_season_nfo(tmp_path):
     d.mkdir(parents=True)
     (d / "season.nfo").write_text("<season><title>Unclosed")
     assert glossary.arc_for(str(d / "ep.mkv")) is None
+
+
+def test_tag_names_by_arc_marks_only_names_the_arc_actually_contains():
+    """[S-11] Tags come from wiki arc membership, so a name the arc does not contain is
+    left untagged rather than tagged falsely -- untagged defaults IN at the consumer, and a
+    wrong tag would actively demote a name in the arcs it belongs to."""
+    g = glossary.load_dict({"names": ["Doflamingo", "Spandam", "Luffy"], "hard_fixes": {}})
+    n = glossary.tag_names_by_arc(g, "Dressrosa", {"Donquixote Doflamingo", "Rebecca", "Monkey D. Luffy"})
+    assert g["arc_tags"]["doflamingo"] == ["Dressrosa"]
+    assert g["arc_tags"]["luffy"] == ["Dressrosa"]
+    assert "spandam" not in g["arc_tags"]
+    assert n == 2
+
+
+def test_tag_names_by_arc_accumulates_arcs_for_a_recurring_character():
+    """A character in two arcs must be tagged with BOTH. Caesar Clown is a Punk Hazard
+    antagonist present in Dressrosa; a single-valued tag would exclude him from one of
+    them, which is the contradiction the round-1 review caught."""
+    g = glossary.load_dict({"names": ["Caesar"], "hard_fixes": {}})
+    glossary.tag_names_by_arc(g, "Punk Hazard", {"Caesar Clown"})
+    glossary.tag_names_by_arc(g, "Dressrosa", {"Caesar Clown"})
+    assert g["arc_tags"]["caesar"] == ["Dressrosa", "Punk Hazard"]
+
+
+def test_tag_names_by_arc_is_idempotent():
+    """Re-running a sweep must not duplicate tags."""
+    g = glossary.load_dict({"names": ["Doflamingo"], "hard_fixes": {}})
+    for _ in range(3):
+        glossary.tag_names_by_arc(g, "Dressrosa", {"Donquixote Doflamingo"})
+    assert g["arc_tags"]["doflamingo"] == ["Dressrosa"]
+
+
+def test_tag_names_by_arc_ignores_an_empty_title_set():
+    """[S-7]: an arc that would not resolve yields no titles, and must therefore change
+    nothing rather than clearing existing tags."""
+    g = glossary.load_dict({"names": ["Doflamingo"], "hard_fixes": {}})
+    glossary.tag_names_by_arc(g, "Dressrosa", {"Donquixote Doflamingo"})
+    glossary.tag_names_by_arc(g, "Gaimon", set())
+    assert g["arc_tags"]["doflamingo"] == ["Dressrosa"]
