@@ -9,6 +9,7 @@ import csv
 import json
 
 import common
+import decisions
 import glossary
 import reflow
 import repair
@@ -1660,3 +1661,331 @@ def test_the_queue_records_the_secondary_models_text_not_the_first_passes(tmp_pa
     # ...and it agrees with the audit trail the same run wrote.
     with open(stem + ".dubtitles.repair.csv") as f:
         assert list(csv.reader(f))[1][1] == queued[0]["proposed_text"]
+
+
+# --- [S-4] the decision-store consult ----------------------------------------
+# The store has been write-only until now: sprint 002 built it, sprint 003 filled its
+# queue, and nothing read either back. These pin the read side.
+
+
+def _store(orig, proposed, verdict, text=""):
+    """A one-decision store, built through decisions.record so the keys are the real ones."""
+    return decisions.record({}, orig, proposed, verdict, text=text)
+
+
+def _one_target(tmp_path, name, text="I saw spondum"):
+    """One mid-confidence card on a 2.0s display window -- is_target() picks it up."""
+    stem = str(tmp_path / name)
+    conf_path = stem + repair.CONF_SUFFIX
+    _write_conf(
+        conf_path,
+        stem + repair.SRT_SUFFIX,
+        [{"start": 0.0, "end": 2.0, "text": text, "avg_logprob": -0.6, "no_speech_prob": 0.1}],
+    )
+    return stem, conf_path
+
+
+def test_a_reject_verdict_keeps_the_post_correction_asr_text(tmp_path, monkeypatch):
+    """A stored `reject` for this exact pair means the repair is not applied.
+
+    Pins the consult BETWEEN glossary.correct() (repair.py:634) and accept_repair
+    (repair.py:649). The llm proposes "I saw Spandom"; hard_fixes rewrites it to
+    "I saw Spandam"; the verdict is stored against the CORRECTED text. A consult placed
+    above line 634 would look up "I saw Spandom", miss, fall through to accept_repair --
+    which accepts this pair (test_process_two_pass_reverifies_name_change relies on it) --
+    and the card would ship repaired. The miss is silent, which is why this is asserted on
+    the card text rather than on the lookup being called."""
+    stem, conf_path = _one_target(tmp_path, "ep_reject")
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_reject.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"], hard_fixes={"Spandom": "Spandam"}))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "I saw Spandom")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (_store("I saw spondum", "I saw Spandam", "reject"), "Show"))
+
+    repair.process(conf_path)
+
+    # The SRT, not conf.json: repair.py mutates the conf rows in memory and never writes
+    # that file back (repair.py:703 vs the rebuild at :709-713). Asserting on conf.json
+    # passes whether or not the repair was applied -- it is the vacuous version of this test.
+    assert "I saw spondum" in open(stem + repair.SRT_SUFFIX).read(), "a rejected repair must not be applied"
+    assert [e for e in unresolved.items(stem) if e["stage"] == "repair_applied"] == [], "a settled line must not be re-queued"
+
+
+def test_a_correct_verdict_applies_the_humans_text(tmp_path, monkeypatch):
+    """A stored `correct` ships the human's wording, not the model's, and is not re-judged.
+
+    The human's text is deliberately one accept_repair REFUSES: 24 chars against a 13-char
+    original is a 1.85 length ratio, outside the 0.6-1.5 band. It still renders inside the
+    2.0s card (12 cps). So this fails both without the branch (the model's text ships) and
+    with a branch that leaves the human's text subject to accept_repair (nothing ships).
+    A `correct` verdict is a human overriding the gate's judgement; only fits_card, which
+    is timing and not judgement, still governs it."""
+    stem, conf_path = _one_target(tmp_path, "ep_correct")
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_correct.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"], hard_fixes={"Spandom": "Spandam"}))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "I saw Spandom")
+    store = _store("I saw spondum", "I saw Spandam", "correct", text="I saw Spandam over there")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (store, "Show"))
+
+    repair.process(conf_path)
+
+    assert "I saw Spandam over there" in open(stem + repair.SRT_SUFFIX).read(), "the human's text must win over the model's"
+
+
+def test_a_correct_that_does_not_fit_the_card_is_refused_and_recorded(tmp_path, monkeypatch):
+    """C1: timing is immutable, so even a human cannot widen a card.
+
+    `correct` overrules accept_repair's JUDGEMENT, never fits_card. A verdict that cannot
+    be rendered leaves the ASR text standing -- and says so in the queue, because the whole
+    point of the review loop is that a decision never disappears silently. The reviewer
+    supplied 57 characters for a 2.0s card (28.5 cps against a 17 cps profile)."""
+    stem, conf_path = _one_target(tmp_path, "ep_unfit")
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_unfit.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"], hard_fixes={"Spandom": "Spandam"}))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "I saw Spandom")
+    too_long = "I saw Spandam standing over there beside the harbour gate"
+    monkeypatch.setattr(
+        decisions, "decisions_for", lambda *a, **k: (_store("I saw spondum", "I saw Spandam", "correct", text=too_long), "Show")
+    )
+
+    repair.process(conf_path)
+
+    srt = open(stem + repair.SRT_SUFFIX).read()
+    # A token, not the whole string: wrap_balance inserts a newline, so the full 57-char
+    # text never appears verbatim even when it HAS shipped -- that form of the assertion
+    # passes unconditionally.
+    assert "harbour" not in srt, "a card cannot be widened to fit the human's text"
+    assert "I saw spondum" in srt, "the ASR text stands when the verdict cannot be rendered"
+    refusals = [e for e in unresolved.items(stem) if e["reason"] == "decision_unfittable"]
+    assert len(refusals) == 1, "the human must be told their decision was refused, not silently dropped"
+    assert refusals[0]["proposed_text"] == too_long
+
+
+def _run_force_case(tmp_path, monkeypatch, name, store):
+    """One episode whose proposal accept_repair REFUSES (30 chars against 13 is a 2.3 length
+    ratio, outside the 0.6-1.5 band) but which renders fine in the 2.0s card (15 cps)."""
+    stem, conf_path = _one_target(tmp_path, name)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / (name + ".mkv")))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"], hard_fixes={"Spandom": "Spandam"}))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "I saw Spandom by the gate here")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (store, "Show"))
+    repair.process(conf_path)
+    return open(stem + repair.SRT_SUFFIX).read()
+
+
+def test_a_force_verdict_admits_a_repair_the_gate_refused(tmp_path, monkeypatch):
+    """`force` is the human overruling accept_repair -- the verdict that exists because the
+    gate is a heuristic and a reader is not. The control half is what makes it mean
+    anything: the SAME pair with an empty store must still be refused, or the test would
+    pass on a proposal the gate was going to accept anyway."""
+    forced = _store("I saw spondum", "I saw Spandam by the gate here", "force")
+    assert "by the gate here" in _run_force_case(tmp_path, monkeypatch, "ep_force", forced), "force must admit it"
+    assert "by the gate here" not in _run_force_case(tmp_path, monkeypatch, "ep_force_ctl", {}), "the gate still refuses it"
+
+
+def test_a_forced_repair_that_cannot_be_rendered_is_still_refused(tmp_path, monkeypatch):
+    """The boundary of `force`: it overrules judgement, never timing.
+
+    accept_repair is a heuristic and a human may overrule it. fits_card is not a heuristic
+    -- it is whether the line can be put on screen for the seconds the card lasts. C1 holds
+    timing immutable, so there is no verdict that admits an unrenderable line, and the
+    reviewer is told rather than having their force silently ignored."""
+    stem, conf_path = _one_target(tmp_path, "ep_force_unfit")
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_force_unfit.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"], hard_fixes={"Spandom": "Spandam"}))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    unrenderable = "I saw Spandam standing over there beside the harbour gate"
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: unrenderable)
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (_store("I saw spondum", unrenderable, "force"), "Show"))
+
+    repair.process(conf_path)
+
+    srt = open(stem + repair.SRT_SUFFIX).read()
+    assert "harbour" not in srt, "force must not be able to widen a card"
+    assert "I saw spondum" in srt
+    assert [e for e in unresolved.items(stem) if e["reason"] == "decision_unfittable"], "the forcer must be told"
+
+
+def _run_accept_case(tmp_path, monkeypatch, name, store):
+    """One episode whose proposal accept_repair ACCEPTS, so applying it proves nothing on
+    its own -- the queue entry is the whole observable difference a verdict makes."""
+    stem, conf_path = _one_target(tmp_path, name)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / (name + ".mkv")))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"], hard_fixes={"Spandom": "Spandam"}))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "I saw Spandom")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (store, "Show"))
+    repair.process(conf_path)
+    return open(stem + repair.SRT_SUFFIX).read(), [e for e in unresolved.items(stem) if e["stage"] == "repair_applied"]
+
+
+def test_an_accept_verdict_applies_the_repair_and_stops_re_queueing_it(tmp_path, monkeypatch):
+    """The verdict the plan omitted, and the one that closes re-run amplification.
+
+    APPLYING is not the observable part: with no verdict at all accept_repair already
+    accepts this pair, so a branch that only applies is indistinguishable from no branch.
+    What `accept` changes is that the line stops coming back -- the control half below
+    shows the same episode queueing it when nothing is stored. Without this, every re-run
+    hands the reviewer a line they already approved, forever."""
+    srt, queued = _run_accept_case(tmp_path, monkeypatch, "ep_accept", _store("I saw spondum", "I saw Spandam", "accept"))
+    assert "I saw Spandam" in srt, "an accepted repair is still applied"
+    assert queued == [], "a line the human approved must not be queued again"
+
+    _, control = _run_accept_case(tmp_path, monkeypatch, "ep_accept_ctl", {})
+    assert len(control) == 1, "with no verdict the same episode DOES queue it -- else the test above is vacuous"
+
+
+def test_correct_and_force_verdicts_are_not_re_queued_either(tmp_path, monkeypatch):
+    """Same rule, other two applying verdicts: a human has ruled, so the line is settled.
+    `reject` is settled by never reaching the queue write at all."""
+    _, corrected = _run_accept_case(
+        tmp_path, monkeypatch, "ep_c_qs", _store("I saw spondum", "I saw Spandam", "correct", text="I saw Spandam there")
+    )
+    assert corrected == [], "a corrected line is settled"
+    _, forced = _run_accept_case(tmp_path, monkeypatch, "ep_f_qs", _store("I saw spondum", "I saw Spandam", "force"))
+    assert forced == [], "a forced line is settled"
+
+
+def test_an_empty_store_is_byte_identical_and_still_reaches_the_lookup(tmp_path, monkeypatch):
+    """The no-op case -- every install that has never reviewed anything.
+
+    Byte-identity alone is a weak claim: a `return` placed above the consult satisfies it
+    while the whole feature is dead. So this also spies on decisions.lookup and requires it
+    to have been reached for the targeted card. Expected values are written literally, not
+    computed from a second run, so a change that breaks BOTH runs the same way still fails."""
+    stem, conf_path = _one_target(tmp_path, "ep_empty")
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_empty.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"], hard_fixes={"Spandom": "Spandam"}))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "I saw Spandom")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: ({}, "Show"))
+    seen = []
+    real = decisions.lookup
+    monkeypatch.setattr(decisions, "lookup", lambda store, o, p: seen.append((o, p)) or real(store, o, p))
+
+    repair.process(conf_path)
+
+    assert seen == [("I saw spondum", "I saw Spandam")], "the consult must be reached even with nothing stored"
+    assert open(stem + repair.SRT_SUFFIX).read() == "1\n00:00:00,000 --> 00:00:02,000\nI saw Spandam\n\n"
+    assert len([e for e in unresolved.items(stem) if e["stage"] == "repair_applied"]) == 1
+
+
+def test_decisions_apply_0_applies_no_verdict(tmp_path, monkeypatch):
+    """Suggestion-only: the review still records verdicts, repair stops acting on them.
+
+    Written AFTER the flag existed (it went in with the first consult), so it never went
+    red on its own -- it is held by the mutation check instead: deleting the DECISIONS_APPLY
+    guard makes the stored `reject` take effect and fails this.
+
+    Asserted on the APPLICATION, not the bytes. A stored `reject` would suppress the
+    repair_applied entry, so that entry's presence is what proves the verdict was never
+    consulted -- byte-identity alone would pass on a flag read after the verdict took
+    effect."""
+    store = _store("I saw spondum", "I saw Spandam", "reject")
+    monkeypatch.setattr(repair, "DECISIONS_APPLY", False)
+    srt, queued = _run_accept_case(tmp_path, monkeypatch, "ep_noapply", store)
+
+    assert "I saw Spandam" in srt, "the reject must NOT take effect"
+    assert len(queued) == 1, "the line is unsettled again, so it is queued -- the verdict was not read"
+    assert srt == "1\n00:00:00,000 --> 00:00:02,000\nI saw Spandam\n\n"
+
+
+def test_a_human_verdict_is_not_overridden_by_the_secondary_model(tmp_path, monkeypatch):
+    """The secondary-model pass must not re-open a line a human has closed.
+
+    The two-pass block (repair.py, the `else:` branch) reassigns `new` AFTER the consult
+    has run, so without a guard a stored verdict is admitted and then quietly replaced by
+    the second model's wording. The suppression rule makes it worse rather than better: no
+    `repair_applied` entry is written for a settled line, so the substituted text reaches
+    the viewer with nothing in the queue to show it ever happened.
+
+    C5 says "a stronger model is still a model". A human is not, and outranks both."""
+    stem, conf_path = _one_target(tmp_path, "ep_verdict_2pass")
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_verdict_2pass.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"], hard_fixes={"Spandom": "Spandam"}))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    monkeypatch.setattr(
+        repair, "llm", lambda prompt, model=None: "I saw Spandam there" if model == "secondary-model" else "I saw Spandom"
+    )
+    monkeypatch.setattr(repair, "MODEL_SECONDARY", "secondary-model")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (_store("I saw spondum", "I saw Spandam", "accept"), "Show"))
+
+    repair.process(conf_path)
+
+    srt = open(stem + repair.SRT_SUFFIX).read()
+    assert "I saw Spandam\n" in srt, "the shipped text must be the one the human approved"
+    assert "there" not in srt, "the secondary model must not overwrite a human verdict"
+
+
+def test_an_accept_verdict_survives_later_drift_in_the_gate(tmp_path, monkeypatch):
+    """An `accept` must not be re-judged by accept_repair on every subsequent run.
+
+    accept_repair's answer is not stable across time: LEN_RATIO_MIN/MAX and MAX_REF_BORROW
+    are documented operator knobs (repair.py Env), the glossary changes, and `ref` moves if
+    the video is re-muxed. When it flips to False for a line a human already approved, two
+    things went wrong at once -- the approved text did not ship, AND the line was written
+    back to the queue as an ordinary `rejected_guard`, handing the reviewer a decision they
+    had already made.
+
+    Simulated here by tightening LEN_RATIO_MAX to 0.9 after the verdict was recorded, which
+    refuses the 1.0-ratio pair the human accepted."""
+    monkeypatch.setattr(repair, "LEN_RATIO_MAX", 0.9)
+    srt, _ = _run_accept_case(tmp_path, monkeypatch, "ep_drift", _store("I saw spondum", "I saw Spandam", "accept"))
+    stem = str(tmp_path / "ep_drift")
+
+    assert "I saw Spandam" in srt, "the human's accept outranks a gate that has since drifted"
+    requeued = [e for e in unresolved.items(stem) if e["reason"] in ("rejected_guard", "rejected_name_invented")]
+    assert requeued == [], "a settled line must never come back as a fresh guard rejection"
+
+
+def test_the_summary_still_accounts_for_every_target_once_verdicts_fire(tmp_path, monkeypatch):
+    """Every targeted card must land in exactly one counted bucket.
+
+    Before [S-4] the summary's buckets covered every target. The two new terminal paths --
+    a `reject` verdict, and an applying verdict refused by fits_card -- both `continue`
+    without incrementing anything, so `targets` would silently exceed the sum and any
+    dashboard treating the buckets as exhaustive would under-count with no field explaining
+    the residual. Three cards here: one settled by a reject, one whose `correct` cannot be
+    rendered, one ordinary repair."""
+    stem = str(tmp_path / "ep_acct")
+    conf_path = stem + repair.CONF_SUFFIX
+    _write_conf(
+        conf_path,
+        stem + repair.SRT_SUFFIX,
+        [
+            {"start": 0.0, "end": 2.0, "text": "I saw spondum", "avg_logprob": -0.6, "no_speech_prob": 0.1},
+            {"start": 2.0, "end": 4.0, "text": "he went thataway", "avg_logprob": -0.6, "no_speech_prob": 0.1},
+            {"start": 4.0, "end": 6.0, "text": "the ship sailed", "avg_logprob": -0.6, "no_speech_prob": 0.1},
+        ],
+    )
+
+    # By call order, NOT by sniffing the prompt: build_prompt embeds the previous and next
+    # card as context, so every card's prompt contains its neighbours' text and a substring
+    # match returns card 1's proposal for card 2. Targets are walked in index order.
+    outputs = iter(["I saw Spandom", "he went that way", "the ship has sailed"])
+
+    def fake_llm(prompt, model=None):
+        return next(outputs)
+
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_acct.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"], hard_fixes={"Spandom": "Spandam"}))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 6.0, "the official sub line")])
+    monkeypatch.setattr(repair, "llm", fake_llm)
+    store = decisions.record({}, "I saw spondum", "I saw Spandam", "reject")
+    store = decisions.record(
+        store, "he went thataway", "he went that way", "correct", text="he went off along that road over there somewhere"
+    )
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (store, "Show"))
+
+    repair.process(conf_path)
+    s = json.load(open(stem + ".dubtitles.repair-summary.json"))
+
+    assert s["verdict_reject"] == 1, "a reject verdict must be counted, not silently dropped from the accounting"
+    assert s["verdict_unfittable"] == 1, "a verdict refused on timing must be counted too"
+    counted = (
+        s["repaired"] + s["skipped_no_ref"] + s["llm_empty"] + s["rejected_guard"] + s["verdict_reject"] + s["verdict_unfittable"]
+    )
+    assert counted == s["targets"], f"targets {s['targets']} != sum of buckets {counted}"

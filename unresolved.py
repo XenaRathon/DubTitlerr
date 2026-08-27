@@ -58,6 +58,10 @@ REASONS = {
         "rejected_guard",  # the model proposed an edit; accept_repair() refused it
         "rejected_name_invented",  # the model substituted a proper noun that is in
         # neither the glossary nor the original -- the phonetic name guard refused it
+        "decision_unfittable",  # [S-4] a HUMAN verdict whose text cannot be displayed on
+        # this card. C1 holds timing immutable, so the ASR text stands -- and the reviewer
+        # is told, because a decision that disappears silently is the failure this whole
+        # loop exists to prevent. The only reason here that is about the human, not the model.
         "llm_empty",
     ),  # the backend returned nothing (transport failure or timeout)
     "punctuation": (
@@ -102,6 +106,11 @@ PRIMARY = (
     ("repair_applied", "accepted"),
     ("repair", "rejected_guard"),
     ("repair", "rejected_name_invented"),
+    # [S-4]. In PRIMARY because it is the reviewer's OWN decision coming back refused: left
+    # out of the default view, their verdict would vanish silently, which is precisely what
+    # the entry was written to prevent. Unlike the punctuation entries held out above, this
+    # one is actionable per line -- the answer is shorter text.
+    ("repair", "decision_unfittable"),
 )
 
 
@@ -214,6 +223,8 @@ _EVIDENCE = {
     "llm_empty": ("original_text", "segments", "words"),
     # The repair was APPLIED. The reviewer's whole job is comparing these two texts.
     "accepted": ("original_text", "proposed_text", "avg_logprob"),
+    # The reviewer's own verdict, refused on timing. They need both texts to shorten it.
+    "decision_unfittable": ("original_text", "proposed_text", "avg_logprob"),
 }
 
 

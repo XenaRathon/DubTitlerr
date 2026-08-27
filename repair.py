@@ -46,6 +46,16 @@ Env:
   LOGPROB_MIN   default -0.4   (mid-confidence-and-lower; below this is a repair target)
   NSP_MAX       default 0.5    (…and below this no_speech_prob — i.e. it IS speech)
   GLOSSARY_DIR  default /config/glossaries   (per-show glossary, resolved from the path)
+  DECISIONS_DIR default /config/decisions    (per-show human verdicts, resolved the same
+                               way; absent on every install that has never reviewed
+                               anything, which is an empty store and a no-op)
+  DECISIONS_APPLY default 1    ([S-4]) apply stored verdicts. A reject keeps the ASR text,
+                               a correct substitutes the human's wording, a force admits a
+                               repair accept_repair refused, and any of the four marks the
+                               line settled so it is not queued for review again. "0" is
+                               suggestion-only: verdicts are still recorded by the review,
+                               repair simply stops acting on them. NOTHING overrides
+                               fits_card — C1 keeps card timing immutable for humans too.
   SUB_LANGS     accepted embedded-sub languages (default eng,en,und,) -- read by
                 common.dialogue_intervals (T1: hoisted out of this module)
   MEDIA_UID/GID default 1000/100
@@ -61,6 +71,7 @@ import sys
 import time
 import urllib.parse
 
+import decisions
 import glossary
 import hallucination
 import qc
@@ -272,6 +283,23 @@ def _post_json(url, body):
 
 
 REPAIR_UNANCHORED = os.environ.get("REPAIR_UNANCHORED", "") not in ("", "0")
+# [S-4] Apply stored human verdicts. Default ON: the store is empty on every install that
+# has never reviewed anything, and an empty store is a no-op, so the default costs nothing.
+# "0" drops the whole path to suggestion-only -- the review still records verdicts, repair
+# just stops acting on them -- which is the knob for an operator who wants the queue as a
+# report rather than as an authority.
+DECISIONS_APPLY = os.environ.get("DECISIONS_APPLY", "1") not in ("", "0")
+# The verdicts that SHIP a repair. All three bypass accept_repair identically: its length
+# band and borrow limit are heuristics standing in for a reader, and a reader has now read
+# the line. They differ in what the gate said at REVIEW time -- `accept` confirms a repair
+# it admitted, `force` overrides one it refused, `correct` supplies different words -- which
+# is what the review UI offers and what the store counts, not how repair applies them.
+#
+# `accept` belongs here for a reason that is easy to miss: accept_repair's answer is not
+# stable over time. LEN_RATIO_*/MAX_REF_BORROW are operator knobs, the glossary changes, and
+# `ref` moves when a video is re-muxed. Re-judging an accepted line means a later glossary
+# edit can silently revert a human decision AND re-queue it as a fresh guard rejection.
+APPLYING = ("accept", "correct", "force")
 MAX_REF_BORROW = int(os.environ.get("MAX_REF_BORROW", "3"))
 LEN_RATIO_MIN = float(os.environ.get("LEN_RATIO_MIN", "0.6"))
 LEN_RATIO_MAX = float(os.environ.get("LEN_RATIO_MAX", "1.5"))
@@ -584,6 +612,10 @@ def process(conf_path):
     # S-13: the episode's arc, for weighting the reference spellings. None for most
     # of the library (no season.nfo), which leaves the term order exactly as before.
     arc = glossary.arc_for(video)
+    # [S-4] The human rung, read back. Resolved ONCE per episode rather than per card: it is
+    # a file read, and the per-card path already pays a network round-trip per LLM call.
+    # An absent or unreadable store is {} -- every install that has never reviewed anything.
+    store, _ = decisions.decisions_for(video)
     targets = [(i, c) for i, c in enumerate(conf) if is_target(c, gloss)]
     if not targets:
         return "clean"  # nothing to repair (e.g. S15E01)
@@ -592,6 +624,10 @@ def process(conf_path):
     rec = qc.Recorder()  # S-6 liveness counters, merged into the summary below
     llm_empty = 0
     rejected_secondary = 0  # C5: second-pass output refused by the gate
+    # [S-4]. Both are terminal `continue` paths, so without their own buckets `targets`
+    # would quietly exceed the sum of the others and the residual would be unexplained.
+    verdict_reject = 0  # a stored `reject`: settled by a human, nothing shipped
+    verdict_unfittable = 0  # an applying verdict refused by fits_card (C1)
     repaired_lines = []  # A10: per-line detail for the summary
     for i, c in targets:
         # C6: select the reference on the SOURCE window -- where the audio actually was --
@@ -646,7 +682,48 @@ def process(conf_path):
                 stem, "repair", "llm_empty", original_text=c["text"], reference=ref[:120], avg_logprob=c.get("avg_logprob")
             )
             continue
-        if not accept_repair(c["text"], new, ref, dur, gloss):
+        # [S-4] A human already ruled on this exact (original, proposal) pair. Consulted
+        # HERE -- after glossary.correct() has canonicalised `new`, before accept_repair
+        # judges it -- because the verdict was recorded against the corrected proposal.
+        # Placed above the correction it would key on raw model output and miss silently.
+        # No `and store` short-circuit: the consult runs whether or not anything is stored,
+        # so the path cannot quietly become dead code on the installs where it matters least
+        # to test and most to keep working. lookup() on {} returns None off an empty list.
+        verdict = decisions.lookup(store, c["text"], new) if DECISIONS_APPLY else None
+        ruling = verdict.get("verdict") if verdict else None
+        human_text = verdict.get("text", "") if verdict else ""
+        if ruling == "reject":
+            # Settled: not applied, and NOT re-queued. Re-queueing it would show the
+            # reviewer a line they have already ruled on, every run, forever.
+            verdict_reject += 1
+            continue
+        if ruling == "correct":
+            new = human_text or new
+        # C1, and the exact boundary of what a human verdict may overrule. Every verdict in
+        # APPLYING bypasses accept_repair -- its length band and borrow limit are
+        # heuristics standing in for a reader who is now present -- but NONE bypasses
+        # fits_card, which is not judgement: it is whether the line can be on screen for
+        # the seconds the card lasts. There is no verdict that admits an unrenderable line.
+        # `c["text"]` as `orig` keeps the existing already-over-cps allowance, so a human
+        # editing a card that was always too fast is not what this refuses.
+        if ruling in APPLYING and not fits_card(new, dur, c["text"]):
+            # Refused, and SAID SO. A verdict that vanishes silently is the failure this
+            # whole loop exists to prevent -- the reviewer would believe the line settled.
+            unresolved.record(
+                stem,
+                "repair",
+                "decision_unfittable",
+                original_text=c["text"],
+                proposed_text=new,
+                avg_logprob=c.get("avg_logprob"),
+            )
+            verdict_unfittable += 1
+            continue
+        # Every applying verdict is admitted here, so `not admitted` below can only be
+        # reached with no ruling at all -- which is why that branch needs no ruling guard of
+        # its own to avoid re-queueing a settled line.
+        admitted = ruling in APPLYING or accept_repair(c["text"], new, ref, dur, gloss)
+        if not admitted:
             if new and new.lower() != c["text"].lower():
                 rejected += 1  # surfaced in the summary so the guard stays visible
                 # ...but the PROPOSAL was discarded, and it is the whole evidence a human
@@ -664,7 +741,14 @@ def process(conf_path):
         else:
             # A3: re-verify divergent-looking repairs (esp. name changes) with the secondary
             # model. No-op by default (REPAIR_MODEL_SECONDARY == REPAIR_MODEL).
-            if MODEL_SECONDARY != MODEL and _needs_secondary_check(c["text"], new, gloss):
+            #
+            # NOT when a human has ruled. C5 says "a stronger model is still a model"; a
+            # human is not, and outranks both passes. Without `not ruling` this block
+            # reassigns `new` AFTER the consult, so an accept/correct/force would be
+            # admitted and then quietly replaced by the second model's wording -- and the
+            # suppression below would write no queue entry, because the line counts as
+            # settled. The substitution would reach the viewer with nothing recording it.
+            if not ruling and MODEL_SECONDARY != MODEL and _needs_secondary_check(c["text"], new, gloss):
                 t1 = time.monotonic()
                 new2 = llm(prompt, model=MODEL_SECONDARY)
                 latency_ms += round((time.monotonic() - t1) * 1000)
@@ -691,15 +775,22 @@ def process(conf_path):
             #
             # Also below the secondary-model block above, so `new` is the text actually
             # applied rather than the first pass's proposal.
-            unresolved.record(
-                stem,
-                "repair_applied",
-                "accepted",
-                original_text=c["text"],
-                proposed_text=new,
-                reference=ref[:120] or None,
-                avg_logprob=c.get("avg_logprob"),
-            )
+            # ...unless a human already ruled on it. [S-4]: an accept/correct/force verdict
+            # means this line is SETTLED, and re-queueing a settled line would hand the
+            # reviewer their own decision back on every subsequent run. That is the re-run
+            # amplification the spec records under Edge cases, and the pair being the
+            # store's key is what lets it be suppressed here rather than deduplicated in
+            # unresolved.record(), whose O(1) append is deliberate.
+            if not ruling:
+                unresolved.record(
+                    stem,
+                    "repair_applied",
+                    "accepted",
+                    original_text=c["text"],
+                    proposed_text=new,
+                    reference=ref[:120] or None,
+                    avg_logprob=c.get("avg_logprob"),
+                )
             c["text"] = new
             fixed += 1
     # rewrite srt from (possibly repaired) conf rows. conf.json stores text FLATTENED
@@ -724,6 +815,10 @@ def process(conf_path):
         "llm_empty": llm_empty,
         "rejected_guard": rejected,  # model proposed an edit, accept_repair() refused it
         "rejected_secondary": rejected_secondary,  # C5: second pass refused, first pass kept
+        # [S-4]. With these, targets == repaired + skipped_no_ref + llm_empty +
+        # rejected_guard + verdict_reject + verdict_unfittable for every episode.
+        "verdict_reject": verdict_reject,  # human said no; ASR text stands
+        "verdict_unfittable": verdict_unfittable,  # human's text cannot be rendered (C1)
         "mean_latency_ms": round(sum(lat_values) / len(lat_values)) if lat_values else 0,
         "p95_latency_ms": round(_p95(lat_values)) if lat_values else 0,
         "model": MODEL,
