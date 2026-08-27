@@ -177,6 +177,18 @@ kept only so the decision is on the record.
   is documented as 8202 tokens x 8109 titles and it re-walks 461 episodes to learn about the
   48 queued. It must NOT be presented as also fixing admission -- [S-9] measured that and it
   admits 0 of 3.
+
+  Scoping needs NO Python change. `_iter_episode_texts` is `os.walk(show_dir)`, so passing a
+  SEASON directory already restricts the harvest -- verified 2026-08-27. What is missing is
+  only the caller knowing which seasons have queued work: `gen_loop.sh` passes `$ANIME/$show`
+  and has no per-season staleness signal, while `generate.py` computes exactly that in
+  `partition_todo` and does not report it. So the work is plumbing a signal that already
+  exists to a caller that already accepts it, not new harvesting logic.
+
+  Deliberately NOT built 2026-08-27: acquire applied 0 of 20 proposals on its last run, so
+  this optimises the cost of a stage currently producing nothing. Worth doing when the
+  admission gates change; not before.
+
 - [S-5] RE-SCOPED 2026-08-27. Was: consolidate the prompt build and the raw acquire into
   one stage. The prompt build is gone -- [S-3] withdrawn, [S-10] cut -- so there are no
   longer two outputs to consolidate. What survives is narrower and still worth doing: ONE
