@@ -255,8 +255,16 @@ def handle_decide(stem: str, index: int, verdict: str, text: str = "", note: str
         # Reported as NOT saved rather than swallowed: a review that silently discards the
         # human's decision is worse than one that errors, because they believe it is settled.
         return {"error": "the decision could not be saved"}
-    unresolved.resolve(ep, index, accept=(verdict != "reject"), note=note)
-    return {"saved": True, "verdict": verdict, "show": show}
+    # The verdict is durable from here. The queue flag is a SECOND file and the two cannot
+    # be made atomic across them -- but the report can be honest. Saying "saved" when the
+    # entry did not clear tells the reviewer the line is settled while their queue still
+    # shows it. The gate is unaffected either way: mux trusts the durable verdict, not this
+    # flag (mux.held_for_review), so this is a reporting fix rather than a correctness one.
+    cleared = unresolved.resolve(ep, index, accept=(verdict != "reject"), note=note)
+    out = {"saved": True, "verdict": verdict, "show": show, "queue_cleared": bool(cleared)}
+    if not cleared:
+        out["warning"] = "verdict saved, but the queue entry could not be cleared — it will still be listed"
+    return out
 
 
 def handle_apply(stem: str) -> dict:
@@ -317,9 +325,13 @@ def render_page(stem: str = "") -> str:
     rows = []
     for e in doc.get("entries", []):
         warn = " <b>PERMANENT — this card has no reference</b>" if e.get("permanent") else ""
+        # data-* attributes plus a delegated listener, NOT an inline handler. html.escape is
+        # HTML escaping, and an HTML parser DECODES entities in an attribute value before the
+        # JS inside it is parsed -- so `&#x27;` becomes a quote and closes the string anyway.
+        # Nothing reachable exploits this today (OFFERED is a closed constant set); it is
+        # fixed because the renderer's contract is that it handles queue data.
         buttons = "".join(
-            f'<button onclick="decide({e["index"]},&apos;{html.escape(v)}&apos;)">{html.escape(v)}</button> '
-            for v in e.get("offered", ())
+            f'<button data-i="{e["index"]}" data-v="{html.escape(v)}">{html.escape(v)}</button> ' for v in e.get("offered", ())
         )
         rows.append(
             "<li><div class=o>{}</div><div class=p>{}</div><small>{}/{}{}</small><div>{}"
@@ -353,12 +365,22 @@ def render_page(stem: str = "") -> str:
         "body:JSON.stringify(b)})).json()}"
         "async function decide(i,v){const t=document.getElementById('t'+i).value;"
         "const r=await post('/api/decide',{stem:STEM,index:i,verdict:v,text:t});"
-        "if(r.error){alert(r.error)}else{location.reload()}}"
+        "if(r.error){alert(r.error)}else if(r.warning){alert(r.warning)}else{location.reload()}}"
+        "document.addEventListener('click',e=>{const b=e.target.closest('button[data-v]');"
+        "if(b){decide(Number(b.dataset.i),b.dataset.v)}});"
         "</script>"
     )
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    # BaseHTTPRequestHandler.timeout is None, and socketserver.StreamRequestHandler.setup()
+    # only calls connection.settimeout() when it is not None -- so without this rfile.read()
+    # blocks with no deadline. The 1MB cap bounds MEMORY per request and nothing else: a
+    # client declaring a legal length and dripping a byte a minute pins a worker thread
+    # BEFORE authorised() is reached, and ThreadingHTTPServer spawns those threads uncapped.
+    # 30s is long for a review POST (a verdict is a few hundred bytes) and short for a drip.
+    timeout = 30
+
     def _send(self, status, payload, ctype="application/json"):
         raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
         self.send_response(status)

@@ -508,3 +508,72 @@ def test_a_symlinked_conf_outside_the_roots_is_not_in_the_allow_list(tmp_path, m
     found = review_server.known_stems()
 
     assert found == [str(root / "good")], "a symlink out of the roots is not an episode of this library"
+
+
+def test_the_handler_has_a_socket_deadline():
+    """Without one, an unauthenticated caller pins a worker thread forever.
+
+    `BaseHTTPRequestHandler.timeout` is None by default, and
+    `socketserver.StreamRequestHandler.setup()` only calls `connection.settimeout()` when it
+    is not None -- so `rfile.read(n)` blocks with no deadline. The 1MB cap bounds MEMORY per
+    request and nothing else: a client declaring a legal length and dripping one byte a
+    minute holds a thread, before `authorised()` is ever reached, and `ThreadingHTTPServer`
+    spawns those threads without a cap.
+
+    This asserts the attribute because the attribute IS the mechanism -- setup() reads it
+    off the class. It is not a source-text assertion standing in for behaviour."""
+    import socketserver
+
+    assert review_server.Handler.timeout is not None, "a None timeout means setup() never calls settimeout"
+    assert 0 < review_server.Handler.timeout <= 120, "long enough for a real review POST, short enough to shed a drip"
+    assert "settimeout" in __import__("inspect").getsource(socketserver.StreamRequestHandler.setup)
+
+
+def test_an_offered_verdict_is_encoded_for_the_javascript_context(monkeypatch, tmp_path):
+    """`html.escape` is not JavaScript escaping.
+
+    Today `OFFERED` is a closed constant set, so nothing reachable exploits this -- the
+    finding is latent, not live. It is fixed anyway because the renderer's contract is that
+    it handles queue data, and the cost of being right here is one call. A quote in an
+    offered value would otherwise close the JS string inside the onclick attribute."""
+    stem = _episode(tmp_path)
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+    monkeypatch.setattr(review_server, "DEFAULT_OFFERED", ("x');alert(1);//",))
+    monkeypatch.setattr(review_server, "OFFERED", {})
+
+    page = review_server.render_page(stem)
+
+    # Decoded the way a browser decodes an attribute value BEFORE the JS in it is parsed.
+    # Asserting on the raw page is the vacuous version of this test: html.escape turns the
+    # quote into &#x27;, which the HTML parser turns back into a quote, and the injection
+    # fires anyway. The first draft of this test asserted exactly that and passed.
+    import html as _html
+
+    assert "onclick=" not in page, "no inline handler: the value must not reach a JS literal at all"
+    # The payload appearing as attribute DATA and as button text is fine and expected -- both
+    # are inert. What must hold is that it never lands inside the script block, where
+    # attribute-entity decoding would hand it to the JS parser. Asserting it is absent from
+    # the whole page would fail on the harmless copies and prove nothing about the JS.
+    script = page[page.index("<script>") : page.index("</script>")]
+
+    assert "alert(1)" not in _html.unescape(script), "the value must never reach the script block"
+    assert 'data-v="' in page, "it travels as data, read back through dataset"
+
+
+def test_decide_reports_a_failed_resolve_instead_of_claiming_success(tmp_path, monkeypatch):
+    """The two writes are independent files and cannot be made atomic across them. What CAN
+    be honest is the report: if the verdict is durable but the queue entry did not clear,
+    saying `saved: true` tells the reviewer the line is settled when their queue will still
+    show it. The gate itself is unaffected -- mux trusts the durable verdict, not the flag
+    -- so this is a reporting fix, not a correctness one."""
+    stem = _episode(tmp_path)
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+    monkeypatch.setattr(decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "show_for", lambda p: "Show")
+    monkeypatch.setattr(unresolved, "resolve", lambda *a, **k: False)
+
+    res = review_server.handle_decide(stem, 0, "reject")
+
+    assert res.get("saved") is True, "the verdict IS durable and must be reported as such"
+    assert res.get("queue_cleared") is False, "but the queue entry did not clear, and that must not be hidden"
+    assert "warning" in res

@@ -29,7 +29,11 @@ DubTitlerr runs as one restart-safe container that watches your anime library an
 show with an **English dub**, runs a full pipeline per episode:
 
 1. **Transcribe** — pick the English-dub audio and run Whisper (large-v3-turbo; build with
-   `--build-arg WHISPER_MODEL=large-v3` if your card has ~6GB or more), then **reflow** the
+   `--build-arg WHISPER_MODEL=large-v3` if your card has ~6GB or more). **Upgrading from a
+   build that used the old `large-v3` default changes the decoder without bumping
+   `TRANSCRIBE_VERSION`**, so existing episodes keep their stamps and are not
+   re-transcribed: old episodes stay large-v3 while new ones use turbo. Re-transcribe
+   deliberately if you want one decoder across the library. Then **reflow** the
    words into clean, well-timed cards (sentence-split, ≤2 lines/≤42 chars, ~17 cps, never shown
    before they're spoken).
 2. **Name correction** — fix proper nouns against a **per-show glossary** (curated `hard_fixes` +
