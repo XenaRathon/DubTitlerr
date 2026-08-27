@@ -90,6 +90,35 @@ def load(path: str) -> dict:
     return load_dict({})
 
 
+def arc_for(video_path: str) -> str | None:
+    """The arc name for an episode, from its season's ``season.nfo`` ``<title>``.
+
+    Plex, Jellyfin and Sonarr already write this file, so the mapping costs nothing to
+    obtain: verified 2026-08-26 across all 35 One Pace seasons, where Season 31 reads
+    ``<title>Dressrosa</title>``.
+
+    Returns None for anything it cannot answer -- no file, no title, unparseable content.
+    Most of the library has no ``season.nfo`` at all, so absence is the COMMON case and not
+    an error; the caller falls back to unweighted terms. A metadata file this pipeline does
+    not own must never be able to fail an episode, which is why every failure returns None
+    rather than raising.
+
+    Read with a regex rather than an XML parser ON PURPOSE. `.nfo` files ship inside
+    downloaded releases, so this is untrusted third-party input, and `xml.etree` is an XXE
+    and entity-expansion surface (the security gate blocks it outright). The file has one
+    fixed shape and one field is wanted from it, so a parser buys nothing and costs an
+    attack surface plus a dependency. Size-capped for the same reason: a crafted `.nfo`
+    must not be able to read a gigabyte into memory."""
+    nfo = os.path.join(os.path.dirname(os.path.abspath(video_path)), "season.nfo")
+    try:
+        with open(nfo, encoding="utf-8", errors="ignore") as f:
+            head = f.read(64 * 1024)
+    except OSError:
+        return None
+    m = re.search(r"<title>(.*?)</title>", head, re.S | re.I)
+    return (m.group(1).strip() or None) if m else None
+
+
 def prompt_for(gloss: dict, show: str = "") -> str:
     """The exact ``initial_prompt`` this glossary and show hand whisper.
 

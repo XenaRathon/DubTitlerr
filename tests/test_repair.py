@@ -1435,3 +1435,70 @@ def test_process_records_rejected_name_invented_reason(tmp_path, monkeypatch):
     assert repair.process(conf_path) == "repaired"
     reasons = [a[2] for a, kw in captured]
     assert "rejected_name_invented" in reasons
+
+
+def _tagged_gloss():
+    """A glossary with arc tags, shaped as [S-11] stores them: term -> the arcs it is in."""
+    g = gl(names=["Doflamingo", "Rebecca", "Oimo", "Spandam", "Zoro"])
+    g["arc_tags"] = {
+        "doflamingo": ["Dressrosa"],
+        "rebecca": ["Dressrosa"],
+        "oimo": ["Enies Lobby"],
+        "spandam": ["Enies Lobby"],
+        "zoro": ["Dressrosa", "Enies Lobby"],  # recurring: belongs to both
+    }
+    return g
+
+
+def test_glossary_terms_puts_the_current_arcs_names_first(monkeypatch):
+    """[S-13] The prompt term list is capped at 1000 chars on whole-term boundaries, and
+    that cap BITES: measured 2026-08-26 on the live One Pace glossary, 30 of 140 terms were
+    dropped, including `Nico Robin` and `Rob Lucci`. Ordering therefore decides which names
+    the model is told about at all, so the current arc's names must come first."""
+    terms = repair._glossary_terms(_tagged_gloss(), arc="Dressrosa").split(", ")
+    assert terms.index("Doflamingo") < terms.index("Oimo")
+    assert terms.index("Rebecca") < terms.index("Spandam")
+
+
+def test_glossary_terms_keeps_a_recurring_name_in_every_arc(monkeypatch):
+    """A character in two arcs must be prioritised in BOTH. Caesar Clown is a Punk Hazard
+    antagonist present in Dressrosa; filtering him out of either would be wrong."""
+    for arc in ("Dressrosa", "Enies Lobby"):
+        terms = repair._glossary_terms(_tagged_gloss(), arc=arc).split(", ")
+        assert terms.index("Zoro") < terms.index("Spandam" if arc == "Dressrosa" else "Rebecca")
+
+
+def test_glossary_terms_never_drops_an_out_of_arc_name_that_fits(monkeypatch):
+    """Weighting REORDERS, it does not filter. An out-of-arc name the model might need is
+    still offered -- dropping it would make the model MORE likely to 'correct' a valid name
+    into a listed one, which is the failure this is supposed to prevent."""
+    terms = repair._glossary_terms(_tagged_gloss(), arc="Dressrosa").split(", ")
+    assert set(terms) >= {"Doflamingo", "Rebecca", "Oimo", "Spandam", "Zoro"}
+
+
+def test_glossary_terms_unchanged_when_the_arc_is_unknown(monkeypatch):
+    """No season.nfo, or a show with no tags, must behave exactly as before -- the common
+    case in this library, and the one that must not regress."""
+    g = _tagged_gloss()
+    assert repair._glossary_terms(g, arc=None) == repair._glossary_terms(g)
+
+
+def test_glossary_terms_unchanged_when_the_glossary_has_no_tags(monkeypatch):
+    """Every glossary in the library today has no arc_tags key at all."""
+    g = gl(names=["Doflamingo", "Oimo"])
+    assert repair._glossary_terms(g, arc="Dressrosa") == repair._glossary_terms(g)
+
+
+def test_build_prompt_threads_the_arc_into_the_reference_spellings(monkeypatch):
+    """[S-13] end to end: the arc reaches the prompt text, not just the term helper."""
+    g = _tagged_gloss()
+    p = repair.build_prompt("some line", "", g, arc="Dressrosa")
+    names = p.split("VERIFICATION ONLY - this is NOT a list of names to insert): ")[1].split(".\n")[0]
+    terms = names.split(", ")
+    assert terms.index("Doflamingo") < terms.index("Spandam")
+
+
+def test_build_prompt_without_an_arc_is_byte_identical_to_before(monkeypatch):
+    """The no-arc path is the whole library today; it must not shift by a single byte."""
+    g = _tagged_gloss()
+    assert repair.build_prompt("l", "r", g, "p", "n", arc=None) == repair.build_prompt("l", "r", g, "p", "n")
