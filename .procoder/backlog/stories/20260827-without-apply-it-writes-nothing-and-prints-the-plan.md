@@ -1,9 +1,9 @@
 # Without `--apply` it writes nothing and prints the plan.
 
-Status: open
+Status: done 2026-08-27
 Created: 2026-08-27
 Epic: repair-review-and-decision-store
-Sprint: -
+Sprint: 005-task-5-review-apply-py-rebuild-an-episode-s-srt-from-conf
 
 ## Description
 
@@ -15,9 +15,11 @@ Done means the plan prints and nothing on disk changes without `--apply`.
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] Without `--apply` it writes nothing and prints the plan.
+- [x] Without `--apply` it writes nothing and prints the plan.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- `test_dry_run_writes_nothing_and_reports_the_plan` passes: `changed` is still reported,
+  no sidecar appears and the stamp survives.
+- Matches the repo convention (`mux.py`, `glossary_acquire.py`, `tools/reapply_glossary.py`).
+- Mutation: removing `or not apply` from the guard fails it.
