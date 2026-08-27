@@ -3,7 +3,7 @@
 Status: open
 Created: 2026-08-27
 Epic: repair-review-and-decision-store
-Sprint: -
+Sprint: 002-task-1-and-2-the-decision-store-and-glossary-promotion
 
 ## Description
 
