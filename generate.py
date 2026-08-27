@@ -29,6 +29,10 @@ Env:
   MODEL_DIR       default /subgen/models  (reuse subgen's downloaded model)
   WHISPER_AUDIO_FILTER  default highpass=f=80,compand=... (V2 A8; "" disables it, the
                   pre-A8 ffmpeg command)
+  FFMPEG_TIMEOUT  default 600  (seconds; the wav decode in extract_wav. Raise it on a
+                  slow NFS mount -- a timeout here fails the episode)
+  FFPROBE_TIMEOUT default 60   (seconds; both ffprobe calls -- audio-stream pick and
+                  duration. The stream pick reads the same remote file as the decode)
   MEDIA_UID/GID   default 1000/100
   GLOSSARY_DIR    default /config/glossaries  (V2 C1: where <show>.lastrun.json is written,
                   same dir mine_glossary.py/repair.py use for the show's glossary itself)
@@ -96,6 +100,12 @@ MODEL_DIR = os.environ.get("MODEL_DIR", "/subgen/models")
 AUDIO_FILTER = os.environ.get(
     "WHISPER_AUDIO_FILTER", "highpass=f=80,compand=attacks=0.001:decays=0.2:points=-80/-80|-30/-15|0/-3|20/-3"
 )
+# ffmpeg/ffprobe wall-clock limits. Both were literals until a full decode timed out
+# on a slow NFS mount with no way to raise the ceiling short of editing this file. The
+# probe budget is the tighter of the two and reads the SAME remote file the decode does,
+# so it is overridable for the same reason.
+FFMPEG_TIMEOUT = int(os.environ.get("FFMPEG_TIMEOUT", "600"))
+FFPROBE_TIMEOUT = int(os.environ.get("FFPROBE_TIMEOUT", "60"))
 UID = int(os.environ.get("MEDIA_UID", "1000"))
 GID = int(os.environ.get("MEDIA_GID", "100"))
 SUFFIX = ".eng.dubtitles.srt"
@@ -182,7 +192,7 @@ def eng_audio_index(video):
             ],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=FFPROBE_TIMEOUT,
             stdin=subprocess.DEVNULL,
         )
         streams = json.loads(r.stdout).get("streams", [])
@@ -212,7 +222,7 @@ def media_duration(path):
             ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", path],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=FFPROBE_TIMEOUT,
             stdin=subprocess.DEVNULL,
         )
         dur = float(json.loads(r.stdout)["format"]["duration"])
@@ -243,7 +253,7 @@ def extract_wav(video, idx, wav):
     if AUDIO_FILTER:  # V2 A8: empty WHISPER_AUDIO_FILTER = no filter (pre-A8 behavior)
         cmd += ["-af", AUDIO_FILTER]
     cmd.append(wav)
-    subprocess.run(cmd, capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
+    subprocess.run(cmd, capture_output=True, timeout=FFMPEG_TIMEOUT, stdin=subprocess.DEVNULL)
     return os.path.exists(wav) and os.path.getsize(wav) > 1000
 
 
