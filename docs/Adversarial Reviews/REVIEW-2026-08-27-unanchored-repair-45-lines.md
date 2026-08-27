@@ -13,99 +13,130 @@ call. Everything else is unjudged.
 
 ## S31E01
 
-- [ ] ASR : That come together.
+- [x] ASR : That come together.
       FIX : That comes together.
-- [ ] ASR : Roger's treasure belongs to me
+- [x] ASR : Roger's treasure belongs to me
       FIX : Roger's treasure belongs to me.
-- [ ] ASR : We'll ride non-stop and travel farther
+- [x] ASR : We'll ride non-stop and travel farther
       FIX : We'll ride non-stop and travel farther.
-- [ ] ASR : That's right, we're shining,
+- [x] ASR : That's right, we're shining,
       FIX : That's right, we're shining.
-- [ ] ASR : running forever Let's go along with curiosity Our feelings lead
+- [x] ASR : running forever Let's go along with curiosity Our feelings lead
       FIX : Running forever. Let's go along with curiosity. Our feelings lead.
-- [ ] ASR : I've been trying to call the bastards all day,
+- [x] ASR : I've been trying to call the bastards all day,
       FIX : I've been trying to call the bastards all day.
-- [ ] ASR : We're gonna die, that's what.
+- [x] ASR : We're gonna die, that's what.
       FIX : We're gonna die. That's what.
-- [ ] ASR : It's the other news that troubles me,
+- [x] ASR : It's the other news that troubles me,
       FIX : It's the other news that troubles me.
-- [ ] ASR : your crew disappeared for two years What were you doing all that time?
+- [x] ASR : your crew disappeared for two years What were you doing all that time?
       FIX : Your crew disappeared for two years. What were you doing all that time?
 - [ ] ASR : We're looking for a factory.
       FIX : We're looking for a needle.
-- [ ] ASR : once we get there we'll find it super easy my lasers will take
-      FIX : Once we get there we'll find it super easy. My lasers will take.
-- [ ] ASR : we might need to think outside the box we're going to Greenbit
+- [x] ASR : once we get there we'll find it super easy my lasers will take
+      FIX : Once we get there we'll find it super easy. My lasers will take
+- [x] ASR : we might need to think outside the box we're going to Greenbit
       FIX : We might need to think outside the box. We're going to Greenbit.
-- [ ] ASR : I relied on the brave assistance of my fellow Samadai,
-      FIX : I relied on the brave assistance of my fellow Samadai.
+- [x] ASR : I relied on the brave assistance of my fellow Samadai,
+      FIX : I relied on the brave assistance of my fellow Samurai.
 - [ ] ASR : Spare Mata-koth for me!
       FIX : Sparing Mata-koth for me!
-- [ ] ASR : First, the world's greatest swordsman, Hawkeye Dracule Mihawk.
+- [x] ASR : First, the world's greatest swordsman, Hawkeye Dracule Mihawk.
       FIX : First, the world's greatest swordsman, Mihawk.
-- [ ] ASR : The heavenly demon, Don Quixote Dothamingo.
+- [x] ASR : The heavenly demon, Don Quixote Dothamingo.
       FIX : The heavenly demon, Don Quixote Doflamingo.
-- [ ] ASR : I shall be the shogun of Wano someday And you'll be in the war beneath my face!
+- [x] ASR : I shall be the shogun of Wano someday And you'll be in the war beneath my face!
       FIX : I shall be the shogun of Wano someday. You'll be in the war beneath my face!
 - [ ] ASR : It's a VIVRA card?
       FIX : It's a Vivi card?
-- [ ] ASR : I'm over it now come on let's eat
+- [x] ASR : I'm over it now come on let's eat
       FIX : I'm over it now. Come on, let's eat.
-- [ ] ASR : This is no good at all Give up, you had enough, old man.
+- [x] ASR : This is no good at all Give up, you had enough, old man.
       FIX : This is no good at all. Give up, you had enough, old man.
-- [ ] ASR : We run this joint you got that they left me no
+- [x] ASR : We run this joint you got that they left me no
       FIX : We run this joint. You got that? They left me no...
 
 ## S31E02
 
-- [ ] ASR : That come together.
+- [x] ASR : That come together.
       FIX : That comes together.
-- [ ] ASR : Roger's treasure belongs to me
+- [x] ASR : Roger's treasure belongs to me
       FIX : Roger's treasure belongs to me.
-- [ ] ASR : We'll ride non-stop and travel farther
+- [x] ASR : We'll ride non-stop and travel farther
       FIX : We'll ride non-stop and travel farther.
-- [ ] ASR : That's right, we're shining,
+- [x] ASR : That's right, we're shining,
       FIX : That's right, we're shining.
-- [ ] ASR : running forever Let's go along with curiosity Our feelings lead
+- [x] ASR : running forever Let's go along with curiosity Our feelings lead
       FIX : Running forever. Let's go along with curiosity. Our feelings lead.
-- [ ] ASR : our moths will never give up There's a fire in our dreams and you can never,
+- [x] ASR : our moths will never give up There's a fire in our dreams and you can never,
       FIX : Our moths will never give up. There's a fire in our dreams and you can never,
-- [ ] ASR : My shoes was right here a minute ago! What?!
+- [x] ASR : My shoes was right here a minute ago! What?!
       FIX : My shoes were right here a minute ago! What?!
-- [ ] ASR : Senor Pink, then Dellinger,
+- [x] ASR : Senor Pink, then Dellinger,
       FIX : Senor Pink, then Dellinger.
-- [ ] ASR : and of course, the Colosseum's reigning
+- [x] ASR : and of course, the Colosseum's reigning
       FIX : and of course, the Colosseum's reigning.
 
 ## S31E03
 
-- [ ] ASR : My darkness will swallow the world, just you wait and see.
+- [x] ASR : My darkness will swallow the world, just you wait and see.
       FIX : My darkness will swallow the world. Just you wait and see.
-- [ ] ASR : Roger's treasure belongs to me
+- [x] ASR : Roger's treasure belongs to me
       FIX : Roger's treasure belongs to me.
-- [ ] ASR : We'll ride non-stop and travel farther
+- [x] ASR : We'll ride non-stop and travel farther
       FIX : We'll ride non-stop and travel farther.
-- [ ] ASR : That's right, we're shining,
+- [x] ASR : That's right, we're shining,
       FIX : That's right, we're shining.
-- [ ] ASR : running forever Let's go along with curiosity Our feelings lead
+- [x] ASR : running forever Let's go along with curiosity Our feelings lead
       FIX : Running forever. Let's go along with curiosity. Our feelings lead.
-- [ ] ASR : running forever Open the map inside your heart and see No matter where we end up,
+- [x] ASR : running forever Open the map inside your heart and see No matter where we end up,
       FIX : Running forever. Open the map inside your heart and see. No matter where we end up,
-- [ ] ASR : our moths will never give up There's a fire in our dreams And you can never,
+- [x] ASR : our moths will never give up There's a fire in our dreams And you can never,
       FIX : Our moths will never give up. There's a fire in our dreams and you can never,
-- [ ] ASR : They don't believe it—that's Cyan Boo from Kano,
+- [x] ASR : They don't believe it—that's Cyan Boo from Kano,
       FIX : They don't believe it—that's Cyan Boo from Kano.
-- [ ] ASR : and that's not Chin Down behind them.
+- [x] ASR : and that's not Chin Down behind them.
       FIX : That's not Chin Down behind them.
-- [ ] ASR : armor helmets and swords my head's about to
-      FIX : Armor helmets and swords, my head's about to.
-- [ ] ASR : There's only one who deserves the flame flame fruit.
-      FIX : There's only one who deserves the flame fruit.
-- [ ] ASR : It's the most mysterious statue in Dres Rosa.
+- [x] ASR : armor helmets and swords my head's about to
+      FIX : Armor helmets and swords, my head's about to
+- [x] ASR : There's only one who deserves the flame flame fruit.
+      FIX : There's only one who deserves the Flame-Flame Fruit.
+- [x] ASR : It's the most mysterious statue in Dres Rosa.
       FIX : It's the most mysterious statue in Dressrosa.
-- [ ] ASR : It'll be big trouble if one of these guys wins the flame flame fruit.
-      FIX : It'll be big trouble if one of these guys wins the flame fruit.
+- [x] ASR : It'll be big trouble if one of these guys wins the flame flame fruit.
+      FIX : It'll be big trouble if one of these guys wins the Flame-Flame Fruit.
 - [ ] ASR : CP-0.
       FIX : CP?
-- [ ] ASR : Do it again, Choppa Amon!
+- [x] ASR : Do it again, Choppa Amon!
       FIX : Do it again, Chopper Amon!
+
+## Verdict — owner read, 2026-08-27
+
+41 of 45 accepted, 4 rejected. Five of the 41 needed a hand-correction, so the
+rate that passed untouched is 36/45.
+
+Rejected:
+
+- `We're looking for a factory.` -> `a needle.` — semantic substitution (known).
+- `It's a VIVRA card?` -> `a Vivi card?` — item swapped for a character (known).
+- `Spare Mata-koth for me!` -> `Sparing Mata-koth for me!` — imperative turned gerund.
+- `CP-0.` -> `CP?` — a canonical organisation name destroyed.
+
+Hand-corrected inside the accepted set, in three classes:
+
+- WORD DELETION (2x): `the flame flame fruit` -> model `the flame fruit`, owner
+  `the Flame-Flame Fruit`. Ratio 0.88 against a 0.6-1.5 band, shorter so `fits_card`
+  passes, no reference to borrow from, no new token for `invents_name` to see.
+  `accept_repair` cannot detect this. It is the same class as factory -> needle and
+  was caught only because the owner knew the term.
+- TRAILING PERIOD ON A CONTINUATION CARD (2x): `My lasers will take.` and
+  `my head's about to.`, both mid-sentence spillovers. One character, invisible to
+  every gate.
+- UNDER-REPAIR (1x): `my fellow Samadai` got a period and not the fix; owner supplied
+  `Samurai`.
+
+Owner's decision on the failures: `accept_repair` is NOT to be tightened now. The
+current version is acceptable at this stage, and the tightening waits for more
+human-reviewed data. Each stage of the build is about getting closer to the goal,
+not chasing perfection early. The six failures are recorded here as the input for
+that later pass, not as a spec to act on yet.
