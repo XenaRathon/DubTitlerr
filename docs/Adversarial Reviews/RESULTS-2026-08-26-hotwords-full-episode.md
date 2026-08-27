@@ -98,18 +98,93 @@ enabled by default on this evidence.**
 It is close, and the failing case has an obvious candidate cause. This is a "measure once
 more", not a "cut the leg".
 
-## Next — the one experiment that resolves it
+## Arm E — the deciding re-run, with a DERIVED list
 
-Re-run arm D with hotwords derived from the FULL arc cast rather than 20 hand-picked terms,
-sized to the token budget by the [S-10] ranking rather than by the author's judgement, and
-check specifically whether `Kanjuro` survives. Two outcomes, both decisive:
+Arm E = arm A plus hotwords, 37 terms derived from the arc prominence ranking (not
+hand-picked), most-important-first, 150 tokens. `Kurozumi Kanjuro` included.
 
-- **Kanjuro survives and no new non-word regression appears** -> the regression was an
-  artifact of an incomplete list, the rule returns net positive, and [S-10] proceeds with a
-  requirement that the list be derived, never hand-picked.
-- **Kanjuro still breaks, or a different name breaks** -> hotwords corrupts names it is not
-  told about, which cannot be fixed by a longer list (the budget is finite and the arc has
-  96+ entities), and [S-10] should be cut per the decision rule.
+**The Kanjuro regression was an artifact of my hand-picked list, and fixing the list beat
+the baseline:**
 
-Until that runs, [S-1], [S-2], [S-5]-arc, [S-8] and [S-11] remain unbuilt per the build
-order: they exist only to feed [S-10].
+    S31E01 @589s   A: "You're a real bro, Kanjuro."   |  "Kanjuro!"
+                   D: "Kajudo Kajudo!"                            <- regression
+                   E: "You're a real pro, Kanjuro!"   |  "Kanjuro!"
+
+    canonical Kanjuro    A=2   D=0   E=4
+    Kajudo               A=0   D=2   E=0
+
+Arm E does not merely avoid D's regression: `Kanjino`, a mishear present in BOTH A and D,
+is gone in E, so E has 4 correct occurrences against the baseline's 2.
+
+Arc names across all three episodes, canonical / any-variant:
+
+    term          A          D          E
+    Doflamingo    7/9       13/13      12/12
+    Dressrosa    12/15      18/18      18/18
+    Colosseum     3/14      13/14      13/14
+    Kanjuro       2/4        1/4        4/4     <- E best, beats baseline
+    Bartolomeo    4/5        4/5        5/6     <- E best
+    Cavendish     3/3        3/3        3/3
+    Rebecca       2/2        2/2        2/2
+    Kyros         0/0        1/1        0/0     <- only D found it
+
+Quality of what each arm newly introduced, judged against the container's 100k-word
+dictionary (capitalised tokens present in the arm but not in the baseline):
+
+    arm D  28 distinct.  Kajudo, Dressnana, Tophie, Batdog, Yerusha, Malachok, Doki...
+                         predominantly non-words.
+    arm E  32 distinct.  Donquixote x3, Sabaody, Fujitora, Kuma, Dracul  -- REAL names the
+                         baseline missed -- alongside Dressnana, Jamaika, Molinosuke,
+                         Dester x1.
+
+So E introduces MORE new tokens than D but a much higher proportion of them are correct
+names. The spike's `Dester` does appear once in arm E.
+
+### E's own cost: repetition loops
+
+    S31E02       cards   collapsed   max_dur   flagged
+    A              393           0      6.2s        14
+    D              381           0      6.9s        27
+    E              411          38     30.0s        25
+
+Arm E induced 38 runaway repeat runs that the hallucination gate had to collapse; 37 were
+handled cleanly and one survived as a 30-second card reading "Grr!" on a non-speech
+stretch. A 30 s card violates the display profile outright. Neither A nor D produced any.
+E03 showed none of this (`collapsed=0`), so it is stretch-dependent, not universal.
+
+Confidence degraded in BOTH hotwords arms and did not improve with the better list:
+flagged 38 (A) -> 93 (D) -> 85 (E); low_conf 24 -> 60 -> 56; mean logprob ~-0.11 -> ~-0.18.
+That is a property of hotwords priming, not of list composition.
+
+## Verdict, and a flaw in my own decision rule
+
+The rule required "no regression on an unanchored card that a human would call worse". Arm
+E still produces some (`Dester`, `Jamaika`, `Molinosuke`, the 30 s "Grr!" card), so by the
+letter of the rule hotwords fails again.
+
+**But the rule as I wrote it is close to unsatisfiable.** Any change to decoder conditioning
+perturbs a 1,400-card transcript somewhere; demanding zero regressions makes the gate
+impossible to pass regardless of net benefit. That is a defect in the rule, not evidence
+about hotwords. A rule that can be met needs to compare weighted fixes against weighted
+regressions, with the 30 s card class treated as severe because it is visible to a viewer
+in a way a mis-spelled name is not.
+
+What the evidence actually supports:
+
+- Hotwords fixes things nothing else in the pipeline can reach. `Coliseum` -> `Colosseum`
+  is blocked from `glossary.correct()` by the `is_english` gate; `Kanjino` -> `Kanjuro`
+  and `do Flamingo` -> `Doflamingo` were never repairable on an unanchored card.
+- A DERIVED list strictly dominates a hand-picked one. Every omission is a regression
+  waiting to happen; [S-10] must forbid hand-picked lists.
+- List SIZE is the live risk, separately from composition. 150 tokens induced loops that 72
+  tokens did not. The two arms failed for different reasons — D by omission, E by size.
+- The untested configuration is the obvious one: DERIVED and SMALL, ~72 tokens. It would
+  have E's coverage of the names that matter without 150 tokens of perturbation.
+
+## Next
+
+Run arm F: derived ranking, truncated to ~72 tokens, most-important-first. If it keeps
+Kanjuro and produces no repetition collapses, that is the configuration to ship and the
+decision rule should be rewritten to a weighted comparison before it is applied. If it
+loses Kanjuro again, coverage and perturbation are in direct conflict at this budget and
+[S-10] should be cut.
