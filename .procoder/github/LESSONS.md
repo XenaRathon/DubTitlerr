@@ -92,3 +92,37 @@ git config commit.template .procoder/github/COMMIT_TEMPLATE.md
 - Adaptation: a comment explaining WHY something is excluded or refused is verified against
   the code it describes before the story closes, like any other claim. A false rationale is
   worse than none — it stops the next reader from looking.
+
+## 2026-08-27 subagent review — a new authority did not disable the old ones
+
+- Class: correctness
+- Missed by: plan
+- Finding: `[S-4]` made a human verdict outrank `accept_repair`. Two pieces of code written
+  before that concept existed still ran afterwards and both silently undid it. The
+  secondary-model pass reassigns `new` INSIDE the admitted branch, so an approved line was
+  replaced by the second model's wording — and the sprint's own new suppression rule then
+  wrote no queue entry, because the line counted as settled, so the substitution reached the
+  viewer with nothing recording it. Separately, `accept` was left out of the bypass tuple and
+  so was re-judged by `accept_repair` on every run; its answer is not stable over time
+  (`LEN_RATIO_*`/`MAX_REF_BORROW` are operator knobs, the glossary changes, `ref` moves on a
+  re-mux), so drift could revert an approved line AND re-queue it as a fresh `rejected_guard`.
+- Missed because: a diff shows the code that was added, never the code that still runs after
+  it. Both defects were downstream of the consult and looked untouched.
+- Adaptation: when a change introduces an authority, enumerate every EXISTING actor that can
+  still write the same value after the new authority has spoken, and write a test per actor.
+  Corollary for suppression: any "don't record this" branch needs its own check that the
+  thing suppressed is genuinely settled — a wrong suppression is silent by construction.
+
+## 2026-08-27 self — a partial mock that did not mirror the real input
+
+- Class: test-quality
+- Missed by: rubric
+- Finding: a three-card accounting test keyed its fake `llm` on substrings of the prompt
+  (`if "spondum" in prompt`). `build_prompt` embeds the PREVIOUS and NEXT card as context, so
+  every card's prompt contains its neighbours' text; card 2 received card 1's proposal, its
+  stored verdict missed, and the counter under test stayed at 0. The test failed for a reason
+  that had nothing to do with the code it was testing.
+- Missed because: the mock mirrored the input's type but not its structure. It looked precise.
+- Adaptation: a mock keyed on the content of a real payload must be checked against what that
+  payload actually contains. Prefer keying on call ORDER when the sequence is deterministic —
+  it cannot be fooled by context the mock's author did not know was there.
