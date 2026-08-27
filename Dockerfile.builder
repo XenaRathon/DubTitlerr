@@ -55,6 +55,10 @@ ENV WHISPER_MODEL=${WHISPER_MODEL}
 ENV MODEL_DIR=/models
 RUN python3 -c "import os; from faster_whisper import WhisperModel; WhisperModel(os.environ['WHISPER_MODEL'], device='cpu', compute_type='int8', download_root='/models')"
 
+# [S-7] the review page. EXPOSE documents it; publishing still needs -p on docker run,
+# which the README's example now carries.
+EXPOSE 8842
+
 WORKDIR /app
 # NOTE (V2-U3 B7/B9): common.py was missing from this COPY list since V1 introduced it --
 # every `from common import ...` (generate.py, mine_glossary.py, mux.py, repair.py,

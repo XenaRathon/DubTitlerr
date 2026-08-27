@@ -646,3 +646,21 @@ def test_serve_uses_the_bounded_server(monkeypatch, tmp_path):
 
     assert built.get("served") is True, "serve() must construct BoundedHTTPServer, not the unbounded one"
     assert built["handler"] is review_server.Handler
+
+
+def test_the_page_offers_a_way_to_apply_decisions_to_an_episode(tmp_path, monkeypatch):
+    """Recording a verdict and APPLYING it are two different things for an episode that is
+    already muxed: the verdict changes what the next repair run ships, and the write-back is
+    what re-opens an episode that has already shipped. `/api/apply` existed and nothing in
+    the page called it, so the write-back was reachable only by hand-crafting a POST.
+
+    The button says what it does. It rewrites the subtitle and drops the stamp, which costs
+    a re-mux of a multi-GB file -- not something to trigger by accident."""
+    stem = _episode(tmp_path)
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    page = review_server.render_page(stem)
+
+    assert 'id="apply"' in page, "an episode page needs a control that applies its decisions"
+    assert "/api/apply" in page, "wired to the route, not just present"
+    assert "re-mux" in page.lower(), "and it says what it costs before you press it"
