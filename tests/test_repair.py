@@ -1549,3 +1549,20 @@ def test_vouched_name_guard_survives_a_missing_jellyfish(monkeypatch):
     _pin_words(monkeypatch, words=("get", "him"))
     monkeypatch.setattr(glossary, "jellyfish", None)
     assert not repair.accept_repair("Get him, Oimo!", "Get him, Zoro!", ref="", dur=6.0, gloss=_known_gloss())
+
+
+def test_unanchored_cards_are_skipped_by_default(monkeypatch, tmp_path):
+    """[S-12] The gate is CONDITIONAL, not deleted. Default-off means production behaves
+    exactly as it does today -- measured on S31E01: targets=161, repaired=0, every one
+    refused for want of a fansub anchor."""
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    assert repair.skips_unanchored("") is True
+    assert repair.skips_unanchored("some fansub line") is False
+
+
+def test_unanchored_cards_reach_the_llm_when_enabled(monkeypatch):
+    """With the flag on, a card with no reference is no longer refused outright. The 161
+    targets on S31E01 produced 21 repairs this way, 18 acceptable."""
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", True)
+    assert repair.skips_unanchored("") is False
+    assert repair.skips_unanchored("some fansub line") is False
