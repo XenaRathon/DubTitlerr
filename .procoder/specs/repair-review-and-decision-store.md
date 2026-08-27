@@ -62,7 +62,26 @@ makes it correctable per line.
 - [S-5] Write-back for episodes already generated, `review_apply.py`: rebuild the `.srt`
   from `conf.json` with decisions applied -- the mechanism `recreate_srt.py` already uses --
   then invalidate the `.dubtitles.done` stamp so the existing merge loop re-muxes. Operates
-  on one episode or sweeps a whole show.
+  on one episode or sweeps a whole show. CLARIFIED 2026-08-27 after the sprint-005 review;
+  the original wording left three things implicit that decide the whole design:
+  - **A muxed episode has NO subtitle sidecar.** `mux.py:367-371` removes both the `.srt`
+    and the `.ass` immediately after stamping, and `dub_signs_merge.py:188` removes the srt
+    earlier still. So the target population has only `conf.json` and a stamp, and a
+    write-back that tried to EDIT an existing srt would refuse every episode it exists for.
+    It writes a sidecar rather than editing one.
+  - **The sidecar is the trigger, not the payload.** `merge_pass.sh:56` finds work by
+    globbing for sidecars, and with an srt present and no ass it re-runs `repair.py`
+    (`merge_pass.sh:59`), which consults the store per [S-4] and settles every reviewed
+    line. Rebuilding from `conf.json` therefore does NOT lose the LLM repairs -- repair
+    re-derives them on that same pass. Reproducing repair's output inside `review_apply`
+    would be redundant and a second place for the verdict logic to drift.
+  - **A stale `.ass` must be removed.** `mux.sub_source` prefers it over the srt
+    (`mux.py:296-302`) and `merge_pass` skips repair when one is present, so leaving it
+    would re-mux the old text and drop the verdict silently.
+    Eligibility is matched on the ORIGINAL text alone, which is all `conf.json` holds; the
+    full pair key is applied by [S-4] on the re-run. The store is resolved PER SHOW during a
+    sweep, and a show that cannot be resolved is reported -- an empty store and a
+    misconfigured `GLOSSARY_DIR` otherwise produce the same "0 changed" output.
 - [S-6] An optional pre-mux gate, and a stall alert so it can never hold silently. For a
   show named in `REVIEW_GATE_SHOWS`, `mux.py` skips
   any episode with pending `repair_applied` entries. Unlisted shows behave exactly as today.

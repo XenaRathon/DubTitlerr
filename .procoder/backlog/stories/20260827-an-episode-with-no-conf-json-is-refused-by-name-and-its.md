@@ -1,9 +1,9 @@
 # An episode with no `conf.json` is refused by name, and its stamp is untouched.
 
-Status: open
+Status: done 2026-08-27
 Created: 2026-08-27
 Epic: repair-review-and-decision-store
-Sprint: -
+Sprint: 005-task-5-review-apply-py-rebuild-an-episode-s-srt-from-conf
 
 ## Description
 
@@ -16,9 +16,14 @@ stamp cleared but text unchanged, is the state to avoid.
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] An episode with no `conf.json` is refused by name, and its stamp is untouched.
+- [x] An episode with no `conf.json` is refused by name, and its stamp is untouched.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- `test_a_missing_conf_json_is_refused_by_name_and_leaves_the_stamp` passes: the result
+  carries `error: "no conf.json"` AND the stem, and the stamp is untouched.
+- Refused BEFORE any write -- a half-applied episode is the failure to avoid. For a muxed
+  episode `conf.json` is the only surviving source, so without it there is nothing to
+  rebuild from; `tools/recover_dub_srt.py` is the tool for that case and it reads the muxed
+  track instead.
+- Mutation: replacing the refusal with an empty row list fails it.

@@ -128,6 +128,19 @@ def path_for(show: str, dir: str = DECISIONS_DIR) -> str:
     return os.path.join(dir, show + ".json")
 
 
+def for_orig(store: dict, orig: str) -> list:
+    """Every verdict recorded for this ORIGINAL line, whatever was proposed against it.
+
+    Deliberately NOT `lookup`, and the difference matters. `lookup` requires both sides
+    because APPLYING a verdict on the strength of `orig` alone would let a rejection of one
+    proposal suppress every future proposal for that line, including the one that fixes it.
+    This function answers a different question -- "has a human ruled on this line at all?"
+    -- which is what [S-5] needs to decide whether an already-muxed episode is worth
+    re-opening. It decides eligibility, never what text to write."""
+    o = key(orig)
+    return [e for e in store.get("decisions", []) if e.get("orig") == o]
+
+
 def load(show: str, dir: str = DECISIONS_DIR) -> dict:
     """This show's store, or {} when it is absent, unreadable or corrupt.
 
