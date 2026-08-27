@@ -293,6 +293,23 @@ def fits_card(text, dur, orig=None):
     return all(a <= b + reflow.EPS for a, b in zip(after, before))
 
 
+PHONETIC_MIN = float(os.environ.get("REPAIR_PHONETIC_MIN", "0.75"))
+
+
+def _proper_cores(text):
+    """Capitalised, non-English, glossary-shaped bare cores -- the tokens both name guards
+    reason about. Shared so the two cannot drift apart on what counts as a proper noun."""
+    out = []
+    for tok in (text or "").split():
+        m = glossary._TOKEN_RE.match(tok)
+        if not m:
+            continue
+        core = m.group(2)
+        if core[:1].isupper() and len(core) >= glossary.MIN_FUZZY_LEN and not glossary.is_english(core):
+            out.append(core)
+    return out
+
+
 def invents_name(orig, new, gloss):
     """True if ``new`` substitutes an INVENTED proper noun for one that was in ``orig``.
 
@@ -331,17 +348,6 @@ def invents_name(orig, new, gloss):
     wrong one is indistinguishable from a right one once written.
     """
 
-    def proper_cores(text):
-        out = []
-        for tok in (text or "").split():
-            m = glossary._TOKEN_RE.match(tok)
-            if not m:
-                continue
-            core = m.group(2)
-            if core[:1].isupper() and len(core) >= glossary.MIN_FUZZY_LEN and not glossary.is_english(core):
-                out.append(core)
-        return out
-
     # Scope widened 2026-08-26: a gained name is judged on its own, whether or not one was
     # LOST. The original rule required a SUBSTITUTION, which made a name conjured from
     # nothing invisible -- measured on the hotwords spike, where `jester` became `Dester`
@@ -354,9 +360,54 @@ def invents_name(orig, new, gloss):
     # as fabricated names -- two real repairs refused, caught by the existing suite.
     # (`that's` is doubly exposed: _read_words drops every wordlist entry containing an
     # apostrophe, so is_english() can never be True for a contraction.)
+    proper_cores = _proper_cores
     orig_all = {m.group(2).lower() for m in (glossary._TOKEN_RE.match(t) for t in (orig or "").split()) if m}
     known = {n.lower() for n in gloss["names"]} | {v.lower() for v in gloss["token_fixes"].values()}
     return any(c.lower() not in orig_all and c.lower() not in known for c in proper_cores(new))
+
+
+def substitutes_a_vouched_name(orig, new, gloss):
+    """True if ``new`` overrules a name the glossary already vouched for, or reaches for a
+    known name that sounds nothing like what it replaced.
+
+    Applied ONLY where there is no fansub reference. `repair.py`'s no-reference skip records
+    why: "the bake-off showed glossary-only repair hallucinates names (Oimo->Zoro) even on
+    qwen3:8b". Both failures in that shape need the model to be guessing from the glossary
+    rather than reading evidence, so with a reference in hand these must NOT fire -- a
+    reference-backed `Oimo` -> `Zoro` is exactly the correction repair exists to make, and
+    refusing it everywhere would lose real anchored repairs across the library.
+
+    Two rules, both measured 2026-08-26:
+
+    * KNOWN -> KNOWN is refused outright. The glossary vouched for the original; a model
+      with no reference has no standing to overrule it.
+    * UNKNOWN -> KNOWN must be phonetically close. jaro_winkler admits the genuine fixes --
+      dothamingo->doflamingo 0.893, zolo->zoro 0.867, syrahose->shirahoshi 0.755 -- and
+      blocks oimo->zoro at 0.667. The threshold is 0.75 and it is KNOWINGLY imperfect:
+      vivra->vivi scores 0.848 and gets through. No threshold separates that case, because
+      the genuine syrahose->shirahoshi fix scores LOWER than it. That one is a glossary
+      COVERAGE gap ("Vivre Card" is a real term absent from the names), not a distance
+      problem, and metaphone cannot help either -- it is False for every pair here."""
+    known = {n.lower() for n in gloss["names"]} | {v.lower() for v in gloss["token_fixes"].values()}
+    orig_cores = _proper_cores(orig)
+    new_cores = _proper_cores(new)
+    orig_all = {c.lower() for c in orig_cores}
+    new_all = {c.lower() for c in new_cores}
+    lost = [c for c in orig_cores if c.lower() not in new_all]
+    gained = [c for c in new_cores if c.lower() not in orig_all]
+    if not (lost and gained):
+        return False
+    if any(c.lower() in known for c in lost):
+        return True  # the glossary already vouched for what was replaced
+    # Only the PHONETIC half needs jellyfish; the vouched-name rule above does not, and
+    # must keep working when the optional dependency is absent. Degrading both would let
+    # the exact bake-off failure through on a box without it.
+    gained_known = [c for c in gained if c.lower() in known]
+    if gained_known and glossary.jellyfish is not None:
+        best = max(glossary.jellyfish.jaro_winkler_similarity(a.lower(), b.lower()) for a in lost for b in gained_known)
+        if best < PHONETIC_MIN:
+            return True
+    return False
 
 
 def accept_repair(orig, new, ref, dur, gloss):
@@ -391,6 +442,8 @@ def accept_repair(orig, new, ref, dur, gloss):
         return False  # nothing changed
     if invents_name(orig, new, gloss):
         return False  # phonetic-name-guard: fabricated proper noun, not a real correction
+    if not ref and substitutes_a_vouched_name(orig, new, gloss):
+        return False  # S-14: no reference, so no standing to overrule a vouched name
     ratio = len(new) / max(1, len(orig))
     if not (LEN_RATIO_MIN <= ratio <= LEN_RATIO_MAX):
         return False  # added or dropped a clause

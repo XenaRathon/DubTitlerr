@@ -1502,3 +1502,50 @@ def test_build_prompt_without_an_arc_is_byte_identical_to_before(monkeypatch):
     """The no-arc path is the whole library today; it must not shift by a single byte."""
     g = _tagged_gloss()
     assert repair.build_prompt("l", "r", g, "p", "n", arc=None) == repair.build_prompt("l", "r", g, "p", "n")
+
+
+def _known_gloss():
+    return gl(names=["Zoro", "Oimo", "Doflamingo", "Shirahoshi"])
+
+
+def test_unanchored_repair_refuses_swapping_one_known_name_for_another(monkeypatch):
+    """[S-14] The documented reason unanchored repair was disabled: repair.py:512 records
+    that glossary-only repair hallucinated `Oimo` -> `Zoro`. The glossary vouched for the
+    ORIGINAL, and a model with no reference has no standing to overrule it."""
+    _pin_words(monkeypatch, words=("get", "him"))
+    assert not repair.accept_repair("Get him, Oimo!", "Get him, Zoro!", ref="", dur=6.0, gloss=_known_gloss())
+
+
+def test_anchored_repair_still_allows_a_known_to_known_swap(monkeypatch):
+    """The same swap WITH a fansub reference is evidence-backed, so it must still pass.
+    Applying the strict guard everywhere would refuse real anchored repairs library-wide,
+    and the bake-off failure this guards against was the glossary-ONLY case."""
+    _pin_words(monkeypatch, words=("get", "him"))
+    assert repair.accept_repair("Get him, Oimo!", "Get him, Zoro!", ref="Get him, Zoro!", dur=6.0, gloss=_known_gloss())
+
+
+def test_unanchored_repair_refuses_a_phonetically_distant_name(monkeypatch):
+    """[S-14b] On the unknown -> known path, require the names to actually sound alike.
+    Measured 2026-08-26: jaro_winkler admits dothamingo->doflamingo 0.893 and
+    syrahose->shirahoshi 0.755, and blocks oimo->zoro 0.667."""
+    _pin_words(monkeypatch, words=("it", "is", "a", "card"))
+    assert not repair.accept_repair("It is a Kavendish card", "It is a Zoro card", ref="", dur=6.0, gloss=_known_gloss())
+
+
+def test_unanchored_repair_allows_the_phonetic_name_fix_it_exists_for(monkeypatch):
+    """The whole point: Dothamingo -> Doflamingo on a card with no reference. Neither
+    glossary tier can reach it (difflib 0.800 vs a 0.84 cutoff, metaphone T0MNK vs TFLMNK)
+    and it is one of S31's 6,492 unanchored cards, so nothing else can fix it either."""
+    _pin_words(monkeypatch, words=("the", "heavenly", "demon", "don"))
+    assert repair.accept_repair(
+        "The heavenly demon, Don Dothamingo.", "The heavenly demon, Don Doflamingo.", ref="", dur=6.0, gloss=_known_gloss()
+    )
+
+
+def test_vouched_name_guard_survives_a_missing_jellyfish(monkeypatch):
+    """Only the phonetic half needs the optional dependency. Degrading the vouched-name
+    rule with it would let the exact bake-off failure (`Oimo` -> `Zoro`) through on any box
+    where jellyfish is absent -- and glossary.py already ships that degradation path."""
+    _pin_words(monkeypatch, words=("get", "him"))
+    monkeypatch.setattr(glossary, "jellyfish", None)
+    assert not repair.accept_repair("Get him, Oimo!", "Get him, Zoro!", ref="", dur=6.0, gloss=_known_gloss())
