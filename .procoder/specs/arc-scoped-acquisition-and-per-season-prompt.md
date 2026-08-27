@@ -170,20 +170,46 @@ Order:
 2. Apply the decision rule below.
 3. Only then build whatever survives it.
 
-Decision rule, stated in advance so the result cannot be rationalised after the fact:
+Decision rule, REWRITTEN 2026-08-26 after the first measurement. The original demanded
+"no regression on an unanchored card that a human would call worse". That is close to
+unsatisfiable: any change to decoder conditioning perturbs a 1,400-card transcript
+somewhere, so a zero-regression gate can never pass regardless of net benefit. That was a
+defect in the rule, not evidence about hotwords. The replacement weighs severity and
+compares against the baseline, and it is written before the deciding numbers arrive:
 
-- **Net positive** — arc-name mishears reduced, no regression on an unanchored card that a
-  human would call worse than the mishear it replaced: build [S-1], [S-2], [S-5]-arc,
-  [S-8], [S-11] and enable hotwords per season.
-- **Net negative or ambiguous** — the leg ships as [S-4] + [S-6] + [S-9] only (scope
-  narrowing, season-aware staleness, the acquire-gate measurement). The arc machinery is
-  CUT, not deferred into a backlog where it accrues the appearance of being planned.
-- **Regressions concentrated on unanchored cards** — treat as net negative regardless of
-  the raw ratio. Those cards have no LLM fallback (`repair.py:493`), so a regression there
-  is permanent in a way an anchored one is not.
+**SEVERE regressions — any single one blocks adoption.**
+- A card whose duration breaks the display profile (arm E produced a 30-second card
+  reading "Grr!" after a runaway repeat run). A viewer sees this; a mis-spelled name they
+  may not.
+- A runaway repetition run that the hallucination gate has to collapse, where the baseline
+  produced none. Count them: arm E had 38 on one episode, arms A, D and F had zero.
+- A correct English word decoded into a capitalised non-word (`jester` -> `Dester`), which
+  `glossary.correct()` cannot repair and which on an unanchored card nothing can.
 
-A ratio alone does not decide this. One catastrophic regression outweighs many spelling
-improvements, so the measurement records severity and location, not just counts.
+**ORDINARY regressions — counted, and weighed against fixes.**
+- A name rendered less correctly than the baseline rendered it.
+- Adoption requires ordinary fixes to exceed ordinary regressions by a clear margin, not a
+  coin-flip one, counted per name occurrence across all measured episodes.
+
+**NOT regressions — do not count these.**
+- Punctuation and casing differences. `punctuation.py` calls an LLM, so two runs differ
+  with no help from hotwords; counting them inflates both columns with noise.
+- Canonical spelling changes that match the glossary or wiki title (`Coliseum` ->
+  `Colosseum`). These are fixes even though a naive diff shows them as changes.
+- Confidence metrics on their own. `flagged` and `low_conf` roughly doubled in every
+  hotwords arm and did not improve with a better list, so they measure priming itself
+  rather than list quality. They are recorded as context; they do not block, because a
+  flagged card still ships the same text.
+
+**Term integrity is a precondition, not a criterion.** Arm D corrupted `Kanjuro` into
+`Kajudo` and the only thing distinguishing it from a clean arm was a malformed hotword,
+`Kin emon` with the apostrophe stripped. Terms are canonical wiki titles used verbatim; any
+term that does not round-trip against the fetched title set is rejected before it reaches
+the decoder. A malformed term is worse than a missing one -- arm F omitted Kanjuro entirely
+and still rendered him correctly three times.
+
+If the rule returns net positive the leg proceeds; if not it ships as [S-4] + [S-6] +
+[S-9] and the arc machinery is CUT, not deferred.
 
 ## Constraints
 
