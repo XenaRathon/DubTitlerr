@@ -77,6 +77,7 @@ docker build -f Dockerfile.builder -t dubtitle-builder:latest .
 
 # run continuously against your media (env vars configure roots/models/Plex — see the Wiki)
 docker run --rm -u 0 --gpus all -v "/path/to/your/media:/media" -v "/path/to/config:/config" \
+  -p 8842:8842 \
   -e ANIME_ROOT="/media/Anime Library" dubtitle-builder:latest
 ```
 

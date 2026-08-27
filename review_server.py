@@ -358,6 +358,16 @@ def render_page(stem: str = "") -> str:
         # show's directory name.
         href = "/?stem=" + html.escape(quote(ep["stem"], safe="/"))
         rows.append(f'<li><a href="{href}">{html.escape(ep["name"])}</a> — {ep["pending"]}</li>')
+    # Only on an episode page. A verdict already changes what the NEXT repair run ships;
+    # this is for an episode that has ALREADY been muxed, where nothing would re-trigger it.
+    # It costs a re-mux of a multi-GB file, so the button says so rather than just doing it.
+    apply_html = (
+        '<hr><p><button id="apply">Apply decisions to this episode</button> '
+        "<small>rewrites the subtitle and drops the stamp, so the merge loop will re-mux it. "
+        "Only needed for an episode that has already been muxed.</small></p>"
+        if stem
+        else ""
+    )
     return (
         "<!doctype html><meta charset=utf-8><title>DubTitlerr review</title>"
         "<style>body{font:14px system-ui;max-width:52em;margin:2em auto}"
@@ -365,6 +375,7 @@ def render_page(stem: str = "") -> str:
         ".o{color:#900}.p{color:#060}small{color:#666}</style>"
         "<h1>Review</h1><p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
         f"<ul>{''.join(rows)}</ul>"
+        f"{apply_html}"
         "<script>"
         f"const STEM={_js(doc.get('stem', ''))};"
         "async function post(p,b){return (await fetch(p,{method:'POST',headers:{'Content-Type':'application/json',"
@@ -375,6 +386,11 @@ def render_page(stem: str = "") -> str:
         "if(r.error){alert(r.error)}else if(r.warning){alert(r.warning)}else{location.reload()}}"
         "document.addEventListener('click',e=>{const b=e.target.closest('button[data-v]');"
         "if(b){decide(Number(b.dataset.i),b.dataset.v)}});"
+        "const ap=document.getElementById('apply');"
+        "if(ap){ap.addEventListener('click',async()=>{ap.disabled=true;"
+        "const r=await post('/api/apply',{stem:STEM});"
+        "alert(r.error?r.error:(r.changed?('re-opened: '+r.changed+' card(s) changed'):"
+        "'nothing to apply for this episode'));ap.disabled=false})}"
         "</script>"
     )
 
