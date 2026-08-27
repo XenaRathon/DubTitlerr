@@ -159,6 +159,25 @@ def _glossary_terms(gloss, arc=None):
     return result
 
 
+def skips_unanchored(ref):
+    """Whether a card with reference ``ref`` is refused before the LLM is ever called.
+
+    S-12. Historically this was unconditional: no fansub anchor meant no repair, because
+    "the bake-off showed glossary-only repair hallucinates names (Oimo->Zoro) even on
+    qwen3:8b" and the deterministic layer was the safe ceiling. That ceiling leaves real
+    damage on screen -- measured on One Pace S31E01, 161 targets were refused here and 0
+    repaired, and the season carries 6,492 such cards. Among them was `Dothamingo`, which
+    `glossary.correct()` cannot reach (difflib 0.800 against a 0.84 cutoff; metaphone T0MNK
+    vs TFLMNK) and which therefore nothing in the pipeline could fix.
+
+    Re-running those 161 with the gate open produced 21 repairs, 18 acceptable, including
+    `Dothamingo` -> `Doflamingo`. But that is ONE episode of ONE show on ONE model against a
+    decision taken on a measured sweep, so the gate stays CONDITIONAL and defaults CLOSED.
+    Turning it on is a deliberate act, and `substitutes_a_vouched_name` guards the path it
+    opens."""
+    return not ref and not REPAIR_UNANCHORED
+
+
 def build_prompt(asr, sub, gloss, prev_text="", next_text="", arc=None):
     """Build the repair prompt. Every element here is the result of a measured sweep over
     real conf.json targets (3 shows x 40 targets, temperature 0), not authorship taste.
@@ -247,6 +266,7 @@ def _post_json(url, body):
         conn.close()
 
 
+REPAIR_UNANCHORED = os.environ.get("REPAIR_UNANCHORED", "") not in ("", "0")
 MAX_REF_BORROW = int(os.environ.get("MAX_REF_BORROW", "3"))
 LEN_RATIO_MIN = float(os.environ.get("LEN_RATIO_MIN", "0.6"))
 LEN_RATIO_MAX = float(os.environ.get("LEN_RATIO_MAX", "1.5"))
@@ -572,7 +592,7 @@ def process(conf_path):
             ref = ""
         else:
             ref = overlap_ref(ivals, c.get("source_start", c["start"]), c.get("source_end", c["end"]))
-        if not ref:
+        if skips_unanchored(ref):
             skipped_no_ref += 1
             # The counter alone made this indistinguishable from "repair ran and found
             # nothing wrong". Record the card so a human can see WHICH lines went unrepaired
@@ -586,9 +606,7 @@ def process(conf_path):
                 source_end=c.get("source_end", c["end"]),
                 avg_logprob=c.get("avg_logprob"),
             )
-            continue  # no fansub anchor -> skip the LLM. The bake-off showed glossary-only
-            # repair hallucinates names (Oimo->Zoro) even on qwen3:8b; without a
-            # reference the deterministic layer (hard_fixes) is the safe ceiling.
+            continue  # see skips_unanchored() for why, and for what opens this path
         prev_text = conf[i - 1]["text"] if i > 0 else ""
         next_text = conf[i + 1]["text"] if i + 1 < len(conf) else ""
         prompt = build_prompt(c["text"], ref, gloss, prev_text, next_text, arc)
