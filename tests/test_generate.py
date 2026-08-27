@@ -1678,3 +1678,56 @@ def test_the_replay_reports_when_the_sidecar_is_unusable(tmp_path, monkeypatch):
     v = _stamped(tmp_path, "ep.mkv", transcribe_version=common.TRANSCRIBE_VERSION, version=4)
     monkeypatch.setattr(generate, "WhisperModel", lambda *a, **k: None)
     assert generate.process_text(v) == "no-words"
+
+
+# --- ffmpeg/ffprobe subprocess timeouts are env-overridable -------------------
+# These were hard-coded literals (600 for the decode, 60 for each probe). On a slow
+# NFS mount the decode has already timed out in production with no way to raise the
+# limit short of editing the source. Each test below fails if a call site goes back
+# to a literal, because a literal cannot see the monkeypatched module constant.
+
+
+def _run_recording_kwargs(monkeypatch, stdout="{}"):
+    """Replace generate.subprocess.run with one that records every kwarg it was given."""
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(kw)
+        return types.SimpleNamespace(stdout=stdout, returncode=0)
+
+    monkeypatch.setattr(generate.subprocess, "run", run)
+    return calls
+
+
+def test_extract_wav_timeout_comes_from_ffmpeg_timeout(monkeypatch, tmp_path):
+    """Breaks if extract_wav's ffmpeg call goes back to a hard-coded timeout."""
+    calls = _run_recording_kwargs(monkeypatch)
+    monkeypatch.setattr(generate, "FFMPEG_TIMEOUT", 1234)
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(b"x" * 2000)  # success check is stat-only; run() is faked
+    generate.extract_wav("ep.mkv", 1, str(wav))
+    assert calls[0]["timeout"] == 1234
+
+
+def test_eng_audio_index_timeout_comes_from_ffprobe_timeout(monkeypatch):
+    """Breaks if the ffprobe that reads the video's audio streams goes back to a literal.
+    This probe touches the same NFS file the decode does, and with a far smaller budget."""
+    calls = _run_recording_kwargs(monkeypatch, stdout='{"streams": []}')
+    monkeypatch.setattr(generate, "FFPROBE_TIMEOUT", 99)
+    generate.eng_audio_index("ep.mkv")
+    assert calls[0]["timeout"] == 99
+
+
+def test_media_duration_timeout_comes_from_ffprobe_timeout(monkeypatch):
+    """Breaks if the duration probe goes back to a literal."""
+    calls = _run_recording_kwargs(monkeypatch, stdout='{"format": {"duration": "12.5"}}')
+    monkeypatch.setattr(generate, "FFPROBE_TIMEOUT", 99)
+    assert generate.media_duration("a.wav") == 12.5
+    assert calls[0]["timeout"] == 99
+
+
+def test_ffmpeg_timeout_defaults_match_the_pre_override_literals():
+    """Breaks if adding the override silently changed production behaviour. An unset
+    env must reproduce exactly the timeouts that were compiled in before."""
+    assert generate.FFMPEG_TIMEOUT == 600
+    assert generate.FFPROBE_TIMEOUT == 60
