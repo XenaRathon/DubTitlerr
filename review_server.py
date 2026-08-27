@@ -42,6 +42,7 @@ import json
 import os
 import secrets
 import tempfile
+import threading
 import time
 from urllib.parse import quote
 
@@ -82,6 +83,12 @@ TOKEN_HEADER = "X-Review-Token"
 # 0.0.0.0 because the container is the point -- the operator reaches this from their LAN.
 # That is exactly why an unset REVIEW_TOKEN generates one instead of meaning "open".
 REVIEW_BIND = os.environ.get("REVIEW_BIND", "0.0.0.0")
+# [F-4] How many requests may be in flight. The Handler.timeout below bounds how LONG one
+# unauthenticated request can hold a worker; this bounds HOW MANY. ThreadingHTTPServer
+# spawns a daemon thread per connection with no cap of its own, so without this a LAN client
+# opens many at once and each dies after the deadline rather than never -- an indefinite pin
+# becomes a sustained churn. A review is one person clicking buttons; 16 is generous.
+MAX_CONCURRENT = int(os.environ.get("REVIEW_MAX_CONCURRENT", "16"))
 # The token minted this process. authorised() calls resolve_token() per request, so without
 # this a persistence failure would mint a FRESH random token every time -- none of them the
 # one printed at startup -- and every write would 401 forever, including for the operator
@@ -433,9 +440,39 @@ class Handler(http.server.BaseHTTPRequestHandler):
         log("review server: " + (format % args))
 
 
+class BoundedHTTPServer(http.server.ThreadingHTTPServer):
+    """ThreadingHTTPServer with a ceiling on requests in flight.
+
+    Over the ceiling the connection is CLOSED rather than queued: an unbounded accept queue
+    is the same resource exhaustion with an extra step, and a reviewer would rather see a
+    dropped connection than a page that hangs. The slot is released in
+    process_request_thread's finally, which is the only place that runs for both the served
+    and the errored path -- releasing in process_request would return the slot before the
+    work it is guarding had started."""
+
+    daemon_threads = True
+
+    def __init__(self, *a, **k):
+        self._slots = threading.Semaphore(MAX_CONCURRENT)
+        super().__init__(*a, **k)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            log(f"review server: refusing {client_address[0]} — {MAX_CONCURRENT} requests already in flight")
+            self.close_request(request)
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
 def serve(port: int = 0):
     resolve_token()  # generates and prints on first start, before anything can be served
-    srv = http.server.ThreadingHTTPServer((REVIEW_BIND, port or REVIEW_PORT), Handler)
+    srv = BoundedHTTPServer((REVIEW_BIND, port or REVIEW_PORT), Handler)
     log(f"review server: listening on {REVIEW_BIND}:{port or REVIEW_PORT}")
     srv.serve_forever()
 

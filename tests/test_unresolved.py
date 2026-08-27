@@ -150,3 +150,115 @@ def test_the_primary_filter_returns_only_the_judgement_worthy_reasons(tmp_path):
     # by discovering it broke.
     assert not any(e["stage"] == "punctuation" for e in primary)
     assert len(unresolved.pending(stem)) == 7, "the unfiltered walk must still return everything"
+
+
+# --- [F-1] a CLI verdict must reach the decision store -----------------------
+# `resolve()` sets a flag and writes nothing durable. repair.py suppresses re-application
+# only on a stored VERDICT, so a "needs fixing" answered here was dropped in silence while
+# the audit trail recorded that a human had judged the line.
+
+
+def _queued(tmp_path, name, stage, reason, orig, proposed):
+    import unresolved as u
+
+    stem = str(tmp_path / name)
+    u.record(stem, stage, reason, original_text=orig, proposed_text=proposed)
+    return stem
+
+
+def _answers(monkeypatch, *replies):
+    """Drive the interactive walk: one reply per input() call, then EOF."""
+    it = iter(replies)
+
+    def fake_input(_prompt=""):
+        try:
+            return next(it)
+        except StopIteration:
+            raise EOFError from None  # the walk ends the way a real Ctrl-D ends it
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+
+def test_needs_fixing_on_an_applied_repair_records_a_reject(tmp_path, monkeypatch):
+    """The card currently shows the REPAIR, so "needs fixing" means the repair is wrong.
+
+    Without this the answer set a flag, repair.py re-applied the same repair on the next
+    run, and the re-queue suppression kept it out of the queue -- so the reviewer's
+    judgement was invisible to the pipeline AND to the reviewer."""
+    import decisions
+    import unresolved as u
+
+    stem = _queued(tmp_path, "ep_f", "repair_applied", "accepted", "I saw spondum", "I saw Spandam")
+    monkeypatch.setattr(decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(u, "show_for", lambda p: "Show")
+    _answers(monkeypatch, "f", "a regression")
+
+    u.main([stem, "--review"])
+
+    hit = decisions.lookup(decisions.load("Show", str(tmp_path)), "I saw spondum", "I saw Spandam")
+    assert hit is not None, "the verdict must be durable, not just a flag on the queue entry"
+    assert hit["verdict"] == "reject"
+    assert u.items(stem)[0]["resolved"] is True, "and the entry still leaves the queue"
+
+
+def test_keep_as_is_and_needs_fixing_are_distinguishable_in_the_store(tmp_path, monkeypatch):
+    """Both answers currently produce an identical queue state apart from one boolean, and
+    neither reaches the store at all. If only one of them recorded a verdict the CLI would
+    still be lossy, so this asserts the PAIR."""
+    import decisions
+    import unresolved as u
+
+    stem = str(tmp_path / "ep_both")
+    u.record(stem, "repair_applied", "accepted", original_text="line one", proposed_text="fix one")
+    u.record(stem, "repair_applied", "accepted", original_text="line two", proposed_text="fix two")
+    monkeypatch.setattr(decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(u, "show_for", lambda p: "Show")
+    _answers(monkeypatch, "k", "", "f", "")
+
+    u.main([stem, "--review"])
+
+    store = decisions.load("Show", str(tmp_path))
+    one, two = decisions.lookup(store, "line one", "fix one"), decisions.lookup(store, "line two", "fix two")
+    assert one is not None and two is not None, "both answers must reach the store, or the CLI is still lossy"
+    assert one["verdict"] == "accept"
+    assert two["verdict"] == "reject"
+
+
+def test_needs_fixing_on_a_refused_repair_records_a_force(tmp_path, monkeypatch):
+    """The mapping is per STAGE, because "keep as-is" is about the CARD, not the proposal.
+
+    On a `rejected_guard` entry the card shows the ASR text -- the repair was refused -- so
+    "keep as-is" endorses that refusal (a `reject` of the proposal) and "needs fixing" says
+    the ASR is wrong and the refused proposal should stand, which is exactly `force`.
+    Recording `reject` for both stages would silently invert the reviewer's meaning here."""
+    import decisions
+    import unresolved as u
+
+    stem = _queued(tmp_path, "ep_guard", "repair", "rejected_guard", "asr text", "model text")
+    monkeypatch.setattr(decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(u, "show_for", lambda p: "Show")
+    _answers(monkeypatch, "f", "")
+
+    u.main([stem, "--review"])
+
+    hit = decisions.lookup(decisions.load("Show", str(tmp_path)), "asr text", "model text")
+    assert hit is not None and hit["verdict"] == "force"
+
+
+def test_a_store_write_failure_is_reported_not_swallowed(tmp_path, monkeypatch, capsys):
+    """A review that silently discards the human's decision is worse than one that errors,
+    because the human believes the line is settled. The queue entry must NOT be marked
+    resolved either -- that would hide the unsaved verdict from the next walk."""
+    import decisions
+    import unresolved as u
+
+    stem = _queued(tmp_path, "ep_fail", "repair_applied", "accepted", "orig", "prop")
+    monkeypatch.setattr(decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(u, "show_for", lambda p: "Show")
+    monkeypatch.setattr(decisions, "save", lambda *a, **k: False)
+    _answers(monkeypatch, "f", "")
+
+    u.main([stem, "--review"])
+
+    assert "not saved" in capsys.readouterr().out.lower()
+    assert u.items(stem)[0].get("resolved") is False, "an unsaved verdict must stay in the queue"

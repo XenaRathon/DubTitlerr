@@ -1,6 +1,6 @@
 # review-loop-followups
 
-Status: open
+Status: done 2026-08-27
 Created: 2026-08-27
 
 ## Why

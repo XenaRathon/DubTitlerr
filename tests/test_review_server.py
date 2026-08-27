@@ -9,6 +9,7 @@ REVIEW_TOKEN generates one; only an explicitly empty REVIEW_TOKEN disables auth.
 import json
 import os
 import stat
+from typing import Any
 
 import decisions
 import review_server
@@ -577,3 +578,71 @@ def test_decide_reports_a_failed_resolve_instead_of_claiming_success(tmp_path, m
     assert res.get("saved") is True, "the verdict IS durable and must be reported as such"
     assert res.get("queue_cleared") is False, "but the queue entry did not clear, and that must not be hidden"
     assert "warning" in res
+
+
+def test_concurrent_requests_are_bounded(monkeypatch):
+    """[F-4]. The 30s deadline bounds how LONG one unauthenticated request holds a worker;
+    it does not bound HOW MANY. `ThreadingHTTPServer` spawns a daemon thread per connection
+    with no cap, so a LAN client can still open many at once -- each now dying after 30s
+    instead of never, which turns an indefinite pin into a sustained churn.
+
+    Refused promptly rather than queued: an unbounded queue is the same exhaustion with an
+    extra step. Asserted without opening a socket, matching the rest of this file."""
+    assert review_server.MAX_CONCURRENT > 0
+    assert issubclass(review_server.BoundedHTTPServer, review_server.http.server.ThreadingHTTPServer)
+
+    srv: Any = review_server.BoundedHTTPServer.__new__(review_server.BoundedHTTPServer)
+    srv._slots = review_server.threading.Semaphore(1)
+    handled, refused = [], []
+    monkeypatch.setattr(
+        review_server.http.server.ThreadingHTTPServer,
+        "process_request",
+        lambda self, req, addr: handled.append(addr),
+    )
+    srv.close_request = lambda req: refused.append(req)
+
+    srv.process_request("r1", ("10.0.0.1", 1))  # takes the only slot, never released here
+    srv.process_request("r2", ("10.0.0.2", 2))
+
+    assert handled == [("10.0.0.1", 1)], "the first is served"
+    assert refused == ["r2"], "the second is closed immediately, not queued behind it"
+
+
+def test_the_slot_is_returned_after_a_request(monkeypatch):
+    """A semaphore that is never released is a server that stops answering after N requests
+    -- a worse outage than the one being prevented."""
+    srv: Any = review_server.BoundedHTTPServer.__new__(review_server.BoundedHTTPServer)
+    srv._slots = review_server.threading.Semaphore(1)
+    srv.close_request = lambda req: None
+    monkeypatch.setattr(review_server.http.server.ThreadingHTTPServer, "process_request", lambda self, req, addr: None)
+    monkeypatch.setattr(review_server.http.server.ThreadingHTTPServer, "process_request_thread", lambda self, req, addr: None)
+
+    # Through the REAL pair: process_request acquires, process_request_thread releases.
+    # Calling only the release half never takes a slot, so the semaphore stays full and the
+    # assertion below passes whether or not the release exists -- which is how the first
+    # draft of this test let a "never release the slot" mutation through.
+    for _ in range(3):
+        srv.process_request("req", ("10.0.0.1", 1))
+        srv.process_request_thread("req", ("10.0.0.1", 1))
+
+    assert srv._slots.acquire(blocking=False), "the slot must come back, or the server dies after MAX_CONCURRENT requests"
+
+
+def test_serve_uses_the_bounded_server(monkeypatch, tmp_path):
+    """serve() constructing a plain ThreadingHTTPServer would leave the cap unreachable in
+    production while every unit test above still passed."""
+    monkeypatch.setenv("REVIEW_TOKEN", "t")
+    built = {}
+
+    class _Fake:
+        def __init__(self, addr, handler):
+            built["addr"], built["handler"] = addr, handler
+
+        def serve_forever(self):
+            built["served"] = True
+
+    monkeypatch.setattr(review_server, "BoundedHTTPServer", _Fake)
+    review_server.serve(port=1)
+
+    assert built.get("served") is True, "serve() must construct BoundedHTTPServer, not the unbounded one"
+    assert built["handler"] is review_server.Handler

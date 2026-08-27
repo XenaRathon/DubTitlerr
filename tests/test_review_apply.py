@@ -221,3 +221,82 @@ def test_a_show_that_cannot_be_resolved_is_reported_not_silently_empty(tmp_path,
 
     assert "no decision store" in capsys.readouterr().out.lower(), "silence here reads as success"
     assert os.path.exists(ep + STAMP)
+
+
+# --- [F-3] the write-back against a signs merge that fails -------------------
+# Both pre-merge reviews reached this path and disagreed about it, which is why it gets a
+# test rather than an argument. `dub_signs_merge.build()` returns "no-signs", 0, 0 at
+# dub_signs_merge.py:127 -- BEFORE writing any .ass -- and process_one can also return
+# "build-error" (:181) or "no-video" (:176), or "empty" when build succeeded with dub == 0.
+
+
+def _merged_episode(tmp_path, name="ep_signs"):
+    """A muxed, signs-bearing episode: conf.json + stamp, no sidecar, plus the stale .ass
+    that mux would have removed had it not been muxed from one."""
+    rows = [{"start": 0.0, "end": 2.0, "text": "I saw spondum"}]
+    stem = _muxed(tmp_path, name, rows, ass=True)
+    return stem, rows
+
+
+def test_a_write_back_leaves_a_muxable_sidecar_when_signs_cannot_be_merged(tmp_path):
+    """The outcome asserted, not assumed.
+
+    review_apply removes the stale .ass and writes an .srt. If the next pass's signs merge
+    returns no-signs, no .ass is produced and the .srt is NOT removed
+    (dub_signs_merge.py:127 returns before both), so mux.sub_source falls back to the srt
+    and the episode still muxes -- carrying the human's verdict, without signs that pass.
+
+    That is recoverable rather than lost, which is what the rebuttal argued. It is asserted
+    here so the next reader does not have to re-derive it from two contradicting reviews."""
+    stem, _ = _merged_episode(tmp_path)
+    store = decisions.record({}, "I saw spondum", "I saw Spandam", "reject")
+
+    review_apply.apply_episode(stem, store, apply=True)
+
+    assert os.path.exists(stem + SRT), "an srt is what mux falls back to when there is no ass"
+    assert not os.path.exists(stem + ASS), "and the stale ass is gone, or it would win and ship the old text"
+    assert not os.path.exists(stem + STAMP), "the episode is re-opened either way"
+
+
+def test_the_write_back_is_idempotent_across_a_failed_signs_pass(tmp_path):
+    """A failing signs merge leaves the srt in place, so the next merge sweep finds the same
+    sidecar and runs the whole thing again. Re-running the write-back on that state must not
+    compound: same sidecar, same stamp state, no second stale ass."""
+    stem, _ = _merged_episode(tmp_path)
+    store = decisions.record({}, "I saw spondum", "I saw Spandam", "reject")
+
+    first = review_apply.apply_episode(stem, store, apply=True)
+    srt_after_first = open(stem + SRT).read()
+    second = review_apply.apply_episode(stem, store, apply=True)
+
+    assert first["changed"] == second["changed"] == 1
+    assert open(stem + SRT).read() == srt_after_first, "a second pass changes nothing"
+    assert not os.path.exists(stem + ASS)
+
+
+def test_an_episode_that_never_had_signs_is_handled_the_same_way(tmp_path):
+    """The counterpart, so the test above is not just describing the ass-removal branch. A
+    dialogue-only episode has no ass to remove and must still be re-opened."""
+    rows = [{"start": 0.0, "end": 2.0, "text": "I saw spondum"}]
+    stem = _muxed(tmp_path, "ep_nosigns", rows, ass=False)
+    store = decisions.record({}, "I saw spondum", "I saw Spandam", "reject")
+
+    res = review_apply.apply_episode(stem, store, apply=True)
+
+    assert res["changed"] == 1 and res.get("ass_dropped") is None
+    assert os.path.exists(stem + SRT) and not os.path.exists(stem + STAMP)
+
+
+def test_removing_a_stale_ass_is_recorded_so_a_lost_signs_pass_is_noticeable(tmp_path):
+    """ "Recoverable" requires someone noticing. An episode that HAD signs and comes back
+    without them is only distinguishable from one that never had them if the write-back says
+    it dropped an ass -- nothing downstream can tell afterwards, because the ass is gone."""
+    signs, _ = _merged_episode(tmp_path, "ep_had_signs")
+    plain = _muxed(tmp_path, "ep_never_had", [{"start": 0.0, "end": 2.0, "text": "I saw spondum"}], ass=False)
+    store = decisions.record({}, "I saw spondum", "I saw Spandam", "reject")
+
+    had = review_apply.apply_episode(signs, store, apply=True)
+    never = review_apply.apply_episode(plain, store, apply=True)
+
+    assert had.get("ass_dropped") is True
+    assert never.get("ass_dropped") is None, "the two cases must be distinguishable in the result"

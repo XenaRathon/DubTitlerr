@@ -628,11 +628,24 @@ def process(conf_path):
     # Matched against EVERY entry, resolved or not -- keying on pending-only would re-append
     # the moment a human resolved one through the --review CLI, which is the same deadlock
     # inverted.
+    _queued = unresolved.items(stem)
     queued_pairs = {
         (decisions.key(e.get("original_text", "")), decisions.key(e.get("proposed_text", "")))
-        for e in unresolved.items(stem)
+        for e in _queued
         if e.get("stage") == "repair_applied"
     }
+    # [F-2] Pending entries by ORIGINAL line, so a changed proposal can supersede the one it
+    # replaces instead of queueing beside it. The pair is right as the DECISION key -- keying
+    # a verdict on `orig` alone would let one rejection suppress the proposal that fixes the
+    # line -- but the reviewer's PENDING set is a different question: two live proposals for
+    # one card are two questions about a card that will only ever ship one answer, and a
+    # verdict on either leaves a gated episode held on the other.
+    pending_by_orig: dict = {}
+    for i, e in enumerate(_queued):
+        if e.get("stage") == "repair_applied" and not e.get("resolved"):
+            pending_by_orig.setdefault(decisions.key(e.get("original_text", "")), []).append(
+                (i, decisions.key(e.get("proposed_text", "")))
+            )
     targets = [(i, c) for i, c in enumerate(conf) if is_target(c, gloss)]
     if not targets:
         return "clean"  # nothing to repair (e.g. S15E01)
@@ -800,6 +813,17 @@ def process(conf_path):
             # unresolved.record(), whose O(1) append is deliberate.
             pair = (decisions.key(c["text"]), decisions.key(new))
             if not ruling and pair not in queued_pairs:
+                # Retire any live entry for this same line whose proposal has changed. Marked
+                # RESOLVED, never deleted: the queue is the audit trail, and what the model
+                # proposed before is the evidence for whether the gate is drifting.
+                # No "is it different?" check: an IDENTICAL pair never reaches here, because
+                # `pair not in queued_pairs` above already skipped it, and queued_pairs is
+                # built from every entry including the pending ones. Any live entry for this
+                # original therefore carries a different proposal by construction.
+                for idx_old, _ in pending_by_orig.get(pair[0], []):
+                    unresolved.resolve(stem, idx_old, accept=False, note=f"superseded by a newer proposal: {new}")
+                pending_by_orig[pair[0]] = [(len(_queued), pair[1])]
+                _queued.append({})  # keep index accounting honest for a second supersession
                 queued_pairs.add(pair)
                 unresolved.record(
                     stem,
