@@ -103,3 +103,50 @@ def test_repair_llm_empty_is_a_declared_reason(tmp_path):
     unresolved.record(stem, "repair", "llm_empty", original_text="garbled line", reference="the fansub line", avg_logprob=-1.4)
     e = unresolved.items(stem)[0]
     assert e["reason"] == "llm_empty" and e["reference"] == "the fansub line"
+
+
+def test_repair_applied_is_a_known_stage_with_its_own_evidence(tmp_path):
+    """Breaks if the accepted-repair stage is missing from REASONS, or is rendered without
+    the two texts a reviewer compares.
+
+    REASONS exists so "the --review CLI and the call sites cannot drift apart, and so a
+    typo'd reason is visible rather than silently creating a new bucket"
+    (unresolved.py:45). A stage recorded but not declared is exactly that silent bucket."""
+    assert "accepted" in unresolved.REASONS["repair_applied"]
+    stem = str(tmp_path / "ep")
+    unresolved.record(stem, "repair_applied", "accepted", original_text="my fellow Samadai", proposed_text="my fellow Samurai.")
+    rendered = unresolved._render(0, unresolved.items(stem)[0])
+    assert "my fellow Samadai" in rendered and "my fellow Samurai." in rendered
+
+
+def test_the_primary_filter_returns_only_the_judgement_worthy_reasons(tmp_path):
+    """Breaks if the primary filter stops excluding the non-actionable reasons.
+
+    Asserted on ABSENCE. pending() applies no stage filter of its own
+    (unresolved.py:89), so a filter that returned everything would satisfy any
+    presence-only assertion while burying the owner: ~25 judgement-worthy entries per
+    episode against ~86 recorded. no_reference is mostly "this release has no fansub" --
+    true, and not actionable line by line."""
+    stem = str(tmp_path / "ep")
+    unresolved.record(stem, "repair_applied", "accepted", original_text="a", proposed_text="b")
+    unresolved.record(stem, "repair", "rejected_guard", original_text="c", proposed_text="d")
+    unresolved.record(stem, "repair", "rejected_name_invented", original_text="e", proposed_text="f")
+    unresolved.record(stem, "repair", "no_reference", original_text="g")
+    unresolved.record(stem, "repair", "llm_empty", original_text="h")
+    unresolved.record(stem, "punctuation", "llm_empty", original_text="i")
+    # REASONS["punctuation"] also carries "rejected_guard", so a filter keyed on the reason
+    # alone would sweep this in. The stage is half the identity.
+    unresolved.record(stem, "punctuation", "rejected_guard", original_text="j", proposed_text="k")
+
+    primary = unresolved.pending(stem, primary_only=True)
+    assert {(e["stage"], e["reason"]) for e in primary} == {
+        ("repair_applied", "accepted"),
+        ("repair", "rejected_guard"),
+        ("repair", "rejected_name_invented"),
+    }
+    assert not any(e["reason"] in ("no_reference", "llm_empty") for e in primary)
+    # Excluded by SCOPE, not because it cannot be judged: punctuation records both texts
+    # too. If the owner widens PRIMARY, this line is the one to change -- deliberately, not
+    # by discovering it broke.
+    assert not any(e["stage"] == "punctuation" for e in primary)
+    assert len(unresolved.pending(stem)) == 7, "the unfiltered walk must still return everything"

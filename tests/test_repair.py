@@ -1586,3 +1586,77 @@ def test_a_name_tagged_to_another_arc_sorts_after_the_current_one(monkeypatch):
     terms = repair._glossary_terms(g, arc="Dressrosa").split(", ")
     assert terms.index("Doflamingo") < terms.index("Spandam")
     assert terms.index("Luffy") < terms.index("Spandam")
+
+
+def test_an_accepted_repair_is_queued_with_the_text_before_and_after(tmp_path, monkeypatch):
+    """Breaks if the accept path stops queueing, or queues the wrong side of the swap.
+
+    `accept_repair` admitted this line; nothing below it checked the meaning, and its own
+    docstring says so. The reviewer is the check, and they need BOTH texts to be one.
+
+    Asserted on the fields, not the count: two empty strings satisfy a count. The ordering
+    is the trap -- `c["text"] = new` (repair.py:683) runs AFTER `audit.append`
+    (repair.py:681), so a record call placed below the assignment would report the
+    repaired text as the original and the entry would compare a line against itself."""
+    stem = str(tmp_path / "ep_queued")
+    conf_path = _repair_env(tmp_path, monkeypatch, stem, [_conf_row(0.0, 2.0, "garbled line here")], "a garbled line here")
+    assert repair.process(conf_path) == "repaired"
+
+    entries = [e for e in unresolved.items(stem) if e["stage"] == "repair_applied"]
+    assert len(entries) == 1
+    assert entries[0]["reason"] == "accepted"
+    assert entries[0]["original_text"] == "garbled line here"
+    assert entries[0]["proposed_text"] == "a garbled line here"
+
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert len(entries) == summary["repaired"]
+
+
+def test_a_rejected_repair_is_not_queued_as_accepted(tmp_path, monkeypatch):
+    """Breaks if the record call lands outside the accept branch. A repair the gate REFUSED
+    must never appear in the accepted queue -- it is already recorded as rejected_guard, and
+    counting it twice would tell the reviewer a line shipped that never did."""
+    stem = str(tmp_path / "ep_tight_q")
+    conf_path = _repair_env(tmp_path, monkeypatch, stem, [_conf_row(0.0, 1.0, "garbled line here")], "a garbled line here")
+    assert repair.process(conf_path) == "repaired"
+
+    stages = [e["stage"] for e in unresolved.items(stem)]
+    assert "repair_applied" not in stages
+    assert json.load(open(stem + ".dubtitles.repair-summary.json"))["repaired"] == 0
+
+
+def test_the_queue_records_the_secondary_models_text_not_the_first_passes(tmp_path, monkeypatch):
+    """Breaks if the queue write moves ABOVE the secondary-model block (repair.py:667-680).
+
+    The gap this closes: the record call's own comment claims it sits below that block so
+    `proposed_text` is the text actually applied, and NO test held it there. Moving the call
+    to just after `else:` left the whole suite green while queueing "I saw Spandam" -- the
+    discarded first pass -- for a card that shipped "I saw Spandam there".
+
+    That is the worst possible failure for this queue: a reviewer approving text the viewer
+    never saw, on precisely the name-change-then-re-verified case the two-pass gate exists
+    for. Mirrors test_process_two_pass_reverifies_name_change, which asserts the same
+    override on the CSV and never looks at the queue."""
+    stem = str(tmp_path / "ep_2pass_q")
+    conf_path = stem + repair.CONF_SUFFIX
+    _write_conf(
+        conf_path,
+        stem + repair.SRT_SUFFIX,
+        [{"start": 0.0, "end": 2.0, "text": "I saw spondum", "avg_logprob": -0.6, "no_speech_prob": 0.1}],
+    )
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_2pass_q.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"]))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    monkeypatch.setattr(
+        repair, "llm", lambda prompt, model=None: "I saw Spandam there" if model == "secondary-model" else "I saw Spandam"
+    )
+    monkeypatch.setattr(repair, "MODEL_SECONDARY", "secondary-model")
+
+    assert repair.process(conf_path) == "repaired"
+    queued = [e for e in unresolved.items(stem) if e["stage"] == "repair_applied"]
+    assert len(queued) == 1
+    assert queued[0]["original_text"] == "I saw spondum"
+    assert queued[0]["proposed_text"] == "I saw Spandam there", "the queue must show what SHIPPED"
+    # ...and it agrees with the audit trail the same run wrote.
+    with open(stem + ".dubtitles.repair.csv") as f:
+        assert list(csv.reader(f))[1][1] == queued[0]["proposed_text"]

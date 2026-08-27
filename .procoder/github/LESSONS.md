@@ -61,3 +61,34 @@ git config commit.template .procoder/github/COMMIT_TEMPLATE.md
   and it caught two claims that had been implemented before their test existed
   (`save()`'s atomicity and `record()`'s `promoted` handling), both of which were passing
   on code nobody had proven.
+
+## 2026-08-27 subagent review — three mutation checks that all moved the same direction
+
+- Class: judgment
+- Missed by: test
+- Finding: the new `unresolved.record()` call in `repair.process()` was pinned by three
+  hand-run mutations — below `c["text"] = new`, and into the reject branch — all of which
+  failed correctly. The untested direction was UP, above the secondary-model block. Moved
+  there, the whole suite stayed green while the queue recorded the discarded first-pass text
+  for a card that shipped the secondary model's. A reviewer would have approved text the
+  viewer never saw, on exactly the name-change-then-re-verified case the two-pass gate exists
+  to catch.
+- Missed because: three mutations felt like coverage. They were one mutation run three ways —
+  every one of them moved the call later or sideways, none earlier.
+- Adaptation: enumerate mutation directions before running them. For a call site, that means
+  earlier and later than EVERY branch boundary it sits between, not only the boundary the
+  author was already worried about.
+
+## 2026-08-27 subagent review — a comment stated a reason the code contradicts
+
+- Class: taste
+- Missed by: rubric
+- Finding: `unresolved.PRIMARY` excludes `punctuation`/`rejected_guard`, and the comment
+  justified it by claiming those entries cannot be judged by reading two texts.
+  `punctuation.py:290-296` records `original_text` and `proposed_text` exactly as the repair
+  rejection that IS included does. The exclusion is right; the reason was invented.
+- Missed because: nothing executes a comment, so no test, gate or lint can contradict one. It
+  read plausibly and matched the shape of the surrounding real rationales.
+- Adaptation: a comment explaining WHY something is excluded or refused is verified against
+  the code it describes before the story closes, like any other claim. A false rationale is
+  worse than none — it stops the next reader from looking.

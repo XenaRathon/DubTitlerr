@@ -16,6 +16,14 @@ This module supplies the missing arrow. It records WHAT could not be settled, WH
 evidence a human needs to settle it — so a model refusal, a dead endpoint and a missing
 reference stop being the same silent no-op.
 
+It also records what WAS settled without anyone checking the meaning. `repair.accept_repair`
+states the acceptance bar in its own docstring and then says plainly that nothing below it
+enforces that: `factory -> needle` and `VIVRA card -> Vivi card` both pass every gate. An
+accepted repair is therefore a decision no code has checked, and the `repair_applied` stage
+is where it waits for someone who can. Measured over 45 of them (2026-08-27): 4 outright
+regressions and 5 more needing correction -- 36 of 45 clean, none of the nine reachable by
+any check in this pipeline.
+
 PER-STAGE, not one flat queue: the triage action differs by stage. A repair rejection needs
 the fansub reference checked; a punctuation failure needs the run read; they are not
 interchangeable, and a flat queue destroys the signal that says which to do.
@@ -56,7 +64,33 @@ REASONS = {
         "llm_empty",  # ditto -- a dead endpoint looks exactly like "no change"
         "rejected_guard",
     ),  # accept_restoration() found the model rewrote words
+    "repair_applied": ("accepted",),  # accept_repair ADMITTED this repair -- see the docstring
 }
+
+# The queue a reviewer opens by default. Keyed on (stage, reason), not reason alone, because
+# "rejected_guard" belongs to BOTH `repair` and `punctuation`.
+#
+# Two different reasons for what is left out, and they must not be confused:
+#
+#   NOT ACTIONABLE per line. `no_reference` is mostly "this release has no fansub" -- true,
+#   and one fact about the release rather than N facts about N cards. `llm_empty` is a dead
+#   endpoint, likewise one fact about the run. Measured: ~25 primary entries per episode
+#   against ~86 recorded, and this module already refuses to queue the hallucination flag on
+#   the same grounds -- "a queue nobody can face is worse than no queue."
+#
+#   OUT OF SCOPE, not unjudgeable. `punctuation`/`rejected_guard` records `original_text` AND
+#   `proposed_text` (punctuation.py:290-296) -- the identical two-text shape as the repair
+#   rejection that IS included, and just as judgeable by reading them. It is excluded only
+#   because [S-1] scopes this view to repair decisions. An earlier version of this comment
+#   claimed punctuation entries could not be judged that way; that was simply false, and an
+#   adversarial review caught it. Whether to widen PRIMARY is an open question for the owner,
+#   not a settled design point. Until then those entries remain reachable through the
+#   unfiltered walk and the --review CLI.
+PRIMARY = (
+    ("repair_applied", "accepted"),
+    ("repair", "rejected_guard"),
+    ("repair", "rejected_name_invented"),
+)
 
 
 def path_for(stem: str) -> str:
@@ -86,8 +120,15 @@ def items(stem: str) -> list:
     return out
 
 
-def pending(stem: str) -> list:
-    return [e for e in items(stem) if not e.get("resolved")]
+def pending(stem: str, primary_only: bool = False) -> list:
+    """Unresolved entries; with ``primary_only``, only those worth a human's attention.
+
+    The filter lives here, not in the caller, so the review UI and the --review CLI cannot
+    disagree about what "the queue" means -- the same reason REASONS is a module constant."""
+    out = [e for e in items(stem) if not e.get("resolved")]
+    if primary_only:
+        out = [e for e in out if (e.get("stage"), e.get("reason")) in PRIMARY]
+    return out
 
 
 def _rewrite(stem: str, doc: list) -> bool:
@@ -159,6 +200,8 @@ _EVIDENCE = {
     "rejected_guard": ("original_text", "proposed_text", "reference", "avg_logprob", "words"),
     "rejected_name_invented": ("original_text", "proposed_text", "reference", "avg_logprob", "words"),
     "llm_empty": ("original_text", "segments", "words"),
+    # The repair was APPLIED. The reviewer's whole job is comparing these two texts.
+    "accepted": ("original_text", "proposed_text", "avg_logprob"),
 }
 
 
