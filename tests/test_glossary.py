@@ -224,3 +224,32 @@ def test_a_names_only_edit_does_not_change_the_prompt_either():
     before = glossary.load_dict({"show": "One Pace", "names": ["Luffy"]})
     after = glossary.load_dict({"show": "One Pace", "names": ["Luffy", "Zoro"]})
     assert glossary.stale_tier(glossary.prompt_for(before), after) is None
+
+
+def test_arc_for_reads_the_season_nfo_title(tmp_path):
+    """[S-1] The arc name comes from season.nfo, which Plex/Jellyfin/Sonarr already write.
+    Verified on the live library: One Pace/Season 31/season.nfo says <title>Dressrosa</title>."""
+    d = tmp_path / "One Pace" / "Season 31"
+    d.mkdir(parents=True)
+    (d / "season.nfo").write_text(
+        '<?xml version="1.0" encoding="utf-8"?>\n<season>\n  <seasonnumber>31</seasonnumber>\n'
+        "  <title>Dressrosa</title>\n</season>\n"
+    )
+    assert glossary.arc_for(str(d / "One Pace - S31E01 - Whatever.mkv")) == "Dressrosa"
+
+
+def test_arc_for_returns_none_without_a_season_nfo(tmp_path):
+    """Most of the library has no season.nfo. That is a normal state, not an error: the
+    caller falls back to unweighted terms rather than failing the episode."""
+    d = tmp_path / "Some Show" / "Season 01"
+    d.mkdir(parents=True)
+    assert glossary.arc_for(str(d / "ep.mkv")) is None
+
+
+def test_arc_for_survives_a_malformed_season_nfo(tmp_path):
+    """A truncated or non-XML season.nfo must not raise -- a metadata file this pipeline
+    does not own must never be able to fail a transcription."""
+    d = tmp_path / "Some Show" / "Season 02"
+    d.mkdir(parents=True)
+    (d / "season.nfo").write_text("<season><title>Unclosed")
+    assert glossary.arc_for(str(d / "ep.mkv")) is None

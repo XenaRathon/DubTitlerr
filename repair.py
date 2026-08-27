@@ -119,7 +119,23 @@ def is_target(c, gloss):
     return c.get("avg_logprob", 0.0) < LOGPROB_MIN or has_low_prob_word(c) or glossary.name_suspect(c.get("text", ""), gloss)
 
 
-def _glossary_terms(gloss):
+def _glossary_terms(gloss, arc=None):
+    """The reference-spelling list for the prompt, current arc first.
+
+    S-13: the cap below is not cosmetic -- measured 2026-08-26 on the live One Pace
+    glossary, 1000 chars holds 110 of 140 terms and silently drops 30, `Nico Robin` and
+    `Rob Lucci` among them. Whatever sorts last is simply never shown to the model, so the
+    order decides which names it can verify against.
+
+    Weighting REORDERS; it never filters. Dropping an out-of-arc name would make things
+    worse, not better: a name absent from the list reads to the model as unrecognised, and
+    the documented failure (`Oimo` -> `Zoro`) is exactly a valid name being "corrected"
+    into a listed one. Every term still fitting the cap is still offered -- the arc's names
+    just get first claim on the budget.
+
+    A term in several arcs is prioritised in all of them, so a recurring character is never
+    demoted in an arc he genuinely appears in. With no arc, or a glossary carrying no tags
+    -- which is every glossary in the library today -- the order is exactly as before."""
     terms = list(gloss["names"]) + list(gloss["phrases"])
     terms += list(gloss["token_fixes"].values()) + list(gloss["phrase_fixes"].values())
     seen, out = set(), []
@@ -127,6 +143,11 @@ def _glossary_terms(gloss):
         if t not in seen:
             seen.add(t)
             out.append(t)
+    tags = gloss.get("arc_tags") or {}
+    if arc and tags:
+        # stable partition: in-arc terms keep their relative order, then the rest
+        in_arc = [t for t in out if arc in (tags.get(t.lower()) or ())]
+        out = in_arc + [t for t in out if t not in set(in_arc)]
     # C12: cap the prompt size on WHOLE-TERM boundaries -- a raw [:1000] slice can cut a
     # name in half mid-word, which would feed the model a garbled "canonical spelling".
     result = ""
@@ -138,7 +159,7 @@ def _glossary_terms(gloss):
     return result
 
 
-def build_prompt(asr, sub, gloss, prev_text="", next_text=""):
+def build_prompt(asr, sub, gloss, prev_text="", next_text="", arc=None):
     """Build the repair prompt. Every element here is the result of a measured sweep over
     real conf.json targets (3 shows x 40 targets, temperature 0), not authorship taste.
 
@@ -163,7 +184,7 @@ def build_prompt(asr, sub, gloss, prev_text="", next_text=""):
     0 -> 16 safe fixes (1 -> 2 name edits), zero prompt leaks or length blowups for either.
 
     prev_text/next_text are extra context only -- never part of what gets corrected."""
-    names = _glossary_terms(gloss)
+    names = _glossary_terms(gloss, arc)
     head = "You fix speech-recognition errors in one English-dub subtitle line.\n"
     name_line = (f"Reference spellings (VERIFICATION ONLY - this is NOT a list of names to insert): {names}.\n") if names else ""
     ref_intro = (
@@ -470,6 +491,9 @@ def process(conf_path):
         return "skip"
     conf = json.load(open(conf_path))
     gloss = glossary_for(video)
+    # S-13: the episode's arc, for weighting the reference spellings. None for most
+    # of the library (no season.nfo), which leaves the term order exactly as before.
+    arc = glossary.arc_for(video)
     targets = [(i, c) for i, c in enumerate(conf) if is_target(c, gloss)]
     if not targets:
         return "clean"  # nothing to repair (e.g. S15E01)
@@ -514,7 +538,7 @@ def process(conf_path):
             # reference the deterministic layer (hard_fixes) is the safe ceiling.
         prev_text = conf[i - 1]["text"] if i > 0 else ""
         next_text = conf[i + 1]["text"] if i + 1 < len(conf) else ""
-        prompt = build_prompt(c["text"], ref, gloss, prev_text, next_text)
+        prompt = build_prompt(c["text"], ref, gloss, prev_text, next_text, arc)
         t0 = time.monotonic()  # V2 A2: per-call latency
         new = llm(prompt)
         latency_ms = round((time.monotonic() - t0) * 1000)

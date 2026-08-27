@@ -102,9 +102,14 @@ Machine) THREE have no glossary at all and run on the neutral fallback prompt wi
   that code, hitting the `continue` at `repair.py:512`. The gate becomes conditional rather
   than removed, so today's behaviour stays reachable.
 - [S-13] Weight the glossary terms handed to the repair prompt by the current episode's
-  season, using [S-11]'s arc tags. This is what makes the documented failure implausible:
-  `Oimo` is an Enies Lobby giant, so in a Dressrosa episode a proposed `Oimo -> Zoro` has
-  the arc against it.
+  arc, resolved from `season.nfo`. BUILT 2026-08-26. The earlier justification here was
+  BACKWARDS and is withdrawn: it claimed weighting makes `Oimo -> Zoro` implausible because
+  Oimo is out-of-arc. Dropping a name from the list does the opposite -- a name the model is
+  not shown reads as unrecognised, and the documented failure is precisely a VALID name
+  being "corrected" into a listed one. The real mechanism is the prompt's 1000-char cap:
+  measured on the live One Pace glossary it holds 110 of 140 terms and silently discards 30,
+  `Nico Robin` and `Rob Lucci` among them. Weighting REORDERS so the current arc's names win
+  the budget; it never filters, and every term that still fits is still offered.
 - [S-14] Refuse a repair that substitutes one KNOWN glossary name for another. Verified
   2026-08-26 that the v7 guard permits exactly this -- `invents_name` returns False for
   `Oimo -> Zoro` because the gained name IS known -- which is the precise failure that got
