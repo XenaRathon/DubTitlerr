@@ -25,6 +25,16 @@ signs/songs, else ``.eng.dubtitles.srt`` for an mp4 dialogue-only episode):
 DRY-RUN by default (prints the plan); pass --apply to do it. Run as root.
 Env: MUX_ROOTS (colon list), KEEP_LANGS, MIN_FREE_GB (skip threshold, default 5),
 DUR_TOL (seconds, default 2), MEDIA_UID/GID.
+  REVIEW_GATE_SHOWS      colon list of show DIRECTORY names (e.g. "Cowboy Bebop (1998)
+                         {tvdb-76885}", not "Cowboy Bebop" -- the same identity the
+                         decision store uses). EMPTY by default. [S-6]: an episode of a listed show
+                         is held back from the mux while it still has pending
+                         `repair_applied` entries -- repairs accept_repair admitted with
+                         nothing checking their meaning. Unlisted shows are unaffected.
+  REVIEW_GATE_STALE_DAYS default 7. A hold older than this is reported LOUDLY and is still
+                         held. It buys a log line, never a release: auto-releasing
+                         unreviewed repairs is the failure the review loop exists to
+                         prevent.
 Requires mkvtoolnix (mkvmerge) + ffprobe.  Built with help of Claude (Anthropic).
 """
 
@@ -35,10 +45,30 @@ import os
 import re
 import shutil
 import subprocess
+import time
 
+import unresolved
 from common import MEDIA_GID, MEDIA_UID, STAMP_SUFFIX, TRACK_NAME, is_our_track, log, read_stamp, stamp_valid, write_stamp
 
+# Imported as a NAME so "which show is this path in" has exactly one definition, shared
+# with the decision store. A second answer here would gate one show while storing verdicts
+# under another, and the two would only disagree for the shows an operator actually listed.
+from decisions import decisions_for, lookup, show_for
+
 ROOTS = os.environ.get("MUX_ROOTS", "/data/Media/Anime Library").split(":")
+# [S-6] Shows whose episodes wait for a human before they are released. Colon list, the
+# MUX_ROOTS idiom. EMPTY BY DEFAULT: every install that has not opted in behaves exactly as
+# it did before this existed.
+REVIEW_GATE_SHOWS = [s.strip() for s in os.environ.get("REVIEW_GATE_SHOWS", "").split(":") if s.strip()]
+# How long a hold may sit before it is reported. This buys a LOG LINE and nothing else --
+# see held_for_review for why it must never buy a release.
+REVIEW_GATE_STALE_DAYS = float(os.environ.get("REVIEW_GATE_STALE_DAYS", "7"))
+# Shows already warned about, so a misconfigured season prints one line per sweep rather
+# than one per episode. A warning nobody can read is the same as no warning.
+_warned_unresolved: set = set()
+# Every show name actually resolved during this run, so main() can report a listed name
+# that matched nothing. See the REVIEW_GATE_SHOWS note in the module docstring.
+_shows_seen: set = set()
 # Base audio/subtitle languages to KEEP. The title's ORIGINAL language is detected
 # per-file (the default audio track's language — Japanese for anime, but whatever it
 # actually is for other content) and added to this set. Everything else (fre, spa,
@@ -293,6 +323,66 @@ def verify(orig, out):
     return "ok"
 
 
+def held_for_review(stem):
+    """Whether this episode is waiting on a human. False for every unlisted show.
+
+    Only `repair_applied` entries hold. A repair the guard REFUSED left the ASR text in
+    place -- the safe outcome, and not something a viewer sees that nobody sanctioned. The
+    admitted repair is the unchecked one: `accept_repair`'s own docstring states the bar and
+    says nothing below it enforces meaning, and `factory -> needle` passes every gate. That
+    is the class of change worth stopping a release for.
+
+    A hold is NEVER released by this function on the strength of time. An episode past
+    REVIEW_GATE_STALE_DAYS is reported loudly and stays held: auto-releasing unreviewed
+    repairs is the exact failure this spec exists to prevent, and an alert that becomes a
+    release is worse than no alert, because it reads as supervision."""
+    if not REVIEW_GATE_SHOWS:
+        return False
+    show = show_for(stem)
+    if not show:
+        # The operator opted IN and we cannot tell which show this is, so the gate silently
+        # does not apply: "" never matches a listed name, the episode muxes, and they
+        # believe unreviewed repairs are being held while every one of them ships. Silence
+        # is the failure here, not the miss.
+        d = os.path.dirname(stem)
+        if d not in _warned_unresolved:
+            _warned_unresolved.add(d)
+            log(f"  WARNING: review gate is on but cannot resolve a show for {d} — check GLOSSARY_DIR; NOT gated")
+        return False
+    _shows_seen.add(show)
+    if show not in REVIEW_GATE_SHOWS:
+        return False
+    pend = [e for e in unresolved.pending(stem) if e.get("stage") == "repair_applied"]
+    if not pend:
+        return False
+    # A line with a stored VERDICT is settled, whatever its queue flag says. resolve() and
+    # decisions.record() are independent write paths: the verdict is what stops repair.py
+    # re-queueing the line, the flag is only what the --review CLI sets. Trusting the flag
+    # alone would hold an episode forever on a line the pipeline already considers decided
+    # -- a verdict written by hand, by a future sync, or by a server whose resolve() write
+    # failed. Resolved here rather than at the call site so the queue file is only read for
+    # episodes that are actually candidates for a hold.
+    store, _ = decisions_for(stem)
+    if store:
+        pend = [e for e in pend if not lookup(store, e.get("original_text", ""), e.get("proposed_text", ""))]
+        if not pend:
+            return False
+    # Entries carry no timestamp, so the sidecar's mtime is the only staleness signal
+    # available -- a deliberate approximation, and it moves whenever repair appends, which
+    # makes it "time since the queue last changed" rather than "time since the oldest
+    # entry". Good enough to surface a backlog; not a clock anything branches on.
+    try:
+        age_days = (time.time() - os.path.getmtime(unresolved.path_for(stem))) / 86400.0
+    except OSError:
+        age_days = 0.0
+    if age_days > REVIEW_GATE_STALE_DAYS:
+        log(
+            f"  STALLED: {os.path.basename(stem)} held for review {age_days:.0f}d "
+            f"(> {REVIEW_GATE_STALE_DAYS:g}d), {len(pend)} pending — NOT released; run the review"
+        )
+    return True
+
+
 def sub_source(stem):
     """The subtitle sidecar to embed: the merged .ass (mkv w/ signs) else the terminal
     .srt (mp4, dialogue only). None if neither exists yet."""
@@ -329,6 +419,12 @@ def process(orig, apply):
         return "no-sub"
     if stamp_valid(read_stamp(stamp), orig):
         return "already-muxed"  # stat-only, version-aware stamp is the ONLY guard
+    # AFTER the stamp check, not before it (the plan sketched the reverse). An episode that
+    # already shipped cannot be held back -- reporting a hold for it would inflate the
+    # backlog count with episodes no review can affect, and hide "already-muxed" behind a
+    # status the operator is meant to act on.
+    if held_for_review(stem):
+        return "held-for-review"
     if not has_room(_free_bytes(orig), os.path.getsize(orig)):
         log("  skip (low disk):", os.path.basename(orig))
         return "skip-no-room"
@@ -381,11 +477,11 @@ def process(orig, apply):
         return "error"
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("paths", nargs="*", help="explicit video paths; else walk MUX_ROOTS")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     if a.apply and os.geteuid() != 0:
         log("WARNING: not root — atomic replace may fail (mergerfs perms).")
     vids = list(a.paths)
@@ -401,6 +497,16 @@ def main():
         counts[res] = counts.get(res, 0) + 1
         if res not in ("no-sub", "already-muxed"):
             log(f"{res}: {os.path.basename(v)}")
+    # A listed name that matched nothing is almost always the display name where the
+    # DIRECTORY BASENAME was wanted ("Cowboy Bebop" vs "Cowboy Bebop (1998) {tvdb-76885}").
+    # show_for returns a non-empty string in that case, so the unresolved-show warning above
+    # never fires: the gate is simply off, and silence is indistinguishable from success.
+    for name in REVIEW_GATE_SHOWS:
+        if name not in _shows_seen:
+            log(
+                f"  WARNING: REVIEW_GATE_SHOWS entry {name!r} never matched a show this sweep — "
+                f"it must be the show's DIRECTORY name. Saw: {sorted(_shows_seen) or 'none'}"
+            )
     log("SUMMARY", counts)
 
 

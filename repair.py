@@ -616,6 +616,23 @@ def process(conf_path):
     # a file read, and the per-card path already pays a network round-trip per LLM call.
     # An absent or unreadable store is {} -- every install that has never reviewed anything.
     store, _ = decisions.decisions_for(video)
+    # Pairs this episode's queue ALREADY holds. merge_pass.sh re-runs repair on every sweep
+    # while an srt exists, and an episode held by the [S-6] gate never loses its srt (mux
+    # stops before removing sidecars, and dub_signs_merge writes no .ass for a dialogue-only
+    # episode -- dub_signs_merge.py:126-127). Without this the queue gains another copy of
+    # every unreviewed line every MERGE_INTERVAL, and the gate's stall alert -- which reads
+    # this file's mtime -- can never fire, because each append refreshes it.
+    #
+    # ONE read for the whole episode, not a scan per card: unresolved.record is an O(1)
+    # append precisely because the array version was O(n^2) I/O over ~86 calls an episode.
+    # Matched against EVERY entry, resolved or not -- keying on pending-only would re-append
+    # the moment a human resolved one through the --review CLI, which is the same deadlock
+    # inverted.
+    queued_pairs = {
+        (decisions.key(e.get("original_text", "")), decisions.key(e.get("proposed_text", "")))
+        for e in unresolved.items(stem)
+        if e.get("stage") == "repair_applied"
+    }
     targets = [(i, c) for i, c in enumerate(conf) if is_target(c, gloss)]
     if not targets:
         return "clean"  # nothing to repair (e.g. S15E01)
@@ -781,7 +798,9 @@ def process(conf_path):
             # amplification the spec records under Edge cases, and the pair being the
             # store's key is what lets it be suppressed here rather than deduplicated in
             # unresolved.record(), whose O(1) append is deliberate.
-            if not ruling:
+            pair = (decisions.key(c["text"]), decisions.key(new))
+            if not ruling and pair not in queued_pairs:
+                queued_pairs.add(pair)
                 unresolved.record(
                     stem,
                     "repair_applied",
