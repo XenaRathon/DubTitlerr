@@ -601,3 +601,59 @@ def test_a_queued_line_that_already_has_a_verdict_does_not_hold_the_episode(tmp_
     monkeypatch.setattr(mux, "decisions_for", lambda p: (store, "Gated Show"))
 
     assert mux.process(v, apply=False) == "plan", "a decided line is settled however it was settled"
+
+
+def _conf(stem, texts):
+    """The episode's current conf.json -- the ASR text of each card."""
+    import json as _j
+
+    with open(stem + ".dubtitles.conf.json", "w") as f:
+        _j.dump([{"start": i * 2.0, "end": i * 2.0 + 2.0, "text": t} for i, t in enumerate(texts)], f)
+
+
+def test_an_entry_orphaned_by_a_version_bump_does_not_hold_the_episode(tmp_path, monkeypatch):
+    """The queue is NOT in generate.SIDECAR_SUFFIXES, so park_stale_sidecars leaves it in
+    place across a TRANSCRIBE_VERSION/TEXT_VERSION bump. After a re-transcription its
+    entries can describe text that no longer appears anywhere in the episode. Nothing will
+    ever re-queue those lines, so nothing will ever resolve them, and with the gate on they
+    hold the episode forever.
+
+    Owner's decision 2026-08-27: keep the history (it is the record of what a human already
+    judged, and the input to the later accept_repair tightening) and have the gate ignore
+    the orphans. The second half is what stops this passing on a gate that never holds."""
+    v, stem = _gated(tmp_path, monkeypatch, entries=0)
+    import unresolved
+
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["Gated Show"])
+    unresolved.record(stem, "repair_applied", "accepted", original_text="a line from the OLD transcript", proposed_text="x")
+    _conf(stem, ["a line the current transcript actually has"])
+    assert mux.process(v, apply=False) == "plan", "an orphan must not hold the episode"
+
+    unresolved.record(
+        stem, "repair_applied", "accepted", original_text="a line the current transcript actually has", proposed_text="y"
+    )
+    assert mux.process(v, apply=False) == "held-for-review", "a live entry still holds it"
+
+
+def test_matching_a_live_entry_ignores_case_and_whitespace(tmp_path, monkeypatch):
+    """Normalised with decisions.key, the same function the store keys on. A raw string
+    compare would orphan a live entry over a doubled space and release it silently."""
+    v, stem = _gated(tmp_path, monkeypatch, entries=0)
+    import unresolved
+
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["Gated Show"])
+    unresolved.record(stem, "repair_applied", "accepted", original_text="  I saw   SPONDUM ", proposed_text="z")
+    _conf(stem, ["I saw spondum"])
+
+    assert mux.process(v, apply=False) == "held-for-review"
+
+
+def test_an_unreadable_conf_json_holds_everything(tmp_path, monkeypatch):
+    """Fails CLOSED. Without conf.json the gate cannot tell an orphan from a live entry, and
+    the alternative to holding is releasing unreviewed repairs -- the failure this whole
+    spec exists to prevent. A sidecar present with no conf.json is an anomaly, and the
+    STALLED alert is what surfaces it."""
+    v, _ = _gated(tmp_path, monkeypatch)  # queue written, no conf.json at all
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["Gated Show"])
+
+    assert mux.process(v, apply=False) == "held-for-review"
