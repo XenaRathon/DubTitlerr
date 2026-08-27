@@ -1,6 +1,6 @@
 # A queue entry orphaned by a version bump does not hold an episode -- the gate ignores pending entries whose original text matches no current conf.json row, so review history survives a re-transcription without becoming a permanent hold
 
-Status: open
+Status: done 2026-08-27
 Created: 2026-08-27
 Epic: repair-review-and-decision-store
 Sprint: 007-task-7-the-review-server-plus-the-orphan-entry-fix-the
@@ -28,13 +28,26 @@ surfaces it.
 
 ## Acceptance criteria
 
-- [ ] A pending `repair_applied` entry whose `original_text` matches no row in the episode's
+- [x] A pending `repair_applied` entry whose `original_text` matches no row in the episode's
       current `conf.json` does not hold the episode.
-- [ ] A pending entry that DOES match a current row still holds it -- asserted in the same
+- [x] A pending entry that DOES match a current row still holds it -- asserted in the same
       test, or the criterion above is satisfied by a gate that never holds anything.
-- [ ] With `conf.json` absent or unreadable, every pending entry still holds: the gate fails
+- [x] With `conf.json` absent or unreadable, every pending entry still holds: the gate fails
       closed rather than releasing unreviewed repairs.
-- [ ] Matching uses the same normalisation as the decision store (`decisions.key`), so
+- [x] Matching uses the same normalisation as the decision store (`decisions.key`), so
       whitespace and case cannot orphan a live entry.
 
 ## Evidence
+
+- `test_an_entry_orphaned_by_a_version_bump_does_not_hold_the_episode` -- an entry whose
+  original_text matches no current conf.json row releases the episode; a second entry that
+  DOES match still holds it, in the same test, so a gate that never held anything cannot
+  pass.
+- `test_matching_a_live_entry_ignores_case_and_whitespace` -- normalised through
+  `decisions.key`, so a doubled space cannot orphan a live entry and release it silently.
+- `test_an_unreadable_conf_json_holds_everything` -- fails CLOSED. Without conf.json an
+  orphan cannot be told from a live entry, and the alternative to holding is releasing
+  unreviewed repairs.
+- Mutations caught: filter removed (1 test), raw string compare instead of decisions.key
+  (1), failing open on an unreadable conf (6).
+- Recorded in the spec's Edge cases with the owner's reasoning for keeping the history.

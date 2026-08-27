@@ -194,3 +194,38 @@ git config commit.template .procoder/github/COMMIT_TEMPLATE.md
   code assume would end soon? Then check each of those assumptions against an indefinite
   duration. Also worth pairing with the sprint-004 lesson: enumerate what else writes the
   value, AND what else assumed the state was brief.
+
+## 2026-08-27 subagent review — a guard that passed while the property it protects was false
+
+- Class: correctness
+- Missed by: rubric
+- Finding: three separate guards in `review_server.py` were documented as enforcing
+  something and did not, on inputs no test used. The 1MB body cap: `int("-1")` does not
+  raise, `-1 > 1<<20` is False, and `rfile.read(-1)` reads to EOF — unbounded, pre-auth,
+  from any LAN client, in the one check whose comment claimed the read was bounded. The
+  token: a persistence failure returned a fresh random token on every call, so every write
+  401'd forever including for the operator holding the token printed at startup. The
+  allow-list: `os.walk` lists symlinked FILES, so a planted symlink entered the set every
+  route trusts as its security boundary.
+- Missed because: every test exercised a happy value — a small body and an oversized one, a
+  writable token dir, a real conf.json. Mutation testing asks "what change breaks this
+  test", which none of these were; the guards were present and the mutations would have been
+  caught.
+- Adaptation: for each guard, ask what input makes the GUARD PASS while the property it
+  protects is FALSE. That is a different question from the mutation one and finds a
+  different class of defect. Negative and absent values first, for any numeric bound.
+
+## 2026-08-27 self — "this file does not cover X" is a to-do, not a boundary
+
+- Class: test-quality
+- Missed by: rubric
+- Finding: `tests/test_review_server.py` opened with "handlers only, no socket is ever
+  opened", which read as a deliberate scoping decision. The review's highest-severity
+  finding lived entirely in the layer that sentence excluded — `Handler.do_POST`, where the
+  body cap is enforced before authentication.
+- Missed because: the exclusion had a good rationale (do not open sockets in a unit suite),
+  and a good rationale for not testing something reads as a decision rather than a gap. The
+  rationale was about SOCKETS, not about the handler, and those were conflated.
+- Adaptation: when a test file states what it does not cover, treat that sentence as a
+  to-do. Ask whether the stated reason actually forces the exclusion — here a handler can be
+  driven with fake streams and no socket at all, so it never did.
