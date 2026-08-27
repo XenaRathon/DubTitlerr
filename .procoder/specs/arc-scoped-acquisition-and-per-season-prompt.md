@@ -95,8 +95,11 @@ Machine) THREE have no glossary at all and run on the neutral fallback prompt wi
   transcription rather than the whole show.
 - [S-5] Consolidate the prompt build and the raw acquire into ONE stage that fetches the
   arc title set once and uses it for both outputs.
-- [S-6] Make prompt staleness season-aware so a per-season prompt marks only that season's
-  episodes transcribe-stale, never the whole show.
+- [S-6] Make decoder-input staleness season-aware so a per-season HOTWORDS string marks
+  only that season's episodes transcribe-stale, never the whole show. Hotwords is a decoder
+  input on every window, so it must be stored in `words.json` alongside `initial_prompt`
+  and compared by `stale_tier` — today that comparison sees only the prompt, which is the
+  input measured to have no effect.
 - [S-7] Degrade to today's behaviour when the arc cannot be resolved, without failing the
   sweep. The trigger is CATEGORY-DISCOVERY EMPTINESS, not page resolution: `season.nfo`
   titles are not uniformly arc names — `Romance Dawn` is an arc, `Gaimon` is a character,
@@ -126,6 +129,29 @@ Machine) THREE have no glossary at all and run on the neutral fallback prompt wi
   feedback loop, because the next transcript then contains the arc's names for acquire to
   harvest normally.
 - Any change to `TRANSCRIBE_VERSION` / `TEXT_VERSION` semantics beyond what [S-6] requires.
+
+## The show prompt stays broad and stable — decided 2026-08-26
+
+`initial_prompt` reaches only the first decoding window, and in this show that window is
+the opening theme on every episode (10 of 10 sampled S31 sidecars, plus all three A/B
+episodes: 7-8 cards of sung lyrics, no character names). So the prompt's content does not
+influence dialogue at all, and a per-season prompt cannot help.
+
+What the prompt DOES control is staleness: `stale_tier` compares the stored string against
+the derived one, so changing it re-transcribes everything that used it. Its content is
+inert; its STABILITY is the only property with value. Two consequences, both counter to
+what the first draft of this spec proposed:
+
+- **`season_prompts` is dropped.** Per-season prompts would churn the library through the
+  GPU for no measurable quality gain. The show keeps ONE broad `initial_prompt`.
+- **One Pace's existing Enies Lobby prompt is NOT to be "fixed".** It looks wrong for
+  Dressrosa and is wrong for Dressrosa, and rewriting it would restale 813 stamps to change
+  how a song is transcribed. Leave it. Accuracy of an inert string is worth less than not
+  paying two GPU-days for it.
+
+Season scoping survives ONLY where it reaches the decoder on every window — that is
+`hotwords` ([S-10]) and the tags that select it ([S-11]). Where this spec still says
+"per-season prompt", read "per-season hotwords".
 
 ## Build order and the decision rule
 
@@ -185,9 +211,9 @@ improvements, so the measurement records severity and location, not just counts.
   is accepted as the eventual end state, but it is paid season by season as each is worked
   on and tested -- Dressrosa first -- so the transcription debt is spread rather than taken
   as a single ~2 GPU-day hit. This falls out of the storage decision at no extra cost: a
-  season with no `season_prompts` entry still derives the show-level `initial_prompt` and
-  therefore stays fresh, so writing a season's prompt IS the act that stales that season
-  and nothing else.
+  season with no `season_hotwords` entry decodes exactly as it does today and therefore
+  stays fresh, so writing a season's hotwords IS the act that stales that season and
+  nothing else.
 
 ## Interfaces
 
@@ -214,13 +240,14 @@ improvements, so the measurement records severity and location, not just counts.
 - Read: `<show>/Season NN/season.nfo`, `<seasonnumber>` and `<title>`.
 - Read: wiki category members per arc, cached like `fetch_titles` already caches
   (`WIKI_TTL`, keyed under `WIKI_CACHE_DIR`).
-- Written: per-season prompts as a `season_prompts` map inside the EXISTING show glossary
-  file -- `"season_prompts": {"31": "This is One Piece ..., the Dressrosa arc. ..."}` --
-  alongside the current `initial_prompt`, which remains the fallback for any season with no
-  entry. One file per show is kept: one file to read, one to back up, and every show in the
-  library that has no per-season data keeps working unchanged.
-- A season is MIGRATED exactly when it has a `season_prompts` entry. Presence of the entry
-  is the migration flag; no separate opt-in field exists.
+- Written: a `season_hotwords` map inside the EXISTING show glossary file --
+  `"season_hotwords": {"31": "Doflamingo, Dressrosa, Rebecca, ..."}`. The storage shape is
+  the one decided for prompts; the key and the consumer changed when the measurement showed
+  prompts are inert. `initial_prompt` stays a single broad show-level string and is not
+  season-scoped.
+- A season is MIGRATED exactly when it has a `season_hotwords` entry. Presence of the entry
+  is the migration flag; no separate opt-in field exists. A season with no entry decodes
+  with no hotwords, exactly as today.
 - **The tag is a SET of arcs, not one season, and it is sourced from WIKI ARC MEMBERSHIP
   rather than from acquisition order.** Recording "the season that produced it" is wrong and
   contradicts this spec's own edge case: Caesar Clown is acquired from Punk Hazard, so a
@@ -319,9 +346,12 @@ why, so a re-transcribe always has a traceable cause.
       demonstrated by a single fetch recorded for two consumers.
 - [ ] [S-6] Changing Season 31's prompt marks Season 31's episodes transcribe-stale and
       leaves every other One Pace season's staleness unchanged.
-- [ ] [S-6] A glossary carrying a `season_prompts` entry for season 31 only leaves every
-      OTHER season resolving to the show-level `initial_prompt`, so their stored prompts
-      still compare equal and no episode outside season 31 is queued for the GPU.
+- [ ] [S-6] A glossary carrying a `season_hotwords` entry for season 31 only leaves every
+      other season decoding with no hotwords, so their stored decoder inputs still compare
+      equal and no episode outside season 31 is queued for the GPU.
+- [ ] [S-6] Editing the show-level `initial_prompt` still stales the whole show, and the
+      spec records that this is a cost with no measured quality benefit — so the One Pace
+      prompt is left untouched rather than corrected.
 - [ ] [S-7] With the wiki unreachable, the stage exits non-fatally, leaves the glossary
       byte-identical, and `gen_loop.sh` proceeds to the GENERATE stage.
 - [ ] [S-7] A show with no glossary file and no `season.nfo` transcribes exactly as it does
