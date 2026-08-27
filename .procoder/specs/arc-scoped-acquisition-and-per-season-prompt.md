@@ -173,7 +173,10 @@ kept only so the decision is on the record.
   person-name framing, or `VIVRA` simply being nearer `Vivi` internally -- are recorded in
   `docs/Adversarial Reviews/RESULTS-2026-08-27-s16-coverage-falsified.md`.
 - [S-4] Narrow acquisition's transcript scope to the season(s) actually queued for
-  transcription rather than the whole show.
+  transcription rather than the whole show. Justified on COST only: acquire's dominant cost
+  is documented as 8202 tokens x 8109 titles and it re-walks 461 episodes to learn about the
+  48 queued. It must NOT be presented as also fixing admission -- [S-9] measured that and it
+  admits 0 of 3.
 - [S-5] Consolidate the prompt build and the raw acquire into ONE stage that fetches the
   arc title set once and uses it for both outputs.
 - [S-6] MOOT 2026-08-26, kept for the record. Was: make decoder-input staleness
@@ -191,9 +194,15 @@ kept only so the decision is on the record.
 - [S-8] Extract wiki access -- fetching, continuation, caching -- out of
   `glossary_verify.py` into a module both the verifier and the consolidated stage consume,
   so the arc logic is built on one wiki layer rather than a second copy of it.
-- [S-9] Establish whether narrowing acquisition scope to a single season ([S-4]) is by
-  itself enough to admit the three confirmed false negatives, by re-measuring their
-  frequency ratios within one season BEFORE any threshold is altered.
+- [S-9] DONE 2026-08-27. Narrowing acquisition scope admits 0 of the 3 confirmed false
+  negatives. The denominators DO move -- `Samji -> Sanji` is 1/811 show-wide and 1/34 within
+  Season 30 -- but the gates that refused them are not ratio gates. `Samji` was refused by
+  `variant_count < NEAR_MISS_MIN_COUNT` (`glossary_acquire.py:479-481`), which tests the
+  MISHEAR's own recurrence: it appears exactly once in either scope, and narrowing cannot
+  change a count of one. `Shadron` and `Uggh` were refused `sentence-initial-only`
+  (`:520`), which is positional and has no scope dimension at all. The hypothesis assumed
+  the refusals were about the ratio between mishear and canonical; two are positional and
+  the third is about the mishear alone.
 
 ## Out of scope
 
@@ -527,9 +536,12 @@ why, so a re-transcribe always has a traceable cause.
 - [ ] [S-7] A show with no glossary file and no `season.nfo` behaves exactly as today.
 - [ ] [S-8] `glossary_verify` fetches titles through the shared wiki module and no longer
       defines its own fetch; its existing tests pass untouched.
-- [ ] [S-9] `Samji -> Sanji` (seen 1/721), `Shadron -> Shandora` (1/42) and `Uggh -> Buggy`
-      (1/152) are re-measured with season-scoped denominators and the result recorded. No
-      threshold constant changes unless that measurement shows narrowing is insufficient.
+- [ ] [S-9] DONE. Re-measured with season-scoped denominators: narrowing admits 0 of 3,
+      because two were refused positionally (`sentence-initial-only`) and the third by the
+      mishear's own recurrence (`variant_count < 2`), which scope cannot change. Recorded in
+      `docs/Adversarial Reviews/RESULTS-2026-08-27-s9-scope-narrowing.md`. Admitting them
+      needs a gate change, which stays UNMADE until the opposite measurement exists: how
+      many BAD terms each gate currently refuses.
 - [ ] [S-10] The cut is recorded with its evidence and NO arc machinery is built to feed it:
       no `season_hotwords`, no `hotwords` argument to `transcribe()`, nothing selecting terms
       for the decoder.
