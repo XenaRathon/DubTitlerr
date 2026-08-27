@@ -94,21 +94,21 @@ MEASURED = evidence exists; SPECIFIED = designed, not built; CUT/WITHDRAWN/MOOT 
 kept only so the decision is on the record.
 
     [S-1]  BUILT      glossary.arc_for, season.nfo -> arc name
-    [S-2]  SPECIFIED  arc-scoped wiki fetch -- the binding constraint on the whole leg
+    [S-2]  BUILT      arc-scoped wiki fetch (page links + discovered categories)
     [S-3]  WITHDRAWN  per-season initial_prompt: measured inert
-    [S-4]  SPECIFIED  narrow acquisition to the queued season
-    [S-5]  SPECIFIED  one stage, one arc fetch, two consumers
-    [S-6]  MOOT       season-aware decoder staleness: nothing season-scoped reaches the decoder
-    [S-7]  SPECIFIED  degrade to today's behaviour when the arc will not resolve
-    [S-8]  SPECIFIED  shared wiki layer (ordinary de-duplication only)
-    [S-9]  SPECIFIED  re-measure the three acquire false negatives
-    [S-10] CUT        hotwords: corrupts unlisted phonetic neighbours, adds repetition
-    [S-11] SPECIFIED  arc tags on glossary names -- feeds [S-13]
+    [S-4]  SPECIFIED  narrow acquisition to the queued season -- COST only, see [S-9]
+    [S-5]  RE-SCOPED  one arc fetch, two consumers
+    [S-6]  MOOT       nothing season-scoped reaches the decoder any more
+    [S-7]  BUILT      empty arc titles on a non-arc season.nfo title (Gaimon -> 0)
+    [S-8]  MOOT       no second wiki layer exists to de-duplicate
+    [S-9]  DONE       scope narrowing admits 0 of 3 -- measured, hypothesis false
+    [S-10] CUT        hotwords: corrupts unlisted neighbours, adds repetition
+    [S-11] BUILT      arc tags on glossary names -- 64 of 92 tagged over 7 arcs
     [S-12] BUILT      conditional unanchored repair, DEFAULT CLOSED
-    [S-13] BUILT      season-weighted repair glossary -- inert until [S-11]
+    [S-13] BUILT      season-weighted repair glossary -- live once tags exist
     [S-14] BUILT      refuse a vouched-name swap where there is no reference
-    [S-15] BUILT      phonetic-proximity gate on the unknown -> known path
-    [S-16] SPECIFIED  falsify the coverage defence (add Vivre Card, re-run)
+    [S-15] BUILT      phonetic-proximity gate, known false negative on vivra->vivi
+    [S-16] DONE       coverage defence FALSIFIED -- Vivre Card changed nothing
 
 - [S-1] Resolve a season's arc name from `season.nfo` (`<title>`), the metadata Plex,
   Jellyfin and Sonarr already write. Verified present for all 35 One Pace seasons;
@@ -177,8 +177,11 @@ kept only so the decision is on the record.
   is documented as 8202 tokens x 8109 titles and it re-walks 461 episodes to learn about the
   48 queued. It must NOT be presented as also fixing admission -- [S-9] measured that and it
   admits 0 of 3.
-- [S-5] Consolidate the prompt build and the raw acquire into ONE stage that fetches the
-  arc title set once and uses it for both outputs.
+- [S-5] RE-SCOPED 2026-08-27. Was: consolidate the prompt build and the raw acquire into
+  one stage. The prompt build is gone -- [S-3] withdrawn, [S-10] cut -- so there are no
+  longer two outputs to consolidate. What survives is narrower and still worth doing: ONE
+  arc fetch per season serving both consumers, [S-11]'s tagging and acquire's candidate
+  resolution, rather than each fetching independently.
 - [S-6] MOOT 2026-08-26, kept for the record. Was: make decoder-input staleness
   season-aware so a per-season HOTWORDS string marks
   only that season's episodes transcribe-stale, never the whole show. Hotwords is a decoder
@@ -191,9 +194,12 @@ kept only so the decision is on the record.
   `Orange Town` and `Syrup Village` are locations — so a title can resolve to a real wiki
   page that is not an arc at all and yield a plausible-looking cast that is wrong. A
   wrong-but-resolved page must not count as resolution.
-- [S-8] Extract wiki access -- fetching, continuation, caching -- out of
-  `glossary_verify.py` into a module both the verifier and the consolidated stage consume,
-  so the arc logic is built on one wiki layer rather than a second copy of it.
+- [S-8] MOOT 2026-08-27, by construction. It existed to stop two modules deriving wiki
+  state independently. [S-2] landed the arc fetch INSIDE `glossary_verify.py`, sharing its
+  `_http_json`, `normalize_api` and continuation handling, so there is no second copy and
+  the drift it guarded against cannot occur. Extracting a layer now would be migrating
+  working code for symmetry, which the round-1 review's F8 argued against and this repo's
+  own rules forbid.
 - [S-9] DONE 2026-08-27. Narrowing acquisition scope admits 0 of the 3 confirmed false
   negatives. The denominators DO move -- `Samji -> Sanji` is 1/811 show-wide and 1/34 within
   Season 30 -- but the gates that refused them are not ratio gates. `Samji` was refused by
