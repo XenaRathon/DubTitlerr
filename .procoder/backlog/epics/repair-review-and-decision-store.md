@@ -1,6 +1,6 @@
 # repair-review-and-decision-store
 
-Status: open
+Status: done 2026-08-27
 Created: 2026-08-27
 Spec: repair-review-and-decision-store @ d7bbc368dd1a
 
