@@ -251,6 +251,113 @@ def resolve_wiki(title: str, override: str | None = None) -> str | None:
     return None
 
 
+def arc_categories(wiki_api: str, arc: str) -> list[str]:
+    """Category pages that scope an arc, DISCOVERED rather than guessed.
+
+    S-2. Arc category naming is not uniform and cannot be derived from the arc name:
+    measured 2026-08-26 on the One Piece wiki, `Category:Dressrosa Arc` does not exist,
+    while `Dressrosa Residents`, `Dressrosa Locations` and `Dressrosa Saga Antagonists` do.
+    A search of namespace 14 finds whatever that wiki actually calls them.
+
+    Non-canon categories are excluded: this feeds canonical spellings, and `Non-Canon
+    Dressrosa Residents` is exactly the material that must not become one.
+
+    Returns [] on any failure. Emptiness is the [S-7] fallback trigger -- a `season.nfo`
+    title that is not an arc at all (`Gaimon` is a character) finds no arc categories, and
+    the caller must degrade rather than tag from some unrelated page's cast."""
+    url = wiki_api + "?action=query&list=search&srnamespace=14&srlimit=25&format=json&srsearch=" + urllib.parse.quote(arc)
+    try:
+        resp = _http_json(url)
+    except Exception:
+        return []
+    out = []
+    for hit in resp.get("query", {}).get("search", []):
+        title = hit.get("title", "")
+        low = title.lower()
+        if "non-canon" in low:
+            continue
+        # Episode/Chapter/Volume categories hold NUMBERED PAGES, not names. Measured
+        # 2026-08-26: including `Dressrosa Arc Episodes` and `Arc Chapters` took the union
+        # from 96 entries to 294, the excess being `Episode 629`-shaped noise.
+        if any(w in low for w in ("episode", "chapter", "volume")):
+            continue
+        if arc.lower() in low:
+            out.append(title)
+    return out
+
+
+def arc_page_links(wiki_api: str, arc: str) -> set[str]:
+    """Entities linked from the arc page's PROSE.
+
+    The primary arc source, because categories provably miss the leads: measured
+    2026-08-26, neither `Rebecca` nor `Kyros` -- the arc's two most-mentioned characters --
+    appears in any `Dressrosa *` category. Rebecca is filed under `Riku Family` and
+    `Former Princesses`, which no arc-name search can reach.
+
+    Read from the wikitext with templates and refs stripped, NOT from `prop=links`: that
+    API returns the page's navboxes too, which on this wiki means 500 alphabetical
+    franchise-wide entries (`100% Island`, `Abdullah`, ...) and is unusable as an arc
+    signal. Verified 2026-08-26.
+
+    Returns an empty set on any failure; this runs inside the sweep."""
+    url = wiki_api + "?action=parse&prop=wikitext&format=json&page=" + urllib.parse.quote(arc + " Arc")
+    # ONLY the "<arc> Arc" page. Falling back to the bare title resolves a page that is not
+    # an arc at all and harvests its links: measured 2026-08-26, `Gaimon` -- a season.nfo
+    # title that names a CHARACTER -- returned 48 entities that way, which [S-7] requires be
+    # treated as no resolution rather than a plausible-looking cast.
+    try:
+        wt = _http_json(url)["parse"]["wikitext"]["*"]
+    except Exception:
+        return set()
+    for _ in range(4):  # nested templates
+        wt = re.sub(r"\{\{[^{}]*\}\}", " ", wt)
+    wt = re.sub(r"<ref[^>]*>.*?</ref>", " ", wt, flags=re.S)
+    wt = re.sub(r"<[^>]+>", " ", wt)
+    out = set()
+    for link in re.findall(r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]", wt):
+        link = link.strip()
+        if not link or link[:1].islower():
+            continue
+        if link.startswith(("Category:", "File:", "Image:", "w:")):
+            continue
+        if re.match(r"^(Chapter|Episode|Volume)\s+\d+$", link):
+            continue
+        out.add(link)
+    return out
+
+
+def fetch_arc_titles(wiki_api: str, arc: str) -> set[str]:
+    """Every ns0 page belonging to an arc, unioned across its categories.
+
+    Members come back paged, so continuation is followed -- a truncated union would
+    silently under-tag an arc, which is worse than not tagging it at all because the gap
+    would be invisible. Bounded at 6 pages per category (3,000 titles), far above the 96
+    measured for Dressrosa, so a runaway cannot stall a sweep.
+
+    Returns an empty set on any failure, including an unreachable wiki. This runs inside
+    the sweep and must never stall or fail it."""
+    titles: set[str] = arc_page_links(wiki_api, arc)
+    for cat in arc_categories(wiki_api, arc):
+        cont = None
+        for _ in range(6):
+            url = (
+                wiki_api
+                + "?action=query&list=categorymembers&cmnamespace=0&cmlimit=500&format=json&cmtitle="
+                + urllib.parse.quote(cat)
+            )
+            if cont:
+                url += "&cmcontinue=" + urllib.parse.quote(cont)
+            try:
+                resp = _http_json(url)
+            except Exception:
+                break
+            titles |= {m["title"] for m in resp.get("query", {}).get("categorymembers", [])}
+            cont = resp.get("continue", {}).get("cmcontinue")
+            if not cont:
+                break
+    return titles
+
+
 def fetch_titles(wiki_api: str, show_key: str) -> list[str]:
     """Cached main-namespace (ns=0) page-title list for the wiki."""
     os.makedirs(CACHE_DIR, exist_ok=True)
