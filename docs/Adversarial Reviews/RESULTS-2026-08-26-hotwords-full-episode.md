@@ -188,3 +188,51 @@ Kanjuro and produces no repetition collapses, that is the configuration to ship 
 decision rule should be rewritten to a weighted comparison before it is applied. If it
 loses Kanjuro again, coverage and perturbation are in direct conflict at this budget and
 [S-10] should be cut.
+
+
+## CORRECTION — arm D's regression was a malformed term I introduced
+
+Arm F (72 tokens, DERIVED, 16 terms) does not contain Kanjuro either, and gets him right:
+
+    arm                  Kanjuro   Kajudo   Kanjino
+    A baseline                 2        0         1
+    D 72 hand-picked           0        2         1
+    F 72 derived               3        0         0
+    E 150 derived              3        0         0
+
+F omits Kanjuro from its hotwords and still produces him correctly three times, beating the
+baseline's two AND fixing the baseline's `Kanjino` mishear. **So the regression was not
+caused by omission.** The "incomplete list" explanation recorded above is WRONG, and so was
+the earlier "hotwords corrupts names it is not told about".
+
+What actually distinguishes D is a malformed term. The three lists:
+
+    D  "... Bellamy, Kin emon, Caesar Clown, ..."    <- apostrophe stripped, split in two
+    F  (contains no Kin'emon at all)
+    E  "... Kin'emon, ..."                           <- correct
+
+The only arm carrying a malformed term is the only arm that corrupted a name, and
+`Kin'emon` and `Kanjuro` are phonetically adjacent Wano names. `Kin emon` as two tokens
+plausibly primes a `Kin...emon` pattern that pulled `Kanjuro` into `Kajudo`. The
+malformation was introduced by the author stripping the apostrophe for shell quoting, not
+by any part of the pipeline.
+
+This is circumstantial, not isolated: proving it needs a 72-token arm containing a correct
+`Kin'emon`. But the correlation holds across three arms, and it changes what [S-10] must
+require. "Derived, never hand-picked" stands, but for a different reason than first stated:
+not because hand-picking OMITS names, but because hand-editing CORRUPTS terms. The spec
+needs a validation rule — hotword terms are canonical wiki titles used verbatim, with
+apostrophes and diacritics preserved, and a term that does not round-trip against the title
+set is rejected rather than passed to the decoder.
+
+It also means **arm D's numbers should carry little weight**: it measured a corrupted list.
+The meaningful comparison is A vs F vs G110 vs G138 vs E.
+
+Perturbation at equal budget also favours the derived list, which the omission theory does
+not explain but term quality does:
+
+    S31E01           flagged   low_conf   meanlp
+    A baseline            16          9    -0.11
+    F 72 derived          24         15    -0.13
+    D 72 hand-picked      32         18    -0.16
+    E 150 derived         30         24    -0.18
