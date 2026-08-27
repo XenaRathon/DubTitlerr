@@ -1,9 +1,9 @@
 # An empty store produces byte-identical output to the code before this change, AND the lookup is observably called -- a `return` short-circuiting before the consult would otherwise satisfy the byte-identical half on its own.
 
-Status: open
+Status: done 2026-08-27
 Created: 2026-08-27
 Epic: repair-review-and-decision-store
-Sprint: -
+Sprint: 004-task-4-consult-the-decision-store-inside-repair-reject
 
 ## Description
 
@@ -17,9 +17,14 @@ gets there.
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] An empty store produces byte-identical output to the code before this change, AND the lookup is observably called -- a `return` short-circuiting before the consult would otherwise satisfy the byte-identical half on its own.
+- [x] An empty store produces byte-identical output to the code before this change, AND the lookup is observably called -- a `return` short-circuiting before the consult would otherwise satisfy the byte-identical half on its own.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- `pytest -k empty_store` -> `test_an_empty_store_is_byte_identical_and_still_reaches_the_lookup`
+  passes. Asserts the exact SRT bytes literally, plus one `repair_applied` entry -- pre-change
+  behaviour, written out rather than computed from a second run.
+- The "observably called" half drove a real code change: the first implementation short-circuited
+  on `if DECISIONS_APPLY and store`, so with an empty store `lookup` was never reached. RED on the
+  spy (`seen == []`) removed the `and store`, so the consult cannot become dead code on exactly the
+  installs where it is least exercised.

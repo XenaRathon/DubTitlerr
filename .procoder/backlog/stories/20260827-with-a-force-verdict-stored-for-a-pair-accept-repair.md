@@ -1,9 +1,9 @@
 # With a `force` verdict stored for a pair `accept_repair` refuses, the repair is applied; the same pair with no verdict is still refused.
 
-Status: open
+Status: done 2026-08-27
 Created: 2026-08-27
 Epic: repair-review-and-decision-store
-Sprint: -
+Sprint: 004-task-4-consult-the-decision-store-inside-repair-reject
 
 ## Description
 
@@ -19,9 +19,11 @@ admit a repair `accept_repair` refused, and that the same pair without a verdict
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] With a `force` verdict stored for a pair `accept_repair` refuses, the repair is applied; the same pair with no verdict is still refused.
+- [x] With a `force` verdict stored for a pair `accept_repair` refuses, the repair is applied; the same pair with no verdict is still refused.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- `pytest -k force_verdict` -> `test_a_force_verdict_admits_a_repair_the_gate_refused` passes.
+- Both halves in one test: the same 30-char proposal (2.3 length ratio) is admitted with `force`
+  stored and refused with an empty store. Without the control half the test would pass on a
+  proposal the gate was going to accept anyway.
