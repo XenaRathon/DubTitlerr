@@ -63,13 +63,21 @@ makes it correctable per line.
   from `conf.json` with decisions applied -- the mechanism `recreate_srt.py` already uses --
   then invalidate the `.dubtitles.done` stamp so the existing merge loop re-muxes. Operates
   on one episode or sweeps a whole show.
-- [S-6] An optional pre-mux gate. For a show named in `REVIEW_GATE_SHOWS`, `mux.py` skips
+- [S-6] An optional pre-mux gate, and a stall alert so it can never hold silently. For a
+  show named in `REVIEW_GATE_SHOWS`, `mux.py` skips
   any episode with pending `repair_applied` entries. Unlisted shows behave exactly as today.
+  A held episode is NEVER auto-released -- releasing unreviewed repairs is the failure this
+  spec exists to prevent -- but one held longer than `REVIEW_GATE_STALE_DAYS` is reported
+  loudly by `mux.py`, and the merge sweep's summary carries the held count, so a backlog is
+  visible rather than silent.
 - [S-7] A review server, `review_server.py`: stdlib `http.server`, no new dependency. Lists
   episodes with pending counts, renders one episode's queue (primary filter by default, full
   unresolved walk on request), accepts a verdict per line, triggers [S-5]. Every route is a
-  thin call into [S-2] and [S-5]; the server holds no durable logic. `REVIEW_TOKEN`, when
-  set, is required on every write route.
+  thin call into [S-2] and [S-5]; the server holds no durable logic. Every write route
+  requires a token. `REVIEW_TOKEN` unset does NOT mean no auth: the server generates a
+  random token on first start, writes it to `<DECISIONS_DIR>/../review_token` (0600) and
+  prints it once to the container log. Only `REVIEW_TOKEN=` set explicitly empty disables
+  auth, for a network the operator has decided is isolated.
 - [S-8] Run the server as a third loop in `container_run.sh`, alongside the existing merge
   and generate loops. Its failure must not take down the container.
 - [S-9] `DECISIONS_DIR` (default `/config/decisions`), a mount, sibling in role to
@@ -83,6 +91,11 @@ makes it correctable per line.
   gets its own spec. Decided 2026-08-27: no shared credential is ever baked into the image;
   a token in an image is extractable, is auto-revoked by secret scanning when it reaches a
   public repo, and makes one identity answerable for every install's submissions.
+  **Precondition added 2026-08-27:** phase 2 may not open until the cross-model pair-hit
+  rate is measured -- transcribe One Pace S31E01-E03 under a second configuration that
+  bumps `TRANSCRIBE_VERSION`, replay repair on both, and count how many of arm A's
+  `(orig, proposed)` pairs `lookup()` still hits in arm B. Shipping a contribution channel
+  on an unmeasured hit rate would export a corpus nobody can be told the value of.
 - **Tightening `accept_repair`.** Deferred by the owner pending more human-reviewed data.
   This spec BUILDS the instrument that produces that data; it does not change the gate.
 - **Flipping `REPAIR_UNANCHORED`.** A separate decision, owned by the maintainer.
@@ -92,12 +105,16 @@ makes it correctable per line.
 - **Re-evaluating the implementation language.** Parked by the owner as its own exercise.
 - **The hallucination `flag` queue.** Still deferred for the reason `unresolved.py` records:
   `maybe_silence` fires on 67% of real cards, and a queue nobody can face is worse than none.
-- **Any authentication stronger than a shared token.** Decided with the owner 2026-08-27:
-  `REVIEW_TOKEN` unset means no auth, which is the LAN default; set means every write route
-  requires it. No user accounts, no OAuth, no TLS termination inside this service. The
-  reasoning: every other knob in this repo is opt-in, and requiring a token to approve a
-  subtitle line on one's own LAN is the friction that stops the review happening at all --
-  which is the failure this entire spec exists to prevent.
+- **Any authentication stronger than a shared token.** No user accounts, no OAuth, no TLS
+  termination inside this service. REVISED 2026-08-27 after the fifth adversarial review
+  (`docs/Adversarial Reviews/GLM-2026-08-27-repair-review-and-decision-store.md`, Item 5 --
+  its one surviving BLOCK). The original decision was "unset means no auth, which is the LAN
+  default", justified by review friction. That reasoning was about the MAINTAINER's friction
+  and did not transfer: `container_run.sh` runs as root so `generate.py` can chown into the
+  media tree, [S-8] adds write routes to that same process tree, and a downstream user
+  running with host networking would expose an unauthenticated root-owned endpoint that can
+  rewrite subtitle files and force re-muxes. Auto-generating the token keeps the
+  maintainer's friction at "read it from the log once" while removing the unsafe default.
 
 ## Constraints
 
@@ -115,8 +132,21 @@ makes it correctable per line.
   instead of a library-wide re-run.
 - **The generate loop is the container's foreground process.** [S-8] must not be able to
   end it.
-- **Decisions must be portable.** Card index and episode number do not survive a
-  `TEXT_VERSION` bump and mean nothing in another user's library; the text pair does.
+- **Decisions must degrade safely, and recur within a run.** REVISED 2026-08-27 after the
+  fifth adversarial review (Item 1). The original claim was "decisions must be portable...
+  the text pair does [survive]" -- an invariant the spec asserted and never measured. What
+  is actually delivered, and all that may be relied on:
+  - **A miss is a no-op.** An `orig` that no longer matches falls through to
+    `accept_repair`, which is today's behaviour, not a misapplied stale verdict.
+  - **Within one transcription run, the same line recurs byte-identically across
+    episodes** -- measured in `REVIEW-2026-08-27-unanchored-repair-45-lines.md`:
+    `"Roger's treasure belongs to me"` appears in E01, E02 AND E03 with an identical fix,
+    and `"That come together."` in E01 and E02. One verdict settles all of them. This is
+    the store's immediate, evidenced value and it does not depend on cross-model stability.
+  - **Cross-model and cross-`TRANSCRIBE_VERSION` portability is UNMEASURED.** Card index
+    still cannot be used -- it does not survive a `TEXT_VERSION` bump -- so the text pair
+    remains the right key. But no claim is made about the hit rate in another user's
+    library, and none may be made until it is measured. See "Out of scope".
 - **`procoder check` clean and `procoder test` green** before any task closes.
 
 ## Interfaces
@@ -150,9 +180,12 @@ directory with a matching `<Show>.json`, and take show identity from `gloss["sho
 
     DECISIONS_DIR      default /config/decisions
     DECISIONS_APPLY    default 1     (0 = suggestion-only; matches never change output)
-    REVIEW_GATE_SHOWS  default ""    (colon list, idiom shared with MUX_ROOTS)
-    REVIEW_PORT        default 8842
-    REVIEW_TOKEN       default ""    (unset = no auth; set = required on every write route)
+    REVIEW_GATE_SHOWS      default ""   (colon list, idiom shared with MUX_ROOTS)
+    REVIEW_GATE_STALE_DAYS default 7    (a held episode older than this is reported loudly;
+                                         it is NEVER auto-released -- see [S-6])
+    REVIEW_PORT            default 8842
+    REVIEW_TOKEN           unset = GENERATE one and print it to the log; set = use it;
+                                         set-but-empty = auth disabled, operator's choice
 
 ## Data
 
@@ -195,6 +228,43 @@ the same terms as a `correct` verdict that does not fit. Force verdicts are reco
 distinctly from `accept` precisely so they can be counted -- they are the evidence for the
 deferred `accept_repair` tightening, which is exactly the record of the gate being wrong in
 the direction the gate cannot see.
+
+**The stakes of `force`, added 2026-08-27 after the fifth adversarial review (Item 2).** On
+an ANCHORED card a forced repair is recoverable: the fansub reference still exists, so a
+later review can judge it again. On an UNANCHORED card it is not -- the spec's own Problem
+section is that nothing downstream can reach those cards. The verdict itself stays editable
+by a human through [S-7], and R4 only protects it from being reverted by an AUTOMATED sweep;
+but any episode muxed while a wrong `force` stood carries that text until someone notices.
+The review UI must show this on the force action for an unanchored card. The review's
+audio-based objection was withdrawn on its own rebuttal and is not the reason: the owner's
+bar is text-based, the 45-line read was text-based, and `accept` on an unanchored card is
+equally audio-free. Permanence is the reason.
+
+**What each verdict means per entry type.** The queue carries two question shapes, so the
+mapping is pinned here rather than left to the UI:
+
+    entry              accept          reject            correct        force
+    repair_applied     keep the        restore the ASR   use `text`     n/a (already
+      /accepted        repair          text                             applied)
+    rejected_guard     n/a -- use      uphold the gate;  use `text`     admit the
+      /_name_invented  `force`         keep the ASR                     refused proposal
+
+`accept` is not offered on a refused entry and `force` is not offered on an applied one.
+Without this, `accept` on a refused entry would silently be a `force` with no distinct
+record, defeating the counting `force` exists for.
+
+**`orig` is the PRE-correction ASR text** -- `c["text"]` as it stands before
+`glossary.correct()` runs, which is also what a `reject` verdict restores. It is NOT the
+post-correction proposal. This matters: keyed on post-correction text, every stored `orig`
+would be invalidated by an unrelated `hard_fixes` addition to the show glossary, which
+`mine_glossary.py` appends on every sweep of a watched show.
+
+**`promoted` is set by the human at review time and is an audit trail, not a classifier.**
+No rule auto-decides whether a verdict is term-level or line-level. The review considered
+auto-classification on a single-token proper-noun difference and it fails on this spec's own
+examples: `factory -> needle` is a single-token difference between two ordinary English
+words and would be promoted show-wide, which is the exact regression the store exists to
+catch. The human classifies; `promoted` records what they chose.
 
 Decided with the owner 2026-08-27. The reasoning: the gate provably errs in BOTH directions.
 [S-14] and [S-15] blocked nothing across 21 repairs, and the 4 proposals the gate did refuse
@@ -252,16 +322,23 @@ theirs, and nothing leaves their machine in this phase.
   says why, matching `repair.py`'s "skip" when the srt is absent. The stamp is NOT
   invalidated, so nothing is left in a half-applied state.
 - **`REVIEW_GATE_SHOWS` names a show that never produces queue entries** -> nothing is ever
-  gated. A gate that silently holds every episode of a show forever is the failure to avoid;
-  the pending check must be the only condition.
+  gated. The pending check is the only RELEASE condition -- an episode is held while and only
+  while it has a pending entry.
+- **A gated show is left unreviewed for weeks** -> every episode with a pending entry stays
+  held, and the backlog grows. This is the designed behaviour, not a fault: auto-releasing
+  unreviewed repairs is the failure the spec exists to prevent. What must not happen is the
+  backlog being SILENT, so `REVIEW_GATE_STALE_DAYS` makes it loud ([S-6]). The operator
+  releases it by reviewing, or by removing the show from `REVIEW_GATE_SHOWS` -- both explicit.
 - **The LLM backend is down** -> unchanged. `llm_empty` already records it; no repairs are
   proposed, so no queue entries are created.
 
 ## Acceptance criteria
 
 - [ ] [S-1] An accepted repair writes one `repair_applied`/`accepted` entry to
-      `<stem>.dubtitles.unresolved.jsonl` carrying `original_text`, `proposed_text` and
-      `avg_logprob`; the entry count equals the summary's `repaired` count for that episode.
+      `<stem>.dubtitles.unresolved.jsonl` whose `original_text` equals the card's
+      pre-repair text and whose `proposed_text` equals the text actually applied -- asserted
+      on the FIELDS, not only on the count, which a pair of empty strings would satisfy.
+      The entry count also equals the summary's `repaired` count for that episode.
 - [ ] [S-1] `unresolved.pending()` filtered to the primary stages returns exactly the
       accepted repairs plus the guard rejections, and the unfiltered walk additionally
       returns `no_reference`, `llm_empty` and the punctuation stages.
@@ -278,8 +355,10 @@ theirs, and nothing leaves their machine in this phase.
 - [ ] [S-3] A decision promoted as a term writes `hard_fixes[variant] = canonical` into the
       show glossary, the decision records what it promoted, and a curated entry already
       present is not overwritten.
-- [ ] [S-4] With a `reject` verdict stored for the pair, `repair.py` leaves the card's ASR
-      text unchanged and writes no `repair_applied` entry.
+- [ ] [S-4] With a `reject` verdict stored for the pair, the card's text equals the
+      POST-`glossary.correct()` ASR text and no `repair_applied` entry is written -- pinning
+      the consult between `glossary.correct()` (`repair.py:634`) and `accept_repair`
+      (`repair.py:649`), so a consult placed before the correction fails this.
 - [ ] [S-4] With a `correct` verdict stored, the card carries the human's text.
 - [ ] [S-4] A `correct` verdict whose text fails `fits_card` leaves the ASR text in place
       and records an unresolved entry naming the refusal.
@@ -287,25 +366,37 @@ theirs, and nothing leaves their machine in this phase.
       applied; the same pair with no verdict is still refused.
 - [ ] [S-4] A `force` verdict whose text fails `fits_card` is still refused, and records an
       unresolved entry naming the refusal -- force does not override card timing.
-- [ ] [S-4] `DECISIONS_APPLY=0` produces byte-identical output to an empty store, for the
-      same episode and the same stored decisions.
+- [ ] [S-4] `DECISIONS_APPLY=0` produces byte-identical output to an empty store for the
+      same episode and the same NON-empty stored decisions, and no verdict is applied --
+      asserted on the application, not only on the bytes, since identical output proves the
+      flag works without proving it is read before the verdict takes effect.
 - [ ] [S-4] An empty store produces byte-identical output to the code before this change,
-      proving the consult point is inert until decisions exist.
+      AND the lookup is observably called -- a `return` short-circuiting before the consult
+      would otherwise satisfy the byte-identical half on its own.
 - [ ] [S-5] `review_apply.py` on an episode with a stored `reject` rewrites the `.srt` with
-      the ASR text restored and invalidates the `.dubtitles.done` stamp; without `--apply`
-      it writes nothing and prints the plan.
+      the ASR text restored and invalidates the `.dubtitles.done` stamp, WITHOUT invoking the
+      LLM -- it rebuilds from `conf.json` the way `recreate_srt.py` does. Asserted on the
+      backend never being called, because re-running `repair.py` also rebuilds the srt from
+      `conf.json` and would otherwise satisfy this criterion.
+- [ ] [S-5] Without `--apply` it writes nothing and prints the plan.
 - [ ] [S-5] `review_apply.py --show` invalidates only the episodes whose text actually
       changes, leaving the rest of the show's stamps valid.
 - [ ] [S-5] An episode with no `conf.json` is refused by name, and its stamp is untouched.
 - [ ] [S-6] With a show listed in `REVIEW_GATE_SHOWS`, `mux.py` skips an episode holding a
       pending `repair_applied` entry and muxes it once that entry is resolved; with the list
       empty, both episodes mux.
-- [ ] [S-7] `GET /ep/<stem>` returns the primary queue by default and the full walk with
-      `?all=1`; `POST /decide` persists through `decisions.py` and the entry becomes
+- [ ] [S-6] An episode held longer than `REVIEW_GATE_STALE_DAYS` is reported loudly and
+      counted in the sweep summary, and is still NOT muxed -- the alert must not become a
+      release.
+- [ ] [S-7] `GET /ep/<stem>` returns the primary queue by default -- asserted on the
+      ABSENCE of `no_reference` and `llm_empty` entries, since `unresolved.pending()` applies
+      no stage filter of its own and a server returning everything would otherwise pass --
+      and the full walk with `?all=1`; `POST /decide` persists through `decisions.py` and the entry becomes
       resolved; `POST /apply/<stem>` invokes [S-5]. Handlers are tested directly, no socket.
-- [ ] [S-7] With `REVIEW_TOKEN` set, a write route without the token is refused and changes
-      nothing; with it unset, the same request succeeds. Read routes are unaffected either
-      way.
+- [ ] [S-7] With `REVIEW_TOKEN` unset, the server generates a token, persists it 0600, and
+      a write route without it is REFUSED -- the unsafe default is the one being tested away.
+      With `REVIEW_TOKEN` set explicitly empty, the same request succeeds. Read routes are
+      unaffected either way.
 - [ ] [S-8] `container_run.sh` starts the server as a background loop; killing the server
       leaves the merge and generate loops running.
 - [ ] [S-9] `decisions_for()` resolves a show's store by the same ancestor walk
