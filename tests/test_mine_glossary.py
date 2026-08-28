@@ -321,3 +321,42 @@ def test_mine_text_forms_is_optional_and_changes_nothing():
     mine_glossary.mine_text(text, *a)
     mine_glossary.mine_text(text, *b, None)
     assert a == b
+
+
+def test_eng_sub_text_passes_ffprobe_no_option_ffprobe_rejects(monkeypatch):
+    """ffprobe has no -nostdin, and it consumed the VIDEO PATH as that option's value.
+
+    ffprobe then exited 1 with empty stdout, json.loads("") raised, and
+    `except Exception: return ""` swallowed it -- so eng_sub_text returned "" for every file
+    on every show, and the miner's summary ("0 new ep(s), no new terms") read exactly like a
+    normal no-op. Measured 2026-08-28 on Sword Art Online: two English fansub tracks on every
+    episode, nothing mined, no glossary written. And with no glossary decisions.show_for
+    returns "", so the show has no decision store and the review page refuses every verdict.
+
+    Every other -nostdin in this repo is on ffmpeg, where it is valid. What actually keeps
+    the child off the terminal is stdin=DEVNULL, which this call already passes.
+
+    The tests above could not catch this: they fake subprocess.run and return well-formed
+    JSON whatever argv they are handed, so the argument list itself was never the subject."""
+    calls = _fake_subprocess([_stream(2, title="English (Fansub)")], monkeypatch)
+
+    mine_glossary.eng_sub_text("fake.mkv")
+
+    probe = calls[0]
+    assert probe[0] == "ffprobe"
+    assert "-nostdin" not in probe, "ffprobe takes the NEXT argument as its value -- the video path"
+    assert probe[-1] == "fake.mkv", "the path must be the argument, never an option's value"
+
+
+def test_eng_sub_text_reports_a_broken_probe_instead_of_looking_empty(monkeypatch, capsys):
+    """Returning "" is right -- a release with no fansub track mines nothing, which is
+    normal. What is not acceptable is that a BROKEN probe looks identical to it. That is
+    what let a wrong argument list run unnoticed against every show in the library."""
+
+    def boom(cmd, **kw):
+        raise OSError("ffprobe not found")
+
+    monkeypatch.setattr(mine_glossary, "subprocess", types.SimpleNamespace(run=boom, DEVNULL=-3))
+
+    assert mine_glossary.eng_sub_text("fake.mkv") == ""
+    assert "fake.mkv" in capsys.readouterr().out, "the failure must name the file it could not read"

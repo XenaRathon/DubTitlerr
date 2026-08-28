@@ -76,7 +76,16 @@ def eng_sub_text(video):
                 "stream=index,codec_name:stream_tags=language,title",
                 "-of",
                 "json",
-                "-nostdin",
+                # NO -nostdin. That is an ffmpeg option; ffprobe has no such flag and takes
+                # the NEXT argument -- the video path -- as its value, then exits 1 with an
+                # empty stdout. json.loads("") raised straight into the handler below, so
+                # this returned "" for every file on every show, and the miner's summary
+                # ("0 new ep(s), no new terms") read exactly like a normal no-op. Found
+                # 2026-08-28 on Sword Art Online: two English fansub tracks per episode,
+                # nothing mined, no glossary -- and with no glossary decisions.show_for
+                # returns "", so the show gets no decision store and the review page refuses
+                # every verdict. stdin=DEVNULL below is what actually keeps ffprobe off the
+                # terminal; the flag was never doing that job.
                 video,
             ],
             capture_output=True,
@@ -85,7 +94,11 @@ def eng_sub_text(video):
             stdin=subprocess.DEVNULL,
         )
         streams = json.loads(r.stdout).get("streams", [])
-    except Exception:
+    except Exception as exc:
+        # SAID, not swallowed. "" is the right answer for a release with no fansub track,
+        # and that is common -- but a broken probe must not be indistinguishable from it.
+        # Silence is how a wrong argument list ran against the whole library unnoticed.
+        print(f"mine: could not read subtitle streams from {video}: {exc}")
         return ""
     cand = [
         s
