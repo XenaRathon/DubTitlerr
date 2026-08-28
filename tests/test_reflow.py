@@ -18,9 +18,12 @@ def sentence(words, t0=0.0, dur=0.3, gap=0.1, seg=0, prob=0.9):
     return out
 
 
-def lay(texts, dur=0.3, gaps=0.0, t0=0.0, seg=0, prob=0.9):
+def lay(texts, dur=0.3, gaps: float | list[float] = 0.0, t0=0.0, seg=0, prob=0.9):
     """Build words with explicit per-position gaps. `gaps` is a scalar applied
-    after every word, or a list of len(texts)-1 gaps (gap after word i)."""
+    after every word, or a list of len(texts)-1 gaps (gap after word i).
+
+    The annotation says what the docstring always did. Left to inference, the 0.0 default
+    pinned it to float and every list-passing caller read as a type error."""
     out, t = [], t0
     for i, w in enumerate(texts):
         out.append(mkword(w, t, t + dur, prob=prob, seg=seg))
@@ -862,3 +865,39 @@ def test_merge_census_excludes_a_long_target():
     groups = _two_groups(0.08, "It's a", "monster.", 2.0, 0.30)
     _out, merges = reflow.merge_runts(groups)
     assert merges and merges[0]["short_groups_before"] == 1  # only the runt
+
+
+def _w(*texts):
+    """Word records as whisper emits them, leading spaces and all."""
+    return [{"text": t, "start": i * 0.3, "end": i * 0.3 + 0.25, "prob": 0.9, "seg": 0} for i, t in enumerate(texts)]
+
+
+def test_text_welds_a_hyphen_split_back_together():
+    """The behaviour _text was written for, which had no direct test.
+
+    whisper's word_timestamps splits "Gum-gum" into (" Gum", "-gum"); a plain " ".join
+    welds them back as "Gum -gum", a space that was never in the audio. Not cosmetic:
+    glossary.correct matches phrase fixes on \\b boundaries, so a "gum gum" -> "Gum-Gum"
+    fix cannot match "Gum -Gum" and the canon correction no-ops on exactly the terms most
+    likely to need it."""
+    assert reflow._text(_w(" Gum", "-gum", " Pistol")) == "Gum-gum Pistol"
+    assert reflow._text(_w(" Gum-", "gum", " Pistol")) == "Gum-gum Pistol", "the split can land either way"
+    assert reflow._text(_w(" wait", " —", " what")) == "wait — what", "a dash ALONE is a real separator"
+
+
+def test_text_keeps_a_number_whole_across_its_separator():
+    """Same phenomenon, different punctuation. whisper emits 2,000 as (" 2", ",000") --
+    note the second token carries no leading space, because whisper is telling us not to
+    put one there -- and _text stripped both and joined on a space anyway.
+
+    Measured on Sword Art Online E02-E04, 2026-08-28: of 6,346 word tokens, 26 begin with
+    punctuation and no leading space. 19 are the hyphen case above; the rest are 4 of ",N"
+    and 1 of ".N". Every thousands separator in the output was malformed -- 4 occurrences,
+    0 correct -- so this is a total failure on the pattern rather than a rare glitch.
+
+    Deliberately NARROW: a comma or period followed by a DIGIT. The em dash and opening
+    quote in that same sample are real separators and must keep their spaces."""
+    assert reflow._text(_w(" And", " 2", ",000", " people")) == "And 2,000 people"
+    assert reflow._text(_w(" It", " costs", " 2", ".5", " million")) == "It costs 2.5 million"
+    assert reflow._text(_w(" He", ' "said', " so")) == 'He "said so', "an opening quote hugs the word AFTER it"
+    assert reflow._text(_w(" Wait", " ,", " no")) == "Wait , no", "a bare comma is not a digit continuation"

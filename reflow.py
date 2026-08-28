@@ -140,6 +140,17 @@ def _text(words: list[dict]) -> str:
             out[-1] += t
         elif out and out[-1].endswith("-") and out[-1].strip("-—–"):
             out[-1] += t  # the split landed the other way ("Gum-", "gum")
+        # The same split, across a number's own punctuation: 2,000 arrives as (" 2", ",000")
+        # and 2.5 as (" 2", ".5"). The second token carries NO leading space -- whisper
+        # saying not to put one there -- but the strip above has already discarded that
+        # signal, so the shape is what is left to go on. Measured on Sword Art Online
+        # E02-E04: 6,346 word tokens, 26 starting with punctuation and no leading space --
+        # 19 the hyphen case, 4 ",N", 1 ".N". Every thousands separator in the output was
+        # broken, 4 for 4, so this was total failure on the pattern rather than a glitch.
+        # NARROW on purpose: the em dash and the opening quote in that same sample are real
+        # separators and keep their spaces.
+        elif out and t[:1] in ",." and t[1:2].isdigit():
+            out[-1] += t
         else:
             out.append(t)
     return " ".join(out)
