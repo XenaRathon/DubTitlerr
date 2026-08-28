@@ -11,6 +11,7 @@ asserting the false claim that mine_text() ignores it.
 """
 
 import json
+import subprocess
 import sys
 import types
 
@@ -361,3 +362,40 @@ def test_eng_sub_text_reports_a_broken_probe_instead_of_looking_empty(monkeypatc
 
     assert mine_glossary.eng_sub_text("fake.mkv") == ""
     assert "fake.mkv" in capsys.readouterr().out, "the failure must name the file it could not read"
+
+
+def test_eng_sub_text_skips_an_episode_whose_extraction_times_out(monkeypatch, capsys):
+    """One slow episode must not cost the whole show's mining.
+
+    Only the ffprobe half was inside a try. The ffmpeg extraction was not, so a
+    TimeoutExpired propagated out of eng_sub_text, out of main(), and killed the run --
+    discarding every term mined from the episodes before it. Measured 2026-08-28 on Sword
+    Art Online: the run died on E11 and the ten episodes already mined were lost with it.
+
+    A per-episode failure is a per-episode loss. It is REPORTED, because a show that mines
+    nothing and a show that could not be read must not look the same -- the lesson from the
+    -nostdin bug two commits ago."""
+    calls = _fake_subprocess([_stream(2, title="English (Fansub)")], monkeypatch)
+
+    def run(cmd, **kw):
+        if cmd[0] == "ffprobe":
+            return types.SimpleNamespace(stdout=json.dumps({"streams": [_stream(2, title="Fansub")]}), returncode=0)
+        raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 0))
+
+    monkeypatch.setattr(
+        mine_glossary, "subprocess", types.SimpleNamespace(run=run, DEVNULL=-3, TimeoutExpired=subprocess.TimeoutExpired)
+    )
+
+    assert mine_glossary.eng_sub_text("slow.mkv") == "", "the episode is skipped, not fatal"
+    assert "slow.mkv" in capsys.readouterr().out, "and named, so a systematic failure is visible"
+    assert calls is not None
+
+
+def test_the_extraction_timeout_is_generous_and_configurable(monkeypatch):
+    """120s was not enough. Extracting one 352MB episode's subtitle measured 0.8s warm but
+    51.7s on the `-c:s copy` path, and the miner walks 25 files back to back over a network
+    mount, so a cold or contended run is far slower than any single warm measurement
+    suggests. The timeout is a backstop against a wedged ffmpeg, not a budget."""
+    assert mine_glossary.EXTRACT_TIMEOUT >= 300, "a per-episode backstop, not a stopwatch"
+    monkeypatch.setenv("MINE_EXTRACT_TIMEOUT", "42")
+    assert mine_glossary._extract_timeout() == 42.0, "tunable without a code change, like MINE_MIN_COUNT"

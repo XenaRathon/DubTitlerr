@@ -57,6 +57,20 @@ def _load_common(path: str = "data/common_proper_noun_deny.txt") -> set:
 COMMON = _load_common()
 
 
+# A backstop against a wedged ffmpeg, not a budget. 120s was not enough: the miner walks
+# every episode of a show back to back over a network mount, and a cold or contended pass is
+# far slower than any single warm measurement suggests. Tunable like MINE_MIN_COUNT.
+EXTRACT_TIMEOUT = 600.0
+
+
+def _extract_timeout() -> float:
+    """Read at CALL time so the env var can be set for one run without a restart."""
+    try:
+        return float(os.environ.get("MINE_EXTRACT_TIMEOUT", EXTRACT_TIMEOUT))
+    except ValueError:
+        return EXTRACT_TIMEOUT
+
+
 def eng_sub_text(video):
     """Return plaintext of the video's English (or und) ASS/SSA/SRT subtitle, or ''.
 
@@ -113,12 +127,26 @@ def eng_sub_text(video):
     idx = cand[0]["index"]
     with tempfile.TemporaryDirectory() as td:
         out = os.path.join(td, "s.ass")
-        subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-nostdin", "-i", video, "-map", f"0:{idx}", out],
-            capture_output=True,
-            timeout=120,
-            stdin=subprocess.DEVNULL,
-        )
+        try:
+            # NO `-c:s copy`, deliberately, and NOT common.extract_sub which tries that
+            # first. Measured 2026-08-28 on one 352MB AV1 episode over the media mount:
+            # `-c:s copy` took 51.7s and the plain path 0.8s, for a byte-identical 586,559
+            # byte result. 60x, the wrong way round, on the shape of file this walks 25 of.
+            subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-nostdin", "-i", video, "-map", f"0:{idx}", out],
+                capture_output=True,
+                timeout=_extract_timeout(),
+                stdin=subprocess.DEVNULL,
+            )
+        except Exception as exc:
+            # A per-episode failure is a per-episode loss. This call was outside any try, so
+            # a TimeoutExpired propagated out of main() and killed the whole run -- throwing
+            # away every term mined from the episodes before it (E11 of Sword Art Online,
+            # 2026-08-28, taking the ten already mined with it). Reported for the same reason
+            # the probe failure is: a show that mines nothing and a show that could not be
+            # read must not look the same.
+            print(f"mine: could not extract subtitles from {video}: {exc}")
+            return ""
         if not os.path.exists(out):
             return ""
         try:
