@@ -41,6 +41,7 @@ import http.server
 import json
 import os
 import secrets
+import string
 import tempfile
 import threading
 import time
@@ -252,11 +253,86 @@ def handle_index() -> dict:
     return {"episodes": out}
 
 
-def _decorate(stem: str, e: dict, index: int) -> dict:
-    """One queue entry as the page needs it: its own index, what may be done to it, and
-    whether doing it is reversible."""
+# Leading/trailing only. `don't` and `it's` are ONE word each; stripping punctuation inside
+# them would split most contractions and file them as word changes -- the exact 78% this
+# ordering exists to push down the page.
+_TRIM = string.punctuation + "\u2014\u2013\u2026\u201c\u201d\u00ab\u00bb\u00a1\u00bf"
+
+
+def _words(text: str) -> list:
+    """The word sequence, with punctuation and case discarded.
+
+    The apostrophe fold is decisions.key's, for decisions.key's reason: U+2019 and U+0027 are
+    two renderings of one character and English dub dialogue is mostly contractions."""
+    folded = (text or "").replace(chr(0x2019), chr(0x27)).lower()
+    # A DASH separates, a HYPHEN does not. This stage's commonest single act is turning a
+    # run-on into sentences, and `it--that's` becoming `it. That's` adds a token on one side
+    # only; filed as a word change, pure punctuation would sort to the top of the queue. The
+    # hyphen is left alone because Flame-Flame, non-stop and CP-0 are one word each.
+    for sep in ("\u2014", "\u2013", "\u2026"):
+        folded = folded.replace(sep, " ")
+    return [w for w in (t.strip(_TRIM) for t in folded.split()) if w]
+
+
+# Worst first. `words` is where the flame-flame deletion lives -- ratio 0.88 inside a 0.6-1.5
+# band, shorter so fits_card passes, no new token for invents_name to see: accept_repair
+# cannot detect it, and on an unanchored card neither can anything downstream.
+RISK_ORDER = {"words": 0, "substitution": 1, "punctuation": 2}
+
+# What the reviewer is being asked to look for, in that order.
+RISK_LABEL = {
+    "words": "a word added or dropped",
+    "substitution": "a word swapped",
+    "punctuation": "punctuation only",
+}
+
+
+def risk_class(original: str, proposed: str) -> str:
+    """What the repair actually DID, as the axis the queue is ordered on.
+
+    Measured over the 682 admitted repairs of the 2026-08-28 run: 529 punctuation, 85
+    substitution, 68 words. Every regression in the owner's 45-line read changed a word;
+    none of the 529 could. This is NOT a safety gate -- accept_repair already ran and
+    admitted all of these -- it is the reading order that puts the reviewer's attention
+    where a mistake is still possible."""
+    a, b = _words(original), _words(proposed)
+    if a == b:
+        return "punctuation"
+    return "substitution" if len(a) == len(b) else "words"
+
+
+def hms(seconds) -> str:
+    """A card start as a seek target. Hours only when there are hours."""
+    total = int(float(seconds))
+    h, m, sec = total // 3600, (total // 60) % 60, total % 60
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
+def _triage_key(e: dict) -> tuple:
+    """Stage, then risk, then position in the episode.
+
+    STAGE OUTRANKS RISK, and that is the point: an admitted repair SHIPPED with nothing
+    checking its meaning, while a refusal means the ASR text shipped -- the safe outcome --
+    and asks the separate audit question of whether the guard was too strict. Ordering the
+    two together by risk would make the reviewer change jobs line by line. Time last, so a
+    bucket reads in episode order and the reviewer scrubs forwards."""
+    return (
+        0 if e.get("stage") == "repair_applied" else 1,
+        RISK_ORDER.get(e.get("risk", ""), 1),
+        (e.get("starts") or [float("inf")])[0],
+        e["index"],
+    )
+
+
+def _decorate(stem: str, e: dict, index: int, starts: dict) -> dict:
+    """One queue entry as the page needs it: its own index, what may be done to it, whether
+    doing it is reversible, what the repair changed, and where in the episode to hear it."""
     d = dict(e)
     d["index"] = index
+    d["risk"] = risk_class(e.get("original_text", ""), e.get("proposed_text", ""))
+    # DERIVED, not stored: repair.py records no timing on an accepted repair. Every card the
+    # line appears on, because duplicate-pair suppression makes repeats a single entry.
+    d["starts"] = starts.get(decisions.key(e.get("original_text", "")), [])
     d["offered"] = list(OFFERED.get((str(e.get("stage", "")), str(e.get("reason", ""))), DEFAULT_OFFERED))
     # No reference means nothing downstream can repair this card again -- a bad force here
     # is permanent. Every S31 card is unanchored, so this is the common case, not an edge.
@@ -274,7 +350,11 @@ def handle_episode(stem: str, all_reasons: bool = False) -> dict:
     # Nothing will re-queue them so nothing will ever resolve them; the mux gate has ignored
     # them since [S-6] and the page was still listing them.
     wanted = unresolved.live_only(ep, unresolved.pending(ep, primary_only=not all_reasons))
-    entries = [_decorate(ep, e, items.index(e)) for e in wanted]
+    starts = unresolved.card_starts(ep)
+    entries = [_decorate(ep, e, items.index(e), starts) for e in wanted]
+    # Sorted for the READER only: index still addresses the jsonl row, so a verdict posted
+    # from the page lands on the same entry whatever order it was displayed in.
+    entries.sort(key=_triage_key)
     return {"stem": ep, "name": os.path.basename(ep), "entries": entries}
 
 
@@ -386,11 +466,18 @@ def render_page(stem: str = "") -> str:
         buttons = "".join(
             f'<button data-i="{e["index"]}" data-v="{html.escape(v)}">{html.escape(v)}</button> ' for v in e.get("offered", ())
         )
+        # Every card the line is on. Approximate by construction -- these are ASR word
+        # timings -- but a seek target within a second or two is what checking a line needs.
+        when = ", ".join(hms(t) for t in e.get("starts", ())) or "no card time"
         rows.append(
-            "<li><div class=o>{}</div><div class=p>{}</div><small>{}/{}{}</small><div>{}"
+            '<li class="r{}"><div class=o>{}</div><div class=p>{}</div>'
+            "<small><b>{}</b> \u2014 {} \u2014 {}/{}{}</small><div>{}"
             '<input id="t{}" placeholder="corrected text"></div></li>'.format(
+                html.escape(e.get("risk", "")),
                 html.escape(e.get("original_text", "")),
                 html.escape(e.get("proposed_text", "")),
+                html.escape(when),
+                html.escape(RISK_LABEL.get(e.get("risk", ""), "")),
                 html.escape(e.get("stage", "")),
                 html.escape(e.get("reason", "")),
                 warn,
@@ -441,8 +528,15 @@ def render_page(stem: str = "") -> str:
     )
     zero_adm = sum(1 for e in doc.get("episodes", []) if not e["admitted"])
     hidden_refusals = sum(e["refused"] for e in doc.get("episodes", []) if not e["admitted"])
+    counts: dict = {}
+    for e in doc.get("entries", []):
+        counts[e.get("risk", "")] = counts.get(e.get("risk", ""), 0) + 1
     controls = (
-        ""
+        # On an episode page the order is a claim about what is below it, so the page backs
+        # the claim with the counts rather than leaving the reviewer to take it on trust.
+        "<p><small>Ordered worst first: "
+        + ", ".join(f"<b>{counts.get(k, 0)}</b> {RISK_LABEL[k]}" for k in RISK_ORDER)
+        + ". Times are the card start, approximate to the ASR word timings.</small></p>"
         if stem
         else (
             '<p><input id="filter" size=32 placeholder="filter by show or episode…"> '
@@ -457,7 +551,9 @@ def render_page(stem: str = "") -> str:
         ".o{color:#900}.p{color:#060}small{color:#666}"
         "details{margin:.4em 0}summary{cursor:pointer}details.season{margin-left:1.4em}"
         "li.ep{border:0;margin:.25em 0}.adm{color:#060;font-weight:600}.ref{color:#888;font-size:90%}"
-        "#filter{padding:.3em}</style>"
+        "#filter{padding:.3em}"
+        "li.rwords{border-left-color:#c00}li.rsubstitution{border-left-color:#e90}"
+        "li.rpunctuation{border-left-color:#ccc}</style>"
         "<h1>Review</h1><p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
         f"{controls}"
         f"<div id=list>{''.join(rows)}</div>"

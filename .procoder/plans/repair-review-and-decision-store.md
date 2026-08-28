@@ -303,3 +303,62 @@ Files: `container_run.sh`, `Dockerfile.builder`, `tests/test_dockerfile_copy.py`
 - [ ] Document `REVIEW_PORT`, `REVIEW_TOKEN`, `DECISIONS_DIR`, `DECISIONS_APPLY`,
       `REVIEW_GATE_SHOWS` and `REVIEW_GATE_STALE_DAYS` in `container_run.sh`'s header.
 - [ ] `procoder test` green, `procoder check` 0 blocking, evidence recorded.
+
+## Task 9: triage order and card timestamps
+
+Files: `review_server.py`, `unresolved.py`, `tests/test_review_server.py`,
+`tests/test_unresolved.py`
+
+Added after the first production run put 682 admitted repairs in front of a human on
+2026-08-28. Two things the queue did not have and a reviewer cannot work without.
+
+**Ordering.** Measured over all 682: **529 punctuation-only (78%), 85 a word swapped,
+68 a word added or dropped.** All four regressions in the owner's 45-line read changed a
+word; none of the 529 could. In queue order the reviewer meets the dangerous 22% only
+after wading through the rest, so `handle_episode` now sorts.
+
+    risk_class(original, proposed) -> "words" | "substitution" | "punctuation"
+
+Word-identity after folding case, punctuation and the U+2019/U+0027 apostrophe. A DASH
+separates and a HYPHEN does not: this stage's commonest single act is turning a run-on
+into sentences, and `it--that's` -> `it. That's` adds a token on one side only, so without
+that rule pure punctuation would sort to the top. `Flame-Flame`, `non-stop` and `CP-0`
+stay one word each.
+
+    _triage_key(entry) -> (stage, risk, first card start, index)
+
+STAGE OUTRANKS RISK deliberately. An admitted repair SHIPPED with nothing checking its
+meaning; a refusal means the ASR text shipped -- the safe outcome -- and asks the separate
+audit question of whether the guard was too strict. Ordered together by risk the reviewer
+would change jobs line by line. Time last, so a bucket reads in episode order.
+
+The sort is for the READER only: `index` still addresses the jsonl row, so a verdict posted
+from the page lands on the same entry whatever order it was shown in.
+
+**Timestamps.** `repair.py` records `original_text` and `proposed_text` and no timing at
+all on an accepted repair, so the seek target is DERIVED from conf.json, not stored:
+
+    unresolved.card_starts(stem) -> {decisions.key(text): [start, ...]}
+
+Derived rather than backfilled means the 682 already queued get times for free, and a
+re-transcription cannot leave a stale one behind. Keyed on `decisions.key`, the same
+identity `live_only` matches on, so the two cannot disagree about which entry is which
+card. A LIST because duplicate-pair suppression makes a line repeated on several cards one
+entry, and the reviewer is owed all of the places it is. CARD start, not `source_start`:
+the target is a card that will be on screen, not the window the anchor logic searched.
+Approximate by construction -- these are ASR word timings.
+
+- [x] RED/GREEN: `test_card_starts_maps_a_line_to_every_time_it_appears`,
+      `test_card_starts_is_empty_rather_than_raising_without_conf` (observability contract:
+      never raise, never fail an episode).
+- [x] RED/GREEN: `test_risk_class_separates_a_changed_word_from_a_changed_comma`, including
+      the em-dash split and the `CP-0` hyphen.
+- [x] RED/GREEN: `test_the_episode_queue_puts_the_word_changing_repairs_first` — fixture
+      queues worst LAST, so append order cannot pass the test by luck.
+- [x] RED/GREEN: `test_a_refusal_sorts_after_every_admitted_repair` — the refusal is first
+      in the jsonl AND substitutes a word, so only the stage rule can put it last.
+- [x] RED/GREEN: `test_an_entry_carries_the_times_its_card_appears_at`,
+      `test_hms_is_readable_at_both_ends_of_an_episode`.
+- [x] Measured on the live library, all 48 S31 episodes: 682 admitted, **682 resolved to a
+      card time, 0 misses**; 68 words / 85 substitution / 529 punctuation.
+- [x] `procoder test` green (all suites), `procoder check` 0 blocking.

@@ -184,6 +184,37 @@ def live_only(stem: str, entries: list) -> list:
     return [e for e in entries if decisions.key(e.get("original_text", "")) in live]
 
 
+def card_starts(stem: str) -> dict:
+    """Every line this episode contains, mapped to the card start times it appears at.
+
+    A queue entry carries no timing: repair.py records original_text and proposed_text, and
+    an accepted repair records neither source_start nor source_end. So the timestamp a
+    reviewer needs to scrub to the line and hear it is DERIVED here from conf.json rather
+    than stored -- which is why the 682 entries already queued get one with no backfill, and
+    why a re-transcription cannot leave a stale time behind.
+
+    A LIST per line, not one time. The same sentence can be on several cards, and repair.py's
+    duplicate-pair suppression makes those ONE queue entry -- so the reviewer is owed all of
+    the places it is, not an arbitrary first.
+
+    CARD start, not source_start: the reviewer is seeking to a card they will read on screen,
+    not to the window the anchor logic searched.
+
+    Keyed on decisions.key, the same identity live_only matches on, so the two cannot
+    disagree about which entry describes which card. Returns {} rather than raising."""
+    out: dict = {}
+    try:
+        with open(out_for(stem + CONF_SUFFIX), encoding="utf-8") as f:
+            cards = json.load(f)
+        for c in cards:
+            if not isinstance(c, dict):
+                continue
+            out.setdefault(decisions.key(c.get("text", "")), []).append(float(c.get("start", 0.0)))
+    except (OSError, ValueError, TypeError):
+        return {}
+    return out
+
+
 def _rewrite(stem: str, doc: list) -> bool:
     """Whole-file replace, used only by resolve(). Atomic via temp + os.replace."""
     path = path_for(stem)

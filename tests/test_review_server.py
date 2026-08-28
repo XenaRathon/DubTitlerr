@@ -830,3 +830,116 @@ def test_the_page_has_a_filter(tmp_path, monkeypatch):
     monkeypatch.setattr(review_server, "known_stems", lambda: stems)
 
     assert 'id="filter"' in review_server.render_page()
+
+
+def _triage_episode(tmp_path, name="triage"):
+    """One episode holding one admitted repair of each risk class, queued WORST LAST.
+
+    Queued in the reverse of the wanted order on purpose: the ordering under test has to be
+    doing the work, not the append order of the jsonl agreeing with it by luck."""
+    cards = [
+        "Roger's treasure belongs to me",  # punctuation only
+        "We're looking for a factory.",  # one word substituted
+        "There's only one who deserves the flame flame fruit.",  # a word deleted
+    ]
+    props = [
+        "Roger's treasure belongs to me.",
+        "We're looking for a needle.",
+        "There's only one who deserves the flame fruit.",
+    ]
+    stem = str(tmp_path / name)
+    with open(stem + ".dubtitles.conf.json", "w") as f:
+        json.dump([{"start": 60.0 + i * 30, "end": 62.0 + i * 30, "text": t} for i, t in enumerate(cards)], f)
+    for c, p in zip(cards, props):
+        unresolved.record(stem, "repair_applied", "accepted", original_text=c, proposed_text=p)
+    return stem
+
+
+def test_risk_class_separates_a_changed_word_from_a_changed_comma():
+    """78% of the admitted repairs (529 of 682, measured 2026-08-28) change no word at all.
+    Every regression the owner's 45-line read found changed one -- so this is the difference
+    between the reviewer's first decision and their five-hundredth."""
+    assert review_server.risk_class("That's right, we're shining,", "That's right, we're shining.") == "punctuation"
+    assert review_server.risk_class("roger's treasure belongs to me", "Roger's treasure belongs to me.") == "punctuation"
+    assert review_server.risk_class("we" + chr(0x2019) + "re shining", "we're shining.") == "punctuation", (
+        "U+2019 and U+0027 are one character rendered two ways -- decisions.key folds them "
+        "for the same reason, and not folding here would file most contractions as risky"
+    )
+    assert (
+        review_server.risk_class(
+            "They don't believe it—that's Cyan Boo from Kano,", "They don't believe it. That's Cyan Boo from Kano."
+        )
+        == "punctuation"
+    ), (
+        "an em dash split into a full stop adds a token on one side only -- filed as a word "
+        "change it would put pure punctuation at the top of the queue, which is the noise "
+        "this ordering exists to remove"
+    )
+    assert review_server.risk_class("We're looking for a factory.", "We're looking for a needle.") == "substitution"
+    assert review_server.risk_class("That come together.", "That comes together.") == "substitution"
+    assert review_server.risk_class("deserves the flame flame fruit.", "deserves the flame fruit.") == "words"
+    assert review_server.risk_class("and that's not Chin Down behind them.", "That's not Chin Down behind them.") == "words"
+    assert review_server.risk_class("CP-0.", "CP 0.") == "words", (
+        "the HYPHEN stays word-internal: Flame-Flame, non-stop and CP-0 are one word each"
+    )
+
+
+def test_the_episode_queue_puts_the_word_changing_repairs_first(tmp_path, monkeypatch):
+    """A queue in queue order is 78% punctuation, and the reviewer meets the dangerous 22%
+    only after wading through it. Ordered by what the change actually did instead."""
+    stem = _triage_episode(tmp_path)
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+
+    entries = review_server.handle_episode(stem)["entries"]
+
+    assert [e["risk"] for e in entries] == ["words", "substitution", "punctuation"], (
+        "words added or dropped first -- that is where the flame-flame deletion lives and no "
+        "gate in this pipeline can see it; punctuation-only last"
+    )
+    assert entries[0]["proposed_text"].endswith("the flame fruit.")
+
+
+def test_a_refusal_sorts_after_every_admitted_repair(tmp_path, monkeypatch):
+    """Two different jobs, not one queue ordered by risk. An admitted repair SHIPPED with
+    nothing checking its meaning; a refusal means the ASR text shipped, which is the safe
+    outcome, and asks the audit question of whether the guard was too strict. Interleaving
+    them by risk class would make the reviewer switch jobs line by line."""
+    stem = str(tmp_path / "mixed")
+    # FIRST in the jsonl, and it substitutes a word -- so both the append order and the risk
+    # ordering argue for showing it first. Only the stage rule puts it last.
+    unresolved.record(
+        stem,
+        "repair",
+        "rejected_guard",
+        original_text="Roger's treasure belongs to me",
+        proposed_text="Rogers treasure belongs to Luffy",
+        reference="ref",
+    )
+    _triage_episode(tmp_path, "mixed")
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+
+    stages = [e["stage"] for e in review_server.handle_episode(stem)["entries"]]
+
+    assert stages == ["repair_applied"] * 3 + ["repair"], "the refusal sorts last despite substituting a word"
+
+
+def test_an_entry_carries_the_times_its_card_appears_at(tmp_path, monkeypatch):
+    """So the reviewer can seek to the line and hear what was actually said."""
+    stem = _triage_episode(tmp_path, "timed")
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+
+    by_risk = {e["risk"]: e for e in review_server.handle_episode(stem)["entries"]}
+
+    assert by_risk["punctuation"]["starts"] == [60.0]
+    assert by_risk["words"]["starts"] == [120.0]
+    page = review_server.render_page(stem)
+    assert "2:00" in page and "1:00" in page, "rendered as mm:ss, not raw seconds"
+
+
+def test_hms_is_readable_at_both_ends_of_an_episode():
+    assert review_server.hms(0) == "0:00"
+    assert review_server.hms(65.4) == "1:05"
+    assert review_server.hms(3725) == "1:02:05"

@@ -1,9 +1,11 @@
 """Per-stage unresolved queue -- the missing human rung of the deterministic -> LLM -> human
 ladder for the subtitle path (glossary_acquire already has one; repair/punctuation did not)."""
 
+import json
 import os
 import stat
 
+import decisions
 import unresolved
 
 
@@ -314,3 +316,35 @@ def test_live_only_keeps_everything_when_conf_is_unreadable(tmp_path):
     entries = [{"stage": "repair_applied", "original_text": "anything"}]
 
     assert u.live_only(stem, entries) == entries
+
+
+def test_card_starts_maps_a_line_to_every_time_it_appears(tmp_path):
+    """The review page needs a timestamp so a reviewer can scrub to the line and hear it.
+
+    repair.py records no timing on an accepted repair, so this is DERIVED from conf.json
+    rather than stored -- which is also why the 682 entries already queued get timestamps
+    with no backfill. Matched on decisions.key, the same identity live_only uses, so a line
+    that differs only in case or whitespace is still the same line."""
+    stem = str(tmp_path / "ep")
+    with open(stem + ".dubtitles.conf.json", "w") as f:
+        json.dump(
+            [
+                {"start": 12.5, "end": 14.0, "text": "Roger's treasure belongs to me"},
+                {"start": 90.0, "end": 92.0, "text": "we run this joint"},
+                {"start": 300.25, "end": 302.0, "text": "ROGER'S   TREASURE belongs to me"},
+            ],
+            f,
+        )
+    starts = unresolved.card_starts(stem)
+
+    assert starts[decisions.key("roger's treasure belongs to me")] == [12.5, 300.25], (
+        "both occurrences, in order -- the same line repaired once is one queue entry, and "
+        "the reviewer must be able to check either card"
+    )
+    assert starts[decisions.key("we run this joint")] == [90.0]
+    assert decisions.key("never said") not in starts
+
+
+def test_card_starts_is_empty_rather_than_raising_without_conf(tmp_path):
+    """Same contract as the rest of this module: observability never fails an episode."""
+    assert unresolved.card_starts(str(tmp_path / "gone")) == {}

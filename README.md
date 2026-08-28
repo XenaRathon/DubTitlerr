@@ -125,6 +125,39 @@ Everything is an env var, so nothing host-specific is baked in:
 
 </details>
 
+## Reviewing what the repair stage changed
+
+The LLM repair pass fixes real ASR errors, and it also produces changes that pass every
+mechanical gate while destroying the meaning — `We're looking for a factory.` became
+`a needle.`, `It's a VIVRA card?` became `a Vivi card?`. Nothing in the pipeline can
+detect those, so accepted repairs are queued for a human instead.
+
+The page is at `http://<host>:8842`. On first start the container logs a token; paste it
+into the box at the top once and the browser remembers it. `REVIEW_TOKEN` sets it
+explicitly; leaving it _unset_ generates one (the server runs as root and its write routes
+rewrite subtitles, so "unset" cannot mean "no auth").
+
+The index groups episodes by show and season and leads with the ones holding **admitted**
+repairs — changes that already shipped with nothing checking their meaning. Refusals, where
+the guard blocked the repair and the ASR text shipped, are the safe outcome and are hidden
+behind a toggle.
+
+An episode's queue is ordered worst first, because most of what the stage does is harmless.
+Measured over the 682 admitted repairs of one 48-episode run: 78% changed no word at all,
+only punctuation or capitalisation. So each entry is classified by what the repair actually
+did — **a word added or dropped**, **a word swapped**, or **punctuation only** — and shown
+in that order, admitted repairs before refusals. Every regression found in a hand-read of
+45 lines changed a word; none of the punctuation-only ones could.
+
+Each entry carries the start time of the card it is on, so you can seek to the line and
+hear what was actually said. Times are derived from the transcript, so they are as accurate
+as the ASR word timings — close enough to find the line, not frame-accurate.
+
+Verdicts are `accept`, `reject`, `correct` (supply your own text) and `force` (apply a
+repair the guard refused). They are stored per show, so the same decision applies the next
+time that line is transcribed. For an episode already muxed, **Apply decisions to this
+episode** rewrites the subtitle and drops the stamp so the merge loop re-muxes it.
+
 ## Requirements
 
 `ffmpeg`/`ffprobe` and the [`pysubs2`](https://pypi.org/project/pysubs2/) Python package — both baked into the provided `Dockerfile`.
