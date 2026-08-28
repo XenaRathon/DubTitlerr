@@ -21,7 +21,7 @@ from collections.abc import Collection
 
 import pysubs2
 
-from common import is_our_track, load_extras, stream_title
+from common import SIGNS_TITLE, is_our_track, load_extras, stream_title
 
 EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_extras)
 
@@ -121,7 +121,19 @@ def eng_sub_text(video):
         if ((s.get("tags") or {}).get("language") or "").lower() in ("eng", "en", "und", "")
         and s.get("codec_name") in ("ass", "ssa", "subrip")
         and not is_our_track(stream_title(s))
+        # A SIGNS/SONGS track is not a script, and the first English track is not
+        # necessarily the dialogue one. Measured on Sword Art Online E01: track 2 is
+        # "S&S English" -- 3,233 events, 2,142 of them Opening-Romaji karaoke, plus signs,
+        # UI text and "Next Episode" cards, and almost no dialogue -- while the real script
+        # is track 3. Mining the first one admitted 418 "names" including Above, Again,
+        # Address and Episode, which then became words the Whisper prompt was told to spell
+        # correctly. SIGNS_TITLE is mux's own test for this, reused so the two cannot
+        # disagree; it matches "S&S" and "Forced" alike.
+        and not SIGNS_TITLE.search(stream_title(s) or "")
     ]
+    # No fallback to a signs track, for the same reason there is none to our own dubtitle:
+    # junk in the glossary becomes junk in the prompt and junk in glossary.correct's name
+    # list, applied to every future episode. Mining nothing is the better failure.
     if not cand:
         return ""
     idx = cand[0]["index"]

@@ -399,3 +399,36 @@ def test_the_extraction_timeout_is_generous_and_configurable(monkeypatch):
     assert mine_glossary.EXTRACT_TIMEOUT >= 300, "a per-episode backstop, not a stopwatch"
     monkeypatch.setenv("MINE_EXTRACT_TIMEOUT", "42")
     assert mine_glossary._extract_timeout() == 42.0, "tunable without a code change, like MINE_MIN_COUNT"
+
+
+def test_eng_sub_text_prefers_dialogue_over_a_signs_and_songs_track(monkeypatch):
+    """The FIRST English track is not necessarily the one with dialogue in it.
+
+    Measured 2026-08-28 on Sword Art Online E01: track 2 is titled "S&S English" and holds
+    3,233 events of which 2,142 are Opening-Romaji karaoke, 780 Opening-Kanji, plus signs,
+    UI text and "Next Episode" preview cards -- and almost no dialogue. Track 3 (Coalgirls)
+    is the real script. Taking cand[0] mined the karaoke track and admitted 418 "names",
+    among them Above, Again, Address, Advice and Episode (from "Next Episode"), which then
+    went into the Whisper initial_prompt as words to spell correctly.
+
+    common.SIGNS_TITLE already encodes this -- it is what mux uses to find signs tracks, and
+    it matches both "S&S" and "Forced". Reused rather than re-derived, so the miner and the
+    muxer cannot disagree about what a signs track is."""
+    calls = _fake_subprocess(
+        [_stream(2, title="S&S English"), _stream(3, title="Coalgirls Subs English"), _stream(4, title="Dialog ENG Forced")],
+        monkeypatch,
+    )
+
+    mine_glossary.eng_sub_text("fake.mkv")
+
+    extract = [c for c in calls if c[0] == "ffmpeg"][0]
+    assert "0:3" in extract, f"must extract the dialogue track, not the signs/songs one: {extract}"
+
+
+def test_eng_sub_text_mines_nothing_when_every_english_track_is_signs(monkeypatch):
+    """No fallback, for the same reason our own dubtitle track has none: mining a karaoke
+    track is worse than mining nothing. Junk in the glossary becomes junk in the Whisper
+    prompt and junk in glossary.correct's name list, applied to every future episode."""
+    _fake_subprocess([_stream(2, title="Signs & Songs"), _stream(3, title="English Forced")], monkeypatch)
+
+    assert mine_glossary.eng_sub_text("fake.mkv") == ""
