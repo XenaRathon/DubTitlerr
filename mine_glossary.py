@@ -21,7 +21,7 @@ from collections.abc import Collection
 
 import pysubs2
 
-from common import SIGNS_TITLE, is_our_track, load_extras, stream_title
+from common import NON_DIALOGUE_STYLE, SIGNS_TITLE, is_our_track, load_extras, stream_title
 
 EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_extras)
 
@@ -165,7 +165,9 @@ def eng_sub_text(video):
             subs = pysubs2.load(out)
         except Exception:
             return ""
-        return "\n".join(ev.plaintext for ev in subs if not ev.is_comment)
+        # Skipping the furniture INSIDE the track, not just the wrong track. See
+        # common.NON_DIALOGUE_STYLE for the measurement and for why this is a heuristic.
+        return "\n".join(ev.plaintext for ev in subs if not ev.is_comment and not NON_DIALOGUE_STYLE.search(ev.style or ""))
 
 
 REVIEW_REASON = "possessive_floor_crossing"

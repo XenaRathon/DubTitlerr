@@ -432,3 +432,64 @@ def test_eng_sub_text_mines_nothing_when_every_english_track_is_signs(monkeypatc
     _fake_subprocess([_stream(2, title="Signs & Songs"), _stream(3, title="English Forced")], monkeypatch)
 
     assert mine_glossary.eng_sub_text("fake.mkv") == ""
+
+
+def _fake_styled(streams, events, monkeypatch):
+    """ffprobe answers with `streams`; the extraction writes `events` as (style, text)."""
+
+    def run(cmd, **kw):
+        if cmd[0] == "ffprobe":
+            return types.SimpleNamespace(stdout=json.dumps({"streams": streams}), returncode=0)
+        sub = pysubs2.SSAFile()
+        sub.events = [pysubs2.SSAEvent(start=i * 1000, end=i * 1000 + 900, text=t, style=st) for i, (st, t) in enumerate(events)]
+        sub.save(cmd[-1])
+        return types.SimpleNamespace(stdout="", returncode=0)
+
+    monkeypatch.setattr(
+        mine_glossary, "subprocess", types.SimpleNamespace(run=run, DEVNULL=-3, TimeoutExpired=subprocess.TimeoutExpired)
+    )
+
+
+def test_eng_sub_text_reads_dialogue_styles_and_skips_the_furniture(monkeypatch):
+    """A dialogue TRACK still carries signs, previews, UI and song lyrics.
+
+    Measured 2026-08-28 on Sword Art Online E01 track 3 -- the Coalgirls script, the right
+    track -- 655 events of which only 322 are dialogue:
+
+        SAO1 321 · Prev2 129 · Prev1 31 · msg 81 · Signs 68 · SAO-rom 13 · SAO-eng 11 · SAO2 1
+
+    Mining all of it admitted 607 terms. `Incident` came from a Signs headline ("Online Game
+    Incident Claims Numerous Victims") and `Remaining` from a song lyric ("Remaining
+    ignorant, I cowered in fear") -- title-cased furniture, read as a cast list, and then
+    written into the Whisper prompt as words to spell correctly.
+
+    Style names are a fansub convention, not a standard, so this is a heuristic and named as
+    one. It is deliberately conservative: an unrecognised style is treated as dialogue,
+    because losing real dialogue costs names the glossary exists to hold."""
+    _fake_styled(
+        [_stream(2, title="Fansub English")],
+        [
+            ("SAO1", "Kirito went to Aincrad."),
+            ("Signs", "Online Game Incident Claims Numerous Victims"),
+            ("Prev2", "Next Episode: The Sleeping Knights"),
+            ("msg", "Remaining Time"),
+            ("SAO-rom", "Yume wa Owaranai"),
+            ("char-menu", "Programmer Kayaba Akihiko"),
+        ],
+        monkeypatch,
+    )
+
+    text = mine_glossary.eng_sub_text("fake.mkv")
+
+    assert "Kirito went to Aincrad." in text, "dialogue is what this is for"
+    for junk in ("Incident", "Sleeping Knights", "Remaining", "Owaranai", "Programmer"):
+        assert junk not in text, f"{junk!r} came from furniture, not from anyone's mouth"
+
+
+def test_an_unrecognised_style_is_treated_as_dialogue(monkeypatch):
+    """The conservative direction. Fansub groups name styles whatever they like, and a miss
+    here costs a real name; a false positive only costs some noise the count floor may
+    catch anyway."""
+    _fake_styled([_stream(2, title="Fansub English")], [("WeirdCustomName", "Asuna drew her rapier.")], monkeypatch)
+
+    assert "Asuna" in mine_glossary.eng_sub_text("fake.mkv")

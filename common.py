@@ -423,6 +423,27 @@ def eng_sub_tracks(video, sub_langs):
 # single mixed dialogue+karaoke track, not a signs-only one.
 SIGNS_TITLE = re.compile(r"\bs\s*&\s*s\b|sign|\bforced\b|songs?\b", re.I)
 
+# The same problem one level down: a dialogue TRACK still carries signs, previews, in-game
+# UI and song lyrics, each under its own ASS style. Measured on Sword Art Online E01's
+# Coalgirls script -- 655 events, only 322 of them dialogue:
+#
+#     SAO1 321 · Prev2 129 · Prev1 31 · msg 81 · Signs 68 · SAO-rom 13 · SAO-eng 11 · SAO2 1
+#
+# Mined whole, that admitted 607 glossary "names": `Incident` out of a headline ("Online
+# Game Incident Claims Numerous Victims"), `Remaining` out of a song lyric. Title-cased
+# furniture read as a cast list.
+#
+# Style names are a fansub CONVENTION, not a standard, so this is a heuristic and is written
+# as one. Conservative by design -- an unrecognised style counts as dialogue, because a miss
+# costs a real name while a false positive costs only noise the count floor may catch anyway.
+# `eng` is deliberately absent: it names the English half of a rom/eng lyric pair here, and
+# just as often names the dialogue track itself.
+NON_DIALOGUE_STYLE = re.compile(
+    r"sign|song|karaoke|lyric|caption|title|credit|insert|typeset|"
+    r"prev|next|msg|message|note|news|menu|screen|staff|opening|ending|romaji|\brom\b",
+    re.I,
+)
+
 
 def signs_sub_streams(video, sub_langs):
     """Stream indices to lift signs/songs from.
