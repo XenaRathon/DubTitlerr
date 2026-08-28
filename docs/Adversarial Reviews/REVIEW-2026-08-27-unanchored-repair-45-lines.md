@@ -135,6 +135,26 @@ Hand-corrected inside the accepted set, in three classes:
 - UNDER-REPAIR (1x): `my fellow Samadai` got a period and not the fix; owner supplied
   `Samurai`.
 
+## Two bars, not one — owner, 2026-08-28
+
+The Mihawk line records BOTH verdicts and they do not contradict each other. Read in this
+document it was "acceptable by owner call"; reviewed line-by-line on the review page the
+owner rejected it. The bar moved because the context did:
+
+- **Automated pipeline**: acceptable. `Hawkeye Dracule Mihawk` -> `Mihawk` keeps the
+  referent, the scene plays, and holding the whole run for it would cost more than it buys.
+- **Human review**: rejected. "If I'm reviewing it myself I'm going to try to get it as
+  perfect as my ears allow." A reviewer already watching the card is not choosing between
+  the repair and nothing; they are choosing between the repair and the right line.
+
+This matters for the tightening this document exists to feed. A `reject` recorded on the
+review page is NOT automatically evidence that `accept_repair` should have blocked the
+repair — some of them are the higher bar being applied, not the guard being wrong.
+Calibrating the guard against every human rejection would tighten it to a standard only the
+manual pass ever applies, and the cost lands on the unattended runs that have no reviewer.
+When that pass happens, the review verdicts need splitting into "the guard missed a
+regression" and "a human could do better here" before any threshold moves.
+
 Owner's decision on the failures: `accept_repair` is NOT to be tightened now. The
 current version is acceptable at this stage, and the tightening waits for more
 human-reviewed data. Each stage of the build is about getting closer to the goal,
