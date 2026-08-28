@@ -481,7 +481,11 @@ def test_the_stem_cache_expires(tmp_path, monkeypatch):
     (root / ("a" + review_server.CONF_SUFFIX)).write_text("[]")
     monkeypatch.setattr(review_server, "ROOTS", [str(root)])
     monkeypatch.setattr(review_server, "_STEMS_CACHE", None)
+    # BOTH, because the TTL is now a floor and the walk's own cost is the other term. On a
+    # tmp_path the walk is sub-millisecond, so the derived ceiling is tiny -- but not zero,
+    # and this test needs the cache genuinely disabled to say anything.
     monkeypatch.setattr(review_server, "STEMS_TTL", 0.0)
+    monkeypatch.setattr(review_server, "STEMS_TTL_FACTOR", 0.0)
 
     assert len(review_server.known_stems()) == 1
     (root / ("b" + review_server.CONF_SUFFIX)).write_text("[]")
@@ -1173,3 +1177,81 @@ def test_the_shared_page_renders_one_row_per_line_with_its_count(tmp_path, monke
     assert "in 3 episodes" in page
     assert 'name="p0" value="accept"' in page and 'name="p0" value="force"' not in page
     assert 'id="save"' in page and 'id="apply"' not in page
+
+
+def test_the_stem_cache_outlives_the_walk_that_fills_it(tmp_path, monkeypatch):
+    """A cache that expires faster than its own refresh is not a cache.
+
+    Measured on the live library 2026-08-28: known_stems() takes 297s over 989 episodes on a
+    network mount, against a 30s TTL — so every request re-walked the whole media tree and
+    the cache had never once been hit. The TTL cannot be a constant when the cost it is
+    hiding is a property of someone else's filesystem."""
+    walks = []
+    clock = {"t": 1000.0}
+    real_walk = os.walk
+
+    def slow_walk(root):
+        walks.append(root)
+        clock["t"] += 300.0  # what the live library actually costs
+        return real_walk(root)
+
+    stem = str(tmp_path / "ep")
+    with open(stem + ".dubtitles.conf.json", "w") as f:
+        json.dump([{"start": 0.0, "end": 2.0, "text": "x"}], f)
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", None)
+    monkeypatch.setattr(review_server.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(os, "walk", slow_walk)
+
+    assert review_server.known_stems() == [stem]
+    clock["t"] += 60.0  # twice the old TTL later
+    assert review_server.known_stems() == [stem]
+
+    assert len(walks) == 1, "a 300s walk must not be redone a minute later"
+    assert review_server._stems_ttl(300.0) > 300.0, "the list outlives the cost of rebuilding it"
+    assert review_server._stems_ttl(0.01) == review_server.STEMS_TTL, "a fast mount keeps the short TTL"
+
+
+def test_the_index_reads_a_queue_file_only_when_it_has_changed(tmp_path, monkeypatch):
+    """989 episodes x (queue jsonl + conf.json) per request was ~200s on the live library,
+    on top of the walk. The contents cannot change without the file changing, so the second
+    pass is two stats per episode instead of two reads."""
+    stems = [_triage_episode(tmp_path, n) for n in ("e01", "e02")]
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    monkeypatch.setattr(review_server, "_QUEUE_CACHE", {})
+    reads = []
+    real = unresolved.items
+    monkeypatch.setattr(unresolved, "items", lambda s: (reads.append(s), real(s))[1])
+
+    review_server.handle_index()
+    first = len(reads)
+    review_server.handle_index()
+
+    assert first >= 2, "both episodes read on the cold pass"
+    assert len(reads) == first, "and neither re-read when nothing changed"
+
+    unresolved.record(stems[0], "repair_applied", "accepted", original_text="new line", proposed_text="New line.")
+    review_server.handle_index()
+
+    assert len(reads) == first + 1, "the episode whose queue file changed, and only that one"
+
+
+def test_a_verdict_is_visible_immediately_despite_the_queue_cache(tmp_path, monkeypatch):
+    """The cache keys on the QUEUE file, and a verdict also writes the decisions store —
+    a second file it does not watch. Saving must not leave the reviewer looking at a line
+    they just settled, so the store is consulted outside the cache, every time."""
+    stems = [_triage_episode(tmp_path, n) for n in ("e01", "e02")]
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    monkeypatch.setattr(review_server, "_QUEUE_CACHE", {})
+    monkeypatch.setattr(review_server.decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "show_for", lambda s: "One Pace")
+    before = len(review_server.handle_episode(stems[1])["entries"])
+    target = next(e for e in review_server.handle_episode(stems[0])["entries"] if "flame fruit" in e["proposed_text"])
+
+    review_server.handle_decide_batch(stems[0], [{"index": target["index"], "verdict": "reject"}])
+
+    assert len(review_server.handle_episode(stems[1])["entries"]) == before - 1, (
+        "the sibling episode's queue file did not change, but the answer did"
+    )

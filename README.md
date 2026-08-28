@@ -170,6 +170,14 @@ Grouping is on the exact text pair, which is the same identity the decision stor
 same sung line transcribed two ways stays two decisions; that is deliberate, since a
 reviewer who read one has not read the other.
 
+The page walks the whole media tree to find episodes, and reads each one's queue. On a
+large library over a network mount that is slow — measured at 297s for the walk alone across
+989 episodes — so both are cached: the episode list for a multiple of what discovering it
+cost (`REVIEW_STEMS_TTL` is the floor, `REVIEW_STEMS_TTL_FACTOR` the multiplier), and each
+episode's queue until one of its files changes. A newly generated episode appears within the
+cache window, or immediately on restart. Verdicts are never cached — a decision shows up on
+every other episode the moment it is saved.
+
 **Apply decisions to this episode** is the separate, expensive step: it rewrites the
 subtitle and drops the stamp so the merge loop re-muxes the file. Only an episode that has
 already been muxed needs it — for anything still queued, saving the verdicts is enough,

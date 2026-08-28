@@ -50,7 +50,7 @@ from urllib.parse import quote
 import decisions
 import review_apply
 import unresolved
-from common import log
+from common import log, out_for
 from decisions import show_for
 
 REVIEW_PORT = int(os.environ.get("REVIEW_PORT", "8842"))
@@ -76,7 +76,21 @@ ROOTS = os.environ.get("MERGE_ROOTS", "/data/Media/Anime Library").split(":")
 # unauthenticated request. Cached with a SHORT ttl rather than forever, so an episode
 # generated mid-session still appears without restarting the container.
 STEMS_TTL = float(os.environ.get("REVIEW_STEMS_TTL", "30"))
+# ...but a TTL that expires faster than the walk it is hiding is not a cache at all. Measured
+# 2026-08-28: 297s over 989 episodes against a 30s TTL, so every request re-walked the whole
+# tree and the cache had never once been hit. The cost is a property of someone else's
+# filesystem, so the floor stays configurable and the ceiling is derived from what the walk
+# actually took. A list this expensive to rebuild is allowed to be an hour stale; a fresh
+# episode still appears within that, and immediately on restart.
+STEMS_TTL_FACTOR = float(os.environ.get("REVIEW_STEMS_TTL_FACTOR", "20"))
 _STEMS_CACHE = None
+# One episode's open queue, memoised on the two files it is derived from. The index reads
+# every episode's queue jsonl AND its conf.json -- ~200s across the live library, on top of
+# the walk -- and neither can change without the file changing, so a warm pass is two stats
+# per episode instead of two reads. Deliberately holds the entries BEFORE the decisions
+# store is consulted: the store is a third file this does not watch, and a verdict has to
+# show up immediately.
+_QUEUE_CACHE: dict = {}
 CONF_SUFFIX = ".dubtitles.conf.json"
 # A HEADER, never a query parameter: a token in a URL lands in proxy logs, browser history
 # and any Referer the page emits.
@@ -179,6 +193,38 @@ def authorised(method: str, presented) -> bool:
     return bool(presented) and secrets.compare_digest(str(presented), resolve_token())
 
 
+def _stems_ttl(elapsed: float) -> float:
+    """How long the stem list stays valid, given what discovering it cost."""
+    return max(STEMS_TTL, elapsed * STEMS_TTL_FACTOR)
+
+
+def _sig(path: str):
+    """A file's identity for cache purposes, or None when it is not there."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    # Size as well as mtime: a same-second rewrite of the same length is the one thing this
+    # misses, and a queue rewrite that keeps the byte count is not a state repair.py or
+    # resolve_many can produce.
+    return (st.st_mtime_ns, st.st_size)
+
+
+def open_entries(stem: str) -> list:
+    """This episode's primary, still-live queue entries, re-read only when a file changed.
+
+    NOT filtered by the decisions store. That is a third file this does not watch, and it
+    changes on every save -- a reviewer must not be shown a line they just settled because
+    the queue file happened not to move. Callers apply unresolved.undecided themselves."""
+    sig = (_sig(unresolved.path_for(stem)), _sig(out_for(stem + CONF_SUFFIX)))
+    hit = _QUEUE_CACHE.get(stem)
+    if hit is not None and hit[0] == sig:
+        return hit[1]
+    entries = unresolved.live_only(stem, unresolved.pending(stem, primary_only=True))
+    _QUEUE_CACHE[stem] = (sig, entries)
+    return entries
+
+
 def known_stems() -> list:
     """Every episode stem this process can see, discovered by walking MERGE_ROOTS.
 
@@ -186,7 +232,9 @@ def known_stems() -> list:
     would let any caller read or overwrite anything this root process can reach."""
     global _STEMS_CACHE
     now = time.monotonic()
-    if _STEMS_CACHE and now - _STEMS_CACHE[0] < STEMS_TTL:
+    # An EXPIRY, not a stamp: how long this list stays good depends on what it cost, and the
+    # caller cannot know that before the walk.
+    if _STEMS_CACHE and now < _STEMS_CACHE[0]:
         return _STEMS_CACHE[1]
     out = []
     for root in ROOTS:
@@ -206,7 +254,7 @@ def known_stems() -> list:
                     continue
                 out.append(full[: -len(CONF_SUFFIX)])
     stems = sorted(out)
-    _STEMS_CACHE = (now, stems)
+    _STEMS_CACHE = (time.monotonic() + _stems_ttl(time.monotonic() - now), stems)
     return stems
 
 
@@ -240,7 +288,7 @@ def handle_index() -> dict:
     thousands of the urgent kind."""
     out, stores = [], {}
     for stem in known_stems():
-        live = unresolved.live_only(stem, unresolved.pending(stem, primary_only=True))
+        live = open_entries(stem)
         # A verdict settles the LINE, show-wide, not the one queue row that raised it. The
         # opening song is 24 episodes of the same question; without this the count here
         # keeps promising work that the episode page no longer has.
@@ -366,7 +414,7 @@ def handle_episode(stem: str, all_reasons: bool = False) -> dict:
     # Entries orphaned by a re-transcription describe text this episode no longer contains.
     # Nothing will re-queue them so nothing will ever resolve them; the mux gate has ignored
     # them since [S-6] and the page was still listing them.
-    wanted = unresolved.live_only(ep, unresolved.pending(ep, primary_only=not all_reasons))
+    wanted = open_entries(ep) if not all_reasons else unresolved.live_only(ep, unresolved.pending(ep))
     # Settled elsewhere. Decided once on the episode it first appeared in, a shared line is
     # not a question here -- the same rule mux.held_for_review has applied since [S-6].
     seen = len(wanted)
@@ -411,8 +459,7 @@ def handle_shared() -> dict:
         show = show_for(stem)
         if not show:
             continue  # a decision has nowhere to go without one, so there is nothing to offer
-        live = unresolved.live_only(stem, unresolved.pending(stem, primary_only=True))
-        for e in unresolved.undecided(live, _store_for(stem, stores)):
+        for e in unresolved.undecided(open_entries(stem), _store_for(stem, stores)):
             if e.get("stage") != "repair_applied":
                 continue
             orig, prop = e.get("original_text", ""), e.get("proposed_text", "")
