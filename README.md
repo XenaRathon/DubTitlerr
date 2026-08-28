@@ -159,6 +159,17 @@ with the radio buttons as you read — nothing is submitted until you hit **Save
 hands the whole episode back in one request. Verdicts are stored per show, so the same
 decision applies the next time that line is transcribed.
 
+A verdict settles the **line**, show-wide — not the one queue row that raised it. Judge the
+opening song on the first episode and it disappears from every other episode's queue, and
+the page says how many it hid. The **shared lines** link lists every repair that appears in
+more than one episode, once, with its episode count, so the repeated ones can be cleared in
+a single pass before you touch anything episode-specific. Measured on one 48-episode run:
+665 open questions, 487 distinct lines — 27% of the reading was a question already answered.
+
+Grouping is on the exact text pair, which is the same identity the decision store uses. The
+same sung line transcribed two ways stays two decisions; that is deliberate, since a
+reviewer who read one has not read the other.
+
 **Apply decisions to this episode** is the separate, expensive step: it rewrites the
 subtitle and drops the stamp so the merge loop re-muxes the file. Only an episode that has
 already been muxed needs it — for anything still queued, saving the verdicts is enough,

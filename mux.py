@@ -53,7 +53,7 @@ from common import MEDIA_GID, MEDIA_UID, STAMP_SUFFIX, TRACK_NAME, is_our_track,
 # Imported as a NAME so "which show is this path in" has exactly one definition, shared
 # with the decision store. A second answer here would gate one show while storing verdicts
 # under another, and the two would only disagree for the shows an operator actually listed.
-from decisions import decisions_for, lookup, show_for
+from decisions import decisions_for, show_for
 
 ROOTS = os.environ.get("MUX_ROOTS", "/data/Media/Anime Library").split(":")
 # [S-6] Shows whose episodes wait for a human before they are released. Colon list, the
@@ -201,7 +201,7 @@ def video_duration(path):
     try the field, then the tag, then fall back to the container figure."""
     st = _ffprobe_video(path)
     try:
-        d = float(st.get("duration"))
+        d = float(st.get("duration") or 0)
         if d > 0:
             return d
     except (TypeError, ValueError):
@@ -363,10 +363,9 @@ def held_for_review(stem):
     # failed. Resolved here rather than at the call site so the queue file is only read for
     # episodes that are actually candidates for a hold.
     store, _ = decisions_for(stem)
-    if store:
-        pend = [e for e in pend if not lookup(store, e.get("original_text", ""), e.get("proposed_text", ""))]
-        if not pend:
-            return False
+    pend = unresolved.undecided(pend, store)
+    if not pend:
+        return False
     # Entries orphaned by a version bump. The queue is NOT in generate.SIDECAR_SUFFIXES, so
     # park_stale_sidecars leaves it across a re-transcription and its rows can describe text
     # the episode no longer contains. Nothing will re-queue those lines, so nothing will ever

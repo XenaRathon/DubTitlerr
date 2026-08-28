@@ -215,6 +215,28 @@ def card_starts(stem: str) -> dict:
     return out
 
 
+def undecided(entries: list, store: dict) -> list:
+    """The entries no stored verdict already settles.
+
+    A line with a stored verdict IS settled, whatever its queue flag says: the verdict is
+    what stops repair.py re-applying and re-queueing it, while `resolved` is only what a
+    reviewer's own write set. mux.held_for_review has trusted the verdict over the flag
+    since [S-6]; the review page never got the same rule, so a reviewer who judged the
+    opening song on E01 was asked again on every other episode it appears in. Measured on
+    the live library 2026-08-28: 665 pending admitted entries against 487 distinct text
+    pairs -- 178 of them (27%) a question already answered.
+
+    Here rather than in either caller, and for live_only's reason: two answers to "is this
+    entry still open" would drift, and the drift would be invisible until a reviewer was
+    shown a queue the gate disagreed with.
+
+    FAILS OPEN on an absent store, like live_only: with nothing to check against, showing a
+    settled question costs a moment and hiding a live one costs the review."""
+    if not store:
+        return list(entries)
+    return [e for e in entries if not decisions.lookup(store, e.get("original_text", ""), e.get("proposed_text", ""))]
+
+
 def _rewrite(stem: str, doc: list) -> bool:
     """Whole-file replace, used only by resolve(). Atomic via temp + os.replace."""
     path = path_for(stem)

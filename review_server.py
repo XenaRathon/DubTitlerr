@@ -215,6 +215,19 @@ def _resolve(stem: str):
     return stem if stem in known_stems() else None
 
 
+def _store_for(stem: str, cache: dict) -> dict:
+    """This episode's show store, loaded once per show per request.
+
+    The index walks the whole library -- 294 episodes on the live one -- and a store load
+    per episode would be 294 reads of a handful of files. Read at CALL time, not bound as a
+    default, for decisions.load's reason: DECISIONS_DIR is captured in its signature at
+    import, so the mount cannot be redirected after this module loads unless passed through."""
+    show = show_for(stem)
+    if show not in cache:
+        cache[show] = decisions.load(show, decisions.DECISIONS_DIR) if show else {}
+    return cache[show]
+
+
 def handle_index() -> dict:
     """Every episode with something pending, split by what kind of question it is.
 
@@ -225,9 +238,13 @@ def handle_index() -> dict:
     whether the guard was too strict. Measured on the live library 2026-08-27: 8,662 pending
     items, every one of them a refusal and none an admitted repair -- a single count read as
     thousands of the urgent kind."""
-    out = []
+    out, stores = [], {}
     for stem in known_stems():
         live = unresolved.live_only(stem, unresolved.pending(stem, primary_only=True))
+        # A verdict settles the LINE, show-wide, not the one queue row that raised it. The
+        # opening song is 24 episodes of the same question; without this the count here
+        # keeps promising work that the episode page no longer has.
+        live = unresolved.undecided(live, _store_for(stem, stores))
         if not live:
             continue
         admitted = sum(1 for e in live if e.get("stage") == "repair_applied")
@@ -350,12 +367,18 @@ def handle_episode(stem: str, all_reasons: bool = False) -> dict:
     # Nothing will re-queue them so nothing will ever resolve them; the mux gate has ignored
     # them since [S-6] and the page was still listing them.
     wanted = unresolved.live_only(ep, unresolved.pending(ep, primary_only=not all_reasons))
+    # Settled elsewhere. Decided once on the episode it first appeared in, a shared line is
+    # not a question here -- the same rule mux.held_for_review has applied since [S-6].
+    seen = len(wanted)
+    wanted = unresolved.undecided(wanted, _store_for(ep, {}))
     starts = unresolved.card_starts(ep)
     entries = [_decorate(ep, e, items.index(e), starts) for e in wanted]
     # Sorted for the READER only: index still addresses the jsonl row, so a verdict posted
     # from the page lands on the same entry whatever order it was displayed in.
     entries.sort(key=_triage_key)
-    return {"stem": ep, "name": os.path.basename(ep), "entries": entries}
+    # Named, not silently dropped -- the same reason the index's toggle names the backlog it
+    # conceals. A queue that quietly shrank would read as work lost, not work already done.
+    return {"stem": ep, "name": os.path.basename(ep), "entries": entries, "settled_elsewhere": seen - len(wanted)}
 
 
 # One writer at a time. Both writes below are read-modify-write over a WHOLE file -- the
@@ -364,6 +387,102 @@ def handle_episode(stem: str, all_reasons: bool = False) -> dict:
 # lose each other's verdicts with no error anywhere. A review is one person clicking, so the
 # contention this serialises is real but tiny.
 _WRITE_LOCK = threading.Lock()
+
+
+def handle_shared() -> dict:
+    """Every still-open line that appears in MORE than one episode, listed once.
+
+    The opening song is the same repair in 24 episodes and the closing song in 23. Read
+    per episode that is 23 further decisions carrying no information, and they are mixed in
+    with the lines that only exist there. Measured on the live library 2026-08-28: 665 open
+    admitted entries against 487 distinct text pairs.
+
+    Grouped on decisions.key of BOTH texts -- the store's own identity -- so what collapses
+    here is exactly what one stored verdict settles. It does NOT collapse the same sung line
+    transcribed two ways (`our minds will never give up` and `our mods will never give up`
+    are 7 episodes each); different ASR text is a different proposal, and a reviewer reading
+    one has not read the other.
+
+    Only `repair_applied`. A guard refusal left the ASR text in place and asks the separate
+    audit question; batching those across episodes would hide which release they came from."""
+    groups: dict = {}
+    stores: dict = {}
+    for stem in known_stems():
+        show = show_for(stem)
+        if not show:
+            continue  # a decision has nowhere to go without one, so there is nothing to offer
+        live = unresolved.live_only(stem, unresolved.pending(stem, primary_only=True))
+        for e in unresolved.undecided(live, _store_for(stem, stores)):
+            if e.get("stage") != "repair_applied":
+                continue
+            orig, prop = e.get("original_text", ""), e.get("proposed_text", "")
+            g = groups.setdefault((show, decisions.key(orig), decisions.key(prop)), {"stems": set(), "e": e})
+            g["stems"].add(stem)
+    rows = []
+    for (show, _ko, _kp), g in groups.items():
+        if len(g["stems"]) < 2:
+            continue  # a line in one episode is that episode's question, not a shared one
+        e = g["e"]
+        rows.append(
+            {
+                "show": show,
+                "original_text": e.get("original_text", ""),
+                "proposed_text": e.get("proposed_text", ""),
+                "episodes": len(g["stems"]),
+                "risk": risk_class(e.get("original_text", ""), e.get("proposed_text", "")),
+                "offered": list(OFFERED[("repair_applied", "accepted")]),
+            }
+        )
+    # DETERMINISTIC, because `pair` below is an index into this list and the client sends it
+    # back: render and submit must agree even across processes. Most-repeated first is also
+    # the order that clears the most work per decision.
+    rows.sort(key=lambda r: (-r["episodes"], RISK_ORDER.get(r["risk"], 1), r["show"], r["original_text"]))
+    for i, r in enumerate(rows):
+        r["pair"] = i
+    return {"pairs": rows}
+
+
+def handle_shared_decide(verdicts: list) -> dict:
+    """Record verdicts from the shared list. One store write per show.
+
+    NO QUEUE FILE IS TOUCHED, and that is the design rather than an omission: the verdict is
+    show-wide, and unresolved.undecided already hides a settled line wherever it appears --
+    including in mux.held_for_review, which has trusted the verdict over the queue flag since
+    [S-6]. Marking 24 episodes' rows resolved would be 24 rewrites to reach a state the
+    pipeline already agrees on.
+
+    The client sends an INDEX into the list this module just built, never the text. A client
+    is not a trust boundary, and accepting raw text here would let it write a decision for
+    any line in the show -- including one nobody was ever shown."""
+    rows = handle_shared()["pairs"]
+    errors: list = []
+    by_show: dict = {}
+    with _WRITE_LOCK:
+        for d in verdicts if isinstance(verdicts, list) else []:
+            if not isinstance(d, dict):
+                errors.append({"pair": None, "error": "not a verdict"})
+                continue
+            pair, verdict = d.get("pair"), str(d.get("verdict", ""))
+            if isinstance(pair, bool) or not isinstance(pair, int) or not (0 <= pair < len(rows)):
+                errors.append({"pair": pair, "error": "no such shared line"})
+                continue
+            r = rows[pair]
+            if verdict not in r["offered"]:
+                errors.append({"pair": pair, "error": "verdict not offered for this entry"})
+                continue
+            by_show.setdefault(r["show"], []).append((r, verdict, str(d.get("text", ""))))
+        saved, ddir = 0, decisions.DECISIONS_DIR
+        for show, wanted in by_show.items():
+            store = decisions.load(show, ddir)
+            for r, verdict, text in wanted:
+                store = decisions.record(store, r["original_text"], r["proposed_text"], verdict, text=text)
+            if not decisions.save(store, show, ddir):
+                # Named per show, not swallowed: with two shows on the page one store can
+                # fail while the other lands, and the reviewer must know which.
+                errors.append({"pair": None, "error": f"the decisions for {show} could not be saved"})
+                continue
+            saved += len(wanted)
+    return {"saved": saved, "errors": errors}
 
 
 def handle_decide_batch(stem: str, verdicts: list) -> dict:
@@ -481,6 +600,11 @@ def route(method: str, path: str, body: dict, token) -> tuple:
             text=str(body.get("text", "")),
             note=str(body.get("note", "")),
         )
+    if method == "GET" and path == "/api/shared":
+        return 200, handle_shared()
+    if method == "POST" and path == "/api/shared":
+        d = body.get("decisions")
+        return 200, handle_shared_decide(d if isinstance(d, list) else [])
     if method == "POST" and path == "/api/apply":
         return 200, handle_apply(str(body.get("stem", "")))
     return 404, {"error": "no such route"}
@@ -496,6 +620,88 @@ def _js(value: str) -> str:
     of it because json.dumps does not touch `/`, so any value containing `</script>` would
     otherwise close the block early."""
     return json.dumps(value).replace("<", "\\u003c")
+
+
+# Shared by both pages, so the shared-lines list and an episode queue cannot drift apart
+# visually -- the risk colours in particular have to mean the same thing in both.
+_CSS = (
+    "body{font:14px system-ui;max-width:52em;margin:2em auto}"
+    "li{margin:1em 0;border-left:3px solid #ccc;padding-left:.8em}"
+    ".o{color:#900}.p{color:#060}small{color:#666}"
+    "details{margin:.4em 0}summary{cursor:pointer}details.season{margin-left:1.4em}"
+    "li.ep{border:0;margin:.25em 0}.adm{color:#060;font-weight:600}.ref{color:#888;font-size:90%}"
+    "#filter{padding:.3em}"
+    "#bar{position:sticky;bottom:0;background:#fff;border-top:2px solid #333;padding:.6em 0;margin-top:1em}"
+    "#bar button{padding:.4em .8em;margin-right:.5em}#tally{color:#888}"
+    "label:has(input[type=radio]){margin-right:.9em;cursor:pointer}"
+    "li.rwords{border-left-color:#c00}li.rsubstitution{border-left-color:#e90}"
+    "li.rpunctuation{border-left-color:#ccc}"
+)
+
+
+def render_shared() -> str:
+    """The shared-lines page. Same radios and same Save as an episode page.
+
+    NO APPLY BUTTON. A verdict here spans episodes; re-muxing is a per-episode act with a
+    per-episode cost, so it stays on the episode page where the reviewer can see which file
+    they are about to rebuild."""
+    rows = handle_shared()["pairs"]
+    lis = []
+    for r in rows:
+        buttons = "".join(
+            f'<label><input type="radio" name="p{r["pair"]}" value="{html.escape(v)}"> {html.escape(v)}</label> '
+            for v in r["offered"]
+        )
+        lis.append(
+            '<li class="r{}"><div class=o>{}</div><div class=p>{}</div>'
+            "<small><b>in {} episodes</b> \u2014 {} \u2014 {}</small><div>{}"
+            '<input id="t{}" placeholder="corrected text"></div></li>'.format(
+                html.escape(r["risk"]),
+                html.escape(r["original_text"]),
+                html.escape(r["proposed_text"]),
+                r["episodes"],
+                html.escape(RISK_LABEL.get(r["risk"], "")),
+                html.escape(r["show"]),
+                buttons,
+                r["pair"],
+            )
+        )
+    saved = sum(r["episodes"] - 1 for r in rows)
+    return (
+        "<!doctype html><meta charset=utf-8><title>DubTitlerr shared lines</title>"
+        f"<style>{_CSS}</style>"
+        '<h1>Shared lines</h1><p><a href="/">← all episodes</a></p>'
+        "<p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
+        f"<p><small>{len(rows)} line(s) that appear in more than one episode. Deciding them "
+        f"here settles them everywhere and removes {saved} repeat question(s) from the "
+        "episode queues. Grouped on the exact text pair, so the same sung line transcribed "
+        "two ways is still two decisions.</small></p>"
+        f"<div id=list>{''.join(lis)}</div>"
+        '<hr><div id=bar><button id="save">Save verdicts</button> <small id=tally></small></div>'
+        "<script>"
+        "const TOK=document.getElementById('tok');"
+        "try{TOK.value=localStorage.getItem('dubtitlerr_token')||''}catch(e){}"
+        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}});"
+        "async function post(p,b){return (await fetch(p,{method:'POST',headers:{'Content-Type':'application/json',"
+        f"'{TOKEN_HEADER}':TOK.value}},"
+        "body:JSON.stringify(b)})).json()}"
+        "function chosen(){return [...document.querySelectorAll('#list input[type=radio]:checked')]"
+        ".map(r=>({pair:Number(r.name.slice(1)),verdict:r.value,"
+        "text:(document.getElementById('t'+r.name.slice(1))||{}).value||''}))}"
+        "const SV=document.getElementById('save'),TAL=document.getElementById('tally');"
+        "function tally(){const n=chosen().length,"
+        "t=new Set([...document.querySelectorAll('#list input[type=radio]')].map(r=>r.name)).size;"
+        "SV.textContent=n?('Save '+n+' verdict'+(n==1?'':'s')):'Save verdicts';SV.disabled=!n;"
+        "TAL.textContent=(t-n)+' still undecided'}"
+        "document.addEventListener('change',e=>{if(e.target.type==='radio')tally()});"
+        "tally();SV.addEventListener('click',async()=>{const d=chosen();if(!d.length)return;"
+        "SV.disabled=true;const r=await post('/api/shared',{decisions:d});"
+        "if(r.error){alert(r.error);SV.disabled=false;return}"
+        "if(r.errors&&r.errors.length){alert('saved '+r.saved+', REFUSED '+r.errors.length+':\\n'+"
+        "r.errors.map(x=>'line '+x.pair+': '+x.error).join('\\n'))}"
+        "location.reload()});"
+        "</script>"
+    )
 
 
 def render_page(stem: str = "") -> str:
@@ -603,6 +809,8 @@ def render_page(stem: str = "") -> str:
         + ". Times are the card start, approximate to the ASR word timings.</small></p>"
         if stem
         else (
+            '<p><a href="/shared">shared lines →</a> — the ones in more than one episode, '
+            "asked once instead of once per episode.</p>"
             '<p><input id="filter" size=32 placeholder="filter by show or episode…"> '
             f'<label><input type="checkbox" id="showall"> also show the {zero_adm} episodes with nothing '
             f"admitted ({hidden_refusals} guard refusals — the audit backlog)</label></p>"
@@ -610,17 +818,7 @@ def render_page(stem: str = "") -> str:
     )
     return (
         "<!doctype html><meta charset=utf-8><title>DubTitlerr review</title>"
-        "<style>body{font:14px system-ui;max-width:52em;margin:2em auto}"
-        "li{margin:1em 0;border-left:3px solid #ccc;padding-left:.8em}"
-        ".o{color:#900}.p{color:#060}small{color:#666}"
-        "details{margin:.4em 0}summary{cursor:pointer}details.season{margin-left:1.4em}"
-        "li.ep{border:0;margin:.25em 0}.adm{color:#060;font-weight:600}.ref{color:#888;font-size:90%}"
-        "#filter{padding:.3em}"
-        "#bar{position:sticky;bottom:0;background:#fff;border-top:2px solid #333;padding:.6em 0;margin-top:1em}"
-        "#bar button{padding:.4em .8em;margin-right:.5em}#tally{color:#888}"
-        "label:has(input[type=radio]){margin-right:.9em;cursor:pointer}"
-        "li.rwords{border-left-color:#c00}li.rsubstitution{border-left-color:#e90}"
-        "li.rpunctuation{border-left-color:#ccc}</style>"
+        f"<style>{_CSS}</style>"
         "<h1>Review</h1><p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
         f"{controls}"
         f"<div id=list>{''.join(rows)}</div>"
@@ -705,6 +903,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         from urllib.parse import parse_qs, urlparse
 
         u = urlparse(self.path)
+        if u.path == "/shared":
+            return self._send(200, render_shared().encode(), "text/html; charset=utf-8")
         if u.path in ("/", "/index.html"):
             stem = (parse_qs(u.query).get("stem") or [""])[0]
             return self._send(200, render_page(stem).encode(), "text/html; charset=utf-8")

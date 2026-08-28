@@ -382,3 +382,38 @@ def test_resolve_many_writes_nothing_when_any_index_is_out_of_range(tmp_path):
 
     assert unresolved.resolve_many(stem, [(0, True, ""), (9, True, "")]) is False
     assert unresolved.items(stem)[0].get("resolved") is False, "the good index did not land either"
+
+
+def test_undecided_drops_the_entries_a_stored_verdict_already_settles(tmp_path):
+    """A line with a stored verdict is settled, whatever its queue flag says.
+
+    mux.held_for_review has applied this rule since [S-6] -- the verdict is what stops
+    repair.py re-queueing a line, the flag is only what the --review CLI sets. The review
+    page never got it, so a reviewer who judged the opening song on E01 met it again on
+    E02..E24. Measured on the live library: 665 pending admitted entries, 487 distinct text
+    pairs -- 178 of them (27%) a question already answered.
+
+    Lives here, beside live_only, for live_only's reason: two answers to "is this entry
+    still open" would drift, and the drift would be invisible until a reviewer was shown a
+    queue the gate disagreed with."""
+    entries = [
+        {
+            "stage": "repair_applied",
+            "original_text": "roger's treasure belongs to me",
+            "proposed_text": "Roger's treasure belongs to me.",
+        },
+        {
+            "stage": "repair_applied",
+            "original_text": "We're looking for a factory.",
+            "proposed_text": "We're looking for a needle.",
+        },
+    ]
+    store = decisions.record({}, "Roger's treasure belongs to me", "roger's treasure belongs to me.", "accept")
+
+    left = unresolved.undecided(entries, store)
+
+    assert [e["original_text"] for e in left] == ["We're looking for a factory."], (
+        "matched through decisions.key, so the case difference between the queued text and "
+        "the decided text is not a second question"
+    )
+    assert unresolved.undecided(entries, {}) == entries, "no store, nothing settled -- fails OPEN like live_only"

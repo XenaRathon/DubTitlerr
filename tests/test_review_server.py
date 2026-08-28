@@ -353,7 +353,10 @@ def test_the_index_link_url_encodes_the_stem(tmp_path, monkeypatch):
     monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
 
     page = review_server.render_page()
-    href = page.split('href="')[1].split('"')[0]
+    # By NAME, not by position: the index carries other links (the shared-lines page), and a
+    # test that took the first href would pass or fail on their ordering rather than on the
+    # encoding it is about.
+    href = next(h for h in page.split('href="')[1:] if h.startswith("/?stem=")).split('"')[0]
 
     assert "%26" in href, "the ampersand must be percent-encoded, not left to split the query"
     from urllib.parse import parse_qs, urlparse
@@ -969,8 +972,10 @@ def test_decide_batch_saves_every_verdict_in_one_store_write(tmp_path, monkeypat
     pending = review_server.handle_episode(stem)["entries"]
     assert [e["index"] for e in pending] == [], "and both entries left the queue"
     store = review_server.decisions.load("One Pace", str(tmp_path))
-    assert review_server.decisions.lookup(store, _CARDS[0], "I saw Spandam")["verdict"] == "reject"
-    assert review_server.decisions.lookup(store, _CARDS[1], "the ship has sailed")["text"] == "the ship has sailed."
+    first = review_server.decisions.lookup(store, _CARDS[0], "I saw Spandam") or {}
+    second = review_server.decisions.lookup(store, _CARDS[1], "the ship has sailed") or {}
+    assert first.get("verdict") == "reject"
+    assert second.get("text") == "the ship has sailed.", "a `correct` carries the human's own text, not the model's"
 
 
 def test_decide_batch_lands_the_good_verdicts_and_names_the_bad_one(tmp_path, monkeypatch):
@@ -1049,3 +1054,122 @@ def test_only_the_offered_verdicts_get_a_radio(tmp_path, monkeypatch):
     refused = entries["rejected_guard"]["index"]
     assert f'name="v{refused}" value="force"' in page
     assert f'name="v{refused}" value="accept"' not in page
+
+
+def test_a_line_decided_on_one_episode_is_hidden_on_every_other(tmp_path, monkeypatch):
+    """The opening song is 24 episodes of the same question. mux has treated a stored
+    verdict as settled since [S-6]; the page was the one place that did not, so judging it
+    on E01 bought nothing on E02."""
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    monkeypatch.setattr(review_server.decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "show_for", lambda s: "One Pace")
+    monkeypatch.setattr(review_server.decisions, "show_for", lambda p, *a, **k: "One Pace")
+    stems = [_triage_episode(tmp_path, n) for n in ("e01", "e02")]
+
+    e01 = review_server.handle_episode(stems[0])["entries"]
+    # By INDEX, which addresses the jsonl row -- not by display position, which the triage
+    # sort reorders. Picking the deletion deliberately: it is the class no gate can see.
+    target = next(e for e in e01 if "flame fruit" in e["proposed_text"])
+    before = len(review_server.handle_episode(stems[1])["entries"])
+
+    review_server.handle_decide_batch(stems[0], [{"index": target["index"], "verdict": "reject"}])
+    after = review_server.handle_episode(stems[1])["entries"]
+
+    assert len(after) == before - 1, "the same line, decided next door, is no longer asked"
+    assert all("flame fruit" not in e["proposed_text"] for e in after)
+    assert review_server.handle_episode(stems[1])["settled_elsewhere"] == 1, "and the page says so"
+    idx = {e["stem"]: e for e in review_server.handle_index()["episodes"]}
+    assert idx[stems[1]]["admitted"] == before - 1, "and the index count agrees with the page"
+
+
+def _shared_library(tmp_path):
+    """Three episodes sharing an opening-song line, each with one line of its own."""
+    song = ("running forever Let's go along with curiosity", "Running forever. Let's go along with curiosity.")
+    stems = []
+    for i, name in enumerate(("e01", "e02", "e03")):
+        own = (f"line {i} as heard", f"Line {i} as heard.")
+        stem = str(tmp_path / name)
+        with open(stem + ".dubtitles.conf.json", "w") as f:
+            json.dump([{"start": 100.0, "end": 102.0, "text": song[0]}, {"start": 300.0, "end": 302.0, "text": own[0]}], f)
+        for o, p in (song, own):
+            unresolved.record(stem, "repair_applied", "accepted", original_text=o, proposed_text=p)
+        stems.append(stem)
+    return stems
+
+
+def test_shared_lists_each_repeated_line_once_with_its_episode_count(tmp_path, monkeypatch):
+    """One question, asked once. The opening song is the same repair in 24 episodes, and
+    reading it 24 times is 23 decisions that carry no information."""
+    _shared_library(tmp_path)
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    monkeypatch.setattr(review_server.decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "show_for", lambda s: "One Pace")
+
+    rows = review_server.handle_shared()["pairs"]
+
+    assert len(rows) == 1, "only lines in MORE than one episode -- the rest belong to their episode"
+    assert rows[0]["episodes"] == 3
+    assert rows[0]["proposed_text"].startswith("Running forever.")
+    assert rows[0]["risk"] == "punctuation" and rows[0]["offered"] == ["accept", "reject", "correct"]
+    assert rows[0]["pair"] == 0, "a stable handle the client sends back, so raw text never has to be trusted"
+
+
+def test_deciding_a_shared_line_clears_it_from_every_episode(tmp_path, monkeypatch):
+    """The whole point, and it needs no write to any queue file: the verdict is show-wide,
+    and unresolved.undecided already hides a settled line wherever it appears."""
+    stems = _shared_library(tmp_path)
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    monkeypatch.setattr(review_server.decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "show_for", lambda s: "One Pace")
+    assert [len(review_server.handle_episode(s)["entries"]) for s in stems] == [2, 2, 2]
+
+    res = review_server.handle_shared_decide([{"pair": 0, "verdict": "accept"}])
+
+    assert res["saved"] == 1 and not res["errors"]
+    assert [len(review_server.handle_episode(s)["entries"]) for s in stems] == [1, 1, 1], "gone from all three"
+    assert review_server.handle_shared()["pairs"] == [], "and off the shared page too"
+
+
+def test_a_shared_verdict_is_refused_for_a_pair_that_is_not_on_the_list(tmp_path, monkeypatch):
+    """The client sends an INDEX into a list the server recomputes, never the text itself.
+    A client is not a trust boundary, and accepting raw text here would let it write a
+    decision for any line in the show -- including one nobody was ever shown."""
+    _shared_library(tmp_path)
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    monkeypatch.setattr(review_server.decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "show_for", lambda s: "One Pace")
+
+    res = review_server.handle_shared_decide([{"pair": 7, "verdict": "accept"}, {"pair": 0, "verdict": "force"}])
+
+    assert res["saved"] == 0
+    assert {e["pair"] for e in res["errors"]} == {7, 0}
+    assert "not offered" in [e["error"] for e in res["errors"] if e["pair"] == 0][0], (
+        "force on an admitted repair is a gate bypass here exactly as it is on an episode page"
+    )
+
+
+def test_the_shared_route_is_gated_like_every_other_write(tmp_path, monkeypatch):
+    """Reads are open and writes are not, the same split the rest of the surface makes."""
+    monkeypatch.setenv("REVIEW_TOKEN", "sekrit")
+    assert review_server.route("POST", "/api/shared", {"decisions": []}, None)[0] == 401
+    assert review_server.route("GET", "/api/shared", {}, None)[0] == 200
+
+
+def test_the_shared_page_renders_one_row_per_line_with_its_count(tmp_path, monkeypatch):
+    """Radios and a Save, like an episode page -- and no Apply: a shared verdict spans
+    episodes, and re-muxing is a per-episode act with a per-episode cost."""
+    _shared_library(tmp_path)
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    monkeypatch.setattr(review_server.decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "show_for", lambda s: "One Pace")
+
+    page = review_server.render_shared()
+
+    assert "in 3 episodes" in page
+    assert 'name="p0" value="accept"' in page and 'name="p0" value="force"' not in page
+    assert 'id="save"' in page and 'id="apply"' not in page
