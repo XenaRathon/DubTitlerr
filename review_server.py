@@ -230,15 +230,25 @@ def handle_index() -> dict:
         if not live:
             continue
         admitted = sum(1 for e in live if e.get("stage") == "repair_applied")
+        season = os.path.basename(os.path.dirname(stem))
         out.append(
             {
                 "stem": stem,
                 "name": os.path.basename(stem),
+                # Path-derived for DISPLAY only. decisions.show_for is the identity the store
+                # and the gate key on, but it needs a glossary to resolve and returns "" when
+                # there is none -- a page that silently dropped those episodes would be worse
+                # than one whose grouping label is occasionally a directory name.
+                "season": season,
+                "show": os.path.basename(os.path.dirname(os.path.dirname(stem))),
                 "pending": len(live),
                 "admitted": admitted,
                 "refused": len(live) - admitted,
             }
         )
+    # Most admitted first. With everything at 0 the flat list had no meaningful order at all,
+    # so the episode that gains an accepted repair has to surface without being hunted for.
+    out.sort(key=lambda e: (-e["admitted"], -e["refused"], e["name"]))
     return {"episodes": out}
 
 
@@ -388,14 +398,36 @@ def render_page(stem: str = "") -> str:
                 e["index"],
             )
         )
+    # Grouped show -> season, because rendered flat against the real library this was 294
+    # rows of links with no way to find anything. One Pace alone is 457 episodes, so grouping
+    # by show is not sufficient on its own.
+    groups: dict = {}
     for ep in doc.get("episodes", []):
-        # quote() for the QUERY value, then escape() for the attribute. html.escape alone
-        # leaves a raw `&`, which terminates the parameter -- an ordinary thing to have in a
-        # show's directory name.
-        href = "/?stem=" + html.escape(quote(ep["stem"], safe="/"))
+        groups.setdefault(ep["show"], {}).setdefault(ep["season"], []).append(ep)
+    for show, seasons in sorted(groups.items(), key=lambda kv: -sum(e["admitted"] for s in kv[1].values() for e in s)):
+        eps_all = [e for s in seasons.values() for e in s]
+        adm, ref = sum(e["admitted"] for e in eps_all), sum(e["refused"] for e in eps_all)
+        inner = []
+        for season, eps in sorted(seasons.items()):
+            sa, sr = sum(e["admitted"] for e in eps), sum(e["refused"] for e in eps)
+            lis = []
+            for ep in eps:
+                href = "/?stem=" + html.escape(quote(ep["stem"], safe="/"))
+                # data-adm drives the toggle client-side: hiding server-side would make the
+                # count on the toggle a claim the page could not back up.
+                lis.append(
+                    f'<li class=ep data-adm="{ep["admitted"]}"><a href="{href}">{html.escape(ep["name"])}</a> '
+                    f"<span class=adm>{ep['admitted']} admitted</span> "
+                    f"<span class=ref>{ep['refused']} refused</span></li>"
+                )
+            inner.append(
+                f'<details class=season data-adm="{sa}"><summary>{html.escape(season)} — '
+                f"<b>{sa}</b> admitted, {sr} refused</summary><ul>{''.join(lis)}</ul></details>"
+            )
         rows.append(
-            f'<li><a href="{href}">{html.escape(ep["name"])}</a> — '
-            f"<b>{ep['admitted']} admitted</b> (shipped unchecked), {ep['refused']} refused by the guard</li>"
+            f'<details class=show data-adm="{adm}"{" open" if adm else ""}>'
+            f"<summary>{html.escape(show)} — <b>{adm}</b> admitted (shipped unchecked), "
+            f"{ref} refused by the guard</summary>{''.join(inner)}</details>"
         )
     # Only on an episode page. A verdict already changes what the NEXT repair run ships;
     # this is for an episode that has ALREADY been muxed, where nothing would re-trigger it.
@@ -407,13 +439,28 @@ def render_page(stem: str = "") -> str:
         if stem
         else ""
     )
+    zero_adm = sum(1 for e in doc.get("episodes", []) if not e["admitted"])
+    hidden_refusals = sum(e["refused"] for e in doc.get("episodes", []) if not e["admitted"])
+    controls = (
+        ""
+        if stem
+        else (
+            '<p><input id="filter" size=32 placeholder="filter by show or episode…"> '
+            f'<label><input type="checkbox" id="showall"> also show the {zero_adm} episodes with nothing '
+            f"admitted ({hidden_refusals} guard refusals — the audit backlog)</label></p>"
+        )
+    )
     return (
         "<!doctype html><meta charset=utf-8><title>DubTitlerr review</title>"
         "<style>body{font:14px system-ui;max-width:52em;margin:2em auto}"
         "li{margin:1em 0;border-left:3px solid #ccc;padding-left:.8em}"
-        ".o{color:#900}.p{color:#060}small{color:#666}</style>"
+        ".o{color:#900}.p{color:#060}small{color:#666}"
+        "details{margin:.4em 0}summary{cursor:pointer}details.season{margin-left:1.4em}"
+        "li.ep{border:0;margin:.25em 0}.adm{color:#060;font-weight:600}.ref{color:#888;font-size:90%}"
+        "#filter{padding:.3em}</style>"
         "<h1>Review</h1><p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
-        f"<ul>{''.join(rows)}</ul>"
+        f"{controls}"
+        f"<div id=list>{''.join(rows)}</div>"
         f"{apply_html}"
         "<script>"
         f"const STEM={_js(doc.get('stem', ''))};"
@@ -435,6 +482,18 @@ def render_page(stem: str = "") -> str:
         "const r=await post('/api/apply',{stem:STEM});"
         "alert(r.error?r.error:(r.changed?('re-opened: '+r.changed+' card(s) changed'):"
         "'nothing to apply for this episode'));ap.disabled=false})}"
+        # Hiding is right -- the refusal backlog is work the owner explicitly deferred -- but
+        # hiding it SILENTLY would make thousands of real items invisible to anyone who did
+        # not know the toggle existed, so the control names the count it conceals.
+        "const F=document.getElementById('filter'),SA=document.getElementById('showall');"
+        "function apply(){const q=(F&&F.value||'').toLowerCase(),all=SA&&SA.checked;"
+        "document.querySelectorAll('#list li.ep').forEach(li=>{"
+        "const t=li.textContent.toLowerCase(),adm=+li.dataset.adm;"
+        "li.style.display=((all||adm>0)&&(!q||t.includes(q)))?'':'none'});"
+        "document.querySelectorAll('#list details').forEach(d=>{"
+        "const vis=[...d.querySelectorAll('li.ep')].some(li=>li.style.display!=='none');"
+        "d.style.display=vis?'':'none';if(q&&vis)d.open=true});}"
+        "if(F){F.addEventListener('input',apply);SA.addEventListener('change',apply);apply()}"
         "</script>"
     )
 

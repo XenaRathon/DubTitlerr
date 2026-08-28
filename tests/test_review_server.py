@@ -753,3 +753,80 @@ def test_the_page_remembers_the_token_in_the_browser(tmp_path, monkeypatch):
 
     assert "localStorage" in page, "the token must survive a reload"
     assert "dubtitlerr_token" in page, "under a name that will not collide"
+
+
+# --- the index has to survive a real library ---------------------------------
+# Rendered against the owner's 294 episodes it was a flat wall of links, every row reading
+# "0 admitted", with no way to find a show. Built without ever being looked at at that size.
+
+
+def _lib(tmp_path, spec):
+    """spec: {(show, season): [(name, n_admitted, n_refused)]} -> stems on disk."""
+    stems = []
+    for (show, season), eps in spec.items():
+        d = tmp_path / show / season
+        d.mkdir(parents=True, exist_ok=True)
+        for name, adm, ref in eps:
+            stem = str(d / name)
+            cards = [{"start": i * 2.0, "end": i * 2.0 + 2.0, "text": f"card {i}"} for i in range(adm + ref)]
+            with open(stem + ".dubtitles.conf.json", "w") as f:
+                json.dump(cards, f)
+            for i in range(adm):
+                unresolved.record(stem, "repair_applied", "accepted", original_text=f"card {i}", proposed_text=f"fix {i}")
+            for i in range(adm, adm + ref):
+                unresolved.record(stem, "repair", "rejected_guard", original_text=f"card {i}", proposed_text=f"no {i}")
+            stems.append(stem)
+    return stems
+
+
+def test_the_index_carries_show_and_season_and_sorts_by_admitted(tmp_path, monkeypatch):
+    """Ordering is the whole point: with everything at 0 admitted the flat list had no
+    meaningful order at all, so the one episode that later gains an accepted repair has to
+    surface without the reviewer hunting for it."""
+    stems = _lib(
+        tmp_path,
+        {
+            ("One Pace", "Season 31"): [("ep_a", 3, 1)],
+            ("Trigun", "Season 01"): [("ep_b", 0, 40)],
+            ("JUJUTSU KAISEN", "Season 01"): [("ep_c", 7, 2)],
+        },
+    )
+    monkeypatch.setattr(review_server, "known_stems", lambda: stems)
+
+    eps = review_server.handle_index()["episodes"]
+
+    assert [e["admitted"] for e in eps] == [7, 3, 0], "most admitted first, refusals last"
+    assert eps[0]["show"] == "JUJUTSU KAISEN" and eps[0]["season"] == "Season 01"
+    assert {e["show"] for e in eps} == {"One Pace", "Trigun", "JUJUTSU KAISEN"}
+
+
+def test_the_page_groups_by_show_and_season(tmp_path, monkeypatch):
+    """294 flat rows become a handful of collapsed groups. One Pace alone is 457 episodes in
+    this library, so show-level grouping is not enough on its own."""
+    stems = _lib(tmp_path, {("One Pace", "Season 31"): [("a", 2, 0)], ("One Pace", "Season 30"): [("b", 1, 0)]})
+    monkeypatch.setattr(review_server, "known_stems", lambda: stems)
+
+    page = review_server.render_page()
+
+    assert page.count("<details") >= 2, "a group per show, and per season inside it"
+    assert "One Pace" in page and "Season 31" in page and "Season 30" in page
+
+
+def test_the_page_hides_zero_admitted_behind_a_toggle_that_names_the_count(tmp_path, monkeypatch):
+    """Hiding is right -- 8,662 refusals is a backlog the owner explicitly does not want to
+    start on -- but hiding it SILENTLY would make real work invisible to someone who does not
+    know the toggle exists. So the control says how many it is concealing."""
+    stems = _lib(tmp_path, {("Trigun", "Season 01"): [("only_refusals", 0, 40)]})
+    monkeypatch.setattr(review_server, "known_stems", lambda: stems)
+
+    page = review_server.render_page()
+
+    assert 'id="showall"' in page, "a toggle, not a permanent hide"
+    assert "40" in page, "and it names what it is hiding"
+
+
+def test_the_page_has_a_filter(tmp_path, monkeypatch):
+    stems = _lib(tmp_path, {("One Pace", "Season 31"): [("a", 1, 0)]})
+    monkeypatch.setattr(review_server, "known_stems", lambda: stems)
+
+    assert 'id="filter"' in review_server.render_page()
