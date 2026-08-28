@@ -234,7 +234,17 @@ def undecided(entries: list, store: dict) -> list:
     settled question costs a moment and hiding a live one costs the review."""
     if not store:
         return list(entries)
-    return [e for e in entries if not decisions.lookup(store, e.get("original_text", ""), e.get("proposed_text", ""))]
+    # Indexed once, not scanned per entry. decisions.lookup is a linear walk of the store,
+    # and the review page runs this over every open entry in the library -- 8,600 of them on
+    # 2026-08-28 -- against a store that grows with every verdict the reviewer gives. Same
+    # key as lookup, BOTH sides: a verdict on one proposal must not settle a different
+    # proposal for the same line, including the one that fixes it.
+    decided = {(d.get("orig"), d.get("proposed")) for d in store.get("decisions", [])}
+    return [
+        e
+        for e in entries
+        if (decisions.key(e.get("original_text", "")), decisions.key(e.get("proposed_text", ""))) not in decided
+    ]
 
 
 def _rewrite(stem: str, doc: list) -> bool:

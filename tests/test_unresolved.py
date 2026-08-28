@@ -417,3 +417,9 @@ def test_undecided_drops_the_entries_a_stored_verdict_already_settles(tmp_path):
         "the decided text is not a second question"
     )
     assert unresolved.undecided(entries, {}) == entries, "no store, nothing settled -- fails OPEN like live_only"
+
+    # BOTH sides are the key, exactly as decisions.lookup requires. A verdict on one proposal
+    # must not settle a different proposal for the same line -- including the one that fixes
+    # it. This is the property the index below has to preserve.
+    other = decisions.record({}, "We're looking for a factory.", "We're looking for a windmill.", "reject")
+    assert len(unresolved.undecided(entries, other)) == 2, "a different proposal is a different question"

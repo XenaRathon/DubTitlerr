@@ -50,7 +50,7 @@ from urllib.parse import quote
 import decisions
 import review_apply
 import unresolved
-from common import log, out_for
+from common import log
 from decisions import show_for
 
 REVIEW_PORT = int(os.environ.get("REVIEW_PORT", "8842"))
@@ -84,12 +84,20 @@ STEMS_TTL = float(os.environ.get("REVIEW_STEMS_TTL", "30"))
 # episode still appears within that, and immediately on restart.
 STEMS_TTL_FACTOR = float(os.environ.get("REVIEW_STEMS_TTL_FACTOR", "20"))
 _STEMS_CACHE = None
-# One episode's open queue, memoised on the two files it is derived from. The index reads
-# every episode's queue jsonl AND its conf.json -- ~200s across the live library, on top of
-# the walk -- and neither can change without the file changing, so a warm pass is two stats
-# per episode instead of two reads. Deliberately holds the entries BEFORE the decisions
-# store is consulted: the store is a third file this does not watch, and a verdict has to
-# show up immediately.
+# One episode's open queue, filled by the same pass that discovers the episodes and dropped
+# when that pass is redone. The index reads every episode's queue jsonl AND its conf.json --
+# ~200s across the live library, on top of the walk.
+#
+# NOT validated per request. The first version stat-ed both files each time to check
+# freshness and that measured 176s warm: 989 episodes x 2 stats x ~90ms, almost exactly the
+# read it was avoiding. On a mount like this ANY per-episode touch costs the same, so
+# validation cannot be cheaper than the thing validated. The cache is therefore tied to the
+# walk's lifetime, and a WRITE drops the one stem it wrote -- the writer knows which, and
+# dropping everything would make each save cost a full walk exactly when the reviewer is
+# working.
+#
+# Deliberately holds the entries BEFORE the decisions store is consulted. The store is one
+# small file read per request, so a verdict shows up everywhere immediately.
 _QUEUE_CACHE: dict = {}
 CONF_SUFFIX = ".dubtitles.conf.json"
 # A HEADER, never a query parameter: a token in a URL lands in proxy logs, browser history
@@ -198,31 +206,22 @@ def _stems_ttl(elapsed: float) -> float:
     return max(STEMS_TTL, elapsed * STEMS_TTL_FACTOR)
 
 
-def _sig(path: str):
-    """A file's identity for cache purposes, or None when it is not there."""
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    # Size as well as mtime: a same-second rewrite of the same length is the one thing this
-    # misses, and a queue rewrite that keeps the byte count is not a state repair.py or
-    # resolve_many can produce.
-    return (st.st_mtime_ns, st.st_size)
-
-
 def open_entries(stem: str) -> list:
-    """This episode's primary, still-live queue entries, re-read only when a file changed.
+    """This episode's primary, still-live queue entries. Read once per walk, then held.
 
-    NOT filtered by the decisions store. That is a third file this does not watch, and it
-    changes on every save -- a reviewer must not be shown a line they just settled because
-    the queue file happened not to move. Callers apply unresolved.undecided themselves."""
-    sig = (_sig(unresolved.path_for(stem)), _sig(out_for(stem + CONF_SUFFIX)))
-    hit = _QUEUE_CACHE.get(stem)
-    if hit is not None and hit[0] == sig:
-        return hit[1]
+    NOT filtered by the decisions store. That file is small, is read once per request, and
+    changes on every save -- so filtering stays live and a verdict is reflected everywhere
+    the moment it lands. Callers apply unresolved.undecided themselves."""
+    if stem in _QUEUE_CACHE:
+        return _QUEUE_CACHE[stem]
     entries = unresolved.live_only(stem, unresolved.pending(stem, primary_only=True))
-    _QUEUE_CACHE[stem] = (sig, entries)
+    _QUEUE_CACHE[stem] = entries
     return entries
+
+
+def forget(stem: str) -> None:
+    """Drop one episode's cached queue, after writing to it."""
+    _QUEUE_CACHE.pop(stem, None)
 
 
 def known_stems() -> list:
@@ -254,6 +253,9 @@ def known_stems() -> list:
                     continue
                 out.append(full[: -len(CONF_SUFFIX)])
     stems = sorted(out)
+    # Filled together, dropped together. Nothing else expires a queue entry, so a re-repaired
+    # episode would otherwise keep its old queue until the container restarted.
+    _QUEUE_CACHE.clear()
     _STEMS_CACHE = (time.monotonic() + _stems_ttl(time.monotonic() - now), stems)
     return stems
 
@@ -591,6 +593,7 @@ def handle_decide_batch(stem: str, verdicts: list) -> dict:
         # cannot be made atomic across them -- but the report can be honest. The gate is
         # unaffected either way: mux trusts the durable verdict, not this flag.
         cleared = unresolved.resolve_many(ep, updates)
+        forget(ep)
     out = {"saved": len(updates), "show": show, "errors": errors, "queue_cleared": bool(cleared)}
     if not cleared:
         out["warning"] = "verdicts saved, but the queue could not be cleared — they will still be listed"
@@ -617,6 +620,7 @@ def handle_apply(stem: str) -> dict:
     if ep is None:
         return {"error": "unknown episode"}
     store, _ = decisions.decisions_for(ep)
+    forget(ep)  # apply_episode drops the stamp and rewrites sidecars; the cached queue is stale
     return review_apply.apply_episode(ep, store, apply=True)
 
 
@@ -1017,11 +1021,34 @@ class BoundedHTTPServer(http.server.ThreadingHTTPServer):
             self._slots.release()
 
 
+def warm_cache() -> None:
+    """Walk the library and read every queue, so the first request does not have to.
+
+    The walk is unavoidable once per cache lifetime; WHO waits for it is a choice. Measured
+    on the live library, a cold index took over 900s -- and the reviewer was the one sitting
+    in front of it, after every deploy. The container has those minutes anyway.
+
+    NEVER RAISES. This runs on a background thread while the server is already accepting
+    connections, and a media tree that is not mounted yet must delay the first page rather
+    than take the process down."""
+    try:
+        t = time.monotonic()
+        stems = known_stems()
+        for stem in stems:
+            open_entries(stem)
+        log(f"review server: cache warm — {len(stems)} episodes in {time.monotonic() - t:.0f}s")
+    except Exception as exc:  # noqa: BLE001 -- a warmer must not be able to end the process
+        log(f"review server: cache warm failed ({exc}) — the first request will pay for it")
+
+
 def serve(port: int = 0):
     resolve_token()  # generates and prints the VALUE on first start, before anything is served
     announce_token()  # and on every start, says where to find it
     srv = BoundedHTTPServer((REVIEW_BIND, port or REVIEW_PORT), Handler)
     log(f"review server: listening on {REVIEW_BIND}:{port or REVIEW_PORT}")
+    # Started BEFORE serve_forever and as a daemon: the port must open immediately either
+    # way, and a warm that is still running must not hold up a shutdown.
+    threading.Thread(target=warm_cache, name="warm", daemon=True).start()
     srv.serve_forever()
 
 

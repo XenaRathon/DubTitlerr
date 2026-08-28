@@ -1212,29 +1212,79 @@ def test_the_stem_cache_outlives_the_walk_that_fills_it(tmp_path, monkeypatch):
     assert review_server._stems_ttl(0.01) == review_server.STEMS_TTL, "a fast mount keeps the short TTL"
 
 
-def test_the_index_reads_a_queue_file_only_when_it_has_changed(tmp_path, monkeypatch):
-    """989 episodes x (queue jsonl + conf.json) per request was ~200s on the live library,
-    on top of the walk. The contents cannot change without the file changing, so the second
-    pass is two stats per episode instead of two reads."""
+def test_the_index_reads_each_queue_once_per_walk_not_once_per_request(tmp_path, monkeypatch):
+    """Validating the cache must not cost what the cache saves.
+
+    The first version of this stat-ed both files per episode to check freshness. Measured on
+    the live library that was 176s -- 989 episodes x 2 stats x ~90ms, almost exactly the
+    read it replaced. On this mount ANY per-episode filesystem touch costs the same, so the
+    queue cache is tied to the walk that discovered the episodes instead: filled once,
+    dropped when that walk is redone."""
+    [_triage_episode(tmp_path, n) for n in ("e01", "e02")]
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", None)
+    monkeypatch.setattr(review_server, "_QUEUE_CACHE", {})
+    # Counts every TOUCH, not just every read: a stat is what the previous version used to
+    # check freshness, and on the live mount it cost the same as the read it was avoiding.
+    touched = []
+    real_stat, real_open = os.stat, open
+
+    def watch(fn):
+        def wrapped(path, *a, **k):
+            if str(tmp_path) in str(path):
+                touched.append(str(path))
+            return fn(path, *a, **k)
+
+        return wrapped
+
+    review_server.handle_index()
+    monkeypatch.setattr(os, "stat", watch(real_stat))
+    monkeypatch.setattr("builtins.open", watch(real_open))
+
+    review_server.handle_index()
+    review_server.handle_shared()
+
+    assert touched == [], f"a warm pass must not touch the media tree at all, but hit {touched[:3]}"
+
+
+def test_a_fresh_walk_drops_the_queue_cache_with_it(tmp_path, monkeypatch):
+    """The counterpart. Nothing else expires the queue entries, so if the walk did not clear
+    them a re-repaired episode would keep its old queue until the container restarted."""
+    _triage_episode(tmp_path, "e01")
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", None)
+    monkeypatch.setattr(review_server, "_QUEUE_CACHE", {})
+    monkeypatch.setattr(review_server, "STEMS_TTL", 0.0)
+    monkeypatch.setattr(review_server, "STEMS_TTL_FACTOR", 0.0)
+    review_server.handle_index()
+    assert review_server._QUEUE_CACHE
+
+    review_server.known_stems()
+
+    assert review_server._QUEUE_CACHE == {}, "the two caches are filled together and die together"
+
+
+def test_deciding_re_reads_that_episode_and_leaves_the_rest_cached(tmp_path, monkeypatch):
+    """A write is the one thing that changes a queue file, and the writer knows which one.
+    Dropping the whole cache would make every save cost a full library walk -- precisely
+    when the reviewer is working."""
     stems = [_triage_episode(tmp_path, n) for n in ("e01", "e02")]
     monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
-    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (float("inf"), stems))
     monkeypatch.setattr(review_server, "_QUEUE_CACHE", {})
+    monkeypatch.setattr(review_server.decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "show_for", lambda s: "One Pace")
+    review_server.handle_index()
+    target = next(e for e in review_server.handle_episode(stems[0])["entries"] if "flame fruit" in e["proposed_text"])
     reads = []
     real = unresolved.items
     monkeypatch.setattr(unresolved, "items", lambda s: (reads.append(s), real(s))[1])
 
-    review_server.handle_index()
-    first = len(reads)
-    review_server.handle_index()
-
-    assert first >= 2, "both episodes read on the cold pass"
-    assert len(reads) == first, "and neither re-read when nothing changed"
-
-    unresolved.record(stems[0], "repair_applied", "accepted", original_text="new line", proposed_text="New line.")
+    review_server.handle_decide_batch(stems[0], [{"index": target["index"], "verdict": "reject"}])
     review_server.handle_index()
 
-    assert len(reads) == first + 1, "the episode whose queue file changed, and only that one"
+    assert stems[1] not in reads, "the untouched episode stays cached"
+    assert stems[0] in reads, "and the one that was written to is read again"
 
 
 def test_a_verdict_is_visible_immediately_despite_the_queue_cache(tmp_path, monkeypatch):
@@ -1255,3 +1305,42 @@ def test_a_verdict_is_visible_immediately_despite_the_queue_cache(tmp_path, monk
     assert len(review_server.handle_episode(stems[1])["entries"]) == before - 1, (
         "the sibling episode's queue file did not change, but the answer did"
     )
+
+
+def test_warm_cache_fills_both_caches_so_the_first_request_does_not_pay_for_them(tmp_path, monkeypatch):
+    """The walk is unavoidable once; who waits for it is a choice.
+
+    Measured on the live library: a cold index took over 900s and the reviewer was the one
+    sitting in front of it, after every deploy. Doing it at startup instead costs the
+    container a few minutes it has anyway and hands the page over ready."""
+    stems = [_triage_episode(tmp_path, n) for n in ("e01", "e02")]
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", None)
+    monkeypatch.setattr(review_server, "_QUEUE_CACHE", {})
+
+    review_server.warm_cache()
+
+    assert sorted(review_server._QUEUE_CACHE) == sorted(stems), "every episode's queue, read once"
+    touched = []
+    real_open = open
+
+    def watch(path, *a, **k):
+        if str(tmp_path) in str(path):
+            touched.append(str(path))
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", watch)
+    review_server.handle_index()
+
+    assert touched == [], "so the first real request reads nothing"
+
+
+def test_warm_cache_never_raises(tmp_path, monkeypatch):
+    """It runs on a background thread at startup. A media tree that is not mounted yet must
+    delay the first page, never take the server down with it."""
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path / "not-mounted")])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", None)
+    monkeypatch.setattr(review_server, "_QUEUE_CACHE", {})
+    monkeypatch.setattr(review_server, "known_stems", lambda: (_ for _ in ()).throw(OSError("mount went away")))
+
+    review_server.warm_cache()  # must not propagate

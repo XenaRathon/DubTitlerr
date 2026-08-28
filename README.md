@@ -170,13 +170,21 @@ Grouping is on the exact text pair, which is the same identity the decision stor
 same sung line transcribed two ways stays two decisions; that is deliberate, since a
 reviewer who read one has not read the other.
 
-The page walks the whole media tree to find episodes, and reads each one's queue. On a
-large library over a network mount that is slow — measured at 297s for the walk alone across
-989 episodes — so both are cached: the episode list for a multiple of what discovering it
-cost (`REVIEW_STEMS_TTL` is the floor, `REVIEW_STEMS_TTL_FACTOR` the multiplier), and each
-episode's queue until one of its files changes. A newly generated episode appears within the
-cache window, or immediately on restart. Verdicts are never cached — a decision shows up on
-every other episode the moment it is saved.
+The page walks the whole media tree to find episodes and reads each one's queue. On a large
+library over a network mount that is slow — measured at 297s for the walk alone across 989
+episodes — so the container does it at startup, on a background thread, and logs
+`cache warm — N episodes in Ns` when it finishes. The port opens immediately; a page opened
+before the warm completes waits for it.
+
+Both the episode list and the per-episode queues are then held until the next walk, whose
+timing is a multiple of what the last one cost (`REVIEW_STEMS_TTL` is the floor,
+`REVIEW_STEMS_TTL_FACTOR` the multiplier). Nothing is re-checked per request — on a mount
+like this, a stat costs what a read costs, so validating a cache is not cheaper than filling
+it. A newly generated episode therefore appears at the next walk, or immediately on restart.
+
+Verdicts are never cached. The decision store is one small file read on every request, so a
+decision shows up on every other episode the moment it is saved, and saving re-reads only
+the episode written to.
 
 **Apply decisions to this episode** is the separate, expensive step: it rewrites the
 subtitle and drops the stamp so the merge loop re-muxes the file. Only an episode that has
