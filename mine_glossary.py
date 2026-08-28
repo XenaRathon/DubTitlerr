@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Collection
 
 import pysubs2
 
@@ -177,7 +178,7 @@ def mine_text(text, bare, poss, midsentence, forms=None):
                 midsentence.add(core)
 
 
-def admit(bare, poss, midsentence, min_count=None, common=None, existing=frozenset()):
+def admit(bare, poss, midsentence, min_count=None, common=None, existing: Collection = frozenset()):
     """Two-lane admission -> (new_names, review_queue).
 
         bare >= min_count                              -> auto-append (unchanged behaviour)
@@ -205,7 +206,7 @@ def admit(bare, poss, midsentence, min_count=None, common=None, existing=frozens
     return new, queue
 
 
-def mine(text, min_count=None, common=None, existing=frozenset()):
+def mine(text, min_count=None, common=None, existing: Collection = frozenset()):
     """mine_text + admit over one block of text -> (new_names, review_queue)."""
     bare, poss, mid = {}, {}, set()
     mine_text(text, bare, poss, mid)

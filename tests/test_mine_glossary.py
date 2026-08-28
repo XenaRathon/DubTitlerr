@@ -271,7 +271,8 @@ def _run_main(tmp_path, text, monkeypatch, cfg=None):
     monkeypatch.setattr(mine_glossary, "eng_sub_text", lambda p: text)
     monkeypatch.setattr(sys, "argv", ["mine_glossary.py", str(show)])
     mine_glossary.main()
-    return json.loads(gpath.read_text()) if gpath.exists() else None
+    assert gpath.exists(), "main() wrote no glossary at all"
+    return json.loads(gpath.read_text())
 
 
 def test_main_queues_a_crossing_term_for_review_instead_of_appending_it(tmp_path, monkeypatch):
