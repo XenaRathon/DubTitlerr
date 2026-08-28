@@ -563,7 +563,10 @@ def test_an_offered_verdict_is_encoded_for_the_javascript_context(monkeypatch, t
     script = page[page.index("<script>") : page.index("</script>")]
 
     assert "alert(1)" not in _html.unescape(script), "the value must never reach the script block"
-    assert 'data-v="' in page, "it travels as data, read back through dataset"
+    assert 'type="radio" name="v' in page, (
+        "it travels as an inert attribute VALUE, read back through .value at submit time -- "
+        "the mechanism changed from data-* to a radio group, the property did not"
+    )
 
 
 def test_decide_reports_a_failed_resolve_instead_of_claiming_success(tmp_path, monkeypatch):
@@ -576,7 +579,7 @@ def test_decide_reports_a_failed_resolve_instead_of_claiming_success(tmp_path, m
     monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
     monkeypatch.setattr(decisions, "DECISIONS_DIR", str(tmp_path))
     monkeypatch.setattr(review_server, "show_for", lambda p: "Show")
-    monkeypatch.setattr(unresolved, "resolve", lambda *a, **k: False)
+    monkeypatch.setattr(unresolved, "resolve_many", lambda *a, **k: False)
 
     res = review_server.handle_decide(stem, 0, "reject")
 
@@ -943,3 +946,106 @@ def test_hms_is_readable_at_both_ends_of_an_episode():
     assert review_server.hms(0) == "0:00"
     assert review_server.hms(65.4) == "1:05"
     assert review_server.hms(3725) == "1:02:05"
+
+
+def test_decide_batch_saves_every_verdict_in_one_store_write(tmp_path, monkeypatch):
+    """The whole point. Per-verdict posting meant one store load, one store save and one
+    queue rewrite EACH, all over the media mount, plus a full page reload between them."""
+    stem = _episode(tmp_path)
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    monkeypatch.setattr(review_server.decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "show_for", lambda s: "One Pace")
+    saves = []
+    real_save = review_server.decisions.save
+    monkeypatch.setattr(review_server.decisions, "save", lambda st, sh, d: (saves.append(1), real_save(st, sh, d))[1])
+
+    res = review_server.handle_decide_batch(
+        stem, [{"index": 0, "verdict": "reject"}, {"index": 1, "verdict": "correct", "text": "the ship has sailed."}]
+    )
+
+    assert res["saved"] == 2 and not res.get("errors"), res
+    assert len(saves) == 1, "one store write for the whole batch, not one per verdict"
+    pending = review_server.handle_episode(stem)["entries"]
+    assert [e["index"] for e in pending] == [], "and both entries left the queue"
+    store = review_server.decisions.load("One Pace", str(tmp_path))
+    assert review_server.decisions.lookup(store, _CARDS[0], "I saw Spandam")["verdict"] == "reject"
+    assert review_server.decisions.lookup(store, _CARDS[1], "the ship has sailed")["text"] == "the ship has sailed."
+
+
+def test_decide_batch_lands_the_good_verdicts_and_names_the_bad_one(tmp_path, monkeypatch):
+    """A reviewer who spent twenty minutes on an episode must not lose nineteen good
+    verdicts to one malformed twentieth. The refusal is REPORTED, not swallowed -- silently
+    discarding a decision is the failure this whole loop exists to prevent."""
+    stem = _episode(tmp_path)
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    monkeypatch.setattr(review_server.decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "show_for", lambda s: "One Pace")
+
+    res = review_server.handle_decide_batch(
+        stem,
+        [
+            {"index": 0, "verdict": "force"},  # not offered on an ACCEPTED entry
+            {"index": 1, "verdict": "force"},  # offered on a guard refusal
+            {"index": 99, "verdict": "reject"},  # no such entry
+        ],
+    )
+
+    assert res["saved"] == 1
+    assert len(res["errors"]) == 2
+    assert {e["index"] for e in res["errors"]} == {0, 99}
+    assert "not offered" in res["errors"][0]["error"]
+    left = {e["index"] for e in review_server.handle_episode(stem)["entries"]}
+    assert 1 not in left and 0 in left, "the accepted entry is still queued, the forced one is not"
+
+
+def test_decide_batch_refuses_an_unknown_episode_and_an_unresolvable_show(tmp_path, monkeypatch):
+    """Same two refusals the single-verdict path already makes, and for the same reasons:
+    the client is not a trust boundary, and a decision with no show has nowhere to go."""
+    stem = _episode(tmp_path)
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+
+    assert review_server.handle_decide_batch(str(tmp_path / "nope"), [{"index": 0, "verdict": "reject"}])["error"]
+    monkeypatch.setattr(review_server, "show_for", lambda s: "")
+    assert "show" in review_server.handle_decide_batch(stem, [{"index": 0, "verdict": "reject"}])["error"]
+
+
+def test_the_batch_route_is_gated_by_the_token_like_every_other_write(tmp_path, monkeypatch):
+    monkeypatch.setenv("REVIEW_TOKEN", "sekrit")
+    status, _ = review_server.route("POST", "/api/decide", {"stem": "x", "decisions": []}, None)
+    assert status == 401, "a batch of verdicts is still a write"
+
+
+def test_the_page_offers_radios_and_posts_nothing_until_save(tmp_path, monkeypatch):
+    """A verdict per click meant a POST and a full page reload each time, so a reviewer
+    working an episode lost their scroll position 31 times. Radios hold the answers; one
+    button hands the whole episode back."""
+    stem = _triage_episode(tmp_path, "radios")
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+
+    page = review_server.render_page(stem)
+
+    assert 'type="radio"' in page and 'name="v0"' in page, "one group per entry, keyed on its index"
+    assert "<button data-v=" not in page and 'data-v="accept"' not in page, "no per-entry submit remains"
+    assert 'id="save"' in page and 'id="apply"' in page, "saving verdicts and re-muxing stay two buttons"
+    assert "decisions:" in page, "the client posts the batch shape"
+
+
+def test_only_the_offered_verdicts_get_a_radio(tmp_path, monkeypatch):
+    """Same closed set the server enforces. Rendering `force` on an accepted entry would
+    invite a click the server then refuses, with the reviewer unable to tell why."""
+    stem = _episode(tmp_path)
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    entries = {e["reason"]: e for e in review_server.handle_episode(stem)["entries"]}
+    page = review_server.render_page(stem)
+
+    admitted = entries["accepted"]["index"]
+    assert f'name="v{admitted}" value="accept"' in page
+    assert f'name="v{admitted}" value="force"' not in page, "force on an admitted entry is a gate bypass"
+    refused = entries["rejected_guard"]["index"]
+    assert f'name="v{refused}" value="force"' in page
+    assert f'name="v{refused}" value="accept"' not in page

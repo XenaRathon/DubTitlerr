@@ -272,6 +272,28 @@ def resolve(stem: str, index: int, accept: bool, note: str = "") -> bool:
     return _rewrite(stem, doc)
 
 
+def resolve_many(stem: str, updates: list) -> bool:
+    """Mark several entries reviewed in ONE rewrite. `updates` is [(index, accept, note)].
+
+    resolve() re-reads and re-writes the whole file per call. That is fine for the --review
+    CLI, which settles one line at a time, and wrong for the review page, where a reviewer
+    hands back thirty verdicts at once: thirty rewrites over CIFS, and -- because the server
+    is threaded -- thirty read-modify-write windows in which two open tabs lose each other's
+    entries.
+
+    ALL OR NOTHING on a bad index. A caller that miscounted would otherwise land some
+    verdicts and not others, with nothing telling the reviewer which."""
+    doc = items(stem)
+    if any(not (0 <= i < len(doc)) for i, _a, _n in updates):
+        return False
+    for index, accept, note in updates:
+        doc[index]["resolved"] = True
+        doc[index]["accepted"] = bool(accept)
+        if note:
+            doc[index]["note"] = note
+    return _rewrite(stem, doc)
+
+
 # --- review CLI ---------------------------------------------------------------------------
 # Mirrors glossary_acquire.py's --review: walk what the automation could not settle, show the
 # evidence that stage's triage actually needs, record the decision. Unified walk, stage-keyed

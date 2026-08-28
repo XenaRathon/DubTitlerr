@@ -154,9 +154,15 @@ hear what was actually said. Times are derived from the transcript, so they are 
 as the ASR word timings — close enough to find the line, not frame-accurate.
 
 Verdicts are `accept`, `reject`, `correct` (supply your own text) and `force` (apply a
-repair the guard refused). They are stored per show, so the same decision applies the next
-time that line is transcribed. For an episode already muxed, **Apply decisions to this
-episode** rewrites the subtitle and drops the stamp so the merge loop re-muxes it.
+repair the guard refused); each entry offers only the ones that make sense for it. Pick them
+with the radio buttons as you read — nothing is submitted until you hit **Save**, which
+hands the whole episode back in one request. Verdicts are stored per show, so the same
+decision applies the next time that line is transcribed.
+
+**Apply decisions to this episode** is the separate, expensive step: it rewrites the
+subtitle and drops the stamp so the merge loop re-muxes the file. Only an episode that has
+already been muxed needs it — for anything still queued, saving the verdicts is enough,
+because the next repair run reads them.
 
 ## Requirements
 

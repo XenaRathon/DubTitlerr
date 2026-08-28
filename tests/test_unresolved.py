@@ -348,3 +348,37 @@ def test_card_starts_maps_a_line_to_every_time_it_appears(tmp_path):
 def test_card_starts_is_empty_rather_than_raising_without_conf(tmp_path):
     """Same contract as the rest of this module: observability never fails an episode."""
     assert unresolved.card_starts(str(tmp_path / "gone")) == {}
+
+
+def test_resolve_many_marks_every_entry_in_a_single_rewrite(tmp_path, monkeypatch):
+    """One rewrite, not one per verdict.
+
+    resolve() re-reads and re-writes the WHOLE jsonl per call, and the same is true of the
+    decisions store behind it. A reviewer settling 30 lines on one episode was 30 of each,
+    every one a CIFS round trip -- and, because the server is threaded, 30 read-modify-write
+    windows in which two open tabs lose each other's entries."""
+    stem = str(tmp_path / "ep")
+    for t in ("a", "b", "c"):
+        unresolved.record(stem, "repair_applied", "accepted", original_text=t, proposed_text=t.upper())
+    calls = []
+    real = unresolved._rewrite
+    monkeypatch.setattr(unresolved, "_rewrite", lambda s, d: (calls.append(1), real(s, d))[1])
+
+    assert unresolved.resolve_many(stem, [(0, True, ""), (2, False, "regression")]) is True
+    assert len(calls) == 1, "the whole point of the batch"
+
+    got = unresolved.items(stem)
+    assert [e.get("resolved") for e in got] == [True, False, True], "and only the two named"
+    assert got[0]["accepted"] is True
+    assert got[2]["accepted"] is False and got[2]["note"] == "regression"
+    assert "accepted" not in got[1], "an untouched entry is not rewritten into a decided one"
+
+
+def test_resolve_many_writes_nothing_when_any_index_is_out_of_range(tmp_path):
+    """All or nothing on a bad index. Partially applying a batch whose caller miscounted
+    would leave the reviewer with some verdicts landed and no way to tell which."""
+    stem = str(tmp_path / "ep")
+    unresolved.record(stem, "repair_applied", "accepted", original_text="a", proposed_text="A")
+
+    assert unresolved.resolve_many(stem, [(0, True, ""), (9, True, "")]) is False
+    assert unresolved.items(stem)[0].get("resolved") is False, "the good index did not land either"

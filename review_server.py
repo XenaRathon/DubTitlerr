@@ -358,45 +358,90 @@ def handle_episode(stem: str, all_reasons: bool = False) -> dict:
     return {"stem": ep, "name": os.path.basename(ep), "entries": entries}
 
 
-def handle_decide(stem: str, index: int, verdict: str, text: str = "", note: str = "") -> dict:
-    """Record a verdict and take the line out of the reviewer's queue.
+# One writer at a time. Both writes below are read-modify-write over a WHOLE file -- the
+# decisions store and the queue jsonl -- and ThreadingHTTPServer serves each connection on
+# its own thread, so two open tabs (or one reviewer double-clicking) could interleave and
+# lose each other's verdicts with no error anywhere. A review is one person clicking, so the
+# contention this serialises is real but tiny.
+_WRITE_LOCK = threading.Lock()
+
+
+def handle_decide_batch(stem: str, verdicts: list) -> dict:
+    """Record many verdicts and take their lines out of the queue, in ONE pass.
+
+    The page hands back a whole episode at once. Done one at a time this was a store load, a
+    store save and a queue rewrite PER VERDICT, every one of them a round trip over the media
+    mount, with a full page reload between each.
 
     BOTH writes matter and they are not interchangeable: the decision is what stops repair.py
     re-applying and re-queueing the line, the resolved flag is what empties the queue. Sprint
-    006 found the [S-6] gate holding an episode forever when only one of the two happened."""
+    006 found the [S-6] gate holding an episode forever when only one of the two happened.
+
+    PARTIAL SUCCESS IS REPORTED, not swallowed. A malformed twentieth verdict must not cost
+    the reviewer the nineteen good ones, and a verdict that vanished silently is the exact
+    failure this loop exists to prevent -- so refused items come back named, with their
+    index, and the caller can show them."""
     ep = _resolve(stem)
     if ep is None:
         return {"error": "unknown episode"}
-    items = unresolved.items(ep)
-    if not isinstance(index, int) or not (0 <= index < len(items)):
-        return {"error": "no such entry"}
-    e = items[index]
-    # Enforced here, not merely rendered: a client is not a trust boundary, and `force` on an
-    # accepted entry would be an unlabelled bypass of the gate.
-    if verdict not in OFFERED.get((str(e.get("stage", "")), str(e.get("reason", ""))), DEFAULT_OFFERED):
-        return {"error": "verdict not offered for this entry"}
     show = show_for(ep)
     if not show:
         return {"error": "cannot resolve a show for this episode"}
-    # Read at CALL time, not bound as a default: decisions.load/save capture DECISIONS_DIR
-    # in their signatures at import, so the mount cannot be changed (or pointed at a test
-    # directory) after this module loads unless it is passed through explicitly.
-    ddir = decisions.DECISIONS_DIR
-    store = decisions.load(show, ddir)
-    store = decisions.record(store, e.get("original_text", ""), e.get("proposed_text", ""), verdict, text=text, note=note)
-    if not decisions.save(store, show, ddir):
-        # Reported as NOT saved rather than swallowed: a review that silently discards the
-        # human's decision is worse than one that errors, because they believe it is settled.
-        return {"error": "the decision could not be saved"}
-    # The verdict is durable from here. The queue flag is a SECOND file and the two cannot
-    # be made atomic across them -- but the report can be honest. Saying "saved" when the
-    # entry did not clear tells the reviewer the line is settled while their queue still
-    # shows it. The gate is unaffected either way: mux trusts the durable verdict, not this
-    # flag (mux.held_for_review), so this is a reporting fix rather than a correctness one.
-    cleared = unresolved.resolve(ep, index, accept=(verdict != "reject"), note=note)
-    out = {"saved": True, "verdict": verdict, "show": show, "queue_cleared": bool(cleared)}
+    errors: list = []
+    with _WRITE_LOCK:
+        items = unresolved.items(ep)
+        # Read at CALL time, not bound as a default: decisions.load/save capture
+        # DECISIONS_DIR in their signatures at import, so the mount cannot be changed (or
+        # pointed at a test directory) after this module loads unless it is passed through.
+        ddir = decisions.DECISIONS_DIR
+        store = decisions.load(show, ddir)
+        updates: list = []
+        for d in verdicts if isinstance(verdicts, list) else []:
+            if not isinstance(d, dict):
+                errors.append({"index": None, "error": "not a verdict"})
+                continue
+            index, verdict = d.get("index"), str(d.get("verdict", ""))
+            # bool is an int in Python, and `True` would index item 1 of somebody else's queue.
+            if isinstance(index, bool) or not isinstance(index, int) or not (0 <= index < len(items)):
+                errors.append({"index": index, "error": "no such entry"})
+                continue
+            e = items[index]
+            # Enforced here, not merely rendered: a client is not a trust boundary, and
+            # `force` on an accepted entry would be an unlabelled bypass of the gate.
+            if verdict not in OFFERED.get((str(e.get("stage", "")), str(e.get("reason", ""))), DEFAULT_OFFERED):
+                errors.append({"index": index, "error": "verdict not offered for this entry"})
+                continue
+            text, note = str(d.get("text", "")), str(d.get("note", ""))
+            store = decisions.record(store, e.get("original_text", ""), e.get("proposed_text", ""), verdict, text=text, note=note)
+            updates.append((index, verdict != "reject", note))
+        if not updates:
+            return {"saved": 0, "errors": errors}
+        if not decisions.save(store, show, ddir):
+            # Reported as NOT saved rather than swallowed: a review that silently discards
+            # the human's decisions is worse than one that errors, because they believe they
+            # are settled. Nothing is cleared from the queue either, so they stay reviewable.
+            return {"error": "the decisions could not be saved", "errors": errors}
+        # The verdicts are durable from here. The queue flags are a SECOND file and the two
+        # cannot be made atomic across them -- but the report can be honest. The gate is
+        # unaffected either way: mux trusts the durable verdict, not this flag.
+        cleared = unresolved.resolve_many(ep, updates)
+    out = {"saved": len(updates), "show": show, "errors": errors, "queue_cleared": bool(cleared)}
     if not cleared:
-        out["warning"] = "verdict saved, but the queue entry could not be cleared — it will still be listed"
+        out["warning"] = "verdicts saved, but the queue could not be cleared — they will still be listed"
+    return out
+
+
+def handle_decide(stem: str, index: int, verdict: str, text: str = "", note: str = "") -> dict:
+    """One verdict, as a batch of one. The --review CLI and the single-entry tests keep this
+    shape; there is deliberately no second implementation of the two writes behind it."""
+    res = handle_decide_batch(stem, [{"index": index, "verdict": verdict, "text": text, "note": note}])
+    if res.get("error"):
+        return {"error": res["error"]}
+    if res.get("errors"):
+        return {"error": res["errors"][0]["error"]}
+    out = {"saved": True, "verdict": verdict, "show": res["show"], "queue_cleared": res["queue_cleared"]}
+    if res.get("warning"):
+        out["warning"] = res["warning"]
     return out
 
 
@@ -423,6 +468,11 @@ def route(method: str, path: str, body: dict, token) -> tuple:
     if method == "GET" and path == "/api/episode":
         return 200, handle_episode(str(body.get("stem", "")), all_reasons=bool(body.get("all")))
     if method == "POST" and path == "/api/decide":
+        # Two shapes on one route, so there is ONE authorised write path for a verdict
+        # rather than two that could drift apart. The page sends the batch; `index` is the
+        # single-verdict form the tests and any scripted caller still use.
+        if isinstance(body.get("decisions"), list):
+            return 200, handle_decide_batch(str(body.get("stem", "")), body["decisions"])
         idx = body.get("index")
         return 200, handle_decide(
             str(body.get("stem", "")),
@@ -458,13 +508,16 @@ def render_page(stem: str = "") -> str:
     rows = []
     for e in doc.get("entries", []):
         warn = " <b>PERMANENT — this card has no reference</b>" if e.get("permanent") else ""
-        # data-* attributes plus a delegated listener, NOT an inline handler. html.escape is
-        # HTML escaping, and an HTML parser DECODES entities in an attribute value before the
-        # JS inside it is parsed -- so `&#x27;` becomes a quote and closes the string anyway.
-        # Nothing reachable exploits this today (OFFERED is a closed constant set); it is
-        # fixed because the renderer's contract is that it handles queue data.
+        # Radios, not submit buttons. Every click used to be a POST and a full page reload,
+        # so working one episode threw the reviewer back to the top thirty times; the answers
+        # now sit on the page until they hand the whole episode back at once.
+        #
+        # Only the OFFERED verdicts are rendered -- the same closed set handle_decide_batch
+        # enforces. Rendering `force` on an admitted entry would invite a click the server
+        # then refuses, with the reviewer unable to tell why.
         buttons = "".join(
-            f'<button data-i="{e["index"]}" data-v="{html.escape(v)}">{html.escape(v)}</button> ' for v in e.get("offered", ())
+            f'<label><input type="radio" name="v{e["index"]}" value="{html.escape(v)}"> {html.escape(v)}</label> '
+            for v in e.get("offered", ())
         )
         # Every card the line is on. Approximate by construction -- these are ASR word
         # timings -- but a seek target within a second or two is what checking a line needs.
@@ -519,10 +572,21 @@ def render_page(stem: str = "") -> str:
     # Only on an episode page. A verdict already changes what the NEXT repair run ships;
     # this is for an episode that has ALREADY been muxed, where nothing would re-trigger it.
     # It costs a re-mux of a multi-GB file, so the button says so rather than just doing it.
+    #
+    # TWO buttons, deliberately. Saving verdicts is cheap and changes what the NEXT repair
+    # run ships; applying costs a re-mux of a multi-GB file. One button for both would make
+    # every partial pass through an episode trigger one.
+    #
+    # Sticky, because an episode's queue is long -- 31 rows on the first S31 episode -- and a
+    # control the reviewer has to scroll to the end of the list to reach is a control they
+    # will not use.
     apply_html = (
-        '<hr><p><button id="apply">Apply decisions to this episode</button> '
-        "<small>rewrites the subtitle and drops the stamp, so the merge loop will re-mux it. "
-        "Only needed for an episode that has already been muxed.</small></p>"
+        '<hr><div id=bar><button id="save">Save verdicts</button> '
+        '<button id="apply">Apply decisions to this episode</button> '
+        "<small id=tally></small><br>"
+        "<small>Save records your verdicts and stops repair re-applying those lines. Apply "
+        "rewrites the subtitle and drops the stamp, so the merge loop re-muxes the file — "
+        "only needed for an episode already muxed.</small></div>"
         if stem
         else ""
     )
@@ -552,6 +616,9 @@ def render_page(stem: str = "") -> str:
         "details{margin:.4em 0}summary{cursor:pointer}details.season{margin-left:1.4em}"
         "li.ep{border:0;margin:.25em 0}.adm{color:#060;font-weight:600}.ref{color:#888;font-size:90%}"
         "#filter{padding:.3em}"
+        "#bar{position:sticky;bottom:0;background:#fff;border-top:2px solid #333;padding:.6em 0;margin-top:1em}"
+        "#bar button{padding:.4em .8em;margin-right:.5em}#tally{color:#888}"
+        "label:has(input[type=radio]){margin-right:.9em;cursor:pointer}"
         "li.rwords{border-left-color:#c00}li.rsubstitution{border-left-color:#e90}"
         "li.rpunctuation{border-left-color:#ccc}</style>"
         "<h1>Review</h1><p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
@@ -568,11 +635,29 @@ def render_page(stem: str = "") -> str:
         "async function post(p,b){return (await fetch(p,{method:'POST',headers:{'Content-Type':'application/json',"
         f"'{TOKEN_HEADER}':TOK.value}},"
         "body:JSON.stringify(b)})).json()}"
-        "async function decide(i,v){const t=document.getElementById('t'+i).value;"
-        "const r=await post('/api/decide',{stem:STEM,index:i,verdict:v,text:t});"
-        "if(r.error){alert(r.error)}else if(r.warning){alert(r.warning)}else{location.reload()}}"
-        "document.addEventListener('click',e=>{const b=e.target.closest('button[data-v]');"
-        "if(b){decide(Number(b.dataset.i),b.dataset.v)}});"
+        # One request for the whole episode. Sequential per-verdict posts would each be a
+        # read-modify-write of two whole files over the media mount, and concurrent ones
+        # would race each other.
+        "function chosen(){return [...document.querySelectorAll('#list input[type=radio]:checked')]"
+        ".map(r=>({index:Number(r.name.slice(1)),verdict:r.value,"
+        "text:(document.getElementById('t'+r.name.slice(1))||{}).value||''}))}"
+        "const SV=document.getElementById('save'),TAL=document.getElementById('tally');"
+        "function tally(){if(!TAL)return;const n=chosen().length,"
+        "t=document.querySelectorAll('#list li input[type=radio]').length?"
+        "new Set([...document.querySelectorAll('#list input[type=radio]')].map(r=>r.name)).size:0;"
+        "SV.textContent=n?('Save '+n+' verdict'+(n==1?'':'s')):'Save verdicts';SV.disabled=!n;"
+        "TAL.textContent=(t-n)+' still undecided'}"
+        "document.addEventListener('change',e=>{if(e.target.type==='radio')tally()});"
+        "if(SV){tally();SV.addEventListener('click',async()=>{const d=chosen();if(!d.length)return;"
+        "SV.disabled=true;const r=await post('/api/decide',{stem:STEM,decisions:d});"
+        # Errors are NAMED, not counted. A reviewer told "2 refused" cannot tell which two of
+        # their thirty verdicts did not land, and a verdict that vanishes quietly is the
+        # exact failure this loop exists to prevent.
+        "if(r.error){alert(r.error);SV.disabled=false;return}"
+        "if(r.errors&&r.errors.length){alert('saved '+r.saved+', REFUSED '+r.errors.length+':\\n'+"
+        "r.errors.map(x=>'entry '+x.index+': '+x.error).join('\\n'))}"
+        "else if(r.warning){alert(r.warning)}"
+        "location.reload()})}"
         "const ap=document.getElementById('apply');"
         "if(ap){ap.addEventListener('click',async()=>{ap.disabled=true;"
         "const r=await post('/api/apply',{stem:STEM});"
