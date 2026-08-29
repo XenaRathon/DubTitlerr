@@ -51,9 +51,27 @@ while :; do
 			echo "#### ACQUIRE $show $(date)"
 			ACQ_FLAGS=""
 			[ -n "${ACQUIRE_APPLY:-}" ] && ACQ_FLAGS="--apply"
+			# INTERIM, 2026-08-29. The acquire cache folds cached verdicts into `settled`,
+			# and propose() skips `settled` -- so a dry run banks verdicts that a later
+			# --apply run then never proposes. The pipeline has exactly three verdicts
+			# (apply, known, flag) and ALL THREE write glossary state, so there is nothing
+			# a dry run may safely skip: measured across five shows, the banked caches were
+			# suppressing 22 apply, 1,654 known and 10,708 flag verdicts -- that last group
+			# being review-queue entries that would never have surfaced for a human.
+			# Disabling the cache on dry runs restores the report and disarms nothing.
+			# An --apply run keeps it: there the verdicts actually land, so skipping them
+			# next sweep is correct.
+			# NOTE this only stops the cache being READ -- acquire still SAVES it
+			# unconditionally, so a run without this variable is disarmed again.
+			# Proper fix (next session): memoise the escalate LLM adjudications, which are
+			# the 71% cost, instead of the final verdicts. See
+			# .procoder/todo/20260829-acquire-cache-suppresses-every-verdict.md
+			ACQ_NO_CACHE=""
+			[ -z "$ACQ_FLAGS" ] && ACQ_NO_CACHE="ACQUIRE_NO_CACHE=1"
 			# 600s was also an incremental-era number; a first full acquisition pass over 463
 			# episodes exceeded it and was killed mid-harvest on 2026-08-21.
-			timeout "${ACQUIRE_TIMEOUT:-1800}" python3 /app/glossary_acquire.py "$GLOSS_DIR/$show.json" "$ANIME/$show" \
+			env $ACQ_NO_CACHE timeout "${ACQUIRE_TIMEOUT:-1800}" python3 /app/glossary_acquire.py \
+				"$GLOSS_DIR/$show.json" "$ANIME/$show" \
 				$ACQ_FLAGS </dev/null 2>&1 || echo "  acquire skipped (continuing)"
 		fi
 		GLOSS="$GLOSS_DIR/$show.json"
