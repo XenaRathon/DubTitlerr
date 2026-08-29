@@ -115,6 +115,12 @@ unchanged. That is the hard part already solved.
 
 Pending.
 
-Scripts used for the measurements above are in this session's scratchpad
-(`why_refused.py`, `clause_split.py`, `overlen.py`) — re-derive rather than trust these
-numbers if the library has been regenerated since.
+The measurements above were taken by throwaway scripts run inside the `dubtitle-review`
+container against the live library; they were not kept. Re-derive rather than trust these
+numbers, especially after a regeneration:
+
+- the per-card faults come from `reflow.layout_faults(reflow.wrap_balance(text), dur)` over
+  every `*.dubtitles.conf.json` under the show root;
+- the split candidates come from cutting the human's text at each word boundary, allocating
+  duration by character share, and keeping cuts where both halves clear `MIN_DUR` and have
+  no `layout_faults` — ranked sentence end > clause end > mid-phrase.
