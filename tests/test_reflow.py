@@ -901,3 +901,16 @@ def test_text_keeps_a_number_whole_across_its_separator():
     assert reflow._text(_w(" It", " costs", " 2", ".5", " million")) == "It costs 2.5 million"
     assert reflow._text(_w(" He", ' "said', " so")) == 'He "said so', "an opening quote hugs the word AFTER it"
     assert reflow._text(_w(" Wait", " ,", " no")) == "Wait , no", "a bare comma is not a digit continuation"
+
+
+def test_text_only_welds_a_separator_onto_a_number():
+    """R5, REVIEW-2026-08-29: the weld above checked the token it was JOINING but never the
+    token it was joining ONTO, so a decimal following an ordinary word got welded into it --
+    the same character-welding class the fix was written to eliminate.
+
+    The break this catches: drop the `out[-1][-1:].isdigit()` guard and "It weighs .5 kilos"
+    comes back as "It weighs.5 kilos"."""
+    assert reflow._text(_w(" It", " weighs", " .5", " kilos")) == "It weighs .5 kilos"
+    assert reflow._text(_w(" Chapter", " ,000")) == "Chapter ,000"
+    # ...and the legitimate case still welds: the previous token ends in a digit.
+    assert reflow._text(_w(" version", " 2", ".5")) == "version 2.5"

@@ -149,7 +149,10 @@ def _text(words: list[dict]) -> str:
         # broken, 4 for 4, so this was total failure on the pattern rather than a glitch.
         # NARROW on purpose: the em dash and the opening quote in that same sample are real
         # separators and keep their spaces.
-        elif out and t[:1] in ",." and t[1:2].isdigit():
+        # R5: BOTH sides must be a number. Checking only the joining token welded a decimal
+        # onto an ordinary word -- "It weighs .5 kilos" -> "It weighs.5 kilos" -- which is
+        # the same character-welding class this branch was added to eliminate.
+        elif out and t[:1] in ",." and t[1:2].isdigit() and out[-1][-1:].isdigit():
             out[-1] += t
         else:
             out.append(t)
