@@ -25,6 +25,7 @@ Env:
 import json
 import os
 import tempfile
+import time
 
 # The four outcomes a reviewer can reach. `force` admits a repair accept_repair refused;
 # it overrides the judgement gates but never fits_card, because card timing is immutable.
@@ -87,7 +88,17 @@ def record(store: dict, orig: str, proposed: str, verdict: str, text: str = "", 
         return store
     if verdict not in VERDICTS:
         return store
-    entry = {"orig": o, "proposed": p, "verdict": verdict, "run": "review"}
+    # `at` is what lets a sweep tell a verdict that has NOT shipped from one that has.
+    # A verdict recorded after an episode's last mux never reaches the video on its own:
+    # mux.py treats the .dubtitles.done stamp as its only skip guard and nothing re-opens
+    # the episode (measured 2026-08-29 -- 11 of 20 One Pace corrections were still absent
+    # from the shipped track). Without a time on the entry, a sweep can only ask "has this
+    # line ever been ruled on", which is true forever, so it would re-open every eligible
+    # episode on every pass. Epoch float, the unit common.write_stamp records `mtime` in,
+    # so the comparison against a stamp is a subtraction rather than a parse.
+    # Entries written before 2026-08-29 have no `at`; lookup() and for_orig() never read
+    # it, so those verdicts keep applying exactly as before.
+    entry = {"orig": o, "proposed": p, "verdict": verdict, "run": "review", "at": time.time()}
     if text:
         entry["text"] = text  # the human's wording, verbatim and un-normalised
     if note:

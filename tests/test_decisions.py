@@ -284,3 +284,49 @@ def test_key_folds_the_curly_apostrophe_onto_the_straight_one():
     straight = "It" + chr(0x27) + "s a VIVRA card?"
     assert decisions.key(curly) == decisions.key(straight)
     assert decisions.key("CP-0.") != decisions.key("CP?"), "folding must not reach real punctuation"
+
+
+def test_record_stamps_a_verdict_with_the_time_it_was_made(monkeypatch):
+    """A verdict recorded AFTER an episode's last mux never reaches the video: mux.py
+    treats the stamp as its only skip guard, and nothing re-opens the episode. Measured on
+    One Pace, 2026-08-29: 11 of 20 human corrections were still absent from the shipped
+    track, every affected stamp predating the store.
+
+    A sweep can only be idempotent if it can tell a verdict that is newer than the stamp
+    from one already shipped -- otherwise it re-opens every eligible episode on every pass
+    forever. Entries carried no time at all, so this is the missing primitive. Stored as an
+    epoch float, the same unit `common.write_stamp` records `mtime` in, so the comparison
+    is a subtraction rather than a parse.
+
+    The break this catches: drop the stamp and the sweep has nothing to compare."""
+    monkeypatch.setattr(decisions.time, "time", lambda: 1756500000.0)
+    store = decisions.record({}, "husab, what did you tell them?", "Usopp, what did you tell them?", "accept")
+    assert store["decisions"][0]["at"] == 1756500000.0
+
+
+def test_re_recording_a_pair_moves_its_timestamp_forward(monkeypatch):
+    """record() REPLACES rather than appends so a reviewer can change their mind. The
+    revision must also look NEWER, or a corrected mistake is indistinguishable from the
+    verdict it replaced and the sweep skips shipping it.
+
+    The break this catches: keep the original entry's `at` on replacement and a reviewer's
+    correction of their own mistake never reaches the video."""
+    monkeypatch.setattr(decisions.time, "time", lambda: 1000.0)
+    store = decisions.record({}, "the flame flame fruit", "the Flame-Flame Fruit", "accept")
+    monkeypatch.setattr(decisions.time, "time", lambda: 2000.0)
+    store = decisions.record(store, "the flame flame fruit", "the Flame-Flame Fruit", "reject")
+    assert len(store["decisions"]) == 1, "still replaced, never appended"
+    assert store["decisions"][0]["verdict"] == "reject"
+    assert store["decisions"][0]["at"] == 2000.0
+
+
+def test_a_verdict_stored_before_timestamps_existed_still_looks_up():
+    """The four live stores predate this field. An entry without `at` must keep working --
+    lookup is what applies a human's verdict, and breaking it would silently discard every
+    decision made before 2026-08-29.
+
+    The break this catches: make `at` required for a match and 82 One Pace verdicts die."""
+    store = {"decisions": [{"orig": "husab", "proposed": "usopp", "verdict": "accept"}]}
+    hit = decisions.lookup(store, "Husab", "Usopp")
+    assert hit is not None and hit["verdict"] == "accept"
+    assert decisions.for_orig(store, "HUSAB")[0]["verdict"] == "accept"
