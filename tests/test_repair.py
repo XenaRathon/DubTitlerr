@@ -504,6 +504,54 @@ def test_process_writes_repair_summary_json(tmp_path, monkeypatch):
     ]
 
 
+def _unchanged_episode(tmp_path, monkeypatch, stem_name):
+    """An episode whose single target the model returns VERBATIM -- the most common real
+    outcome of the repair stage, and the one [S-4] never had a bucket for."""
+    stem = str(tmp_path / stem_name)
+    conf_path = stem + repair.CONF_SUFFIX
+    _write_conf(
+        conf_path,
+        stem + repair.SRT_SUFFIX,
+        [{"start": 0.0, "end": 1.0, "text": "garbled line", "avg_logprob": -0.6, "no_speech_prob": 0.1}],
+    )
+    g = gl()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / (stem_name + ".mkv")))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    # Verbatim echo: accept_repair refuses it, and the `if not admitted` inner guard
+    # (new.lower() != c["text"].lower()) is false by construction, so before the counter
+    # existed this outcome incremented nothing and recorded nothing.
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "garbled line")
+    repair.process(conf_path)
+    return json.load(open(stem + ".dubtitles.repair-summary.json"))
+
+
+def test_summary_counts_a_verbatim_model_response_as_unchanged(tmp_path, monkeypatch):
+    """The break this catches: drop the `unchanged` increment (or put it inside the
+    `new.lower() != c["text"].lower()` guard, where it can never fire) and the single most
+    common repair outcome silently vanishes from the summary again."""
+    summary = _unchanged_episode(tmp_path, monkeypatch, "ep_unchanged")
+    assert summary["unchanged"] == 1
+    assert summary["repaired"] == 0
+    assert summary["rejected_guard"] == 0  # NOT the guard refusing an edit: there was no edit
+
+
+def test_every_target_lands_in_exactly_one_summary_bucket(tmp_path, monkeypatch):
+    """[S-4]'s invariant, corrected. It was stated as fact in a comment and was false --
+    568 of 836 SAO targets were unaccounted for. The break this catches: any future outcome
+    added to the repair loop without a bucket makes this arithmetic fail."""
+    s = _unchanged_episode(tmp_path, monkeypatch, "ep_invariant")
+    assert s["targets"] == (
+        s["repaired"]
+        + s["skipped_no_ref"]
+        + s["llm_empty"]
+        + s["rejected_guard"]
+        + s["verdict_reject"]
+        + s["verdict_unfittable"]
+        + s["unchanged"]
+    )
+
+
 # --- V2 C10: chown failures are logged, not silently swallowed -------------------------
 
 

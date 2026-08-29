@@ -654,6 +654,11 @@ def process(conf_path):
     rec = qc.Recorder()  # S-6 liveness counters, merged into the summary below
     llm_empty = 0
     rejected_secondary = 0  # C5: second-pass output refused by the gate
+    # The model returned the line verbatim -- the single most common outcome of this stage
+    # (568 of 836 targets on the SAO pass). accept_repair refuses it and the `not admitted`
+    # inner guard is false by construction, so before this counter it incremented nothing
+    # and recorded nothing: the [S-4] invariant below was stated as fact and was false.
+    unchanged = 0
     # [S-4]. Both are terminal `continue` paths, so without their own buckets `targets`
     # would quietly exceed the sum of the others and the residual would be unexplained.
     verdict_reject = 0  # a stored `reject`: settled by a human, nothing shipped
@@ -768,6 +773,11 @@ def process(conf_path):
                     reference=ref[:120],
                     avg_logprob=c.get("avg_logprob"),
                 )
+            else:
+                # `new` is non-empty (the `if not new` above returned), so this is exactly
+                # the verbatim echo. NOT queued: there is no proposal for a human to judge,
+                # and queueing every unrepaired line would flood the review page.
+                unchanged += 1
         else:
             # A3: re-verify divergent-looking repairs (esp. name changes) with the secondary
             # model. No-op by default (REPAIR_MODEL_SECONDARY == REPAIR_MODEL).
@@ -858,8 +868,13 @@ def process(conf_path):
         "llm_empty": llm_empty,
         "rejected_guard": rejected,  # model proposed an edit, accept_repair() refused it
         "rejected_secondary": rejected_secondary,  # C5: second pass refused, first pass kept
-        # [S-4]. With these, targets == repaired + skipped_no_ref + llm_empty +
-        # rejected_guard + verdict_reject + verdict_unfittable for every episode.
+        "unchanged": unchanged,  # model echoed the line back; nothing proposed, nothing shipped
+        # [S-4]. targets == repaired + skipped_no_ref + llm_empty + rejected_guard +
+        # verdict_reject + verdict_unfittable + unchanged, for every episode. `unchanged`
+        # was missing until 2026-08-29 and it is the LARGEST bucket, so the identity this
+        # comment asserts was false everywhere it was read. Pinned by
+        # test_every_target_lands_in_exactly_one_summary_bucket -- add an outcome to the
+        # loop without a bucket here and that test fails.
         "verdict_reject": verdict_reject,  # human said no; ASR text stands
         "verdict_unfittable": verdict_unfittable,  # human's text cannot be rendered (C1)
         "mean_latency_ms": round(sum(lat_values) / len(lat_values)) if lat_values else 0,
