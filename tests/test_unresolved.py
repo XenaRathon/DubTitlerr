@@ -423,3 +423,73 @@ def test_undecided_drops_the_entries_a_stored_verdict_already_settles(tmp_path):
     # it. This is the property the index below has to preserve.
     other = decisions.record({}, "We're looking for a factory.", "We're looking for a windmill.", "reject")
     assert len(unresolved.undecided(entries, other)) == 2, "a different proposal is a different question"
+
+
+def test_card_context_gives_the_neighbouring_cards_for_every_occurrence(tmp_path):
+    """A queue entry shows one card's text, and a card is not a sentence -- reflow splits on
+    duration and line length, so a line routinely starts or ends mid-clause. Judging whether
+    a repair is right needs the cards either side of it.
+
+    Per OCCURRENCE, not per line, for card_starts' reason: the same sentence can be on
+    several cards and duplicate-pair suppression makes those one queue entry, so the reviewer
+    is owed the context of each place it appears, not an arbitrary first.
+
+    The break this catches: return a flat list per line instead of one entry per occurrence
+    and a repeated line shows the wrong neighbours for every card after the first."""
+    stem = str(tmp_path / "ep")
+    with open(stem + ".dubtitles.conf.json", "w") as f:
+        json.dump(
+            [
+                {"start": 1.0, "end": 2.0, "text": "We're looking"},
+                {"start": 2.0, "end": 3.0, "text": "for a factory"},
+                {"start": 3.0, "end": 4.0, "text": "somewhere near here"},
+                {"start": 90.0, "end": 91.0, "text": "unrelated line"},
+                {"start": 300.0, "end": 301.0, "text": "FOR A   FACTORY"},
+                {"start": 301.0, "end": 302.0, "text": "he said again"},
+            ],
+            f,
+        )
+    ctx = unresolved.card_context(stem, width=1)
+    occ = ctx[decisions.key("for a factory")]
+    assert len(occ) == 2, "both occurrences, in card order"
+    assert occ[0] == {"start": 2.0, "before": ["We're looking"], "after": ["somewhere near here"]}
+    assert occ[1] == {"start": 300.0, "before": ["unrelated line"], "after": ["he said again"]}
+
+
+def test_card_context_at_the_episode_edges_returns_what_exists(tmp_path):
+    """The first and last cards have no neighbour on one side. Empty, never a padded blank
+    or an IndexError -- the page renders whatever is there.
+
+    The break this catches: index arithmetic that wraps, so the first card shows the LAST
+    card of the episode as its predecessor."""
+    stem = str(tmp_path / "edge")
+    with open(stem + ".dubtitles.conf.json", "w") as f:
+        json.dump(
+            [
+                {"start": 1.0, "end": 2.0, "text": "first line"},
+                {"start": 2.0, "end": 3.0, "text": "middle line"},
+                {"start": 3.0, "end": 4.0, "text": "last line"},
+            ],
+            f,
+        )
+    ctx = unresolved.card_context(stem, width=1)
+    assert ctx[decisions.key("first line")][0]["before"] == []
+    assert ctx[decisions.key("last line")][0]["after"] == []
+
+
+def test_card_context_width_two_reaches_two_cards_either_side(tmp_path):
+    """One card of context is often not a sentence either. Width is a parameter so the page
+    can widen it without a second implementation.
+
+    The break this catches: hard-code width 1 and this returns one neighbour."""
+    stem = str(tmp_path / "wide")
+    with open(stem + ".dubtitles.conf.json", "w") as f:
+        json.dump([{"start": float(i), "end": i + 1.0, "text": f"line {i}"} for i in range(5)], f)
+    occ = unresolved.card_context(stem, width=2)[decisions.key("line 2")][0]
+    assert occ["before"] == ["line 0", "line 1"]
+    assert occ["after"] == ["line 3", "line 4"]
+
+
+def test_card_context_is_empty_rather_than_raising_without_conf(tmp_path):
+    """Same contract as card_starts: observability never fails an episode."""
+    assert unresolved.card_context(str(tmp_path / "gone")) == {}

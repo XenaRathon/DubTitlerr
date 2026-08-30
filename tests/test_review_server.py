@@ -1344,3 +1344,38 @@ def test_warm_cache_never_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(review_server, "known_stems", lambda: (_ for _ in ()).throw(OSError("mount went away")))
 
     review_server.warm_cache()  # must not propagate
+
+
+def test_an_entry_carries_the_cards_either_side_of_it(tmp_path, monkeypatch):
+    """A card is not a sentence -- reflow splits on duration and line length, so a queued
+    line routinely starts or ends mid-clause and the reviewer cannot tell whether a repair
+    fits the sentence it belongs to. The page gets the neighbours so they can.
+
+    The break this catches: drop the context off _decorate and every entry is judged on one
+    fragment again."""
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", None)
+    stem = _episode(tmp_path)
+    out = review_server.handle_episode(stem)
+
+    by_orig = {e["original_text"]: e for e in out["entries"]}
+    mid = by_orig["the ship sailed"]  # _CARDS[1] -- a neighbour on each side
+    assert mid["context"] == [{"start": 2.0, "before": ["I saw spondum"], "after": ["he went thataway"]}]
+
+    first = by_orig["I saw spondum"]  # _CARDS[0] -- nothing before it
+    assert first["context"] == [{"start": 0.0, "before": [], "after": ["the ship sailed"]}]
+
+
+def test_the_episode_page_renders_the_surrounding_cards(tmp_path, monkeypatch):
+    """Carrying the context in the JSON is not enough -- the reviewer reads the HTML. Text
+    is escaped like every other field on this page.
+
+    The break this catches: add the field to _decorate but never render it, and the feature
+    is invisible to the only person it is for."""
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", None)
+    stem = _episode(tmp_path)
+    html_out = review_server.render_page(stem)
+
+    assert "he went thataway" in html_out, "the following card must reach the page"
+    assert "ctx" in html_out, "and be marked up so it can be styled apart from the entry itself"

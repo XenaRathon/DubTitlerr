@@ -391,15 +391,20 @@ def _triage_key(e: dict) -> tuple:
     )
 
 
-def _decorate(stem: str, e: dict, index: int, starts: dict) -> dict:
+def _decorate(stem: str, e: dict, index: int, starts: dict, context: dict | None = None) -> dict:
     """One queue entry as the page needs it: its own index, what may be done to it, whether
-    doing it is reversible, what the repair changed, and where in the episode to hear it."""
+    doing it is reversible, what the repair changed, where in the episode to hear it, and
+    the cards either side of it."""
     d = dict(e)
     d["index"] = index
     d["risk"] = risk_class(e.get("original_text", ""), e.get("proposed_text", ""))
     # DERIVED, not stored: repair.py records no timing on an accepted repair. Every card the
     # line appears on, because duplicate-pair suppression makes repeats a single entry.
     d["starts"] = starts.get(decisions.key(e.get("original_text", "")), [])
+    # A card is not a sentence: reflow splits on duration and line length, so a queued line
+    # routinely starts or ends mid-clause and cannot be judged on its own. Same key as
+    # `starts`, one entry per occurrence, so context and seek target stay paired.
+    d["context"] = (context or {}).get(decisions.key(e.get("original_text", "")), [])
     d["offered"] = list(OFFERED.get((str(e.get("stage", "")), str(e.get("reason", ""))), DEFAULT_OFFERED))
     # No reference means nothing downstream can repair this card again -- a bad force here
     # is permanent. Every S31 card is unanchored, so this is the common case, not an edge.
@@ -422,7 +427,8 @@ def handle_episode(stem: str, all_reasons: bool = False) -> dict:
     seen = len(wanted)
     wanted = unresolved.undecided(wanted, _store_for(ep, {}))
     starts = unresolved.card_starts(ep)
-    entries = [_decorate(ep, e, items.index(e), starts) for e in wanted]
+    context = unresolved.card_context(ep)
+    entries = [_decorate(ep, e, items.index(e), starts, context) for e in wanted]
     # Sorted for the READER only: index still addresses the jsonl row, so a verdict posted
     # from the page lands on the same entry whatever order it was displayed in.
     entries.sort(key=_triage_key)
@@ -779,11 +785,23 @@ def render_page(stem: str = "") -> str:
         # Every card the line is on. Approximate by construction -- these are ASR word
         # timings -- but a seek target within a second or two is what checking a line needs.
         when = ", ".join(hms(t) for t in e.get("starts", ())) or "no card time"
+        # The cards either side, so the reviewer can see whether the queued line is a whole
+        # sentence or a fragment of one. Rendered per occurrence and in card order, with the
+        # queued line itself marked, because a repeated line's neighbours differ each time.
+        ctx = "".join(
+            "<div class=ctx>{}<b>{}</b>{}</div>".format(
+                "".join(f"<span>{html.escape(b)}</span> " for b in occ.get("before", ())),
+                html.escape(e.get("original_text", "")),
+                "".join(f" <span>{html.escape(a)}</span>" for a in occ.get("after", ())),
+            )
+            for occ in e.get("context", ())
+        )
         rows.append(
-            '<li class="r{}"><div class=o>{}</div><div class=p>{}</div>'
+            '<li class="r{}">{}<div class=o>{}</div><div class=p>{}</div>'
             "<small><b>{}</b> \u2014 {} \u2014 {}/{}{}</small><div>{}"
             '<input id="t{}" placeholder="corrected text"></div></li>'.format(
                 html.escape(e.get("risk", "")),
+                ctx,
                 html.escape(e.get("original_text", "")),
                 html.escape(e.get("proposed_text", "")),
                 html.escape(when),

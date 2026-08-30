@@ -215,6 +215,48 @@ def card_starts(stem: str) -> dict:
     return out
 
 
+def card_context(stem: str, width: int = 1) -> dict:
+    """Every line mapped to the cards either side of it, per occurrence.
+
+    A queue entry shows ONE card's text, and a card is not a sentence: reflow splits on
+    duration and line length, so a line routinely starts or ends mid-clause. A reviewer
+    judging whether `factory -> needle` is right has to see where the sentence begins and
+    ends, and the queue entry alone cannot tell them.
+
+    Per OCCURRENCE, not per line, for card_starts' reason: the same sentence can be on
+    several cards and repair.py's duplicate-pair suppression makes those ONE queue entry, so
+    the reviewer is owed the context of each place it appears rather than an arbitrary
+    first. `start` is carried on each occurrence so the page can pair context with the
+    matching seek target without re-deriving the join.
+
+    At the episode edges the missing side is EMPTY, never padded and never wrapped -- the
+    first card showing the last card of the episode as its predecessor would be a confident
+    lie about what the reviewer is reading.
+
+    Keyed on decisions.key, the same identity card_starts and live_only use, so the three
+    cannot disagree about which entry describes which card. Returns {} rather than raising:
+    observability never fails an episode."""
+    out: dict = {}
+    try:
+        with open(out_for(stem + CONF_SUFFIX), encoding="utf-8") as f:
+            cards = json.load(f)
+        rows = [c for c in cards if isinstance(c, dict)]
+        texts = [str(c.get("text", "")) for c in rows]
+        for i, c in enumerate(rows):
+            out.setdefault(decisions.key(texts[i]), []).append(
+                {
+                    "start": float(c.get("start", 0.0)),
+                    # max(0, ...) rather than i-width: a negative slice start reaches the END
+                    # of the list, which is exactly the wrap this must not do.
+                    "before": texts[max(0, i - width) : i],
+                    "after": texts[i + 1 : i + 1 + width],
+                }
+            )
+    except (OSError, ValueError, TypeError):
+        return {}
+    return out
+
+
 def undecided(entries: list, store: dict) -> list:
     """The entries no stored verdict already settles.
 
