@@ -35,6 +35,41 @@ Splitting at a natural boundary, with duration allocated proportionally by chara
 Every dimension legal: lines, longest line, total chars, cps, and both halves clear
 `MIN_DUR` (0.83s). 11 legal split points for E08, 5 for E10.
 
+## A third case, found 2026-08-30 — and splitting does NOT fix it
+
+The 18-episode re-run surfaced a third refused correction, and it fails on a DIFFERENT
+dimension:
+
+| ep     | card | dur    | fault      | before -> after    |
+| ------ | ---- | ------ | ---------- | ------------------ |
+| S31E18 | #177 | 3.16 s | `over_cps` | 19.32 -> 19.64 cps |
+
+    ASR : Although I'm still in a state of disbelief over such we folk,
+    YOU : Although I'm still in a state of disbelief over such wee folk.
+
+One letter and a full stop. The card was ALREADY at 19.32 cps against a 17.0 ceiling, so
+`fits_card`'s already-over branch refuses anything that worsens a dimension, and 62 chars in
+3.16 s worsens it.
+
+**Splitting cannot fix this one.** A proportional split leaves both halves at the same
+cps as the original — total characters and total duration are unchanged, so the reading
+speed is identical. Splitting only ever relieves `over_line_len` and `over_chars`. Fixing
+`over_cps` requires extending the card's DURATION, which is the immutability wall (C1), not a
+layout problem.
+
+So the three blocked corrections are two different problems:
+
+- **E08, E10** — `over_line_len`, one character over. Splitting fixes these.
+- **E18** — `over_cps`, one character over on an already-too-fast card. Splitting does
+  nothing; this needs either borrowed time or a relaxed bar for human verdicts.
+
+The second is worth a decision of its own: the guard is refusing text that is objectively
+MORE accurate ("wee folk" is right, "we folk" is not) because it adds one character to a card
+that already broke the profile before the human touched it. Per the owner's stated bar --
+"if I'm reviewing it myself I'm going to try to get it as perfect as my ears allow" -- a
+human verdict arguably earns a bounded worsening allowance on a dimension that was already
+failing. That is a policy question, not a layout one, and it is NOT proposed here.
+
 ## Library context (One Pace, 209,231 cards, 2026-08-29)
 
 | fault                 | count  | share |
@@ -109,7 +144,8 @@ unchanged. That is the hard part already solved.
 - [ ] `conf.json` and the shipped cue list stay consistent across a `repair.py` re-run and a
       `review_apply` rebuild — no drift between the two writers.
 - [ ] Existing `unresolved` entries survive the index shift, or are migrated.
-- [ ] The 2 blocked One Pace corrections ship.
+- [ ] The 2 `over_line_len` corrections (E08, E10) ship. E18 is out of scope for splitting --
+      it is an `over_cps` refusal and needs the separate policy decision above.
 
 ## Evidence
 
