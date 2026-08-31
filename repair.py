@@ -680,6 +680,15 @@ def process(conf_path):
         return "skip"
     conf = json.load(open(conf_path))
     gloss = glossary_for(video)
+    # A3. glossary_for falls back to a no-op glossary when no <Show>.json resolves, which is
+    # the right behaviour -- a missing glossary must never fail an episode. Doing it SILENTLY
+    # is what is wrong: a misconfigured GLOSSARY_DIR repairs a whole library with no names at
+    # all and nothing anywhere says why. load_dict leaves `show` empty when nothing resolved.
+    if not gloss.get("show"):
+        log(
+            f"  WARNING no glossary resolved for {os.path.basename(stem)} — names will not be corrected."
+            " Check GLOSSARY_DIR and that a <Show>.json matches the show directory."
+        )
     # S-13: the episode's arc, for weighting the reference spellings. None for most
     # of the library (no season.nfo), which leaves the term order exactly as before.
     arc = glossary.arc_for(video)
@@ -1007,6 +1016,18 @@ def process(conf_path):
             os.chown(p, MEDIA_UID, MEDIA_GID)
         except OSError as e:
             log(f"chown failed for {p}: {e}")
+    # A3. The beta-user shape: dub-only copies, `unanchored_repair` never declared, and no
+    # prior repairs -- so guard (c) above cannot fire, since it only protects work that
+    # already exists. Every card is skipped and, until this line, the only trace was a
+    # skipped_no_ref count inside a JSON sidecar nobody opens. The message names the remedy:
+    # a user who does not know the setting exists cannot act on "144 targets skipped".
+    if targets and fixed == 0 and skipped_no_ref == len(targets):
+        log(
+            f"  WARNING every one of {len(targets)} targets on {os.path.basename(stem)} was skipped for want of a"
+            " reference — this release has no English subtitles for the Japanese audio, so there is nothing to"
+            ' anchor a repair on. Set "unanchored_repair": true in this show\'s glossary to repair from the'
+            " glossary alone (wider guesses, fewer missed names), or leave it off to ship the ASR text as-is."
+        )
     log(f"  targets={len(targets)} repaired={fixed}")
     return "repaired"
 
