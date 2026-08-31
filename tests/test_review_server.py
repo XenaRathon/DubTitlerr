@@ -1401,9 +1401,21 @@ def test_the_episode_page_offers_client_side_sort_modes_with_risk_default(tmp_pa
 
 
 def test_episode_sort_reorders_rows_without_changing_the_posted_index_set(tmp_path, monkeypatch):
-    """Sorting moves existing DOM rows only. Their radio names remain the JSONL row
-    indexes, so choosing verdicts after reordering posts the same index set and cannot land
-    a decision on a different queue entry."""
+    """The one thing sorting must never do: land a verdict on a different queue entry.
+
+    A verdict posts the JSONL row number, carried in each radio's name. `_triage_episode`
+    queues WORST LAST on purpose, so risk-first display order is the REVERSE of the stored
+    order -- which makes this checkable without a JS runtime. If the names were ever
+    generated from the display position (an `enumerate` over the sorted rows) they would
+    read 0,1,2 down the page; because they come from the stored index they read 2,1,0.
+
+    Breaks the moment radio names are derived from position rather than from `e["index"]`,
+    which is exactly the regression that would silently misfile a reviewer's decision.
+
+    The client-side reorder itself cannot be executed here -- there is no JS runtime in this
+    suite and adding one for this is not worth it -- so what is pinned instead is that the
+    names are position-INDEPENDENT at the source, plus that the handler only moves existing
+    nodes and never re-requests the page."""
     import re
 
     stem = _triage_episode(tmp_path, "sort_identity")
@@ -1411,14 +1423,20 @@ def test_episode_sort_reorders_rows_without_changing_the_posted_index_set(tmp_pa
     monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
     page = review_server.render_page(stem)
 
-    rows = re.findall(r'<li class="r[^"]*"[^>]*data-index="(\d+)".*?name="v(\d+)"', page, re.S)
-    before = [int(radio) for _dom, radio in rows]
-    after = list(reversed(before))  # the presentation reorder; no index is regenerated
-    sort_body = page.split("function sortEpisode", 1)[1].split("const TOK", 1)[0]
+    rows = re.findall(r'data-index="(\d+)".*?name="v(\d+)"', page, re.S)
+    assert rows, "no queue rows rendered"
+    assert all(dom == radio for dom, radio in rows), "a row's radio name must be its own stored index"
 
-    assert rows and all(int(dom) == int(radio) for dom, radio in rows)
-    assert set(after) == set(before), "the posted JSONL index set is invariant under reordering"
-    assert "appendChild(row)" in sort_body and "fetch(" not in sort_body and "location.reload" not in sort_body
+    displayed = [int(radio) for _dom, radio in rows]
+    assert displayed == sorted(displayed, reverse=True), (
+        "the fixture queues worst last, so risk-first display order must expose the stored "
+        "indexes in reverse -- reading 0,1,.. would mean the names follow the page position"
+    )
+    assert set(displayed) == {0, 1, 2}, "every queued entry is still addressable exactly once"
+
+    sort_body = page.split("function sortEpisode", 1)[1].split("const TOK", 1)[0]
+    assert "appendChild(row)" in sort_body, "reordering must move existing nodes"
+    assert "fetch(" not in sort_body and "location.reload" not in sort_body, "no round trip"
     assert "name.slice(1)" in page, "posted indexes come from stable radio names, not visual position"
 
 
