@@ -2106,3 +2106,126 @@ def test_a_changed_proposal_supersedes_the_pending_one_for_that_line(tmp_path, m
     assert pending_now[0]["proposed_text"] == "I saw Spandam there", "and about the proposal that would ship"
     superseded = [e for e in applied if e.get("resolved")]
     assert superseded[0]["note"].startswith("superseded"), "the older one says why it left the queue"
+
+
+def test_a_show_can_declare_unanchored_repair_in_its_glossary(monkeypatch):
+    """A2. Many users hold dub-only copies of shows the maintainer holds in dual audio, so
+    the unanchored path is a mainstream configuration, not a One Pace quirk. The declaration
+    therefore belongs to the SHOW, in the artifact the repo can commit and reproduce, rather
+    than to a hand-set global that no committed file records.
+
+    This drives the whole route on purpose: `glossary.load_dict` normalises a raw glossary
+    to an explicit key list and drops everything else, so a field it does not carry never
+    reaches the gate however correct the gate is."""
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    gloss = glossary.load_dict({"show": "One Pace", "unanchored_repair": True})
+    assert repair.skips_unanchored("", gloss) is False
+
+
+def test_a_show_that_declares_nothing_keeps_the_closed_default(monkeypatch):
+    """The global default stays CLOSED and `skips_unanchored`'s docstring stays the
+    authority on why. A show that says nothing must behave exactly as it does today --
+    otherwise adding the per-show field would silently open the gate library-wide, which is
+    the opposite of what it is for."""
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    gloss = glossary.load_dict({"show": "Sword Art Online"})
+    assert repair.skips_unanchored("", gloss) is True
+    assert repair.skips_unanchored("some fansub line", gloss) is False
+
+
+def test_process_honours_the_shows_declaration_not_just_the_global(tmp_path, monkeypatch):
+    """A2 wiring. `skips_unanchored` accepting a glossary is inert unless `process` hands it
+    one -- and the whole defect this fixes is a gate that was correct in isolation while the
+    committed scripts skipped every card and rebuilt raw ASR over the shipped repairs.
+
+    Breaks if `process` calls `skips_unanchored(ref)` without the glossary: the card is
+    refused, the LLM is never reached, and skipped_no_ref goes back to 1."""
+    stem = str(tmp_path / "ep_declared")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path, srt_path, [{"start": 0.0, "end": 1.0, "text": "garbled line", "avg_logprob": -0.9, "no_speech_prob": 0.1}]
+    )
+
+    g = glossary.load_dict({"show": "One Pace", "unanchored_repair": True})
+    calls = []
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)  # the global stays shut
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_declared.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])  # no fansub anchor anywhere
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: calls.append(prompt) or "garbled line")
+
+    assert repair.process(conf_path) == "repaired"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["skipped_no_ref"] == 0
+    assert calls, "the declared show must reach the LLM"
+
+
+def test_a_pass_that_would_skip_every_target_refuses_to_overwrite_prior_repairs(tmp_path, monkeypatch):
+    """A2 guard (c). `repair.process` REBUILDS the srt from conf.json on every run, so when
+    the gate is shut and every card is skipped the rebuild is raw ASR -- and it lands ON TOP
+    of repairs already shipped. Reproduced on One Pace S31E24: targets=144 repaired=0
+    skipped_no_ref=144, and the sidecar came back as `our mods will never give up There's a`
+    where the shipped track had `Our mods will never give up. There's a fire...`.
+
+    The episode must abort instead, leaving both the srt and the prior summary untouched, so
+    a misconfigured pass is loud rather than quietly destructive.
+
+    Breaks if the guard is removed, if it fires on `repaired > 0`, or if it runs after the
+    srt is rewritten rather than before."""
+    stem = str(tmp_path / "ep_prior")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path,
+        srt_path,
+        [{"start": 0.0, "end": 2.0, "text": "our mods will never give up", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    shipped = "1\n00:00:00,000 --> 00:00:02,000\nOur mods will never give up.\n\n"
+    open(srt_path, "w").write(shipped)
+    prior = {"targets": 144, "repaired": 3, "skipped_no_ref": 0}
+    summary_path = stem + ".dubtitles.repair-summary.json"
+    json.dump(prior, open(summary_path, "w"))
+
+    g = glossary.load_dict({"show": "One Pace"})  # declares nothing -> gate shut
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_prior.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])  # no fansub anchor anywhere
+
+    assert repair.process(conf_path) == "refused"
+    assert open(srt_path).read() == shipped, "the shipped repairs were overwritten with raw ASR"
+    assert json.load(open(summary_path))["repaired"] == 3, "the prior summary was clobbered"
+
+
+def test_the_refusal_is_narrow_and_a_quiet_episode_still_rewrites(tmp_path, monkeypatch):
+    """A2 guard (c), mutation check. The guard must fire only when EVERY target was skipped
+    for want of an anchor. Loosened to `skipped_no_ref > 0` it would refuse any episode that
+    happened to repair nothing while one card lacked a reference -- a normal, harmless
+    outcome -- and stall the pipeline on it.
+
+    Here card 1 is anchored and the model proposes nothing; card 2 is unanchored and skipped.
+    fixed == 0 and prior repairs exist, so only the `== len(targets)` clause holds it back."""
+    stem = str(tmp_path / "ep_quiet")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path,
+        srt_path,
+        [
+            {"start": 0.0, "end": 2.0, "text": "anchored line", "avg_logprob": -0.9, "no_speech_prob": 0.1},
+            {"start": 10.0, "end": 12.0, "text": "unanchored line", "avg_logprob": -0.9, "no_speech_prob": 0.1},
+        ],
+    )
+    json.dump({"targets": 2, "repaired": 3}, open(stem + ".dubtitles.repair-summary.json", "w"))
+
+    g = glossary.load_dict({"show": "One Pace"})
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_quiet.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 2.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "anchored line")  # nothing to fix
+
+    assert repair.process(conf_path) == "repaired"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["repaired"] == 0 and summary["skipped_no_ref"] == 1

@@ -40,7 +40,14 @@ show with an **English dub**, runs a full pipeline per episode:
    a guarded fuzzy that won't touch real English words). The glossary is **auto-built by mining**
    the embedded subs and **wiki-verified** (canonical, dub-preferred spellings — see below).
 3. **LLM repair** — a local model (qwen3:8b) fixes mid-/low-confidence and name-suspect lines,
-   anchored on the embedded fansub dialogue when present.
+   anchored on the embedded fansub dialogue when present. **If your copies of a show have no
+   English subtitles for the Japanese audio there is nothing to anchor on, and by default every
+   line is left alone** — glossary-only repair invents names, so the gate is shut unless a show
+   opts in. Set `"unanchored_repair": true` in that show's glossary to open it. Repairs then run
+   from the glossary alone, which fixes names nothing else can reach (`Dothamingo` →
+   `Doflamingo`) at the cost of a wider guess. A pass that would skip _every_ line on an episode
+   whose last run shipped repairs refuses that episode instead of rewriting it, so a
+   misconfigured run cannot quietly revert work you already have.
 4. **Hallucination gate** — drop music/silence/blocklist lines and within-card loops, collapse
    runaway repeat runs, flag the merely-uncertain.
 5. **Signs & songs merge** — lift the on-screen signs/song-lyric events into the same subtitle.
