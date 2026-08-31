@@ -1,0 +1,56 @@
+name: release
+# Tag-triggered ONLY. `:latest` follows the tag, never `main` -- main is the working branch
+# and every commit landing there is not a release. A beta user pinning a tag is what makes
+# "I'm on v0.1.0-beta" a reproducible sentence in a bug report.
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false # never cancel a half-pushed image
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    # The build downloads a CUDA base plus a whisper model. 40 minutes is generous; it is
+    # here so a stalled pull cannot hold a runner for GitHub's six-hour default.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # A hosted runner starts with roughly 14 GB free. The base image (mccloud/subgen, a
+      # CUDA/faster-whisper stack) plus the large-v3-turbo weights baked in by Dockerfile.builder
+      # can exceed that, and the failure mode is an opaque "no space left on device" deep in a
+      # layer. Reclaiming the preinstalled toolchains costs about a minute and buys ~25 GB.
+      # If this still runs out, the answer is a self-hosted runner, not a bigger cleanup.
+      - name: Reclaim runner disk
+        run: |
+          set -euo pipefail
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          sudo docker image prune -af
+          df -h / | tail -1
+
+      # No third-party action for this. `docker login` over stdin is three lines of shell and
+      # avoids adding a supply-chain surface that would itself need pinning and reviewing.
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push
+        run: |
+          set -euo pipefail
+          # github.repository is Owner/Name; GHCR requires the path lowercased.
+          repo=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          tag="${GITHUB_REF_NAME}"
+          docker build -f Dockerfile.builder \
+            -t "ghcr.io/$repo:$tag" \
+            -t "ghcr.io/$repo:latest" \
+            .
+          docker push "ghcr.io/$repo:$tag"
+          docker push "ghcr.io/$repo:latest"
+          echo "published ghcr.io/$repo:$tag and :latest"
