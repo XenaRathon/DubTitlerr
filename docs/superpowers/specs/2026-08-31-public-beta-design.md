@@ -27,22 +27,23 @@ answers them; the tool release serves the smaller group who want to run it thems
 
 ## Settled decisions
 
-| #   | Decision                      | Answer                                                                 |
-| --- | ----------------------------- | ---------------------------------------------------------------------- |
-| 1   | Tool or output                | **Both, same week**                                                    |
-| 2   | Where the subtitle files live | **Their own repository**                                               |
-| 3   | Public git history            | **Publish in full, after a secret scan**                               |
-| 4   | Card splitting in beta        | **No.** Queue sorting yes                                              |
-| 5   | VRAM target                   | **Measure both**: 6GB on fasc, 8GB on xenapc                           |
-| 6   | Glossary submission path      | **Read-only + PR template, no CI gate**                                |
-| 7   | What users pin to             | **Tagged releases**; `:edge` later. Feature branches → PR → main       |
-| 8   | Version-stamp promise         | **Stated in README**: stamps may be invalidated during beta            |
-| 9   | Unvalidated configurations    | **Loud non-fatal warnings**, pasteable into an issue                   |
-| 10  | Subtitle drop scope           | **Only episodes with a human review pass**, restriction stated plainly |
-| 11  | Definition of "reviewed"      | **Every queued line in the episode has a verdict**                     |
-| 12  | Subtitle file format          | **Both** `.srt` and the merged `.ass`                                  |
-| 13  | Source of the shipped files   | **Fresh `review_apply` pass**, then export                             |
-| 14  | Automatic re-open sweep       | **No.** Manual button plus a warning on the page                       |
+| #   | Decision                          | Answer                                                                 |
+| --- | --------------------------------- | ---------------------------------------------------------------------- |
+| 1   | Tool or output                    | **Both, same week**                                                    |
+| 2   | Where the subtitle files live     | **Their own repository**                                               |
+| 3   | Public git history                | **Publish in full, after a secret scan**                               |
+| 4   | Card splitting in beta            | **No.** Queue sorting yes                                              |
+| 5   | VRAM target                       | **Measure both**: 6GB on fasc, 8GB on xenapc                           |
+| 6   | Glossary submission path          | **Read-only + PR template, no CI gate**                                |
+| 7   | What users pin to                 | **Tagged releases**; `:edge` later. Feature branches → PR → main       |
+| 8   | Version-stamp promise             | **Stated in README**: stamps may be invalidated during beta            |
+| 9   | Unvalidated configurations        | **Loud non-fatal warnings**, pasteable into an issue                   |
+| 10  | Subtitle drop scope               | **Only episodes with a human review pass**, restriction stated plainly |
+| 11  | Definition of "reviewed"          | **Every queued line in the episode has a verdict**                     |
+| 12  | Subtitle file format              | **Both** `.srt` and the merged `.ass`                                  |
+| 13  | Source of the shipped files       | **Fresh `review_apply` pass**, then export                             |
+| 14  | Automatic re-open sweep           | **No.** Manual button plus a warning on the page                       |
+| 15  | Internal hosts in the public repo | **Scrub the current tree only**; history keeps them                    |
 
 ### Why 11 is worded that way
 
@@ -180,6 +181,20 @@ versions pushed but has never been released or shared.
    garbage-collects, which requires a support request. The scan therefore covers the published
    history, and remediation is rotation plus a GitHub Support purge, not a force-push. The two
    credentials known to have leaked on 2026-08-28 were already rotated; the scan hunts unknowns.
+   **Result, 2026-08-31: history is clean.** Four passes — gitleaks over 726 commits across
+   all refs (no leaks); a targeted key-name-with-value scan; a Plex-token shape scan; and
+   `procoder security` over the working tree (0 findings). `REVIEW_TOKEN` appears only as a
+   variable name in docs and specs, never with a value. The 2026-08-28 leak went into a
+   transcript, not a commit, and both credentials were rotated. **The public push is
+   unblocked on secrets.**
+
+   The scan did surface network topology: 22 of 280 tracked files name internal hosts
+   (`192.168.1.232` 12x, `192.168.1.196` 5x, `192.168.1.209` 3x — all RFC1918 and not
+   routable), plus `ourserver.party` in `README.md`. **Decision 15: scrub the current tree
+   only**, accepting that history retains them. `repair.py`'s is the dead default A5 removes,
+   and `README.md`'s is the wiki link B5 rewrites, so the remaining work is two comment lines
+   in `punctuation.py` and `tools/bakeoff.py`.
+
 2. **Force-push the attribution-stripped history** once the scan is clean. Backup tag
    `backup/pre-attribution-strip` stays.
 3. **Tagged release** `v0.1.0-beta`; GHCR image published by tag, `:latest` pointing at the tag,
