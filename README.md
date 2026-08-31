@@ -4,7 +4,7 @@
 
 DubTitlerr is a self-hosted, *-arr-style service that watches your anime library and, for every show with an **English dub**, transcribes the dub into accurate captions ("dubtitles"), repairs them with a local LLM, and **merges the on-screen signs & song lyrics into the same subtitle track** — so one track shows everything. It runs as one container, grows a per-show name **dictionary** automatically, and refreshes Plex per-episode.
 
-> The original `dub-signs-merge` was just the signs+dub _merge_ step (documented below); the project has grown into the full pipeline (transcribe → repair → merge → mux) with additive per-show dictionaries. **See the [Wiki](https://git.ourserver.party/xenarathon/DubTitlerr/wiki) for setup & usage.**
+> The original `dub-signs-merge` was just the signs+dub _merge_ step (documented below); the project has grown into the full pipeline (transcribe → repair → merge → mux) with additive per-show dictionaries. **See the [Wiki](https://github.com/xenarathon/DubTitlerr/wiki) for setup & usage.**
 
 <details>
 <summary><b>The signs+dub merge, in detail (click to expand)</b></summary>

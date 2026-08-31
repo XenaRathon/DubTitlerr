@@ -241,7 +241,7 @@ OLLAMA_URL=http://ollama.local:11434/api/generate
 # Secondary (slow, CPU via llama.cpp on Xeon server):
 REPAIR_MODEL_SECONDARY=qwen3.6:35b-a3b
 REPAIR_BACKEND_SECONDARY=llamacpp
-REPAIR_LLAMACPP_URL=http://192.168.1.232:8080/completion
+REPAIR_LLAMACPP_URL=http://<llm-host>:8080/completion
 ```
 
 This way:
@@ -328,7 +328,7 @@ python3 tools/bakeoff.py \
     --glossary "/config/glossaries/One Pace.json" \
     --models qwen3:8b \
     --limit 15 \
-    --ollama http://192.168.1.232:8080/completion  # llama.cpp endpoint
+    --ollama http://<llm-host>:8080/completion  # llama.cpp endpoint
 ```
 
 ### Step 3: Judge by these criteria
@@ -362,10 +362,10 @@ python3 tools/bakeoff.py \
 
 ### Repair (`repair.py`)
 
-| Env var                    | Current default                        | Candidate value    | Why                   |
-| :------------------------- | :------------------------------------- | :----------------- | :-------------------- |
-| `REPAIR_MODEL`             | `qwen3:8b`                             | `phi-4:14b-q3_K_M` | Best GPU upgrade      |
-| `REPAIR_BACKEND`           | `ollama`                               | `ollama`           | GPU primary           |
-| `REPAIR_MODEL_SECONDARY`   | (same as primary)                      | `qwen3.6:35b-a3b`  | CPU second opinion    |
-| `REPAIR_BACKEND_SECONDARY` | —                                      | `llamacpp`         | **Needs code change** |
-| `REPAIR_LLAMACPP_URL`      | `http://192.168.1.232:8080/completion` | —                  | Points at Xeon server |
+| Env var                    | Current default                     | Candidate value    | Why                   |
+| :------------------------- | :---------------------------------- | :----------------- | :-------------------- |
+| `REPAIR_MODEL`             | `qwen3:8b`                          | `phi-4:14b-q3_K_M` | Best GPU upgrade      |
+| `REPAIR_BACKEND`           | `ollama`                            | `ollama`           | GPU primary           |
+| `REPAIR_MODEL_SECONDARY`   | (same as primary)                   | `qwen3.6:35b-a3b`  | CPU second opinion    |
+| `REPAIR_BACKEND_SECONDARY` | —                                   | `llamacpp`         | **Needs code change** |
+| `REPAIR_LLAMACPP_URL`      | `http://<llm-host>:8080/completion` | —                  | Points at Xeon server |
