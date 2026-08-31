@@ -271,6 +271,17 @@ constant and the quantisation is the only variable:
 `tools/bakeoff.py` speaks Ollama only and needs a llama.cpp path added — a small addition to
 an existing harness, not a new tool. That one addition now serves both arms.
 
+**Card contention on xenapc.** The `qwen-tagger` container serves a 28.2B Q3_K_M model
+(13.68 GB, `n_ctx` 32768) via llama.cpp on host port 8091, reading its GGUF out of
+`/ollama-data/models/blobs`. On an 8 GB card that means heavy CPU offload, and it holds
+~7.1 GB of the 8 GB while up. It is already taken down nightly, so the 8 GB arm runs inside
+that existing window rather than needing new orchestration.
+
+The scheduled 07:30 restart did not fire on 2026-08-31 (the container was started by hand),
+so the window cannot be trusted at either end. **The A/B therefore guards on free VRAM
+rather than on the clock**: it checks the card before each arm, aborts with a clear message
+if a model is resident, and re-checks between quantisations.
+
 **Candidates:** Q4_K_M, Q5_K_M, Q6_K, against Q8_0 as control.
 
 **Judged on:** safe-fix count **and** name-edit count on the existing target set — both, because
