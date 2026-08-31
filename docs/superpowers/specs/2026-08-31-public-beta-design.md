@@ -4,15 +4,17 @@ Written 2026-08-31. Supersedes nothing; this is the first release-scoped spec.
 
 ## TL;DR
 
-Ship a public beta of DubTitlerr this week, plus a companion repository of finished One Pace
-subtitle files, aimed at the r/onepace readers who asked about dubtitle availability. The
-tool is published to the existing GitHub repository with tagged GHCR images; the subtitles
-and the per-show glossaries each get their own repository. Four defects that ship wrong
-output or lose human work are fixed first. Card splitting, a glossary CI gate and the
-automatic re-open sweep are explicitly out.
+Ship a public beta of DubTitlerr this week: the tool, published to the existing GitHub
+repository with tagged GHCR images, mirrored with the self-hosted forgejo. The per-show
+glossaries get their own repository in the same week. Four defects that ship wrong output or
+lose human work are fixed first. Card splitting, a glossary CI gate and the automatic re-open
+sweep are explicitly out.
 
-The audience asked about **availability**, not about a pipeline. The subtitle drop is what
-answers them; the tool release serves the smaller group who want to run it themselves.
+**The subtitle repository does not ship this week** (decision 16). Measured 2026-08-31: zero
+episodes qualify under decision 11 -- 255 episodes carry a review queue and 7,222 queued lines
+have no verdict, Season 31 included. The export tooling is built and merged; it publishes
+episodes as review finishes them, on its own schedule. The r/onepace post named the tool, so
+the week's deliverable still answers what was asked.
 
 ---
 
@@ -44,6 +46,8 @@ answers them; the tool release serves the smaller group who want to run it thems
 | 13  | Source of the shipped files       | **Fresh `review_apply` pass**, then export                             |
 | 14  | Automatic re-open sweep           | **No.** Manual button plus a warning on the page                       |
 | 15  | Internal hosts in the public repo | **Scrub the current tree only**; history keeps them                    |
+| 16  | Subtitle repository timing        | **Not this week.** Ships per-episode as review completes               |
+| 17  | Where the code lives              | **Mirrored**: forgejo and GitHub both carry every branch and the wiki  |
 
 ### Why 11 is worded that way
 
@@ -215,7 +219,24 @@ versions pushed but has never been released or shared.
 
 ## Workstream C — subtitle repository
 
-A separate public repository, so a takedown reaches it and not the tool.
+**Deferred out of release week (decision 16).** A separate public repository, so a takedown
+reaches it and not the tool.
+
+**Why it slipped.** The risk this spec recorded — "if very few episodes outside Season 31
+qualify, the drop is Season 31 plus a handful" — resolved worse than its worst case. Measured
+2026-08-31 with `tools/export_reviewed.py` against the real library: **255 episodes carry a
+review queue, 7,222 queued lines have no verdict, and 0 episodes qualify.** Season 31, the set
+believed reviewed, does not qualify either. There is nothing to export.
+
+Decision 11 is not the problem and is not being loosened: an episode where a human has read
+every line the pipeline was unsure about is the only claim this project can honestly make.
+The gap is review hours, and review hours are the maintainer's, not the schedule's.
+
+**What ships instead:** nothing, this week. `tools/export_reviewed.py` is built, tested and
+merged; it names the qualifying set on demand. Episodes are published as review finishes them,
+which makes the repository a rolling drop rather than a release artifact. That is a better
+shape for it anyway — a reader who finds it in a month gets more than a reader who finds it on
+launch day.
 
 **Contents:** for each qualifying episode, the dialogue `.srt` and the merged `.ass`, plus the
 episode's duration in seconds as a matching aid. One Pace is a single fan project with no
@@ -368,20 +389,22 @@ before documenting it.
 | 3     | A4 skipped card, A6 page warning           | 5h            |
 | 4     | A5 stale defaults                          | 1h            |
 | 5     | A7 queue sorting                           | 3h            |
-| 6     | C subtitle repository                      | 6h            |
-| 7     | B tool repository public                   | 1d            |
-| 8     | D glossary repository                      | 2h            |
+| 6     | B tool repository public                   | 1d            |
+| 7     | D glossary repository                      | 2h            |
+| —     | C subtitle repository (deferred, rolling)  | 6h, later     |
 | —     | E quant A/B (parallel; two overnight runs) | 4h + 2 nights |
 
-**Roughly five working days, with no slack.** E runs alongside, and its result feeds B's README.
+**Roughly four working days.** C leaving the week is where the slack came from. E runs
+alongside, and its result feeds B's README.
 
 ---
 
 ## Risks
 
-- **The qualifying-episode count is unknown.** If very few episodes outside Season 31 qualify,
-  the subtitle drop is Season 31 plus a handful. That is an acceptable outcome and does not
-  change the design, but it should be measured before the repository README is written.
+- ~~**The qualifying-episode count is unknown.**~~ **Measured 2026-08-31: it is zero.** This
+  risk fired past its stated worst case and took workstream C out of the week (decision 16).
+  The lesson worth carrying: the count was derivable from the queue and the store at any point
+  in the last month, and nobody derived it until the week the deliverable depended on it.
 - **The secret scan may find something.** Remediation is rotation plus a GitHub Support purge,
   and it can delay the public push. Run the scan first, not last.
 - **A2 changes a durable artifact's shape** (the glossary file gains a field). Existing
