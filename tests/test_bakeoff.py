@@ -531,3 +531,96 @@ def test_an_unbounded_run_reports_nothing_bounded_it():
 def test_a_partial_model_run_is_flagged_in_its_row():
     ranked = bo.rank_models([_score("killed", scored=4, missing=6)])
     assert "4" in ranked[0]["note"] and "10" in ranked[0]["note"]
+
+
+def test_spread_sampling_reaches_the_whole_episode_not_just_the_opening():
+    """`--limit N` took targets[:N], which is the first N in CARD ORDER -- and an episode
+    opens with its theme song. Whisper is least confident on sung lyrics, so songs are
+    over-represented among targets to begin with; the first 15 targets of One Pace S31E06
+    were all opening-song lines, with not one proper noun among them.
+
+    That made a whole 8-model bake-off unable to measure the thing it exists to measure:
+    every model scored 0% name edits because there were no names to edit.
+
+    Breaks if sampling goes back to a head slice: the selected indices would cluster at the
+    start instead of spanning the episode."""
+    targets = [{"text": f"line {i}", "start": float(i)} for i in range(100)]
+
+    picked = bo.sample_targets(targets, 10, "spread")
+
+    assert len(picked) == 10
+    assert picked[0] is targets[0], "the first target is still included"
+    idx = [targets.index(p) for p in picked]
+    assert idx == sorted(idx), "sampling preserves episode order"
+    assert max(idx) > 80, "the sample must reach the end of the episode, not stop at the front"
+    assert len(set(idx)) == 10, "no target is sampled twice"
+
+
+def test_head_sampling_is_still_available_and_unchanged():
+    """The old behaviour stays reachable, so a run can be reproduced exactly as it was."""
+    targets = [{"text": f"line {i}"} for i in range(100)]
+    assert bo.sample_targets(targets, 5, "head") == targets[:5]
+
+
+def test_sampling_fewer_targets_than_asked_for_returns_them_all():
+    """An episode with 3 targets and --limit 15 must not raise or pad."""
+    targets = [{"text": "a"}, {"text": "b"}, {"text": "c"}]
+    assert bo.sample_targets(targets, 15, "spread") == targets
+
+
+def test_comparison_puts_every_model_on_the_same_line_side_by_side():
+    """Ship rate alone cannot rank models: 40% shipped could be 40% garbage, and 13% could be
+    a model correctly leaving good lines alone. The only way to tell is to read what each
+    model actually did to the SAME line.
+
+    A 6GB card holds one model at a time, so the pool runs one model per invocation and the
+    side-by-side `bakeoff.py` was built to print is lost across separate files. This rebuilds
+    it from the per-model runs.
+
+    Breaks if a model's answer is dropped, if answers are misaligned against the original, or
+    if a model that failed on a line is silently omitted rather than shown as failed."""
+    runs = {
+        "alpha": [
+            {"orig": "i saw spondum", "out": "I saw Spandam.", "admitted": True},
+            {"orig": "dothamingo laughed", "out": "dothamingo laughed", "admitted": False},
+        ],
+        "beta": [
+            {"orig": "i saw spondum", "out": "I saw a phantom.", "admitted": True},
+            {"orig": "dothamingo laughed", "out": "Doflamingo laughed.", "admitted": True},
+        ],
+        "gamma": [
+            {"orig": "i saw spondum", "out": "<ERROR timeout>", "admitted": False},
+            {"orig": "dothamingo laughed", "out": "Doflamingo laughed.", "admitted": True},
+        ],
+    }
+
+    out = bo.format_comparison(runs)
+
+    assert "i saw spondum" in out and "dothamingo laughed" in out
+    for model in runs:
+        assert model in out
+    assert "I saw Spandam." in out and "I saw a phantom." in out
+    assert "<ERROR timeout>" in out, "a failed call must be shown, not omitted"
+
+    # the two originals must appear as separate blocks, each carrying all three models.
+    # split()[0] is the header, which carries no ORIG: of its own.
+    assert out.count("ORIG:") == 2, "one block per original line"
+    blocks = out.split("ORIG:")[1:]
+    for b in blocks:
+        for model in runs:
+            assert model in b, f"{model} missing from a comparison block"
+
+
+def test_comparison_marks_which_answers_would_ship():
+    """The reader needs to know which changes passed production's gate, because an unshipped
+    change is a proposal the pipeline would have thrown away -- judging it as if it shipped
+    would blame a model for a line no viewer would ever see."""
+    runs = {
+        "alpha": [{"orig": "a line", "out": "A line.", "admitted": True}],
+        "beta": [{"orig": "a line", "out": "Some other thing entirely.", "admitted": False}],
+    }
+    out = bo.format_comparison(runs)
+    alpha_line = [ln for ln in out.splitlines() if "alpha" in ln][0]
+    beta_line = [ln for ln in out.splitlines() if "beta" in ln][0]
+    assert alpha_line != beta_line
+    assert "ship" in out.lower() or "✓" in out
