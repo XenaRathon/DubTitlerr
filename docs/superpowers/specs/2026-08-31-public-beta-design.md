@@ -303,6 +303,18 @@ if a model is resident, and re-checks between quantisations.
 
 **Candidates:** Q4_K_M, Q5_K_M, Q6_K, against Q8_0 as control.
 
+**Model selection runs at the LARGEST quant that fits, not at the deployment quant.** Judging
+a candidate at Q4 risks eliminating it for quantisation damage rather than model quality,
+which is not the question being asked. Whisper is not resident during a bake-off -- the
+harness only talks to the LLM endpoint -- so the whole 6 GB card is available and every
+candidate in the pool fits at Q8_0 (largest is Qwen3-4B at 3.99 GB).
+
+Finalists then go into the overnight quant sweep to find the smallest quant that still holds
+their quality. This deliberately splits one question into two: _which model_ is decided at
+each model's best, and _which quant_ is decided per finalist afterwards. Doing both at once
+would confound them, and the answer to the second is per model anyway, since a 1.1B model
+fits at Q8_0 where a 4B needs Q4_K_M to leave room for Whisper.
+
 **Two runs, separated on purpose.**
 
 The overnight window is the scarce resource, so it holds NANBEIGE QUANTS ONLY. That is what
