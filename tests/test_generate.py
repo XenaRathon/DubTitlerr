@@ -1797,8 +1797,13 @@ def test_delayed_audio_shifts_cards_to_the_video_timeline(monkeypatch, tmp_path,
 
 
 def test_zero_audio_start_preserves_pre_change_outputs_byte_for_byte(monkeypatch, tmp_path):
-    """A zero start offset must be a true no-op: the products match the same fixture
-    through the pre-change path where no offset was available."""
+    """A zero start offset must be a true no-op.
+
+    This compares a probe that returns 0.0 against one that returns None (the probe-failure
+    path), not against the code as it stood before the offset existed -- so it pins that the
+    two no-op routes agree, which is what can regress. The stronger claim, that a zero-offset
+    episode is byte-identical to pre-change output, holds by construction: below the
+    threshold _apply_audio_start_offset mutates nothing and returns its input."""
     model = _FakeModel([_FakeSegment(0.0, 0.5, 0.05, [_FakeWord(" Hello.", 0.0, 0.5, 0.95)])])
     monkeypatch.setattr(generate, "eng_audio_index", lambda video: 7)
     monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
@@ -1837,3 +1842,28 @@ def test_subframe_audio_start_does_not_shift_or_log(monkeypatch, tmp_path, capsy
     assert conf[0]["start"] == pytest.approx(0.0)
     assert conf[0]["end"] == pytest.approx(0.83)
     assert "audio start offset" not in capsys.readouterr().out
+
+
+def test_a_negative_audio_start_is_reported_and_never_applied(capsys):
+    """A negative container start means the audio begins BEFORE video zero, so correcting
+    shifts cues below zero -- and ts_srt has no guard for that: ts_srt(-0.5) renders
+    '-1:59:59,500', a malformed timestamp that corrupts the whole file silently.
+
+    Correcting buys nothing here (a cue before the video starts is unrenderable however it
+    is written), so the offset is refused and logged. The measured population already
+    contains negative starts -- SAO S01E02-E24 at -7ms -- so this is a real shape, not a
+    hypothetical; -7ms is merely below the threshold and never reached this branch.
+
+    Breaks if the guard is dropped: `words` comes back shifted to -0.2 and the log says
+    corrected."""
+    words = [{"start": 0.0, "end": 0.5}]
+    segments = [{"start": 0.0, "end": 0.5}]
+
+    out = generate._apply_audio_start_offset(words, segments, 5.0, -0.2)
+
+    assert words == [{"start": 0.0, "end": 0.5}], "a negative offset must not move the cues"
+    assert segments == [{"start": 0.0, "end": 0.5}]
+    assert out == 5.0
+    printed = capsys.readouterr().out
+    assert "branch=refused-negative" in printed
+    assert "branch=corrected" not in printed

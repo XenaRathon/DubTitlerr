@@ -226,8 +226,11 @@ def media_duration(path):
     """Duration of ``path`` in seconds via ffprobe, or None when it cannot be measured.
     None means "unbounded" to reflow.time_cards(): a probe failure must never fail an
     episode, and unbounded is exactly the pre-existing behavior. Called on the EXTRACTED
-    WAV, not the container -- whisper's timestamps live on the wav's timeline, and that
-    is the timeline time_cards()'s end-of-audio guard has to compare against."""
+    WAV, not the container -- whisper's timestamps come out on the wav's timeline, and that
+    is the timeline time_cards()'s end-of-audio guard has to compare against.
+
+    When the audio stream is delayed, _apply_audio_start_offset moves the words AND this
+    duration onto the video timeline together, so the two stay comparable."""
     try:
         r = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", path],
@@ -280,8 +283,19 @@ def audio_start_time(video, idx):
 
 
 def _apply_audio_start_offset(words, segments, audio_duration, offset):
-    """Move Whisper's audio-relative timestamps onto the video timeline."""
+    """Move Whisper's audio-relative timestamps onto the video timeline.
+
+    Only a POSITIVE offset is applied. A negative container start means the audio begins
+    before video zero, so correcting would shift cues below zero -- and ts_srt has no guard
+    for that: ts_srt(-0.5) renders "-1:59:59,500", which corrupts the file silently rather
+    than failing. Correcting buys nothing there either, since a cue before the video starts
+    cannot be rendered however it is written. The measured population already contains
+    negative starts (SAO S01E02-E24 at -7ms); those sit below the threshold and never reach
+    this branch, but nothing guarantees the next release will."""
     if offset is None or abs(offset) <= AUDIO_START_THRESHOLD:
+        return audio_duration
+    if offset < 0:
+        log(f"audio start offset: branch=refused-negative offset={offset:+.3f}s (would shift cues before video zero)")
         return audio_duration
     for item in words:
         item["start"] += offset
