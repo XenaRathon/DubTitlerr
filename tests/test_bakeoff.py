@@ -531,3 +531,38 @@ def test_an_unbounded_run_reports_nothing_bounded_it():
 def test_a_partial_model_run_is_flagged_in_its_row():
     ranked = bo.rank_models([_score("killed", scored=4, missing=6)])
     assert "4" in ranked[0]["note"] and "10" in ranked[0]["note"]
+
+
+def test_spread_sampling_reaches_the_whole_episode_not_just_the_opening():
+    """`--limit N` took targets[:N], which is the first N in CARD ORDER -- and an episode
+    opens with its theme song. Whisper is least confident on sung lyrics, so songs are
+    over-represented among targets to begin with; the first 15 targets of One Pace S31E06
+    were all opening-song lines, with not one proper noun among them.
+
+    That made a whole 8-model bake-off unable to measure the thing it exists to measure:
+    every model scored 0% name edits because there were no names to edit.
+
+    Breaks if sampling goes back to a head slice: the selected indices would cluster at the
+    start instead of spanning the episode."""
+    targets = [{"text": f"line {i}", "start": float(i)} for i in range(100)]
+
+    picked = bo.sample_targets(targets, 10, "spread")
+
+    assert len(picked) == 10
+    assert picked[0] is targets[0], "the first target is still included"
+    idx = [targets.index(p) for p in picked]
+    assert idx == sorted(idx), "sampling preserves episode order"
+    assert max(idx) > 80, "the sample must reach the end of the episode, not stop at the front"
+    assert len(set(idx)) == 10, "no target is sampled twice"
+
+
+def test_head_sampling_is_still_available_and_unchanged():
+    """The old behaviour stays reachable, so a run can be reproduced exactly as it was."""
+    targets = [{"text": f"line {i}"} for i in range(100)]
+    assert bo.sample_targets(targets, 5, "head") == targets[:5]
+
+
+def test_sampling_fewer_targets_than_asked_for_returns_them_all():
+    """An episode with 3 targets and --limit 15 must not raise or pad."""
+    targets = [{"text": "a"}, {"text": "b"}, {"text": "c"}]
+    assert bo.sample_targets(targets, 15, "spread") == targets

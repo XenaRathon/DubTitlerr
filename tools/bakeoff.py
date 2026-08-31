@@ -415,6 +415,27 @@ def format_summary(ranked, bounds=()):
     return "\n".join(out)
 
 
+def sample_targets(targets, limit, mode="spread"):
+    """Which of an episode's targets to judge on.
+
+    "head" is `targets[:limit]` -- the original behaviour, kept so an earlier run can be
+    reproduced exactly. It is a bad default: targets are in CARD ORDER, an episode opens with
+    its theme song, and Whisper is least confident on sung lyrics, so songs crowd the front of
+    the list. Measured on One Pace S31E06, the first 15 of 212 targets were ALL opening-song
+    lines with not one proper noun among them -- which let an 8-model bake-off run to
+    completion while being unable to measure name handling at all.
+
+    "spread" walks the whole episode at an even stride, so dialogue, names and songs appear in
+    proportion to how the episode actually contains them. Order is preserved and the first
+    target is always included, so the sample still reads like the episode."""
+    if limit <= 0 or len(targets) <= limit:
+        return list(targets)
+    if mode == "head":
+        return list(targets[:limit])
+    stride = len(targets) / limit
+    return [targets[int(i * stride)] for i in range(limit)]
+
+
 def coverage_bounds(scores, all_targets, targets, limit, gloss):
     """Everything that narrowed what was actually measured, as report lines.
 
@@ -455,6 +476,13 @@ def main():
     ap.add_argument("--models", nargs="+", default=["qwen3:8b", "qwen3.5:4b", "qwen2.5:7b"])
     ap.add_argument("--limit", type=int, default=15)
     ap.add_argument(
+        "--sample",
+        choices=("spread", "head"),
+        default="spread",
+        help="spread: sample evenly across the episode (default -- a head slice is all opening song); "
+        "head: the first --limit targets, the pre-2026-08-31 behaviour",
+    )
+    ap.add_argument(
         "--shortlist",
         type=int,
         default=5,
@@ -488,7 +516,7 @@ def main():
     for c in cards:  # deterministic layer first (as in prod)
         c["text"] = glossary.correct(c["text"], gloss)[0]
     all_targets = [c for c in cards if repair.is_target(c, gloss)]
-    targets = all_targets[: a.limit]
+    targets = sample_targets(all_targets, a.limit, a.sample)
     prompts = [repair.build_prompt(c["text"], "", gloss) for c in targets]  # glossary-only (mp4)
     print(f"cards={len(cards)} targets={len(targets)} of {len(all_targets)} (--limit {a.limit})  models={a.models}\n")
 
