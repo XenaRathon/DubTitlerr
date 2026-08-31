@@ -303,18 +303,30 @@ if a model is resident, and re-checks between quantisations.
 
 **Candidates:** Q4_K_M, Q5_K_M, Q6_K, against Q8_0 as control.
 
-**Two runs, separated on purpose.** The overnight window is the scarce resource, so it holds
-QUANTS ONLY -- that is what the README's VRAM line is blocked on, and it varies one thing.
-Candidate MODELS (Ling, TinyLlama, LFM) are judged separately, by eye, on fasc during the
-day while the tagger holds xenapc. Comparing a new model against a settled quant baseline is
-one variable; comparing both at once is neither result. TinyLlama at 1.1B is well under
-nanbeige's 3B and the measured failure mode on this prompt is inaction, so expect it to go
-inert -- it is cheap to include and should not be counted on.
+**Two runs, separated on purpose.**
+
+The overnight window is the scarce resource, so it holds NANBEIGE QUANTS ONLY. That is what
+the README's VRAM line is blocked on, and it varies one thing.
+
+Candidate MODELS (Ling, TinyLlama, LFM) are judged separately, by eye, on fasc during the day
+while the tagger holds xenapc.
+
+**The quant baseline is per model, not global.** Each candidate gets its own quant, chosen as
+the largest that fits the VRAM budget beside whisper -- a 1.1B model may fit at Q8_0 where a
+3B needs Q4_K_M. So the comparable unit is never "the model", it is "the model at the largest
+quant its size allows in the budget", and the deliverable table is per model rather than one
+envelope for all of them. The nanbeige sweep answers that question for nanbeige and for
+nothing else.
+
+TinyLlama at 1.1B is well under nanbeige's 3B and the measured failure mode on this prompt is
+inaction (nanbeige itself returned 0 safe fixes across 120 targets before the prompt was
+fixed), so expect it to go inert. Cheap to include, not to be counted on.
 
 **Judged on:** safe-fix count **and** name-edit count on the existing target set — both, because
 a model that makes more edits is not thereby better; VRAM at 16k context; latency.
 
-**Deliverable:** a table of documented deployment routes with quality expectations for each —
+**Deliverable:** a PER-MODEL table of documented deployment routes with quality expectations
+for each —
 single 8 GB card, single 6 GB card, split across two cards, and sequential model swap on a
 smaller card. Sequential swap is likely close to free already: `generate.py` loads Whisper
 lazily and its process exits between shows, and repair talks to an HTTP endpoint. Confirm
