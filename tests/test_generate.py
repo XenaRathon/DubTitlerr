@@ -1731,3 +1731,139 @@ def test_ffmpeg_timeout_defaults_match_the_pre_override_literals():
     env must reproduce exactly the timeouts that were compiled in before."""
     assert generate.FFMPEG_TIMEOUT == 600
     assert generate.FFPROBE_TIMEOUT == 60
+
+
+# --- delayed audio stream start correction ------------------------------------
+
+
+def test_audio_start_time_uses_the_requested_stream_index(monkeypatch):
+    """The correction must inspect the same audio stream that extract_wav maps, not
+    whichever audio stream ffprobe happens to list first."""
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        return types.SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "streams": [
+                        {"index": 1, "start_time": "0.0"},
+                        {"index": 7, "start_time": "1.250"},
+                    ]
+                }
+            ),
+            returncode=0,
+        )
+
+    monkeypatch.setattr(generate.subprocess, "run", run)
+    assert generate.audio_start_time("ep.mkv", 7) == pytest.approx(1.25)
+    assert "stream=index,start_time" in calls[0]
+
+
+def test_delayed_audio_shifts_cards_to_the_video_timeline(monkeypatch, tmp_path, capsys):
+    """Synthetic delayed-audio fixture: Whisper starts at the WAV's zero, while the
+    selected stream starts 1.25s into the video. The written cue must include that delay."""
+    v = tmp_path / "delayed.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 7)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+
+    def probe(cmd, **kw):
+        path = cmd[-1]
+        start = "0.0" if "zero" in path else "1.25"
+        return types.SimpleNamespace(stdout=json.dumps({"streams": [{"index": 7, "start_time": start}]}), returncode=0)
+
+    monkeypatch.setattr(generate.subprocess, "run", probe)
+    monkeypatch.setattr(generate, "media_duration", lambda path: 5.0)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+    monkeypatch.setattr(generate, "WMODEL", _FakeModel([_FakeSegment(0.0, 0.5, 0.05, [_FakeWord(" Hello.", 0.0, 0.5, 0.95)])]))
+
+    assert generate.process(str(v)) == "ok"
+    conf = json.loads((tmp_path / "delayed.dubtitles.conf.json").read_text())
+    assert conf[0]["start"] == pytest.approx(1.25)
+    assert conf[0]["end"] == pytest.approx(2.08)
+
+    zero = tmp_path / "zero.mkv"
+    zero.write_bytes(b"x" * 1000)
+    assert generate.process(str(zero)) == "ok"
+    zero_conf = json.loads((tmp_path / "zero.dubtitles.conf.json").read_text())
+    assert zero_conf[0]["start"] == pytest.approx(0.0)
+    assert zero_conf[0]["end"] == pytest.approx(0.83)
+    assert conf[0]["start"] - zero_conf[0]["start"] == pytest.approx(1.25)
+    assert conf[0]["end"] - zero_conf[0]["end"] == pytest.approx(1.25)
+
+    output = capsys.readouterr().out
+    assert output.count("audio start offset: branch=corrected") == 1
+
+
+def test_zero_audio_start_preserves_pre_change_outputs_byte_for_byte(monkeypatch, tmp_path):
+    """A zero start offset must be a true no-op.
+
+    This compares a probe that returns 0.0 against one that returns None (the probe-failure
+    path), not against the code as it stood before the offset existed -- so it pins that the
+    two no-op routes agree, which is what can regress. The stronger claim, that a zero-offset
+    episode is byte-identical to pre-change output, holds by construction: below the
+    threshold _apply_audio_start_offset mutates nothing and returns its input."""
+    model = _FakeModel([_FakeSegment(0.0, 0.5, 0.05, [_FakeWord(" Hello.", 0.0, 0.5, 0.95)])])
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 7)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setattr(generate, "media_duration", lambda path: 5.0)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+
+    baseline = tmp_path / "baseline.mkv"
+    baseline.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "audio_start_time", lambda video, idx: None)
+    monkeypatch.setattr(generate, "WMODEL", model)
+    assert generate.process(str(baseline)) == "ok"
+
+    zero = tmp_path / "zero.mkv"
+    zero.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "audio_start_time", lambda video, idx: 0.0)
+    assert generate.process(str(zero)) == "ok"
+
+    for suffix in (generate.SUFFIX, ".dubtitles.conf.json", generate.WORDS_SUFFIX):
+        assert (tmp_path / ("baseline" + suffix)).read_bytes() == (tmp_path / ("zero" + suffix)).read_bytes()
+
+
+def test_subframe_audio_start_does_not_shift_or_log(monkeypatch, tmp_path, capsys):
+    """The measured -7ms Opus pre-skip population is below the 50ms threshold: output
+    stays on the existing zero-based timeline and no offset branch is logged."""
+    v = tmp_path / "preskip.mkv"
+    v.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: 7)
+    monkeypatch.setattr(generate, "extract_wav", lambda video, idx, wav: True)
+    monkeypatch.setattr(generate, "audio_start_time", lambda video, idx: -0.007)
+    monkeypatch.setattr(generate, "media_duration", lambda path: 5.0)
+    monkeypatch.setenv("SKIP_IF_SRT", "0")
+    monkeypatch.setattr(generate, "WMODEL", _FakeModel([_FakeSegment(0.0, 0.5, 0.05, [_FakeWord(" Hello.", 0.0, 0.5, 0.95)])]))
+
+    assert generate.process(str(v)) == "ok"
+    conf = json.loads((tmp_path / "preskip.dubtitles.conf.json").read_text())
+    assert conf[0]["start"] == pytest.approx(0.0)
+    assert conf[0]["end"] == pytest.approx(0.83)
+    assert "audio start offset" not in capsys.readouterr().out
+
+
+def test_a_negative_audio_start_is_reported_and_never_applied(capsys):
+    """A negative container start means the audio begins BEFORE video zero, so correcting
+    shifts cues below zero -- and ts_srt has no guard for that: ts_srt(-0.5) renders
+    '-1:59:59,500', a malformed timestamp that corrupts the whole file silently.
+
+    Correcting buys nothing here (a cue before the video starts is unrenderable however it
+    is written), so the offset is refused and logged. The measured population already
+    contains negative starts -- SAO S01E02-E24 at -7ms -- so this is a real shape, not a
+    hypothetical; -7ms is merely below the threshold and never reached this branch.
+
+    Breaks if the guard is dropped: `words` comes back shifted to -0.2 and the log says
+    corrected."""
+    words = [{"start": 0.0, "end": 0.5}]
+    segments = [{"start": 0.0, "end": 0.5}]
+
+    out = generate._apply_audio_start_offset(words, segments, 5.0, -0.2)
+
+    assert words == [{"start": 0.0, "end": 0.5}], "a negative offset must not move the cues"
+    assert segments == [{"start": 0.0, "end": 0.5}]
+    assert out == 5.0
+    printed = capsys.readouterr().out
+    assert "branch=refused-negative" in printed
+    assert "branch=corrected" not in printed

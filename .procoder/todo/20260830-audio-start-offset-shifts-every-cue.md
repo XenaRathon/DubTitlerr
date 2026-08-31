@@ -96,7 +96,35 @@ the owner's call, not a detail to infer.
 
 ## Evidence
 
-Pending.
+Implemented on branch `fix/audio-start-offset` using post-transcription timing correction.
+`generate.audio_start_time()` probes the selected global stream index with ffprobe and follows
+`media_duration()`'s failure handling: probe failures are logged and return `None`. Offsets
+whose absolute value is at most 50 ms are left untouched and produce no offset log. Larger
+offsets shift every Whisper word and segment timestamp, and the adjusted audio duration, before
+punctuation restoration and reflow. The correction log is explicit:
+`audio start offset: branch=corrected offset=+N.NNNs`.
+
+TDD evidence:
+
+- Failing focused run before implementation: `3 failed` — `AttributeError: module 'generate'
+has no attribute 'audio_start_time'` in the stream-index, delayed-audio, and sub-frame tests.
+- Passing focused run after implementation: `7 passed` (`tests/test_generate.py`, selected
+  audio-offset/extraction tests).
+- Full suite: `rtk proxy "python3 -m pytest tests/ -q"` — passed, 100% (`[100%]`, no failures).
+- Final `procoder check`: `0 unformatted, 0 unchecked, 0 out of scope`; the only reported
+  blocker is procoder's commit-message documentation acknowledgment, which cannot be
+  consumed without committing. No code or formatting blocker remains.
+
+Acceptance coverage:
+
+- Synthetic delayed-audio fixture: passed; a +1.25 s selected-stream start shifts both cue
+  boundaries by +1.25 s onto the video timeline.
+- Zero offset: passed; baseline (`None`) and explicit `0.0` products are byte-identical.
+- -7 ms pre-skip: passed; no timing correction and no offset log.
+- Log branch: passed for the corrected branch; the below-threshold path intentionally has no
+  offset log per the 50 ms decision.
+- SAO S01E01 playback/re-run was not performed, as explicitly required to remain the owner's
+  post-landing step.
 
 Measurement to re-derive: `ffprobe -v error -select_streams a:0 -show_entries
 stream=start_time -of json <video>` over a season, compared against the video and subtitle

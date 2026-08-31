@@ -116,6 +116,7 @@ AUDIO_FILTER = os.environ.get(
 # so it is overridable for the same reason.
 FFMPEG_TIMEOUT = int(os.environ.get("FFMPEG_TIMEOUT", "600"))
 FFPROBE_TIMEOUT = int(os.environ.get("FFPROBE_TIMEOUT", "60"))
+AUDIO_START_THRESHOLD = 0.05  # ignore codec pre-skip and sub-frame timestamp noise
 UID = int(os.environ.get("MEDIA_UID", "1000"))
 GID = int(os.environ.get("MEDIA_GID", "100"))
 SUFFIX = ".eng.dubtitles.srt"
@@ -225,8 +226,11 @@ def media_duration(path):
     """Duration of ``path`` in seconds via ffprobe, or None when it cannot be measured.
     None means "unbounded" to reflow.time_cards(): a probe failure must never fail an
     episode, and unbounded is exactly the pre-existing behavior. Called on the EXTRACTED
-    WAV, not the container -- whisper's timestamps live on the wav's timeline, and that
-    is the timeline time_cards()'s end-of-audio guard has to compare against."""
+    WAV, not the container -- whisper's timestamps come out on the wav's timeline, and that
+    is the timeline time_cards()'s end-of-audio guard has to compare against.
+
+    When the audio stream is delayed, _apply_audio_start_offset moves the words AND this
+    duration onto the video timeline together, so the two stay comparable."""
     try:
         r = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", path],
@@ -240,6 +244,69 @@ def media_duration(path):
         log("ffprobe duration failed", path, e)
         return None
     return dur if dur > 0 else None
+
+
+def audio_start_time(video, idx):
+    """Start time of the selected audio stream in the container timeline, or None.
+
+    ``idx`` is the global stream index returned by ``eng_audio_index``. Filtering the
+    probe result by that index is important when a file contains multiple audio tracks:
+    the stream that is probed must be the stream that ``extract_wav`` maps.
+    """
+    try:
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a",
+                "-show_entries",
+                "stream=index,start_time",
+                "-of",
+                "json",
+                video,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=FFPROBE_TIMEOUT,
+            stdin=subprocess.DEVNULL,
+        )
+        streams = json.loads(r.stdout).get("streams", [])
+        stream = next((s for s in streams if s.get("index") == idx), None)
+        if stream is None:
+            return None
+        return float(stream["start_time"])
+    except Exception as e:
+        log("ffprobe audio start failed", video, e)
+        return None
+
+
+def _apply_audio_start_offset(words, segments, audio_duration, offset):
+    """Move Whisper's audio-relative timestamps onto the video timeline.
+
+    Only a POSITIVE offset is applied. A negative container start means the audio begins
+    before video zero, so correcting would shift cues below zero -- and ts_srt has no guard
+    for that: ts_srt(-0.5) renders "-1:59:59,500", which corrupts the file silently rather
+    than failing. Correcting buys nothing there either, since a cue before the video starts
+    cannot be rendered however it is written. The measured population already contains
+    negative starts (SAO S01E02-E24 at -7ms); those sit below the threshold and never reach
+    this branch, but nothing guarantees the next release will."""
+    if offset is None or abs(offset) <= AUDIO_START_THRESHOLD:
+        return audio_duration
+    if offset < 0:
+        log(f"audio start offset: branch=refused-negative offset={offset:+.3f}s (would shift cues before video zero)")
+        return audio_duration
+    for item in words:
+        item["start"] += offset
+        item["end"] += offset
+    for segment in segments:
+        segment["start"] += offset
+        segment["end"] += offset
+    if audio_duration is not None:
+        audio_duration += offset
+    log(f"audio start offset: branch=corrected offset={offset:+.3f}s")
+    return audio_duration
 
 
 def extract_wav(video, idx, wav):
@@ -947,6 +1014,7 @@ def process(video):
                 words.append(
                     {"text": s.text, "start": s.start, "end": s.end, "prob": min(1.0, math.exp(s.avg_logprob)), "seg": si}
                 )
+        audio_duration = _apply_audio_start_offset(words, segments, audio_duration, audio_start_time(video, idx))
     try:
         os.remove(fail)  # transcription finished -> clear in-flight mark
     except OSError:
