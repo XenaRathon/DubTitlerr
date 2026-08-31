@@ -43,4 +43,29 @@ Worth checking whether the choice should persist in localStorage beside the toke
 
 ## Evidence
 
-<!-- Filled at close time. -->
+Implemented on branch `feat/review-sorting`.
+
+- Episode pages retain the server's risk-first order by default and add client-side
+  `chronological`, `queue order`, and `longest first` modes. Sorting moves existing DOM rows;
+  it does not fetch, reload, or alter the JSONL-derived radio indexes.
+- The episode invariant is tested by reordering the rendered rows and asserting the posted
+  index set is unchanged. Row metadata carries the stable index, risk, start time, and length.
+- Shared lines retain the measured **most-repeated-first** default because one decision then
+  clears the most duplicate questions. They also offer **risk-first**; chronological is not
+  meaningful across multiple episodes and was intentionally not added there.
+- Sort selections persist in localStorage beside the existing token, using separate keys:
+  `dubtitlerr_episode_sort` and `dubtitlerr_shared_sort`.
+- TDD failing run: `FFF` — the three new tests failed because the sort controls/functions
+  did not yet exist (`episode-sort` absent, `sortEpisode` absent, `shared-sort` absent).
+- Passing focused run: `3 passed` for the episode/shared sorting tests.
+- Required full suite: `python3 -m pytest tests/ -q --tb=short > /tmp/suite.txt 2>&1; echo $?`
+  returned `0`; `/tmp/suite.txt` reached `[100%]` with no failures. Direct pytest is the
+  authoritative result because procoder's test-stage report is unreliable in this repo.
+- Final `procoder check`: `0 unformatted, 0 unchecked, 0 out of scope`; no code or lint
+  blocker remains. One procedural blocker remains because no commit message exists for the
+  required documentation acknowledgment, and this task was deliberately left uncommitted.
+- This was presentation-only: no authenticated write route was changed, so
+  `procoder:security` was not invoked.
+
+Acceptance limitation: no item from the feature acceptance list remains unimplemented. No
+commit or push was performed.

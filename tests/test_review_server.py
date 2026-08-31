@@ -1379,3 +1379,63 @@ def test_the_episode_page_renders_the_surrounding_cards(tmp_path, monkeypatch):
 
     assert "he went thataway" in html_out, "the following card must reach the page"
     assert "ctx" in html_out, "and be marked up so it can be styled apart from the entry itself"
+
+
+def test_the_episode_page_offers_client_side_sort_modes_with_risk_default(tmp_path, monkeypatch):
+    """Risk-first remains the measured default, while chronological is the reviewer mode
+    that permits one forward scrub. Queue order and longest-first are cheap extra views and
+    make the control useful for debugging and long-card triage too."""
+    stem = _triage_episode(tmp_path, "sort_modes")
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+
+    page = review_server.render_page(stem)
+
+    assert '<select id="episode-sort">' in page
+    assert '<option value="risk" selected>risk first</option>' in page
+    assert '<option value="chronological">chronological</option>' in page
+    assert '<option value="queue">queue order</option>' in page
+    assert '<option value="longest">longest first</option>' in page
+    assert "function sortEpisode" in page
+    assert "localStorage" in page and "dubtitlerr_episode_sort" in page
+
+
+def test_episode_sort_reorders_rows_without_changing_the_posted_index_set(tmp_path, monkeypatch):
+    """Sorting moves existing DOM rows only. Their radio names remain the JSONL row
+    indexes, so choosing verdicts after reordering posts the same index set and cannot land
+    a decision on a different queue entry."""
+    import re
+
+    stem = _triage_episode(tmp_path, "sort_identity")
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    page = review_server.render_page(stem)
+
+    rows = re.findall(r'<li class="r[^"]*"[^>]*data-index="(\d+)".*?name="v(\d+)"', page, re.S)
+    before = [int(radio) for _dom, radio in rows]
+    after = list(reversed(before))  # the presentation reorder; no index is regenerated
+    sort_body = page.split("function sortEpisode", 1)[1].split("const TOK", 1)[0]
+
+    assert rows and all(int(dom) == int(radio) for dom, radio in rows)
+    assert set(after) == set(before), "the posted JSONL index set is invariant under reordering"
+    assert "appendChild(row)" in sort_body and "fetch(" not in sort_body and "location.reload" not in sort_body
+    assert "name.slice(1)" in page, "posted indexes come from stable radio names, not visual position"
+
+
+def test_shared_page_keeps_most_repeated_default_and_offers_risk_sort(tmp_path, monkeypatch):
+    """Shared lines keep their measured most-repeated-first default: one decision clears the
+    most duplicate questions. Risk-first is available when the reviewer wants to audit the
+    dangerous word changes instead."""
+    _shared_library(tmp_path)
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    monkeypatch.setattr(review_server.decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "show_for", lambda s: "One Pace")
+
+    page = review_server.render_shared()
+
+    assert '<select id="shared-sort">' in page
+    assert '<option value="repeated" selected>most repeated first</option>' in page
+    assert '<option value="risk">risk first</option>' in page
+    assert "function sortShared" in page
+    assert "localStorage" in page and "dubtitlerr_shared_sort" in page
