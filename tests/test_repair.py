@@ -2360,3 +2360,76 @@ def test_a_skipped_card_a_human_ruled_on_is_never_silent(tmp_path, monkeypatch):
     assert summary["verdict_owed"] == 1
     assert summary["skipped_no_ref"] == 0
     assert "I saw spondum" in open(srt_path).read(), "a rejection leaves the ASR text standing"
+
+
+def test_a_first_run_with_no_anchor_says_so_loudly(tmp_path, monkeypatch, capsys):
+    """A3. The beta-user case: dub-only copies, `unanchored_repair` never declared, and no
+    prior repairs -- so guard (c) cannot fire, because it only protects work that already
+    exists. Every card is skipped, nothing is repaired, and until now the only trace was a
+    `skipped_no_ref` count inside a JSON sidecar nobody opens.
+
+    The message has to name the remedy, not just the symptom: a user who does not know the
+    setting exists cannot act on "144 targets skipped".
+
+    Breaks if the warning is dropped, or if it fires on an episode that DID repair something
+    -- which would train the reader to ignore it."""
+    stem = str(tmp_path / "ep_first_run")
+    conf_path = stem + repair.CONF_SUFFIX
+    _write_conf(
+        conf_path,
+        stem + repair.SRT_SUFFIX,
+        [{"start": 0.0, "end": 2.0, "text": "garbled line", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_first_run.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl())
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])
+
+    assert repair.process(conf_path) == "repaired"
+    out = capsys.readouterr().out
+    assert "reference" in out.lower(), "the reason must be stated, not just the count"
+    assert "skipped" in out.lower()
+    assert "unanchored_repair" in out, "the remedy must be named, not just the symptom"
+
+
+def test_an_episode_that_repaired_something_does_not_get_the_no_anchor_warning(tmp_path, monkeypatch, capsys):
+    """The other half of the pair. A warning that fires on healthy episodes is noise, and
+    noise is how the real one gets missed."""
+    stem = str(tmp_path / "ep_healthy")
+    conf_path = stem + repair.CONF_SUFFIX
+    _write_conf(
+        conf_path,
+        stem + repair.SRT_SUFFIX,
+        [{"start": 0.0, "end": 4.0, "text": "I saw spondum", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_healthy.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"]))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 4.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "I saw Spandam")
+
+    assert repair.process(conf_path) == "repaired"
+    assert "unanchored_repair" not in capsys.readouterr().out
+
+
+def test_a_show_with_no_glossary_is_reported_not_silently_no_opped(tmp_path, monkeypatch, capsys):
+    """`glossary_for` falls back to a no-op glossary when no <Show>.json resolves. That is
+    the right behaviour -- a missing glossary must never fail an episode -- but doing it
+    silently means a user whose GLOSSARY_DIR is misconfigured gets a whole library repaired
+    with no names at all and nothing anywhere says why.
+
+    Breaks if the fallback goes back to being silent."""
+    stem = str(tmp_path / "ep_nogloss")
+    conf_path = stem + repair.CONF_SUFFIX
+    _write_conf(
+        conf_path,
+        stem + repair.SRT_SUFFIX,
+        [{"start": 0.0, "end": 4.0, "text": "I saw spondum", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_nogloss.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: glossary.load_dict({}))  # nothing resolved
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 4.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "I saw Spandam")
+
+    assert repair.process(conf_path) == "repaired"
+    out = capsys.readouterr().out
+    assert "glossary" in out.lower() and "GLOSSARY_DIR" in out
