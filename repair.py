@@ -27,7 +27,8 @@ Env:
   OLLAMA_URL           default http://127.0.0.1:11434/api/generate
   REPAIR_MODEL         default nanbeige4.2-3b   (see the note at MODEL: it reverses the
                          C1 bake-off's qwen3:8b on this file's own measurements)
-  REPAIR_BACKEND         ollama | llamacpp  (default ollama — V2 A1)
+  REPAIR_BACKEND         ollama | llamacpp  (default llamacpp; see the note at
+                         REPAIR_BACKEND — V2 A1 added the dispatch, the default moved later)
   REPAIR_LLAMACPP_URL    default http://127.0.0.1:8090/v1/chat/completions
                          (chat endpoint: the raw /completion path applies no chat
                          template and yields empty output from instruct models)
@@ -90,7 +91,12 @@ OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 # invisible to every mechanical gate; it also happens to be the model that fits beside
 # whisper on one card.
 MODEL = os.environ.get("REPAIR_MODEL", "nanbeige4.2-3b")
-REPAIR_BACKEND = os.environ.get("REPAIR_BACKEND", "ollama")
+# llamacpp, not ollama. The owner swapped to it on measurement -- it was the stronger
+# performer -- and it is what both arms of the quant A/B run on, so the default matches
+# what the numbers in the README will have been taken on. It costs a beta user a harder
+# install than `ollama pull`; the quickstart carries that, and OLLAMA_URL still works for
+# anyone who prefers it.
+REPAIR_BACKEND = os.environ.get("REPAIR_BACKEND", "llamacpp")
 # Loopback, not a LAN address. The previous default named a host that was DEAD, so the
 # documented default could not have worked for anybody -- including the maintainer, who was
 # passing this explicitly and had no reason to notice.

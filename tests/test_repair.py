@@ -1208,13 +1208,22 @@ def test_fits_card_without_orig_stays_absolute():
     assert repair.fits_card("z" * 60, 1.0) is False
 
 
-def test_repair_backend_defaults_to_ollama_when_unset(monkeypatch):
-    """The backward-compat default, asserted independently of whatever the ambient
-    environment sets (the production container sets REPAIR_BACKEND=llamacpp)."""
+def test_repair_backend_defaults_to_llamacpp_when_unset(monkeypatch):
+    """Asserted independently of whatever the ambient environment sets.
+
+    This used to pin `ollama` as a backward-compat default while, as its own docstring
+    recorded, "the production container sets REPAIR_BACKEND=llamacpp" -- the shipped default
+    and the only real deployment disagreeing, with the repo documenting the one nobody ran.
+    That is the same shape as REPAIR_UNANCHORED: a hand-set variable doing load-bearing work
+    no committed file records. llama.cpp is also the stronger performer on the owner's
+    measurement and what both arms of the quant A/B run on, so the default now matches the
+    configuration the published numbers were taken on.
+
+    Ollama is still fully supported; it is a value, not a removal."""
     import importlib
 
     monkeypatch.delenv("REPAIR_BACKEND", raising=False)
-    assert importlib.reload(repair).REPAIR_BACKEND == "ollama"
+    assert importlib.reload(repair).REPAIR_BACKEND == "llamacpp"
     importlib.reload(repair)  # restore ambient config for the rest of the session
 
 
