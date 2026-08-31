@@ -413,8 +413,25 @@ def test_every_model_appears_in_the_summary_even_when_it_scores_zero():
         _score("broken", errors=10, error_rate=1.0, changed=0, change_rate=0.0, admitted=0, admitted_rate=0.0),
     ]
     out = bo.format_summary(bo.rank_models(scores))
+
+    # The name appearing SOMEWHERE in the summary is not the claim -- the per-model notes and
+    # the shortlist both mention models too, so "in out" passes even when the ranked table has
+    # been filtered. Checked here against the TABLE, which is what the docstring above means:
+    # rows between the column header and the legend that follows it.
+    table = []
+    for line in out.splitlines():
+        if line.lstrip().startswith("#") and "model" in line:
+            table = []  # header: start collecting
+            continue
+        if table and not line.strip():
+            break  # blank line ends the table
+        if table or line.strip()[:1].isdigit():
+            table.append(line)
+    rendered = "\n".join(table)
+
     for m in ("good", "inert", "broken"):
-        assert m in out
+        assert m in rendered, f"{m} is missing from the ranked table, not merely ranked low"
+    assert rendered.count("\n") + 1 == 3, "every model gets a row, no more and no fewer"
 
 
 def test_a_model_that_ranks_low_is_told_why():
