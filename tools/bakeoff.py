@@ -436,6 +436,42 @@ def sample_targets(targets, limit, mode="spread"):
     return [targets[int(i * stride)] for i in range(limit)]
 
 
+def format_comparison(runs):
+    """Every model's answer to the SAME line, one block per line.
+
+    Ship rate cannot rank models on its own: 40% shipped may be 40% garbage, and 13% may be a
+    model correctly leaving good lines alone. Whether a change is an improvement is the one
+    judgment no counter makes, and making it requires reading what each model did to the same
+    input, next to each other.
+
+    `bakeoff.py` prints that side-by-side when every model runs in one invocation. A 6GB card
+    holds one model at a time, so the pool runs one model per invocation and the comparison
+    has to be rebuilt from the separate runs -- which is what this does.
+
+    ``runs`` is {model: [{"orig", "out", "admitted"}, ...]}, each list in target order.
+    A model that failed on a line is SHOWN as failed rather than omitted: a blank would read
+    as "left it alone", which is a different and much better outcome than not answering."""
+    models = list(runs)
+    origs = []
+    for rows in runs.values():
+        for i, r in enumerate(rows):
+            if i >= len(origs):
+                origs.append(r["orig"])
+    w = max((len(m) for m in models), default=0)
+    out = ["\n=== WHAT EACH MODEL ACTUALLY DID (ship = production's gate would write it) ==="]
+    for i, orig in enumerate(origs):
+        out.append(f"\nORIG: {orig}")
+        for m in models:
+            rows = runs[m]
+            if i >= len(rows):
+                out.append(f"  {m:<{w}}  [no result — run ended before this line]")
+                continue
+            r = rows[i]
+            mark = "ship" if r.get("admitted") else "  — "
+            out.append(f"  {m:<{w}}  {mark}  {r['out']}")
+    return "\n".join(out)
+
+
 def coverage_bounds(scores, all_targets, targets, limit, gloss):
     """Everything that narrowed what was actually measured, as report lines.
 
@@ -475,6 +511,7 @@ def main():
     ap.add_argument("--ollama", default="http://127.0.0.1:11434/api/generate")
     ap.add_argument("--models", nargs="+", default=["qwen3:8b", "qwen3.5:4b", "qwen2.5:7b"])
     ap.add_argument("--limit", type=int, default=15)
+    ap.add_argument("--json", help="also write per-line results here, for cross-model comparison")
     ap.add_argument(
         "--sample",
         choices=("spread", "head"),
@@ -538,6 +575,21 @@ def main():
         s = score_model(m, targets, outs[m], totals[m], gloss)
         scores.append(s)
         print(format_score_line(s), flush=True)
+        if a.json:
+            # Per-line rows, so a pool run on a card that holds one model at a time can be
+            # reassembled into the side-by-side this tool prints when every model runs at
+            # once. `admitted` is repair.accept_repair's verdict, recorded per line rather
+            # than only aggregated, because "is this change an improvement" is judged line by
+            # line and a rate cannot be read back into one.
+            rows = []
+            for c, out in zip(targets, outs[m]):
+                dur = (c.get("end") or 0) - (c.get("start") or 0)
+                admitted = bool(
+                    dur > 0 and not out.startswith(("<ERROR", "<EMPTY")) and repair.accept_repair(c["text"], out, "", dur, gloss)
+                )
+                rows.append({"orig": c["text"], "out": out, "admitted": admitted})
+            with open(a.json, "w") as f:
+                json.dump({m: rows}, f, indent=2)
 
     print("\n=== SIDE BY SIDE ===")
     for i, c in enumerate(targets):
