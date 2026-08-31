@@ -548,6 +548,8 @@ def test_every_target_lands_in_exactly_one_summary_bucket(tmp_path, monkeypatch)
         + s["rejected_guard"]
         + s["verdict_reject"]
         + s["verdict_unfittable"]
+        + s["verdict_rescued"]
+        + s["verdict_owed"]
         + s["unchanged"]
     )
 
@@ -2229,3 +2231,123 @@ def test_the_refusal_is_narrow_and_a_quiet_episode_still_rewrites(tmp_path, monk
     assert repair.process(conf_path) == "repaired"
     summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
     assert summary["repaired"] == 0 and summary["skipped_no_ref"] == 1
+
+
+def test_an_llm_empty_card_still_ships_a_stored_human_correction(tmp_path, monkeypatch):
+    """A4. `llm()` returns "" on any transport failure or timeout, and the backend being
+    briefly unreachable during a merge pass is an ordinary operational event. Today that
+    card `continue`s before the store is consulted, and `process` then rebuilds the whole srt
+    from conf.json -- so the reviewer's typed text is replaced by raw ASR while the summary
+    records only `llm_empty`, a number that reads as "the model had nothing to say".
+
+    Breaks if the consult stays below the skip branches, or if the rescue does not run when
+    the LLM is silent."""
+    stem = str(tmp_path / "ep_rescue_empty")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path,
+        srt_path,
+        [{"start": 0.0, "end": 4.0, "text": "I saw spondum", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    store = _store("I saw spondum", "I saw Spandam", "correct", text="I saw Spandam.")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (store, "Show"))
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_rescue_empty.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"]))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 4.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "")  # transport failure
+
+    assert repair.process(conf_path) == "repaired"
+    assert "I saw Spandam." in open(srt_path).read(), "the human's text was replaced by raw ASR"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["verdict_rescued"] == 1
+    assert summary["llm_empty"] == 0, "a rescued card must land in exactly one bucket"
+
+
+def test_an_unanchored_card_still_ships_a_stored_human_correction(tmp_path, monkeypatch):
+    """The same rescue on the other skip branch. One guard where both paths converge, not a
+    patch on the one the defect was found in."""
+    stem = str(tmp_path / "ep_rescue_noref")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path,
+        srt_path,
+        [{"start": 0.0, "end": 4.0, "text": "I saw spondum", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    store = _store("I saw spondum", "I saw Spandam", "correct", text="I saw Spandam.")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (store, "Show"))
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_rescue_noref.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"]))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])  # no anchor at all
+    monkeypatch.setattr(
+        repair, "llm", lambda prompt, model=None: (_ for _ in ()).throw(AssertionError("no anchor -> the LLM must not be called"))
+    )
+
+    assert repair.process(conf_path) == "repaired"
+    assert "I saw Spandam." in open(srt_path).read()
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["verdict_rescued"] == 1
+    assert summary["skipped_no_ref"] == 0
+
+
+def test_a_rescued_correction_that_cannot_be_rendered_is_still_refused(tmp_path, monkeypatch):
+    """C1 is not relaxed for this path. Card timing is immutable for humans too, so a stored
+    correction that cannot be displayed in the card's own duration is refused and counted --
+    exactly as `fits_card` refuses one on the ordinary verdict path.
+
+    Breaks if the rescue writes c["text"] before consulting fits_card."""
+    stem = str(tmp_path / "ep_rescue_unfit")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path,
+        srt_path,
+        [{"start": 0.0, "end": 1.0, "text": "I saw spondum", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    too_long = "I saw Spandam standing right over there by the gate and he was not alone at all."
+    store = _store("I saw spondum", "I saw Spandam", "correct", text=too_long)
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (store, "Show"))
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_rescue_unfit.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"]))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])
+
+    assert repair.process(conf_path) == "repaired"
+    shipped = open(srt_path).read()
+    assert too_long not in shipped, "an unrenderable human line must not be forced onto the card"
+    assert "I saw spondum" in shipped
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["verdict_unfittable"] == 1
+    assert summary["verdict_rescued"] == 0
+
+
+def test_a_skipped_card_a_human_ruled_on_is_never_silent(tmp_path, monkeypatch):
+    """The acceptance criterion the defect turns on: the summary must distinguish "skipped
+    and nothing was owed" from "skipped while a verdict existed". Here the human rejected the
+    proposal, so there is no text to ship -- but a reviewer HAD ruled on the line, and a run
+    that drops that fact is how the loss went unnoticed for eleven corrections.
+
+    Breaks if the rescue returns None whenever there is no `correct` text, collapsing this
+    back into the plain skip bucket."""
+    stem = str(tmp_path / "ep_owed")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path,
+        srt_path,
+        [{"start": 0.0, "end": 4.0, "text": "I saw spondum", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    store = _store("I saw spondum", "I saw Spandam", "reject")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (store, "Show"))
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_owed.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"]))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])
+
+    assert repair.process(conf_path) == "repaired"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["verdict_owed"] == 1
+    assert summary["skipped_no_ref"] == 0
+    assert "I saw spondum" in open(srt_path).read(), "a rejection leaves the ASR text standing"

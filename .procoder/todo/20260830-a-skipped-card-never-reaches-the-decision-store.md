@@ -66,4 +66,29 @@ first caller to write from it.
 
 ## Evidence
 
-Pending.
+Owner decision: a new purpose-named reader, not a write caller on `for_orig`.
+
+RED, `decisions.corrected_text` before it existed:
+
+    AttributeError: module 'decisions' has no attribute 'corrected_text'
+
+RED, the wiring, showing the defect itself -- the srt holds raw ASR where the reviewer's
+text should be:
+
+    AssertionError: assert 'I saw Spandam.' in '1\n00:00:00,000 --> 00:00:04,000\nI saw spondum\n\n'
+
+GREEN: full suite `rc=0`, 0 failures.
+
+Mutation-checked, each caught by the named test:
+
+| mutation                                         | tests failing |
+| ------------------------------------------------ | ------------- |
+| rescue no longer runs on the no-anchor branch    | 2             |
+| the human's text applied before `fits_card`      | 1             |
+| `owed` collapsed back into the plain skip bucket | 1             |
+| `max(dated)` -> `min(dated)` in the tie-break    | 1             |
+| ambiguous-undated refusal removed                | 1             |
+
+`for_orig` did NOT gain a write caller, so its documented contract stands: `corrected_text`
+is a separate reader, and `apply_human_text` calls `for_orig` only to answer "was anything
+owed", which is exactly what it is for.

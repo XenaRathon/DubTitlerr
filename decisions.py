@@ -147,7 +147,10 @@ def for_orig(store: dict, orig: str) -> list:
     proposal suppress every future proposal for that line, including the one that fixes it.
     This function answers a different question -- "has a human ruled on this line at all?"
     -- which is what [S-5] needs to decide whether an already-muxed episode is worth
-    re-opening. It decides eligibility, never what text to write."""
+    re-opening. It decides eligibility, never what text to write.
+
+    That restriction is unchanged: `corrected_text` below is the write-side sibling, and it
+    is where the "which wording" question is answered and bounded to `correct` verdicts."""
     o = key(orig)
     return [e for e in store.get("decisions", []) if e.get("orig") == o]
 
