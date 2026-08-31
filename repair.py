@@ -24,10 +24,11 @@ LLM output is run back through the deterministic correction to enforce canon.
 
 CPU/network only — the LLM runs on the 2070 (Ollama) or, optionally, a llama.cpp server.
 Env:
-  OLLAMA_URL           default http://ollama.local:11434/api/generate
-  REPAIR_MODEL         default qwen3:8b   (locked by the C1 bake-off)
+  OLLAMA_URL           default http://127.0.0.1:11434/api/generate
+  REPAIR_MODEL         default nanbeige4.2-3b   (see the note at MODEL: it reverses the
+                         C1 bake-off's qwen3:8b on this file's own measurements)
   REPAIR_BACKEND         ollama | llamacpp  (default ollama — V2 A1)
-  REPAIR_LLAMACPP_URL    default http://192.168.1.232:8080/v1/chat/completions
+  REPAIR_LLAMACPP_URL    default http://127.0.0.1:8090/v1/chat/completions
                          (chat endpoint: the raw /completion path applies no chat
                          template and yields empty output from instruct models)
   REPAIR_MODEL_SECONDARY default REPAIR_MODEL — two-pass re-check model (V2 A3; no-op if equal)
@@ -79,10 +80,21 @@ import reflow
 import unresolved
 from common import MEDIA_GID, MEDIA_UID, dialogue_intervals, find_video, out_for, ts_srt
 
-OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
-MODEL = os.environ.get("REPAIR_MODEL", "qwen3:8b")
+OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
+# nanbeige4.2-3b, not qwen3:8b. The C1 bake-off locked qwen and this reverses that, on the
+# evidence already in this file: qwen makes MORE fixes (23 safe fixes per 120 targets against
+# nanbeige's 16) but imports the fansub reference verbatim into 84.1% of its repairs, 29.2%
+# of them three words or more, against nanbeige's 52.5% and 17.1% -- the failure that turned
+# "That's enough of that, idiots!" into "Hold it, you brats!". It also makes 14 name edits to
+# nanbeige's 2. Fewer, safer repairs is the right default for a stage whose damage is
+# invisible to every mechanical gate; it also happens to be the model that fits beside
+# whisper on one card.
+MODEL = os.environ.get("REPAIR_MODEL", "nanbeige4.2-3b")
 REPAIR_BACKEND = os.environ.get("REPAIR_BACKEND", "ollama")
-LLAMACPP_URL = os.environ.get("REPAIR_LLAMACPP_URL", "http://192.168.1.232:8080/v1/chat/completions")
+# Loopback, not a LAN address. The previous default named a host that was DEAD, so the
+# documented default could not have worked for anybody -- including the maintainer, who was
+# passing this explicitly and had no reason to notice.
+LLAMACPP_URL = os.environ.get("REPAIR_LLAMACPP_URL", "http://127.0.0.1:8090/v1/chat/completions")
 MODEL_SECONDARY = os.environ.get("REPAIR_MODEL_SECONDARY", MODEL)
 TIMEOUT_CONNECT = float(os.environ.get("REPAIR_TIMEOUT_CONNECT", "10"))
 TIMEOUT_READ = float(os.environ.get("REPAIR_TIMEOUT_READ", "120"))

@@ -57,9 +57,9 @@ RESTORE_PUNCTUATION = os.environ.get("RESTORE_PUNCTUATION", "1")
 RESTORE_MIN_RUN = int(os.environ.get("RESTORE_MIN_RUN", "2"))
 RESTORE_BACKEND = os.environ.get("RESTORE_BACKEND", os.environ.get("REPAIR_BACKEND", "ollama"))
 RESTORE_MODEL = os.environ.get("RESTORE_MODEL", os.environ.get("REPAIR_MODEL", "qwen3:8b"))
-OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
+OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 RESTORE_LLAMACPP_URL = os.environ.get(
-    "RESTORE_LLAMACPP_URL", os.environ.get("REPAIR_LLAMACPP_URL", "http://192.168.1.232:8080/v1/chat/completions")
+    "RESTORE_LLAMACPP_URL", os.environ.get("REPAIR_LLAMACPP_URL", "http://127.0.0.1:8090/v1/chat/completions")
 )
 RESTORE_MAX_TOKENS = int(os.environ.get("RESTORE_MAX_TOKENS", "2048"))
 MAX_REJECT_EVENTS = 20  # a systematic rejection pattern shows in the first few; the rest

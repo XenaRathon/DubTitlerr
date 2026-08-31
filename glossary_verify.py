@@ -37,7 +37,7 @@ def log(*a):
 TOPK = 6  # candidate titles per term handed to the LLM
 CAND_CUTOFF = 0.62  # min similarity for a candidate (0.5 let junk like blarghxyzqq->Largo in)
 VERIFY_MODEL = os.environ.get("VERIFY_MODEL", "qwen3:8b")
-OLLAMA = os.environ.get("OLLAMA_URL", "http://ollama.local:11434/api/generate")
+OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 # VERIFY_BACKEND (ollama|llamacpp) lets adjudication run on the same server as repair, so
 # the whole pipeline can sit on one model instead of keeping a second one resident on a
 # shared 8 GB GPU. Defaults follow REPAIR_* so setting the repair backend moves this too,

@@ -13,7 +13,7 @@ fansub if you have one) -> print orig vs each model + per-model latency.
 Usage:
   python3 tools/bakeoff.py --conf "/media/.../Ep.dubtitles.conf.json" \\
       --glossary "glossaries/One Pace.json" \\
-      --ollama http://192.168.1.196:11434/api/generate \\
+      --ollama http://127.0.0.1:11434/api/generate \\
       --models qwen3:8b qwen3.5:4b qwen2.5:7b --limit 15
 
 No GPU needed locally — the models run on the Ollama host. Built with help of Claude.
@@ -168,7 +168,7 @@ def main():
     ap.add_argument("--raw", help="captured faster-whisper dump (needs a GPU re-transcribe)")
     ap.add_argument("--conf", help="a production <stem>.dubtitles.conf.json (what repair.py reads)")
     ap.add_argument("--glossary", default="")
-    ap.add_argument("--ollama", default="http://192.168.1.196:11434/api/generate")
+    ap.add_argument("--ollama", default="http://127.0.0.1:11434/api/generate")
     ap.add_argument("--models", nargs="+", default=["qwen3:8b", "qwen3.5:4b", "qwen2.5:7b"])
     ap.add_argument("--limit", type=int, default=15)
     ap.add_argument(
