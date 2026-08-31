@@ -8,7 +8,7 @@ Severity: a merge pass run from the committed scripts SILENTLY STRIPS repairs
 
 `repair.skips_unanchored()` refuses any card with no fansub reference unless
 `REPAIR_UNANCHORED` is set (`repair.py:194`), and the flag "stays CONDITIONAL and defaults
-CLOSED" by deliberate decision. One Pace has NO reference track at all — its muxed episodes
+CLOSED" by deliberate decision. The Dressrosa season (S31) has NO reference track — its muxed episodes
 carry only our own `Dubtitles` stream, and `common.dialogue_intervals()` returns 0 intervals
 — so with the gate closed EVERY card is skipped.
 
@@ -81,3 +81,27 @@ failure loud, and it is independent of the policy question.
 Pending. The reproduction and the corrected run are both in this todo's Description; redo
 them against any One Pace episode with `docker exec dubtitle-review python3 /app/repair.py
 <conf.json>` with and without `REPAIR_UNANCHORED=1`.
+
+## Correction, 2026-08-31: this is per SEASON, not per show
+
+The claim above originally read "One Pace has NO reference track at all". That was measured on
+S31 and written up as a property of the whole show. It is false. Measured across seasons:
+
+    Season 16   audio: eng   subs: English · Signs and Songs · Dubtitles
+    Season 19   audio: eng   subs: English · Signs and Songs · Dubtitles
+    Season 35   audio: eng   subs: English · Signs and Songs · Dubtitles
+    Season 31   audio: eng   subs: Dubtitles                    <- no anchor
+
+One Pace is a mix. Arcs the project has released with a dub carry the `English` track; arcs it
+has not are covered by **Muhn Pace**, which is English-dub-only with no subtitles. The r/onepace
+Dub Watch Guide marks Dressrosa (arcs 30-31) as Muhn Pace, which is exactly the season measured
+above and the one every earlier measurement in this todo was taken on.
+
+**The behaviour needs no change.** `skips_unanchored(ref, gloss)` consults the per-show flag
+only when a card HAS no reference, so anchored seasons keep using their anchor and only the
+Muhn Pace ones fall back to unanchored repair. The flag is permission, not a mode. What was
+wrong was the stated reason, which would have misled the next reader into thinking the whole
+show lacked an anchor -- and into "fixing" a per-season reality with a per-episode setting.
+
+Note also that S31 carries no `Signs and Songs` track, so the signs merge contributes nothing
+on that season. That is a property of the Muhn Pace releases, not a defect.
