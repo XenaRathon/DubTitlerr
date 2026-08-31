@@ -283,8 +283,12 @@ constant and the quantisation is the only variable:
   (`cmd.exe`, no POSIX shell) and loses ~1.6 GB to the desktop, which makes this arm
   conservative: what fits here fits a headless 8 GB card comfortably.
 
-`tools/bakeoff.py` speaks Ollama only and needs a llama.cpp path added — a small addition to
-an existing harness, not a new tool. That one addition now serves both arms.
+`tools/bakeoff.py` needs NO change. An earlier claim in this spec that it "speaks Ollama
+only" was wrong: it already carries `--llamacpp` (raw `/completion`, mirroring `repair.py`)
+and `--llamacpp-chat` (`/v1/chat/completions`, which applies the chat template and disables
+thinking — nanbeige returns nothing but newlines through the raw endpoint). It is also
+model-outer so each candidate loads once, explicitly to avoid reload thrash on an 8 GB card.
+The A/B is a configuration exercise, not an implementation one.
 
 **Card contention on xenapc.** The `qwen-tagger` container serves a 28.2B Q3_K_M model
 (13.68 GB, `n_ctx` 32768) via llama.cpp on host port 8091, reading its GGUF out of
@@ -298,6 +302,14 @@ rather than on the clock**: it checks the card before each arm, aborts with a cl
 if a model is resident, and re-checks between quantisations.
 
 **Candidates:** Q4_K_M, Q5_K_M, Q6_K, against Q8_0 as control.
+
+**Two runs, separated on purpose.** The overnight window is the scarce resource, so it holds
+QUANTS ONLY -- that is what the README's VRAM line is blocked on, and it varies one thing.
+Candidate MODELS (Ling, TinyLlama, LFM) are judged separately, by eye, on fasc during the
+day while the tagger holds xenapc. Comparing a new model against a settled quant baseline is
+one variable; comparing both at once is neither result. TinyLlama at 1.1B is well under
+nanbeige's 3B and the measured failure mode on this prompt is inaction, so expect it to go
+inert -- it is cheap to include and should not be counted on.
 
 **Judged on:** safe-fix count **and** name-edit count on the existing target set — both, because
 a model that makes more edits is not thereby better; VRAM at 16k context; latency.
