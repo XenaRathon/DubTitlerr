@@ -667,7 +667,7 @@ them from `process()` using the target's index in the conf list.
 **Current:** `qwen3:8b` on the RTX 2070S via Ollama (`repair.py:MODEL`).
 
 **Suggestion:** The homelab-briefing shows Qwen3.6-35B-A3B (35B MoE, 3B active)
-running on VM102 (`192.168.1.232`) via llama.cpp. This model is ~12× slower per
+running on VM102 via llama.cpp. This model is ~12× slower per
 token but for the repair workload (2–5 lines per episode, each ~15 tokens
 output) the absolute latency is ~3–5 seconds per line — negligible in a
 background batch process. The quality jump from 8B → 35B (MoE) on this
