@@ -152,6 +152,40 @@ def for_orig(store: dict, orig: str) -> list:
     return [e for e in store.get("decisions", []) if e.get("orig") == o]
 
 
+def corrected_text(store: dict, orig: str):
+    """The human's own wording for this ORIGINAL line, or None. The write-side sibling of
+    `for_orig`, which stays eligibility-only.
+
+    `repair.process` consults `lookup` inside the per-card loop and only AFTER a proposal
+    exists, so a card it SKIPS -- no fansub anchor, or `llm()` returned "" on a transport
+    failure -- never reaches the store. It then rebuilds the srt from conf.json, shipping
+    raw ASR over text a reviewer typed through `review_apply`. `lookup` cannot help there:
+    it needs both sides of the pair and a skipped card has no proposal.
+
+    Answering on the orig alone is safe for `correct` AND ONLY FOR IT. The human supplied
+    the wording themselves, so it stands whatever was proposed against it. Every other
+    verdict is excluded deliberately: `accept` and `force` carry the MODEL's proposal, which
+    a skipped card does not have, and `reject` means the ASR text stands -- reaching a
+    rejection on the orig alone is precisely the "one rejection suppresses every future
+    proposal" failure `lookup`'s docstring exists to prevent.
+
+    `record` replaces per (orig, proposed) pair, so one orig can still hold two corrections
+    made against different proposals. The later one wins, by `at`. Entries written before
+    2026-08-29 have no `at`; a dated correction therefore beats an undated one, and when
+    two undated ones disagree this returns None rather than guessing. The caller sees a
+    non-empty `for_orig` with no text and counts that as owed-but-unresolved, which is the
+    outcome that must never be silent."""
+    hits = [e for e in for_orig(store, orig) if e.get("verdict") == "correct" and (e.get("text") or "").strip()]
+    if not hits:
+        return None
+    if len(hits) == 1:
+        return hits[0]["text"]
+    dated = [e for e in hits if isinstance(e.get("at"), (int, float))]
+    if not dated:
+        return None
+    return max(dated, key=lambda e: e["at"])["text"]
+
+
 def load(show: str, dir: str = DECISIONS_DIR) -> dict:
     """This show's store, or {} when it is absent, unreadable or corrupt.
 
