@@ -710,10 +710,13 @@ def render_shared() -> str:
             for v in r["offered"]
         )
         lis.append(
-            '<li class="r{}"><div class=o>{}</div><div class=p>{}</div>'
+            '<li class="r{}" data-pair="{}" data-risk="{}" data-repeats="{}"><div class=o>{}</div><div class=p>{}</div>'
             "<small><b>in {} episodes</b> \u2014 {} \u2014 {}</small><div>{}"
             '<input id="t{}" placeholder="corrected text"></div></li>'.format(
                 html.escape(r["risk"]),
+                r["pair"],
+                html.escape(r["risk"]),
+                r["episodes"],
                 html.escape(r["original_text"]),
                 html.escape(r["proposed_text"]),
                 r["episodes"],
@@ -728,6 +731,10 @@ def render_shared() -> str:
         "<!doctype html><meta charset=utf-8><title>DubTitlerr shared lines</title>"
         f"<style>{_CSS}</style>"
         '<h1>Shared lines</h1><p><a href="/">← all episodes</a></p>'
+        '<p><label>Order: <select id="shared-sort">'
+        '<option value="repeated" selected>most repeated first</option>'
+        '<option value="risk">risk first</option>'
+        "</select></label></p>"
         "<p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
         f"<p><small>{len(rows)} line(s) that appear in more than one episode. Deciding them "
         f"here settles them everywhere and removes {saved} repeat question(s) from the "
@@ -736,6 +743,16 @@ def render_shared() -> str:
         f"<div id=list>{''.join(lis)}</div>"
         '<hr><div id=bar><button id="save">Save verdicts</button> <small id=tally></small></div>'
         "<script>"
+        "const SS=document.getElementById('shared-sort'),SR={words:0,substitution:1,punctuation:2};"
+        "function sortShared(mode){const list=document.getElementById('list');"
+        "const rows=[...list.querySelectorAll('li[data-pair]')];"
+        "rows.sort((a,b)=>{let d=mode==='risk'?SR[a.dataset.risk]-SR[b.dataset.risk]:"
+        "Number(b.dataset.repeats)-Number(a.dataset.repeats);"
+        "return d||Number(a.dataset.pair)-Number(b.dataset.pair)});rows.forEach(row=>list.appendChild(row))}"
+        "const SHARED_SORT_KEY='dubtitlerr_shared_sort';"
+        "try{const saved=localStorage.getItem(SHARED_SORT_KEY);if(['repeated','risk'].includes(saved))SS.value=saved}catch(e){}"
+        "sortShared(SS.value);SS.addEventListener('change',()=>{sortShared(SS.value);"
+        "try{localStorage.setItem(SHARED_SORT_KEY,SS.value)}catch(e){}});"
         "const TOK=document.getElementById('tok');"
         "try{TOK.value=localStorage.getItem('dubtitlerr_token')||''}catch(e){}"
         "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}});"
@@ -797,10 +814,15 @@ def render_page(stem: str = "") -> str:
             for occ in e.get("context", ())
         )
         rows.append(
-            '<li class="r{}">{}<div class=o>{}</div><div class=p>{}</div>'
+            '<li class="r{}" data-index="{}" data-risk="{}" data-start="{}" '
+            'data-length="{}">{}<div class=o>{}</div><div class=p>{}</div>'
             "<small><b>{}</b> \u2014 {} \u2014 {}/{}{}</small><div>{}"
             '<input id="t{}" placeholder="corrected text"></div></li>'.format(
                 html.escape(e.get("risk", "")),
+                e["index"],
+                html.escape(e.get("risk", "")),
+                min(e.get("starts") or [float("inf")]),
+                max(len(e.get("original_text", "")), len(e.get("proposed_text", ""))),
                 ctx,
                 html.escape(e.get("original_text", "")),
                 html.escape(e.get("proposed_text", "")),
@@ -873,7 +895,13 @@ def render_page(stem: str = "") -> str:
     controls = (
         # On an episode page the order is a claim about what is below it, so the page backs
         # the claim with the counts rather than leaving the reviewer to take it on trust.
-        "<p><small>Ordered worst first: "
+        '<p><label>Order: <select id="episode-sort">'
+        '<option value="risk" selected>risk first</option>'
+        '<option value="chronological">chronological</option>'
+        '<option value="queue">queue order</option>'
+        '<option value="longest">longest first</option>'
+        "</select></label> <small>Reorders this page only; verdicts keep their JSONL indexes.</small></p>"
+        "<p><small>Risk summary: "
         + ", ".join(f"<b>{counts.get(k, 0)}</b> {RISK_LABEL[k]}" for k in RISK_ORDER)
         + ". Times are the card start, approximate to the ASR word timings.</small></p>"
         if stem
@@ -885,6 +913,23 @@ def render_page(stem: str = "") -> str:
             f"admitted ({hidden_refusals} guard refusals — the audit backlog)</label></p>"
         )
     )
+    episode_sort_script = (
+        "const ES=document.getElementById('episode-sort'),ER={words:0,substitution:1,punctuation:2};"
+        "function sortEpisode(mode){const list=document.getElementById('list');"
+        "const rows=[...list.querySelectorAll('li[data-index]')];"
+        "rows.sort((a,b)=>{let d;if(mode==='chronological')d=Number(a.dataset.start)-Number(b.dataset.start);"
+        "else if(mode==='queue')d=Number(a.dataset.index)-Number(b.dataset.index);"
+        "else if(mode==='longest')d=Number(b.dataset.length)-Number(a.dataset.length);"
+        "else d=ER[a.dataset.risk]-ER[b.dataset.risk];"
+        "return d||Number(a.dataset.index)-Number(b.dataset.index)});rows.forEach(row=>list.appendChild(row))}"
+        "const EPISODE_SORT_KEY='dubtitlerr_episode_sort';"
+        "try{const saved=localStorage.getItem(EPISODE_SORT_KEY);"
+        "if(['risk','chronological','queue','longest'].includes(saved))ES.value=saved}catch(e){}"
+        "sortEpisode(ES.value);ES.addEventListener('change',()=>{sortEpisode(ES.value);"
+        "try{localStorage.setItem(EPISODE_SORT_KEY,ES.value)}catch(e){}});"
+        if stem
+        else ""
+    )
     return (
         "<!doctype html><meta charset=utf-8><title>DubTitlerr review</title>"
         f"<style>{_CSS}</style>"
@@ -894,6 +939,7 @@ def render_page(stem: str = "") -> str:
         f"{apply_html}"
         "<script>"
         f"const STEM={_js(doc.get('stem', ''))};"
+        f"{episode_sort_script}"
         # Restored on load and saved on every edit. The server never renders the value --
         # the browser holds it, which is where it already was the moment it was pasted.
         "const TOK=document.getElementById('tok');"
