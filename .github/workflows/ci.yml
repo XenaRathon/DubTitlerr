@@ -7,21 +7,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Both Python versions are load-bearing, not a duplicate of each other: 3.11 is the floor
+  # pyproject declares (requires-python = ">=3.11") and 3.13 is a current release. This was
+  # previously two separate workflow FILES, which drifted -- they pinned different versions
+  # of the same two actions -- so they are one matrix now.
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # a 3.11-only break is exactly what the floor leg exists to find
+      matrix:
+        python: ["3.11", "3.13"]
     # Without this a hung job holds a runner for GitHub's six-hour default.
     timeout-minutes: 15
     steps:
-      # Actions are pinned to commit SHAs: a tag can be silently repointed at
-      # new code, and these run with access to the checkout.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.11"
-      # pysubs2 and jellyfish are import-time dependencies of the suite; without
-      # them every test module fails at collection and this job never really ran.
-      - run: pip install ruff pytest pysubs2 jellyfish
-      # Scoped to the reflow module + its tests (the quality-build surface);
-      # the other legacy scripts are linted as later steps touch them.
-      - run: ruff check reflow.py generate.py glossary.py glossary_verify.py hallucination.py ordering.py repair.py mux.py common.py mine_glossary.py scripts/ tools/ tests/
+      # Actions are pinned to commit SHAs: a tag can be silently repointed at new code, and
+      # these run with access to the checkout.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with: { python-version: "${{ matrix.python }}" }
+      # pysubs2 and jellyfish are import-time dependencies of the suite; without them every
+      # test module fails at collection and this job never really ran. faster_whisper is
+      # stubbed in tests (test_generate) and webrtcvad is monkeypatched (test_vad), so
+      # neither is installed here.
+      - run: pip install pytest pysubs2 jellyfish
+      # pyproject's [tool.pytest.ini_options] already sets addopts = "-q" and testpaths.
       - run: pytest
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with: { python-version: "3.13" }
+      - run: pip install ruff
+      # The whole tree, not a hand-maintained file list. The previous list named ten modules
+      # and had stopped covering thirteen others as the repo grew -- including
+      # review_server.py, an authenticated HTTP write surface that runs as root, and
+      # decisions.py, which holds every human verdict. ruff's config lives in pyproject
+      # (line-length, rule selection, the *.md exclude), so "." is the honest argument.
+      - run: ruff check .
