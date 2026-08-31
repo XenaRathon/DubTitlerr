@@ -208,9 +208,14 @@ because the next repair run reads them.
   status, live logs), queue or reorder shows, kick off a re-scan, and edit per-show glossaries
   — instead of tailing logs over SSH.
 - **Per-show glossary editor** — manage the name/spelling glossaries from the UI.
-- **Community glossary repo** — a shared, TitleCardMaker-blueprints-style repository of per-show
-  glossaries that instances can fetch on startup and submit their mined dictionaries back to
-  (keyed by show + tvdb-id, with dedup/merge).
+- **Community glossary repo** — the shared repository of per-show glossaries exists; what is
+  still on the roadmap is the pipeline fetching it on startup and submitting mined dictionaries
+  back automatically. Today it is a `git clone` into your `GLOSSARY_DIR` and a `git pull` to
+  update, which `decisions.py` already documents as the intended flow.
+
+  **This repository's `glossaries/` directory is a snapshot**, used by the tests and by the
+  examples in these docs. The pipeline reads whatever is mounted at `GLOSSARY_DIR` and never
+  the copy in its own source tree, so the shared repository is the one to install.
 
 ## License
 
