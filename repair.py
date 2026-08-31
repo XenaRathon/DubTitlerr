@@ -608,6 +608,36 @@ def _p95(values):
     return s[min(len(s) - 1, round(0.95 * (len(s) - 1)))]
 
 
+def apply_human_text(c, store, stem):
+    """A card the repair loop is about to SKIP: ship the human's wording if one is stored.
+
+    `decisions.lookup` sits further down the loop and needs both sides of the pair, so a card
+    that skips -- no fansub anchor, or `llm()` returned "" on a transport failure -- never
+    reaches it. `process` then rebuilds the srt from conf.json, replacing a reviewer's typed
+    correction with raw ASR. `decisions.corrected_text` answers on the orig alone, which is
+    safe for `correct` and only for it.
+
+    Returns the summary bucket this card belongs in, or None when nothing was stored and the
+    caller keeps its own. "owed" is the outcome that must never be silent again: a human had
+    ruled on the line, and this path could not act on it.
+
+    fits_card is NOT bypassed. C1 keeps card timing immutable for humans too, exactly as it
+    does for the verdict path below."""
+    if not DECISIONS_APPLY:
+        return None
+    text = decisions.corrected_text(store, c["text"])
+    if text:
+        if not fits_card(text, c["end"] - c["start"], c["text"]):
+            unresolved.record(stem, "repair", "verdict_unfittable", original_text=c["text"], proposed_text=text)
+            return "unfittable"
+        c["text"] = text
+        return "rescued"
+    if decisions.for_orig(store, c["text"]):
+        unresolved.record(stem, "repair", "verdict_owed", original_text=c["text"])
+        return "owed"
+    return None
+
+
 def prior_repairs(stem):
     """How many repairs the LAST run of this episode shipped, from the summary it left.
 
@@ -685,6 +715,8 @@ def process(conf_path):
     # [S-4]. Both are terminal `continue` paths, so without their own buckets `targets`
     # would quietly exceed the sum of the others and the residual would be unexplained.
     verdict_reject = 0  # a stored `reject`: settled by a human, nothing shipped
+    verdict_rescued = 0  # a SKIPPED card whose stored human text was shipped anyway (A4)
+    verdict_owed = 0  # skipped, a human had ruled, and this path could not act on it (A4)
     verdict_unfittable = 0  # an applying verdict refused by fits_card (C1)
     repaired_lines = []  # A10: per-line detail for the summary
     for i, c in targets:
@@ -704,6 +736,16 @@ def process(conf_path):
         else:
             ref = overlap_ref(ivals, c.get("source_start", c["start"]), c.get("source_end", c["end"]))
         if skips_unanchored(ref, gloss):
+            bucket = apply_human_text(c, store, stem)
+            if bucket == "rescued":
+                verdict_rescued += 1
+                continue
+            if bucket == "unfittable":
+                verdict_unfittable += 1
+                continue
+            if bucket == "owed":
+                verdict_owed += 1
+                continue
             skipped_no_ref += 1
             # The counter alone made this indistinguishable from "repair ran and found
             # nothing wrong". Record the card so a human can see WHICH lines went unrepaired
@@ -735,6 +777,16 @@ def process(conf_path):
             # `if new and ...`, so an empty result incremented NOTHING and recorded nothing:
             # a dead endpoint was indistinguishable from a card that needed no repair. With
             # the backend down this is every targeted card in the episode.
+            bucket = apply_human_text(c, store, stem)
+            if bucket == "rescued":
+                verdict_rescued += 1
+                continue
+            if bucket == "unfittable":
+                verdict_unfittable += 1
+                continue
+            if bucket == "owed":
+                verdict_owed += 1
+                continue
             llm_empty += 1
             unresolved.record(
                 stem, "repair", "llm_empty", original_text=c["text"], reference=ref[:120], avg_logprob=c.get("avg_logprob")
@@ -910,12 +962,15 @@ def process(conf_path):
         "rejected_secondary": rejected_secondary,  # C5: second pass refused, first pass kept
         "unchanged": unchanged,  # model echoed the line back; nothing proposed, nothing shipped
         # [S-4]. targets == repaired + skipped_no_ref + llm_empty + rejected_guard +
-        # verdict_reject + verdict_unfittable + unchanged, for every episode. `unchanged`
+        # verdict_reject + verdict_unfittable + verdict_rescued + verdict_owed + unchanged,
+        # for every episode. `unchanged`
         # was missing until 2026-08-29 and it is the LARGEST bucket, so the identity this
         # comment asserts was false everywhere it was read. Pinned by
         # test_every_target_lands_in_exactly_one_summary_bucket -- add an outcome to the
         # loop without a bucket here and that test fails.
         "verdict_reject": verdict_reject,  # human said no; ASR text stands
+        "verdict_rescued": verdict_rescued,  # skipped, but the human's stored text shipped (A4)
+        "verdict_owed": verdict_owed,  # skipped while a human verdict existed and could not be applied (A4)
         "verdict_unfittable": verdict_unfittable,  # human's text cannot be rendered (C1)
         "mean_latency_ms": round(sum(lat_values) / len(lat_values)) if lat_values else 0,
         "p95_latency_ms": round(_p95(lat_values)) if lat_values else 0,

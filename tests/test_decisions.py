@@ -330,3 +330,87 @@ def test_a_verdict_stored_before_timestamps_existed_still_looks_up():
     hit = decisions.lookup(store, "Husab", "Usopp")
     assert hit is not None and hit["verdict"] == "accept"
     assert decisions.for_orig(store, "HUSAB")[0]["verdict"] == "accept"
+
+
+def test_corrected_text_answers_on_the_orig_alone():
+    """A card `repair` SKIPS -- no anchor, or the LLM returned nothing -- has no proposal,
+    so `lookup` cannot reach the human's verdict and the rebuilt srt ships raw ASR over a
+    correction a reviewer just typed. `for_orig` answers on the orig alone but is documented
+    as deciding eligibility, "never what text to write", so this is its write-side sibling:
+    a purpose-named reader returning the human's wording for a line, or None.
+
+    Applying on the orig alone is safe for `correct` specifically, and only for it: the
+    human supplied the text themselves, so it stands whatever was proposed against it. A
+    `reject` must never be reachable this way -- that is exactly the "one rejection
+    suppresses every future proposal" failure `lookup`'s docstring guards against."""
+    store = {}
+    decisions.record(
+        store, "our mods will never give up", "our moms will never give up", "correct", text="Our mods will never give up."
+    )
+    assert decisions.corrected_text(store, "  Our  Mods  Will Never Give Up ") == "Our mods will never give up."
+    assert decisions.corrected_text(store, "a line nobody ruled on") is None
+
+
+def test_corrected_text_ignores_every_verdict_that_is_not_a_correction():
+    """Breaks if the filter widens. `accept` and `force` carry the MODEL's proposal, not the
+    human's wording, and a skipped card has no proposal to apply them against; `reject` means
+    the ASR text stands. Only `correct` carries text a human authored."""
+    store = {}
+    decisions.record(store, "line a", "proposal a", "reject")
+    decisions.record(store, "line b", "proposal b", "accept")
+    decisions.record(store, "line c", "proposal c", "force")
+    assert decisions.corrected_text(store, "line a") is None
+    assert decisions.corrected_text(store, "line b") is None
+    assert decisions.corrected_text(store, "line c") is None
+
+
+def test_two_corrections_for_one_line_resolve_by_time_and_refuse_when_undated():
+    """`record` replaces per (orig, proposed) PAIR, so one orig can hold two corrections
+    made against two different proposals. Answering on the orig alone therefore has to pick.
+
+    The later one wins. Entries written before 2026-08-29 carry no `at`, so a dated
+    correction beats an undated one; when two undated ones disagree there is nothing to
+    order them by and guessing would silently ship the wrong reviewer's wording, so this
+    returns None and the caller counts the line as owed-but-unresolved.
+
+    Breaks if the tie-break takes the first match, the last appended, or invents an order
+    for undated entries."""
+    store = {
+        "decisions": [
+            {
+                "orig": decisions.key("the line"),
+                "proposed": decisions.key("p1"),
+                "verdict": "correct",
+                "text": "older",
+                "at": 100.0,
+            },
+            {
+                "orig": decisions.key("the line"),
+                "proposed": decisions.key("p2"),
+                "verdict": "correct",
+                "text": "newer",
+                "at": 200.0,
+            },
+        ]
+    }
+    assert decisions.corrected_text(store, "the line") == "newer"
+
+    store["decisions"].reverse()  # order in the file must not decide it
+    assert decisions.corrected_text(store, "the line") == "newer"
+
+    dated_beats_undated = {
+        "decisions": [
+            {"orig": decisions.key("x"), "proposed": decisions.key("p1"), "verdict": "correct", "text": "legacy"},
+            {"orig": decisions.key("x"), "proposed": decisions.key("p2"), "verdict": "correct", "text": "dated", "at": 5.0},
+        ]
+    }
+    assert decisions.corrected_text(dated_beats_undated, "x") == "dated"
+
+    both_undated = {
+        "decisions": [
+            {"orig": decisions.key("y"), "proposed": decisions.key("p1"), "verdict": "correct", "text": "one"},
+            {"orig": decisions.key("y"), "proposed": decisions.key("p2"), "verdict": "correct", "text": "two"},
+        ]
+    }
+    assert decisions.corrected_text(both_undated, "y") is None
+    assert len(decisions.for_orig(both_undated, "y")) == 2, "the caller must still see that something was owed"
