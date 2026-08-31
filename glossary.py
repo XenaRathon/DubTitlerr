@@ -77,6 +77,10 @@ def load_dict(cfg: dict) -> dict:
         "token_fixes": token_fixes,
         "phrase_fixes": phrase_fixes,
         "initial_prompt": cfg.get("initial_prompt") or "",
+        # A2: whether this show's copies lack a fansub reference track, so repair may
+        # run unanchored. Normalised here because load_dict drops every key it does not
+        # name, so a field absent from this dict never reaches repair.skips_unanchored.
+        "unanchored_repair": bool(cfg.get("unanchored_repair")),
     }
 
 

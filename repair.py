@@ -175,7 +175,7 @@ def _glossary_terms(gloss, arc=None):
     return result
 
 
-def skips_unanchored(ref):
+def skips_unanchored(ref, gloss=None):
     """Whether a card with reference ``ref`` is refused before the LLM is ever called.
 
     S-12. Historically this was unconditional: no fansub anchor meant no repair, because
@@ -190,8 +190,19 @@ def skips_unanchored(ref):
     `Dothamingo` -> `Doflamingo`. But that is ONE episode of ONE show on ONE model against a
     decision taken on a measured sweep, so the gate stays CONDITIONAL and defaults CLOSED.
     Turning it on is a deliberate act, and `substitutes_a_vouched_name` guards the path it
-    opens."""
-    return not ref and not REPAIR_UNANCHORED
+    opens.
+
+    A2. The gate is now declared PER SHOW, in the glossary, rather than by a global that no
+    committed artifact records. The live One Pace library was produced with the env flag
+    hand-set; nothing in the repo said so, so a merge pass run from the committed scripts
+    skipped every card and rebuilt the srt as raw ASR OVER the shipped repairs (reproduced
+    on S31E24: targets=144 repaired=0 skipped_no_ref=144). A show declares
+    `unanchored_repair` when the user's copies carry no English subtitles for the Japanese
+    audio -- a mainstream configuration for dub-only libraries, not a One Pace quirk.
+
+    The global default stays CLOSED and everything above stays the authority on why: a
+    show that declares nothing behaves exactly as it did before."""
+    return not ref and not (REPAIR_UNANCHORED or (gloss or {}).get("unanchored_repair"))
 
 
 def build_prompt(asr, sub, gloss, prev_text="", next_text="", arc=None):
@@ -597,6 +608,18 @@ def _p95(values):
     return s[min(len(s) - 1, round(0.95 * (len(s) - 1)))]
 
 
+def prior_repairs(stem):
+    """How many repairs the LAST run of this episode shipped, from the summary it left.
+
+    The summary survives the mux (mux.py removes the srt/ass sidecars, not this), so it is
+    the durable record of whether an episode already carries repaired text."""
+    try:
+        with open(stem + ".dubtitles.repair-summary.json") as f:
+            return int(json.load(f).get("repaired", 0))
+    except Exception:
+        return 0
+
+
 def process(conf_path):
     stem = conf_path[: -len(CONF_SUFFIX)]
     srt = stem + SRT_SUFFIX
@@ -680,7 +703,7 @@ def process(conf_path):
             ref = ""
         else:
             ref = overlap_ref(ivals, c.get("source_start", c["start"]), c.get("source_end", c["end"]))
-        if skips_unanchored(ref):
+        if skips_unanchored(ref, gloss):
             skipped_no_ref += 1
             # The counter alone made this indistinguishable from "repair ran and found
             # nothing wrong". Record the card so a human can see WHICH lines went unrepaired
@@ -846,6 +869,23 @@ def process(conf_path):
                 )
             c["text"] = new
             fixed += 1
+    # A2 guard (c). This function REBUILDS the srt from conf.json unconditionally, so a run
+    # that repaired nothing because every target was refused for want of an anchor writes RAW
+    # ASR over whatever was already shipped. Reproduced on One Pace S31E24 (targets=144
+    # repaired=0 skipped_no_ref=144), which came back as `our mods will never give up There's
+    # a` where the shipped track had `Our mods will never give up. There's a fire...`.
+    #
+    # Refusing is deliberately narrow: it fires only when EVERY target was skipped for want of
+    # a reference AND the last run shipped repairs. An episode that genuinely has nothing to
+    # fix still rewrites normally, and the first run of a new episode has no prior summary.
+    if targets and fixed == 0 and skipped_no_ref == len(targets) and prior_repairs(stem) > 0:
+        log(
+            f"  REFUSED {os.path.basename(stem)}: every one of {len(targets)} targets was skipped for want of a"
+            f" fansub anchor, but the last run shipped {prior_repairs(stem)} repairs. Rebuilding the srt would"
+            " overwrite them with raw ASR. Declare `unanchored_repair` in this show's glossary if its copies"
+            " carry no English subtitles for the Japanese audio."
+        )
+        return "refused"
     # rewrite srt from (possibly repaired) conf rows. conf.json stores text FLATTENED
     # (generate.py replaces '\n' with ' '), so re-wrap here or every episode that
     # passes through repair ships as unwrapped single lines -- which is exactly what
