@@ -31,6 +31,15 @@ def test_season_ep_unmatched_is_high_sentinel():
     assert s == o.NO_SEASON and e == 0
 
 
+def test_episode_key_formats_zero_padded_season_and_episode():
+    assert o.episode_key(paths("20:1")[0]) == "S20E01"
+    assert o.episode_key(paths("1:10")[0]) == "S01E10"
+
+
+def test_episode_key_is_none_with_no_season_tag():
+    assert o.episode_key("/media/Anime Library/One Pace/Specials/A Movie.mkv") is None
+
+
 # --- order_files: start disabled = plain lexical -----------------------------
 
 
