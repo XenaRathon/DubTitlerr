@@ -1,6 +1,6 @@
 # glossary_acquire.episode_admission_titles per-episode admission resolution
 
-Status: open
+Status: closed 2026-09-01
 Created: 2026-09-01
 
 ## Description
@@ -20,19 +20,33 @@ byte-for-byte unchanged). `detail` carries `nfo_present`/`nfo_parsed`/
 
 ## Acceptance criteria
 
-- [ ] `glossary_acquire.episode_admission_titles()` exists, matching the
+- [x] `glossary_acquire.episode_admission_titles()` exists, matching the
       plan's Task 9 signature and the five `method` values
       (`absolute`/`relative`/`fallback-allpages`/`unscoped`/
       `no-episode-tag`).
-- [ ] `pytest tests/test_glossary_acquire.py -k admission_titles -q`
+- [x] `pytest tests/test_glossary_acquire.py -k admission_titles -q`
       passes all 4 tests: unscoped with no pattern declared; absolute
       wins when it resolves; fallback with accurate `nfo_present` when
       no `.nfo` exists; partial mapping keeps the resolved pages' union
       and reports `partial_pages`.
-- [ ] `ruff check glossary_acquire.py tests/test_glossary_acquire.py`
+- [x] `ruff check glossary_acquire.py tests/test_glossary_acquire.py`
       reports 0 findings.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the task open. -->
+- RED: `rtk proxy python3 -m pytest tests/test_glossary_acquire.py -k admission_titles -q`
+  — 4 failed, `AttributeError: module 'glossary_acquire' has no
+attribute 'episode_admission_titles'`.
+- GREEN: `rtk proxy python3 -m pytest tests/test_glossary_acquire.py -q`
+  → 150 passed.
+- Full suite: `rtk proxy python3 -m pytest -q` → 100%, no failures.
+- Lint: `rtk proxy ruff check glossary_acquire.py tests/test_glossary_acquire.py`
+  → "All checks passed!"
+- Mutation check (mental): trying relative before absolute would be
+  caught by the "absolute wins" test (both fields set, only absolute
+  mocked to resolve); skipping the `.nfo`-presence check would be caught
+  by the fallback test's `nfo_present is False` assertion; dropping
+  `failed` from `partial_pages` would be caught by the partial-mapping
+  test's exact list assertion.
+- Committed: `2bba410 feat(glossary_acquire): resolve one episode's
+admission title set, with a logged fallback`.
