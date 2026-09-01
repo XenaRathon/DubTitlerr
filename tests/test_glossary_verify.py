@@ -426,6 +426,54 @@ def test_resolve_redirects_chunks_over_fifty_titles(monkeypatch):
     assert len(calls) == 3  # ceil(120 / 50)
 
 
+def test_fetch_episode_titles_caches_a_positive_result(monkeypatch, tmp_path):
+    monkeypatch.setattr(gv, "CACHE_DIR", str(tmp_path))
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return {"parse": {"wikitext": {"*": "== Plot ==\n[[Kirito]]\n"}}}
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    first = gv.fetch_episode_titles("https://x/api.php", "SAO", "Episode 05")
+    second = gv.fetch_episode_titles("https://x/api.php", "SAO", "Episode 05")
+    assert first == second == ["Kirito"]
+    # 2 calls for the first fetch (wikitext + resolve_redirects' own call),
+    # 0 more for the second -- the cache hit skips both, not just one.
+    assert len(calls) == 2
+
+
+def test_fetch_episode_titles_does_not_cache_a_negative_result(monkeypatch, tmp_path):
+    monkeypatch.setattr(gv, "CACHE_DIR", str(tmp_path))
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return {"parse": {"wikitext": {"*": "no plot section here"}}}
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    gv.fetch_episode_titles("https://x/api.php", "SAO", "Episode 99")
+    gv.fetch_episode_titles("https://x/api.php", "SAO", "Episode 99")
+    assert len(calls) == 2  # retried, not cached-empty
+
+
+def test_fetch_episode_titles_expires_past_the_ttl(monkeypatch, tmp_path):
+    monkeypatch.setattr(gv, "CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(gv, "WIKI_TTL", 0)  # expire immediately
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return {"parse": {"wikitext": {"*": "== Plot ==\n[[Kirito]]\n"}}}
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    gv.fetch_episode_titles("https://x/api.php", "SAO", "Episode 05")
+    gv.fetch_episode_titles("https://x/api.php", "SAO", "Episode 05")
+    # 2 calls per genuine fetch (wikitext + resolve_redirects); TTL=0 means
+    # neither fetch is a cache hit, so both pay the full cost.
+    assert len(calls) == 4
+
+
 def test_resolve_redirects_parses_a_real_captured_mediawiki_response(monkeypatch):
     """Not a synthetic mock: tests/fixtures/mediawiki_redirects_sample.json is a live
     response captured 2026-09-01 from swordartonline.fandom.com for the Kirito/

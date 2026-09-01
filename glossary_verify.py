@@ -362,6 +362,34 @@ def resolve_redirects(wiki_api: str, titles: set[str]) -> set[str]:
     return out
 
 
+def fetch_episode_titles(wiki_api: str, show_key: str, page_title: str) -> list[str]:
+    """Cached Plot-section entity titles for one wiki episode page [S-4]. One JSON
+    cache file per SHOW (not per page), each page entry independently WIKI_TTL-gated
+    -- mirrors fetch_titles' TTL-file pattern, not acquire_cache's token-verdict
+    cache. Only positive results are cached, mirroring fetch_titles' own asymmetry:
+    a missing page is retried every call rather than cached empty forever."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(CACHE_DIR, re.sub(r"[^A-Za-z0-9]+", "_", show_key) + "_episodes.json")
+    try:
+        doc = json.load(open(cache_path))
+    except (OSError, ValueError):
+        doc = {}
+    pages = doc.get("pages", {}) if doc.get("api") == wiki_api else {}
+    entry = pages.get(page_title)
+    if entry and (time.time() - entry.get("fetched_at", 0)) < WIKI_TTL:
+        return entry["titles"]
+    url = wiki_api + "?action=parse&prop=wikitext&format=json&page=" + urllib.parse.quote(page_title)
+    try:
+        wt = _http_json(url)["parse"]["wikitext"]["*"]
+    except Exception:
+        return []
+    titles = sorted(resolve_redirects(wiki_api, plot_section_links(wt)))
+    if titles:
+        pages[page_title] = {"fetched_at": time.time(), "titles": titles}
+        json.dump({"api": wiki_api, "pages": pages}, open(cache_path, "w"))
+    return titles
+
+
 def arc_page_links(wiki_api: str, arc: str) -> set[str]:
     """Entities linked from the arc page's PROSE.
 
