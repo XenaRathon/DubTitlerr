@@ -624,3 +624,39 @@ def llm_chat(prompt, *, backend="ollama", ollama_url=None, llamacpp_url=None, mo
     if not out:
         return ""
     return out.splitlines()[0].strip().strip('"').strip() if first_line else out
+
+
+def within_window(spec: str, hour: int, minute: int) -> bool:
+    """Whether ``hour:minute`` falls inside ``spec``, a "HH:MM-HH:MM" window.
+
+    Empty spec means no window: always true, so an install that has not opted in behaves
+    exactly as it did before this existed.
+
+    THE WINDOW MAY CROSS MIDNIGHT, and that is the case it exists for. The repair endpoint
+    runs 23:00-07:30 because the card it lives on is shared during the day; a naive
+    ``start <= now <= end`` is false for every minute of that window and would stop the
+    merge loop forever while looking like it was configured correctly.
+
+    The end is EXCLUSIVE. 07:30 is the minute the endpoint is stopped, so a sweep admitted
+    at exactly 07:30 would start against a backend being taken away underneath it.
+
+    A malformed spec runs rather than blocks. A typo that silently stopped every sweep
+    would present as "the pipeline did nothing all week" with no error to find; the loud
+    failure -- work continuing against a possibly-absent backend -- is now caught by the
+    dead-backend guard in repair.process, which refuses the episode instead of shipping
+    raw ASR."""
+    spec = (spec or "").strip()
+    if not spec:
+        return True
+    try:
+        start_s, end_s = spec.split("-", 1)
+        sh, sm = (int(x) for x in start_s.strip().split(":"))
+        eh, em = (int(x) for x in end_s.strip().split(":"))
+    except (ValueError, TypeError):
+        return True
+    now, start, end = hour * 60 + minute, sh * 60 + sm, eh * 60 + em
+    if start == end:
+        return True
+    if start < end:
+        return start <= now < end
+    return now >= start or now < end

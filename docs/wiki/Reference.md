@@ -180,13 +180,14 @@ Per **show** rather than per episode: `.lastrun.json` and the glossary's
 
 ### Loop cadence
 
-| Var                                        | Default      | Meaning                                  |
-| ------------------------------------------ | ------------ | ---------------------------------------- |
-| `MERGE_INTERVAL`                           | `600`        | Seconds between merge passes             |
-| `RESCAN_INTERVAL`                          | `21600`      | Idle seconds after a full generate sweep |
-| `ACQUIRE_TIMEOUT`                          | `1800`       | Seconds                                  |
-| `VERIFY_TIMEOUT`                           | `1200`       | Seconds                                  |
-| `LLM_TIMEOUT_CONNECT` / `LLM_TIMEOUT_READ` | `10` / `120` | Seconds                                  |
+| Var                                        | Default            | Meaning                                                                                                                                         |
+| ------------------------------------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MERGE_INTERVAL`                           | `600`              | Seconds between merge passes                                                                                                                    |
+| `MERGE_WINDOW`                             | _(empty — always)_ | Hours a merge sweep may run, `HH:MM-HH:MM`. May cross midnight. The end is exclusive. Set it when the repair backend is only up part of the day |
+| `RESCAN_INTERVAL`                          | `21600`            | Idle seconds after a full generate sweep                                                                                                        |
+| `ACQUIRE_TIMEOUT`                          | `1800`             | Seconds                                                                                                                                         |
+| `VERIFY_TIMEOUT`                           | `1200`             | Seconds                                                                                                                                         |
+| `LLM_TIMEOUT_CONNECT` / `LLM_TIMEOUT_READ` | `10` / `120`       | Seconds                                                                                                                                         |
 
 ---
 
