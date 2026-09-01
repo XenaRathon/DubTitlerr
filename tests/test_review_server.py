@@ -1414,6 +1414,31 @@ def test_warm_cache_never_raises(tmp_path, monkeypatch):
     review_server.warm_cache()  # must not propagate
 
 
+def test_next_warm_delay_re_warms_before_the_current_cache_expires(monkeypatch):
+    """Reported live 2026-09-01: warm_cache() only ever ran once, at server startup.
+    Measured on the real 968-episode library: the stems TTL (STEMS_TTL_FACTOR=20 against a
+    16.82s walk) expires in ~336s, but nothing re-warmed the cache after that -- so every
+    request landing after the FIRST five minutes of the container's life paid the full cold
+    cost again (measured live: 115-157s), not just the very first request after a deploy.
+    The delay must land BEFORE the tracked expiry, not after it -- the gap between expiry
+    and refresh is exactly the window a real request could still land cold in."""
+    now = 1_000_000.0
+    stems_cache = (now + 336.4, ["a", "b"])  # matches the real measured expiry above
+
+    delay = review_server._next_warm_delay(stems_cache, now)
+
+    assert delay < 336.4, "must fire before the tracked cache actually expires"
+    assert now + delay < stems_cache[0], "the re-warm must land inside the still-valid window"
+
+
+def test_next_warm_delay_falls_back_to_stems_ttl_with_no_cache_yet(monkeypatch):
+    """The very first call, or a walk that just failed, leaves no expiry to read -- must
+    still produce a sane, bounded delay rather than raising or looping immediately."""
+    delay = review_server._next_warm_delay(None, 1_000_000.0)
+
+    assert 0 < delay <= review_server.STEMS_TTL
+
+
 def test_an_entry_carries_the_cards_either_side_of_it(tmp_path, monkeypatch):
     """A card is not a sentence -- reflow splits on duration and line length, so a queued
     line routinely starts or ends mid-clause and the reviewer cannot tell whether a repair
@@ -1525,6 +1550,38 @@ def test_shared_page_keeps_most_repeated_default_and_offers_risk_sort(tmp_path, 
     assert '<option value="risk">risk first</option>' in page
     assert "function sortShared" in page
     assert "localStorage" in page and "dubtitlerr_shared_sort" in page
+
+
+def test_shared_lines_are_grouped_by_show(tmp_path, monkeypatch):
+    """Reported 2026-09-01: shared lines from every show rendered as one flat, interleaved
+    list with the show name buried in small text per row -- a reviewer working through one
+    show's shared lines had no way to see them apart from another's without reading every
+    row. handle_shared()'s own identity key already scopes a group to one show
+    (`groups.setdefault((show, ...))`); the page just never reflected that. Matches the
+    <details class=show> convention the episode index already uses for exactly this job."""
+    song_a = ("running forever curiosity", "Running forever. Curiosity.")
+    song_b = ("we are the pirates of the sea", "We are the pirates of the sea!")
+    for show, song in (("Show A", song_a), ("Show B", song_b)):
+        d = tmp_path / show
+        d.mkdir()
+        for name in ("ep1", "ep2"):
+            stem = str(d / name)
+            with open(stem + ".dubtitles.conf.json", "w") as f:
+                json.dump([{"start": 0.0, "end": 2.0, "text": song[0]}], f)
+            unresolved.record(stem, "repair_applied", "accepted", original_text=song[0], proposed_text=song[1])
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    monkeypatch.setattr(review_server.decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "show_for", lambda s: "Show A" if str(tmp_path / "Show A") in s else "Show B")
+
+    page = review_server.render_shared()
+
+    assert page.count("<details class=show") == 2, "one group per show, not a flat interleaved list"
+    blocks = page.split("<details class=show")[1:]
+    a_block = next(b for b in blocks if "Show A" in b.split("</summary>")[0])
+    b_block = next(b for b in blocks if "Show B" in b.split("</summary>")[0])
+    assert "Running forever" in a_block and "pirates" not in a_block, "Show A's group must not leak Show B's line"
+    assert "pirates" in b_block and "Running forever" not in b_block, "Show B's group must not leak Show A's line"
 
 
 def test_every_queued_row_offers_a_way_to_clear_its_verdict(tmp_path, monkeypatch):

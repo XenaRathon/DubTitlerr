@@ -737,28 +737,41 @@ def render_shared() -> str:
     per-episode cost, so it stays on the episode page where the reviewer can see which file
     they are about to rebuild."""
     rows = handle_shared()["pairs"]
-    lis = []
+    # Grouped by show -- handle_shared's own identity key already scopes a group to one
+    # show (`groups.setdefault((show, ...))`), and a flat interleaved list threw that away
+    # visually: a reviewer working through one show's shared lines had no way to see them
+    # apart from another's without reading every row. Same <details class=show> convention
+    # the episode index already uses for the same job.
+    by_show: dict = {}
     for r in rows:
-        buttons = "".join(
-            f'<label><input type="radio" name="p{r["pair"]}" value="{html.escape(v)}"> {html.escape(v)}</label> '
-            for v in r["offered"]
-        )
-        lis.append(
-            '<li class="r{}" data-pair="{}" data-risk="{}" data-repeats="{}"><div class=o>{}</div><div class=p>{}</div>'
-            "<small><b>in {} episodes</b> \u2014 {} \u2014 {}</small><div>{}"
-            '<input id="t{}" placeholder="corrected text"></div></li>'.format(
-                html.escape(r["risk"]),
-                r["pair"],
-                html.escape(r["risk"]),
-                r["episodes"],
-                html.escape(r["original_text"]),
-                html.escape(r["proposed_text"]),
-                r["episodes"],
-                html.escape(RISK_LABEL.get(r["risk"], "")),
-                html.escape(r["show"]),
-                buttons,
-                r["pair"],
+        by_show.setdefault(r["show"], []).append(r)
+    sections = []
+    for show, srows in sorted(by_show.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        lis = []
+        for r in srows:
+            buttons = "".join(
+                f'<label><input type="radio" name="p{r["pair"]}" value="{html.escape(v)}"> {html.escape(v)}</label> '
+                for v in r["offered"]
             )
+            lis.append(
+                '<li class="r{}" data-pair="{}" data-risk="{}" data-repeats="{}"><div class=o>{}</div><div class=p>{}</div>'
+                "<small><b>in {} episodes</b> \u2014 {}</small><div>{}"
+                '<input id="t{}" placeholder="corrected text"></div></li>'.format(
+                    html.escape(r["risk"]),
+                    r["pair"],
+                    html.escape(r["risk"]),
+                    r["episodes"],
+                    html.escape(r["original_text"]),
+                    html.escape(r["proposed_text"]),
+                    r["episodes"],
+                    html.escape(RISK_LABEL.get(r["risk"], "")),
+                    buttons,
+                    r["pair"],
+                )
+            )
+        sections.append(
+            f"<details class=show open><summary>{html.escape(show)} \u2014 {len(srows)} line(s)</summary>"
+            f"<ul>{''.join(lis)}</ul></details>"
         )
     saved = sum(r["episodes"] - 1 for r in rows)
     return (
@@ -770,16 +783,18 @@ def render_shared() -> str:
         '<option value="risk">risk first</option>'
         "</select></label></p>"
         "<p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
-        f"<p><small>{len(rows)} line(s) that appear in more than one episode. Deciding them "
-        f"here settles them everywhere and removes {saved} repeat question(s) from the "
-        "episode queues. Grouped on the exact text pair, so the same sung line transcribed "
+        f"<p><small>{len(rows)} line(s) that appear in more than one episode, grouped by show. "
+        f"Deciding one here settles it everywhere and removes {saved} repeat question(s) from "
+        "the episode queues. Grouped on the exact text pair, so the same sung line transcribed "
         "two ways is still two decisions.</small></p>"
-        f"<div id=list>{''.join(lis)}</div>"
+        f"<div id=list>{''.join(sections)}</div>"
         '<hr><div id=bar><button id="save">Save verdicts</button> <small id=tally></small></div>'
         "<script>"
         "const SS=document.getElementById('shared-sort'),SR={words:0,substitution:1,punctuation:2};"
-        "function sortShared(mode){const list=document.getElementById('list');"
-        "const rows=[...list.querySelectorAll('li[data-pair]')];"
+        # Sorts WITHIN each show's own <ul>, never across groups -- collecting every li into
+        # #list and re-appending there would flatten the grouping right back out on sort.
+        "function sortShared(mode){document.querySelectorAll('#list ul').forEach(ul=>{"
+        "const rows=[...ul.querySelectorAll('li[data-pair]')];"
         "rows.sort((a,b)=>{let d=mode==='risk'?SR[a.dataset.risk]-SR[b.dataset.risk]:"
         "Number(b.dataset.repeats)-Number(a.dataset.repeats);"
         "return d||Number(a.dataset.pair)-Number(b.dataset.pair)});rows.forEach(row=>list.appendChild(row))}"
@@ -1171,6 +1186,39 @@ def warm_cache() -> None:
         log(f"review server: cache warm failed ({exc}) — the first request will pay for it")
 
 
+# How long before the CURRENT cache's own tracked expiry to fire the next warm. Small on
+# purpose: it only has to beat the gap between expiry and the next re-warm, not the walk
+# itself -- a request landing in THAT gap is the exact cold-cache hit this whole mechanism
+# exists to prevent.
+_WARM_MARGIN_S = 5.0
+
+
+def _next_warm_delay(stems_cache, now: float) -> float:
+    """Seconds until the next re-warm should run, timed to land just BEFORE the cache
+    warm_cache() just built would expire -- not after. Reported live 2026-09-01: warm_cache
+    only ever ran once, at startup; measured on the real 968-episode library the stems TTL
+    (STEMS_TTL_FACTOR=20 against a 16.82s walk) expired in ~336s, and every request landing
+    after that paid the full cold cost again (measured live: 115-157s), not just the very
+    first request after a deploy. Falls back to STEMS_TTL when there is no cache to read an
+    expiry from -- the walk failed, or this is the very first call."""
+    expiry = stems_cache[0] if stems_cache else now + STEMS_TTL
+    return max(1.0, expiry - now - _WARM_MARGIN_S)
+
+
+def _warm_cache_forever() -> None:
+    """Keep the cache perpetually warm, not just once at startup.
+
+    A single warm_cache() call goes stale the moment _STEMS_CACHE's own TTL expires, and
+    nothing was re-warming it after that -- so the FIRST request after every ~5-6 minute
+    window (on the real library) paid the full cold-cache cost `warm_cache`'s own docstring
+    says a reviewer should never have to. NEVER RAISES past one iteration: warm_cache()
+    already swallows its own failures, so a transient mount hiccup delays the next warm
+    rather than killing this thread."""
+    while True:
+        warm_cache()
+        time.sleep(_next_warm_delay(_STEMS_CACHE, time.monotonic()))
+
+
 def serve(port: int = 0):
     resolve_token()  # generates and prints the VALUE on first start, before anything is served
     announce_token()  # and on every start, says where to find it
@@ -1178,7 +1226,7 @@ def serve(port: int = 0):
     log(f"review server: listening on {REVIEW_BIND}:{port or REVIEW_PORT}")
     # Started BEFORE serve_forever and as a daemon: the port must open immediately either
     # way, and a warm that is still running must not hold up a shutdown.
-    threading.Thread(target=warm_cache, name="warm", daemon=True).start()
+    threading.Thread(target=_warm_cache_forever, name="warm", daemon=True).start()
     srv.serve_forever()
 
 
