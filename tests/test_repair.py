@@ -1565,6 +1565,46 @@ def test_build_prompt_threads_the_arc_into_the_reference_spellings(monkeypatch):
     assert terms.index("Doflamingo") < terms.index("Spandam")
 
 
+def _episode_tagged_gloss():
+    """A glossary with both arc_tags (Dressrosa/Enies Lobby) and episode_tags (Rebecca
+    tagged to S31E01 specifically), shaped as [S-9] stores them."""
+    g = _tagged_gloss()
+    g["episode_tags"] = {"rebecca": ["S31E01"]}
+    return g
+
+
+def test_glossary_terms_episode_tag_outranks_arc_tag():
+    g = _episode_tagged_gloss()
+    terms = repair._glossary_terms(g, arc="Dressrosa", episode="S31E01").split(", ")
+    # Rebecca is BOTH arc- and episode-tagged for S31E01; Doflamingo is arc-tagged only.
+    # The episode tier must rank Rebecca ahead of Doflamingo.
+    assert terms.index("Rebecca") < terms.index("Doflamingo")
+
+
+def test_glossary_terms_episode_untagged_falls_through_to_arc_tier():
+    """An episode-untagged term is NOT defaulted into the episode-first tier the way an
+    arc-untagged term defaults into the arc tier -- it falls through to the (unchanged)
+    arc-tier logic, which still applies. Doflamingo (arc-tagged, not episode-tagged)
+    must still outrank Oimo (a different arc) for this episode."""
+    g = _episode_tagged_gloss()
+    terms = repair._glossary_terms(g, arc="Dressrosa", episode="S31E01").split(", ")
+    assert terms.index("Doflamingo") < terms.index("Oimo")
+
+
+def test_glossary_terms_untagged_term_still_appears():
+    g = _episode_tagged_gloss()
+    terms = repair._glossary_terms(g, arc="Dressrosa", episode="S99E99").split(", ")
+    assert "Oimo" in terms  # untagged for both dimensions, still included
+
+
+def test_glossary_terms_episode_none_matches_today_2tier_behavior():
+    g = _tagged_gloss()
+    with_episode_none = repair._glossary_terms(g, arc="Dressrosa", episode=None)
+    # Must be byte-identical to calling with no episode kwarg at all, for every
+    # existing caller that doesn't pass one.
+    assert with_episode_none == repair._glossary_terms(g, arc="Dressrosa")
+
+
 def test_build_prompt_without_an_arc_is_byte_identical_to_before(monkeypatch):
     """The no-arc path is the whole library today; it must not shift by a single byte."""
     g = _tagged_gloss()
