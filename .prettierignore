@@ -11,6 +11,15 @@ specs/v2-models-ops/tasks.md
 # never "formatted". Same class of bug as the two above.
 specs/c1-glossary-precision/tasks.md
 
+# Same class again, worse: repeated ```python fences nested inside "- [ ] ..."
+# checklist items across a 1300+ line file. --write does not oscillate between two
+# states here, it compounds -- each pass adds MORE leading indent to already-valid,
+# consistently-indented Python inside the fence, verified over 4 consecutive --write
+# runs (4 different md5sums). --check never reaches a state it calls clean, including
+# on hand-verified, correctly-indented source content. Verified against a scratch
+# copy, not guessed. Drop once prettier handles deeply nested fenced code in lists.
+.procoder/plans/per-episode-glossary-acquisition.md
+
 # NOT ignored on purpose, though the gate reports it as "NOT checked":
 #   glossaries/Frieren Beyond Journey's End (2023) {tvdb-424536}.json
 # prettier 3.9.6 refuses any explicitly-passed path holding BOTH an apostrophe and
