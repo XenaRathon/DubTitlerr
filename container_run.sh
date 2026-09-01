@@ -12,13 +12,23 @@ export APP_DIR=/app
 : "${MERGE_INTERVAL:=600}"    # seconds between merge sweeps
 : "${RESCAN_INTERVAL:=21600}" # seconds to idle after a full generate sweep (default 6h)
 : "${REVIEW_RESTART:=15}"     # seconds before restarting the review server after an exit
+# Hours in which a merge sweep may run, "HH:MM-HH:MM". EMPTY BY DEFAULT: an install that has
+# not opted in behaves exactly as before. Set it when the repair backend is only up for part
+# of the day -- a sweep that runs with the endpoint down used to queue one unreviewable
+# llm_empty entry per target (measured: 1,299 across 11 episodes) before repair.process
+# learned to refuse. The window stops the wasted work; the guard stops the damage.
+: "${MERGE_WINDOW:=}"
 
 echo "==== dubtitle-builder up $(date) — merge_interval=${MERGE_INTERVAL}s rescan=${RESCAN_INTERVAL}s ===="
 
 # merge loop in the background
 (
 	while :; do
-		sh /app/merge_pass.sh || echo "merge_pass error (continuing)"
+		if [ -n "$MERGE_WINDOW" ] && ! python3 -c "import sys,time,common; t=time.localtime(); sys.exit(0 if common.within_window(sys.argv[1], t.tm_hour, t.tm_min) else 1)" "$MERGE_WINDOW" 2>/dev/null; then
+			echo "merge_pass: outside MERGE_WINDOW=$MERGE_WINDOW ($(date +%H:%M)) — skipping this sweep"
+		else
+			sh /app/merge_pass.sh || echo "merge_pass error (continuing)"
+		fi
 		sleep "$MERGE_INTERVAL"
 	done
 ) &
