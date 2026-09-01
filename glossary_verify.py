@@ -390,6 +390,23 @@ def fetch_episode_titles(wiki_api: str, show_key: str, page_title: str) -> list[
     return titles
 
 
+def episode_page_titles(wiki_api: str, show_key: str, page_titles: list[str]) -> tuple[set[str], list[str], list[str]]:
+    """Union Plot-section titles across several wiki pages, reporting which pages
+    resolved and which didn't [S-5] -- the split S-13's partial-mapping status
+    needs, without a second pass over the same pages."""
+    union: set[str] = set()
+    resolved: list[str] = []
+    failed: list[str] = []
+    for title in page_titles:
+        titles = fetch_episode_titles(wiki_api, show_key, title)
+        if titles:
+            union |= set(titles)
+            resolved.append(title)
+        else:
+            failed.append(title)
+    return union, resolved, failed
+
+
 def arc_page_links(wiki_api: str, arc: str) -> set[str]:
     """Entities linked from the arc page's PROSE.
 

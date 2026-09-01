@@ -474,6 +474,21 @@ def test_fetch_episode_titles_expires_past_the_ttl(monkeypatch, tmp_path):
     assert len(calls) == 4
 
 
+def test_episode_page_titles_splits_resolved_and_failed(monkeypatch, tmp_path):
+    monkeypatch.setattr(gv, "CACHE_DIR", str(tmp_path))
+
+    def fake(url):
+        if "Episode+629" in url or "Episode%20629" in url:
+            return {"parse": {"wikitext": {"*": "no plot section"}}}
+        return {"parse": {"wikitext": {"*": "== Plot ==\n[[Rebecca]]\n"}}}
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    union, resolved, failed = gv.episode_page_titles("https://x/api.php", "One Pace", ["Episode 628", "Episode 629"])
+    assert union == {"Rebecca"}
+    assert resolved == ["Episode 628"]
+    assert failed == ["Episode 629"]
+
+
 def test_resolve_redirects_parses_a_real_captured_mediawiki_response(monkeypatch):
     """Not a synthetic mock: tests/fixtures/mediawiki_redirects_sample.json is a live
     response captured 2026-09-01 from swordartonline.fandom.com for the Kirito/
