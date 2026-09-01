@@ -216,6 +216,29 @@ def test_export_episode_returns_none_when_no_dubtitles_stream_is_found(tmp_path)
     assert not (out_root / "One Pace").exists()
 
 
+def test_export_episode_returns_none_when_ass_extraction_fails(tmp_path):
+    """A failed extractor call must not ship a manifest entry promising an .ass file that
+    was never written -- the README's per-episode contract is dialogue .srt AND merged
+    .ass, not one of the two on a coin flip."""
+    import tools.export_subtitles as es
+
+    ep = _stem(tmp_path, "One Pace", "Season 31", "One Pace - S31E01")
+    _conf(ep, [{"start": 0.0, "end": 2.0, "text": "hi"}])
+    out_root = tmp_path / "out"
+
+    entry = es.export_episode(
+        ep,
+        str(out_root),
+        probe=lambda video: 700.0,
+        stream_finder=lambda video: 3,
+        extractor=lambda video, index, out_path: False,
+    )
+
+    assert entry is None
+    assert not (out_root / "One Pace" / "Season 31" / "One Pace - S31E01.ass").exists()
+    assert not (out_root / "One Pace" / "Season 31" / "One Pace - S31E01.srt").exists()
+
+
 def test_the_cli_writes_a_valid_empty_manifest_end_to_end(tmp_path):
     prog = os.path.join(os.path.dirname(__file__), "..", "tools", "export_subtitles.py")
     proc = subprocess.run(

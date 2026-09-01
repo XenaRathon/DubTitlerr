@@ -189,7 +189,13 @@ def export_episode(
 
     out_dir = os.path.join(out_root, show, season)
     os.makedirs(out_dir, exist_ok=True)
-    extractor(video, index, os.path.join(out_dir, episode_title + ".ass"))
+    ass_path = os.path.join(out_dir, episode_title + ".ass")
+    if not extractor(video, index, ass_path):
+        try:
+            os.remove(ass_path)
+        except OSError:
+            pass
+        return None
 
     srt = dialogue_srt(stem)
     if srt is not None:
