@@ -36,6 +36,17 @@ def season_ep(path: str) -> tuple[int, int]:
     return (int(m.group(1)), int(m.group(2)))
 
 
+def episode_key(path: str) -> str | None:
+    """ "SxxExx" identity for an episode, or None with no SxxExx in the filename. One
+    canonical stringification of season_ep(), shared by repair.py's per-episode
+    prompt weighting and glossary_acquire.py's episode-tag writes so the two cannot
+    disagree about a key's spelling."""
+    s, e = season_ep(path)
+    if s == NO_SEASON:
+        return None
+    return f"S{s:02d}E{e:02d}"
+
+
 def order_files(files: list[str], start: int) -> list[str]:
     """Sort files for processing. start<=0 -> plain lexical (unchanged). start>0 -> seasons
     >= start first (ascending season, then episode), then seasons < start (also ascending);

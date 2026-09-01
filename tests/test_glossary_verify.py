@@ -317,6 +317,78 @@ def test_arc_categories_exclude_episode_and_chapter_listings(monkeypatch):
     assert not any("Episodes" in c or "Chapters" in c for c in cats)
 
 
+def test_plot_section_links_extracts_only_the_plot_section():
+    wt = (
+        "{{Infobox|junk=[[Navbox Junk]]}}\n"
+        "== Plot ==\n"
+        "[[Kirito]] and [[Asuna]] fight. <ref>[[Reference Junk]]</ref>\n"
+        "== Trivia ==\n"
+        "[[Should Not Appear]] is mentioned here.\n"
+    )
+    links = gv.plot_section_links(wt)
+    assert {"Kirito", "Asuna"} <= links
+    assert "Should Not Appear" not in links
+    assert "Reference Junk" not in links
+    assert "Navbox Junk" not in links
+
+
+def test_plot_section_links_filters_file_and_image_links():
+    wt = "== Plot ==\n[[Kirito]] draws [[File:Sword.png]] and [[Image:Map.png]].\n"
+    links = gv.plot_section_links(wt)
+    assert links == {"Kirito"}
+
+
+def test_plot_section_links_is_empty_with_no_plot_heading():
+    assert gv.plot_section_links("No headings here, just [[Kirito]].") == set()
+
+
+def test_plot_section_links_is_case_insensitive_on_the_heading():
+    wt = "==PLOT==\n[[Kirito]] appears.\n"
+    assert gv.plot_section_links(wt) == {"Kirito"}
+
+
+def test_plot_section_links_matches_short_summary_heading():
+    # One Piece Fandom's episode pages use "Short Summary", not "Plot" -- discovered
+    # 2026-09-01 testing per-episode-acquire against its own primary target show, where
+    # a Plot-only regex left admission scoping permanently inert.
+    wt = "==Short Summary==\n[[Monkey D. Luffy|Luffy]] fights [[Doflamingo]].\n==Long Summary==\n{{Empty section}}\n"
+    assert gv.plot_section_links(wt) == {"Monkey D. Luffy", "Doflamingo"}
+
+
+def test_plot_section_links_skips_an_empty_long_summary_section():
+    wt = "==Short Summary==\n[[Zoro]] trains.\n==Long Summary==\n{{Empty section}}\n"
+    links = gv.plot_section_links(wt)
+    assert links == {"Zoro"}
+
+
+def test_plot_section_links_matches_plot_details_heading():
+    # Jujutsu Kaisen's wiki: "Plot Details", not bare "Plot" -- a naive substring/prefix
+    # match on "Plot" alone must not treat this as a false match for a bare "Plot" heading
+    # while still recognising the distinct "Plot Details" heading in its own right.
+    wt = "==Summary==\n[[Yuji Itadori]] enrolls.\n==Plot Details==\n[[Satoru Gojo]] appears.\n"
+    assert gv.plot_section_links(wt) == {"Yuji Itadori", "Satoru Gojo"}
+
+
+def test_plot_section_links_matches_synopsis_and_summary_with_no_plot_heading():
+    # Spy x Family's wiki has neither "Plot" nor "Plot Details" -- only "Synopsis" and
+    # "Summary", both populated on the same page.
+    wt = "==Synopsis==\n[[Loid Forger]] adopts [[Anya Forger]].\n==Summary==\n[[Yor Forger]] is a spy.\n"
+    assert gv.plot_section_links(wt) == {"Loid Forger", "Anya Forger", "Yor Forger"}
+
+
+def test_plot_section_links_matches_summary_only_heading():
+    # My Hero Academia's wiki has only "Summary" -- no "Plot", no "Synopsis".
+    wt = "==Summary==\n[[Izuku Midoriya]] meets [[All Might]].\n"
+    assert gv.plot_section_links(wt) == {"Izuku Midoriya", "All Might"}
+
+
+def test_plot_section_links_unions_multiple_populated_sections_on_the_same_page():
+    # Cowboy Bebop's wiki populates BOTH "Plot" and "Synopsis" on the same episode page --
+    # both are real content, neither should be dropped in favour of the other.
+    wt = "==Synopsis==\n[[Spike Spiegel]] hunts a bounty.\n==Plot==\n[[Jet Black]] pilots the [[Bebop]].\n"
+    assert gv.plot_section_links(wt) == {"Spike Spiegel", "Jet Black", "Bebop"}
+
+
 def test_arc_page_links_supply_the_names_categories_miss(monkeypatch):
     """Categories alone are not sufficient and this is measured, not theoretical: neither
     `Rebecca` nor `Kyros` -- the arc's two most-mentioned characters -- appears in ANY
@@ -342,6 +414,132 @@ def test_arc_page_links_is_empty_when_the_page_is_missing(monkeypatch):
 
     monkeypatch.setattr(gv, "_http_json", boom)
     assert gv.arc_page_links("https://x/api.php", "Nonesuch") == set()
+
+
+def test_resolve_redirects_follows_an_input_redirect_to_its_target(monkeypatch):
+    def fake(url):
+        return {
+            "query": {
+                "redirects": [{"from": "Kirito", "to": "Kirigaya Kazuto"}],
+                "pages": {"1": {"title": "Kirigaya Kazuto", "redirects": []}},
+            }
+        }
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    out = gv.resolve_redirects("https://x/api.php", {"Kirito"})
+    assert "Kirigaya Kazuto" in out
+
+
+def test_resolve_redirects_pulls_in_incoming_redirects_of_a_direct_link(monkeypatch):
+    def fake(url):
+        return {
+            "query": {
+                "pages": {
+                    "1": {
+                        "title": "Kirigaya Kazuto",
+                        "redirects": [{"title": "Kirito"}],
+                    }
+                }
+            }
+        }
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    out = gv.resolve_redirects("https://x/api.php", {"Kirigaya Kazuto"})
+    assert {"Kirigaya Kazuto", "Kirito"} <= out
+
+
+def test_resolve_redirects_fails_open_to_the_input_set(monkeypatch):
+    def boom(url):
+        raise OSError("network down")
+
+    monkeypatch.setattr(gv, "_http_json", boom)
+    assert gv.resolve_redirects("https://x/api.php", {"Kirito", "Asuna"}) == {"Kirito", "Asuna"}
+
+
+def test_resolve_redirects_chunks_over_fifty_titles(monkeypatch):
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return {"query": {"pages": {}}}
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    gv.resolve_redirects("https://x/api.php", {f"T{i}" for i in range(120)})
+    assert len(calls) == 3  # ceil(120 / 50)
+
+
+def test_fetch_episode_titles_caches_a_positive_result(monkeypatch, tmp_path):
+    monkeypatch.setattr(gv, "CACHE_DIR", str(tmp_path))
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return {"parse": {"wikitext": {"*": "== Plot ==\n[[Kirito]]\n"}}}
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    first = gv.fetch_episode_titles("https://x/api.php", "SAO", "Episode 05")
+    second = gv.fetch_episode_titles("https://x/api.php", "SAO", "Episode 05")
+    assert first == second == ["Kirito"]
+    # 2 calls for the first fetch (wikitext + resolve_redirects' own call),
+    # 0 more for the second -- the cache hit skips both, not just one.
+    assert len(calls) == 2
+
+
+def test_fetch_episode_titles_does_not_cache_a_negative_result(monkeypatch, tmp_path):
+    monkeypatch.setattr(gv, "CACHE_DIR", str(tmp_path))
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return {"parse": {"wikitext": {"*": "no plot section here"}}}
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    gv.fetch_episode_titles("https://x/api.php", "SAO", "Episode 99")
+    gv.fetch_episode_titles("https://x/api.php", "SAO", "Episode 99")
+    assert len(calls) == 2  # retried, not cached-empty
+
+
+def test_fetch_episode_titles_expires_past_the_ttl(monkeypatch, tmp_path):
+    monkeypatch.setattr(gv, "CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(gv, "WIKI_TTL", 0)  # expire immediately
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return {"parse": {"wikitext": {"*": "== Plot ==\n[[Kirito]]\n"}}}
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    gv.fetch_episode_titles("https://x/api.php", "SAO", "Episode 05")
+    gv.fetch_episode_titles("https://x/api.php", "SAO", "Episode 05")
+    # 2 calls per genuine fetch (wikitext + resolve_redirects); TTL=0 means
+    # neither fetch is a cache hit, so both pay the full cost.
+    assert len(calls) == 4
+
+
+def test_episode_page_titles_splits_resolved_and_failed(monkeypatch, tmp_path):
+    monkeypatch.setattr(gv, "CACHE_DIR", str(tmp_path))
+
+    def fake(url):
+        if "Episode+629" in url or "Episode%20629" in url:
+            return {"parse": {"wikitext": {"*": "no plot section"}}}
+        return {"parse": {"wikitext": {"*": "== Plot ==\n[[Rebecca]]\n"}}}
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    union, resolved, failed = gv.episode_page_titles("https://x/api.php", "One Pace", ["Episode 628", "Episode 629"])
+    assert union == {"Rebecca"}
+    assert resolved == ["Episode 628"]
+    assert failed == ["Episode 629"]
+
+
+def test_resolve_redirects_parses_a_real_captured_mediawiki_response(monkeypatch):
+    """Not a synthetic mock: tests/fixtures/mediawiki_redirects_sample.json is a live
+    response captured 2026-09-01 from swordartonline.fandom.com for the Kirito/
+    Kirigaya Kazuto pair (Luna review F5 -- a hand-tailored mock can pass while the
+    real API returns a different field combination)."""
+    fixture = json.load(open("tests/fixtures/mediawiki_redirects_sample.json"))
+    monkeypatch.setattr(gv, "_http_json", lambda url: fixture)
+    out = gv.resolve_redirects("https://swordartonline.fandom.com/api.php", {"Kirito"})
+    assert {"Kirigaya Kazuto", "Kirito", "Kazuto", "Black Swordsman"} <= out
 
 
 def test_a_character_named_season_resolves_to_nothing(monkeypatch):

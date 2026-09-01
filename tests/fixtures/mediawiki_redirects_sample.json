@@ -1,0 +1,29 @@
+{
+  "_captured": "2026-09-01, live GET against https://swordartonline.fandom.com/api.php?action=query&redirects=1&prop=redirects&rdlimit=500&format=json&titles=Kirito -- see .procoder/todo/20260901-glossary-verify-resolve-redirects-both-direction-redirect.md and Luna review F5 (docs/Adversarial Reviews/LUNA-2026-09-01-per-episode-glossary-acquisition.md) for why this is required, not a synthetic mock.",
+  "_note": "Identical response shape returned when queried by either 'Kirito' (an input redirect, resolved via query.redirects) or 'Kirigaya Kazuto' (the direct target, whose own incoming redirects are listed on the page). Confirms glossary_verify.resolve_redirects' assumption that BOTH directions are answerable from ONE combined redirects=1&prop=redirects call.",
+  "batchcomplete": "",
+  "query": {
+    "redirects": [{ "from": "Kirito", "to": "Kirigaya Kazuto" }],
+    "pages": {
+      "2090": {
+        "pageid": 2090,
+        "ns": 0,
+        "title": "Kirigaya Kazuto",
+        "redirects": [
+          { "pageid": 12609, "ns": 0, "title": "The Black Swordsman" },
+          { "pageid": 14371, "ns": 0, "title": "Kazuto" },
+          { "pageid": 34911, "ns": 0, "title": "Kiriko" },
+          { "pageid": 35462, "ns": 0, "title": "Black Swordsman" },
+          { "pageid": 43712, "ns": 0, "title": "Kazuto Kirigaya" },
+          { "pageid": 56170, "ns": 0, "title": "Kirito" },
+          {
+            "pageid": 68432,
+            "ns": 0,
+            "title": "Kirito Synthesis Thirty-three"
+          },
+          { "pageid": 74974, "ns": 0, "title": "Narusaka Kazuto" }
+        ]
+      }
+    }
+  }
+}

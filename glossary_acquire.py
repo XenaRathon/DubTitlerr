@@ -27,7 +27,8 @@ import acquire_cache
 import glossary
 import glossary_verify
 import mine_glossary
-from common import llm_chat, log
+import ordering
+from common import find_video, llm_chat, log
 
 _DISAMBIG_RE = re.compile(r"\s*\([^)]*\)\s*$")
 _REDUCE_RE = re.compile("[\\s" + chr(0x27) + chr(0x2019) + "-]")
@@ -257,6 +258,7 @@ def _candidate(variant: str, source: str) -> dict:
         "occurrence_count": 0,
         "episode_count": 0,
         "contexts": [],
+        "contributing_stems": set(),
     }
 
 
@@ -287,6 +289,7 @@ def harvest_candidates(show_dir: str, source: str = SOURCE_TRANSCRIPT) -> tuple[
             c = cands.setdefault(tok, _candidate(tok, source))
             c["occurrence_count"] += bare.get(tok, 0)
             c["episode_count"] += 1
+            c["contributing_stems"].add(stem)
             for surface, n in forms.get(tok, {}).items():
                 c["raw_forms"][surface] = c["raw_forms"].get(surface, 0) + n
     for c in cands.values():
@@ -565,6 +568,7 @@ def propose(
     resolved: dict | None = None,
     candidates: dict | None = None,
     anchors: set | None = None,
+    admission_fn=None,
 ) -> list:
     """One proposal per harvested token that resolves to a wiki title.
 
@@ -620,6 +624,8 @@ def propose(
                 "occurrence_count": counts[tok],
                 "episode_count": cand["episode_count"],
                 "raw_forms": cand["raw_forms"],
+                "contributing_stems": cand.get("contributing_stems", set()),
+                "admission_method": admission_fn(tok)[1] if admission_fn else None,
                 **d,
             }
         )
@@ -651,10 +657,14 @@ def _provenance(p: dict, scope: int) -> dict:
         "settled_target": p.get("settled_target"),
         "episode_count": p.get("episode_count", 0),
         "scope": scope,
+        # [S-12]: survives onto the WRITTEN glossary entry, not just the transient
+        # acquire() report -- a reviewer opening the glossary file alone must be able
+        # to tell a fallback-backed proposal from a tight one.
+        "admission_method": p.get("admission_method"),
     }
 
 
-def apply_proposals(gloss: dict, proposals: list, run_id: str, scope: int = 0) -> dict:
+def apply_proposals(gloss: dict, proposals: list, run_id: str, scope: int = 0, episode_keys_by_stem: dict | None = None) -> dict:
     """Write applied proposals into hard_fixes + acquired; record the rest in flagged.
 
     Pure: deep-copies its input the way glossary_verify.apply_results does, so curated
@@ -706,6 +716,14 @@ def apply_proposals(gloss: dict, proposals: list, run_id: str, scope: int = 0) -
             "run": run_id,
             **_provenance(p, scope),
         }
+        # [S-9]: keyed on the CANONICAL, not the variant -- repair._glossary_terms
+        # iterates token_fixes/phrase_fixes VALUES (the split form of hard_fixes,
+        # which is keyed on variant with canonical as the value), so tagging the
+        # variant would write a key _glossary_terms never looks up.
+        if episode_keys_by_stem:
+            stems = p.get("contributing_stems", ())
+            keys = {episode_keys_by_stem[s] for s in stems if s in episode_keys_by_stem}
+            glossary.add_episode_tag(g, p["canonical"], keys)
     if not flagged:
         g.pop("flagged", None)
     if known:
@@ -826,6 +844,56 @@ def _write_json(path: str, obj) -> None:
     os.replace(tmp, path)
 
 
+def _format_episode_page(pattern: str, **kw) -> str | None:
+    """pattern.format(**kw), or None on a malformed hand-edited pattern -- must never
+    crash a sweep."""
+    try:
+        return pattern.format(**kw)
+    except (KeyError, IndexError, ValueError):
+        return None
+
+
+def episode_admission_titles(
+    video: str, gloss: dict, wiki_api: str, show: str, source_episodes_fn=None
+) -> tuple[set[str] | None, str, dict]:
+    """The per-episode wiki title set [S-7], or None ("unscoped") when neither
+    episode_page_pattern field is declared -- today's behaviour, unchanged. Tries
+    episode_page_pattern_absolute (via source_episodes() + episode_page_titles) first,
+    then episode_page_pattern_relative (via the episode's own SxxExx) when absolute
+    yields nothing; falls back to the franchise-wide allpages set -- logged via
+    `method`, never silent -- when neither resolves, when the episode has no SxxExx at
+    all, or when neither pattern field is declared. `detail` carries nfo_present/
+    nfo_parsed/partial_pages for the caller's report."""
+    source_episodes_fn = source_episodes_fn or glossary.source_episodes
+    detail = {"nfo_present": False, "nfo_parsed": False, "partial_pages": []}
+    pat_abs = gloss.get("episode_page_pattern_absolute")
+    pat_rel = gloss.get("episode_page_pattern_relative")
+    if not pat_abs and not pat_rel:
+        return None, "unscoped", detail
+    ek = ordering.episode_key(video)
+    if pat_abs:
+        nfo_path = os.path.splitext(video)[0] + ".nfo"
+        detail["nfo_present"] = os.path.exists(nfo_path)
+        numbers = source_episodes_fn(nfo_path) if detail["nfo_present"] else []
+        detail["nfo_parsed"] = bool(numbers)
+        if numbers:
+            pages = [p for p in (_format_episode_page(pat_abs, n=n) for n in numbers) if p]
+            union, _resolved, failed = glossary_verify.episode_page_titles(wiki_api, show, pages)
+            if union:
+                detail["partial_pages"] = failed
+                return union, "absolute", detail
+    if pat_rel and ek:
+        s, e = ordering.season_ep(video)
+        page = _format_episode_page(pat_rel, s=s, e=e)
+        if page:
+            union, _resolved, _failed = glossary_verify.episode_page_titles(wiki_api, show, [page])
+            if union:
+                return union, "relative", detail
+    if not ek:
+        return set(glossary_verify.fetch_titles(wiki_api, show)), "no-episode-tag", detail
+    return set(glossary_verify.fetch_titles(wiki_api, show)), "fallback-allpages", detail
+
+
 def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str | None = None) -> dict:
     """Harvest -> score -> gate -> (optionally) write. Returns a report; never raises.
 
@@ -859,6 +927,59 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     # harvested token against the wiki exactly once and hand the same result to propose()
     # and unmatched(), instead of each independently re-running it (was ~1.5x the work).
     resolved = _resolve_tokens(counts, titles)
+    # [S-8] Per-episode admission scoping. Inactive (admission_fn=None, resolved_admitted
+    # == resolved) unless the show declares a pattern field -- byte-for-byte today's
+    # behaviour otherwise. When active, admission is scoped PER TOKEN -- the union of
+    # only THAT token's own contributing episodes' title sets, not one union across the
+    # whole run's `scope` -- because harvest_candidates walks the entire show_dir every
+    # sweep, and a flat run-wide union would let one unmapped episode's fallback widen
+    # admission for every other episode's tokens too (found during design, before any
+    # code existed).
+    nfo_present = nfo_parsed = nfo_missing = nfo_parse_failed = 0
+    fallback_episodes: list = []
+    admission_active = bool(gloss.get("episode_page_pattern_absolute") or gloss.get("episode_page_pattern_relative"))
+    stem_admission: dict = {}
+    admission_fn = None
+    resolved_admitted = resolved
+    if admission_active:
+        for s in scope:
+            video = find_video(s)
+            if not video:
+                continue
+            stem_admission[s] = episode_admission_titles(video, gloss, api, show)
+            _titles_s, method, detail = stem_admission[s]
+            if detail["nfo_present"]:
+                nfo_present += 1
+                if detail["nfo_parsed"]:
+                    nfo_parsed += 1
+                else:
+                    nfo_parse_failed += 1
+            else:
+                nfo_missing += 1
+            if method in ("fallback-allpages", "no-episode-tag"):
+                fallback_episodes.append(s)
+        if nfo_present and not nfo_parsed:
+            log(f"  WARNING {show}: {nfo_present} .nfo file(s) found, 0 parsed -- check the per-episode .nfo naming convention")
+
+        def admission_fn(tok):  # noqa: F811 -- intentional shadow, only reachable when admission_active
+            stems = cands.get(tok, {}).get("contributing_stems", ())
+            methods = {stem_admission[s][1] for s in stems if s in stem_admission}
+            if not stems or not methods:
+                return None, "unscoped"
+            union: set = set()
+            for s in stems:
+                titles_for_s = stem_admission.get(s, (None, "unscoped", {}))[0]
+                if titles_for_s:
+                    union |= titles_for_s
+            tight = methods <= {"absolute", "relative"}
+            fell = methods <= {"fallback-allpages", "no-episode-tag"}
+            return union, ("tight" if tight else ("fallback" if fell else "mixed"))
+
+        resolved_admitted = {}
+        for tok, (canon, score) in resolved.items():
+            union, _m = admission_fn(tok)
+            if union is None or normalize_title(canon) in {normalize_title(t) for t in union}:
+                resolved_admitted[tok] = (canon, score)
     anchors = anchor_terms(gloss)
     # Per-token decision cache. `settled` alone was 107 terms against 8,199 harvested, so
     # ~99% of the work -- including 371 LLM calls in escalate, 71% of this stage's runtime --
@@ -877,7 +998,9 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
         else set()
     )
     settled = settled | cached
-    proposals = propose(counts, mid, titles, settled, resolved=resolved, candidates=cands, anchors=anchors)
+    proposals = propose(
+        counts, mid, titles, settled, resolved=resolved_admitted, candidates=cands, anchors=anchors, admission_fn=admission_fn
+    )
     close = [p for p in proposals if p.get("reason") == "share-too-close"]
     if close:
         toks = sorted({p["variant"] for p in close} | {p["canonical"] for p in close})
@@ -908,7 +1031,7 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
             if p["verdict"] == "flag":
                 p["context"] = fctx.get(p["variant"], [])
     tier_b = {}
-    for term in unmatched(counts, mid, titles, resolved=resolved):
+    for term in unmatched(counts, mid, titles, resolved=resolved_admitted):
         try:
             adj = glossary_verify.adjudicate(term, glossary_verify.candidates(term, titles), show)
         except Exception as e:
@@ -930,8 +1053,17 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     ).hexdigest()[:8]
     run_id = f"{show}:{len(titles)}:{files}:{digest}"
     if apply and (proposals or tier_b):
+        # [S-9]: one stem -> SxxExx map, built once, reused by apply_proposals' episode
+        # tagging -- same pattern as `stem_admission` above (resolve once, thread through).
+        episode_keys_by_stem = {}
+        for s in scope:
+            v = find_video(s)
+            if v:
+                k = ordering.episode_key(v)
+                if k:
+                    episode_keys_by_stem[s] = k
         try:
-            out = apply_proposals(gloss, proposals, run_id, files)
+            out = apply_proposals(gloss, proposals, run_id, files, episode_keys_by_stem)
             if tier_b:
                 tctx = context_lines(show_dir, list(tier_b))
                 flagged = out.setdefault("flagged", {})
@@ -966,6 +1098,11 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
         "scope_episodes": [os.path.basename(s) for s in scope],
         "proposals": proposals,
         "tier_b": tier_b,
+        "nfo_present": nfo_present,
+        "nfo_parsed": nfo_parsed,
+        "nfo_missing": nfo_missing,
+        "nfo_parse_failed": nfo_parse_failed,
+        "fallback_episodes": [os.path.basename(s) for s in fallback_episodes],
     }
 
 

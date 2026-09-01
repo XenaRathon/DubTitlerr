@@ -1233,6 +1233,28 @@ def test_repair_backend_defaults_to_llamacpp_when_unset(monkeypatch):
     importlib.reload(repair)  # restore ambient config for the rest of the session
 
 
+def test_repair_model_defaults_to_qwen3_4b_instruct_when_unset(monkeypatch):
+    """Asserted independently of whatever the ambient environment sets.
+
+    This used to pin `nanbeige4.2-3b` -- the C1 bake-off's own choice, reversing the
+    original C1 bake-off's qwen3.5:9b lock on the evidence that qwen3.5:9b imported the
+    fansub reference verbatim into 84.1% of its repairs. A live anchored bake-off run
+    2026-09-01 against real production data (Trigun, MARRIAGETOXIN, Serial Experiments
+    Lain) on a DIFFERENT, newer qwen candidate -- qwen3-4b-instruct, not qwen3.5:9b, and
+    not the same model the original C1 bake-off rejected -- found it the only one of four
+    real candidates (nanbeige4.2-3b, gemma3n-e2b, phi4-mini, qwen3-4b-instruct) with zero
+    hallucinations, zero severe content drops, and zero verbatim-reference-copy instances
+    across all three shows; the others each exhibited at least one of those failure modes,
+    including one outright fabricated line from phi4-mini. qwen3-4b-instruct is also the
+    model recorded as the unanchored verdict-bake-off leader on exact-match count in the
+    2026-08-31 handoff (59/90 vs nanbeige's 43/90)."""
+    import importlib
+
+    monkeypatch.delenv("REPAIR_MODEL", raising=False)
+    assert importlib.reload(repair).MODEL == "qwen3-4b-instruct"
+    importlib.reload(repair)  # restore ambient config for the rest of the session
+
+
 # --- implausible source window (VAD design S6; spec v5, S-6) -------------------
 
 
@@ -1563,6 +1585,46 @@ def test_build_prompt_threads_the_arc_into_the_reference_spellings(monkeypatch):
     names = p.split("VERIFICATION ONLY - this is NOT a list of names to insert): ")[1].split(".\n")[0]
     terms = names.split(", ")
     assert terms.index("Doflamingo") < terms.index("Spandam")
+
+
+def _episode_tagged_gloss():
+    """A glossary with both arc_tags (Dressrosa/Enies Lobby) and episode_tags (Rebecca
+    tagged to S31E01 specifically), shaped as [S-9] stores them."""
+    g = _tagged_gloss()
+    g["episode_tags"] = {"rebecca": ["S31E01"]}
+    return g
+
+
+def test_glossary_terms_episode_tag_outranks_arc_tag():
+    g = _episode_tagged_gloss()
+    terms = repair._glossary_terms(g, arc="Dressrosa", episode="S31E01").split(", ")
+    # Rebecca is BOTH arc- and episode-tagged for S31E01; Doflamingo is arc-tagged only.
+    # The episode tier must rank Rebecca ahead of Doflamingo.
+    assert terms.index("Rebecca") < terms.index("Doflamingo")
+
+
+def test_glossary_terms_episode_untagged_falls_through_to_arc_tier():
+    """An episode-untagged term is NOT defaulted into the episode-first tier the way an
+    arc-untagged term defaults into the arc tier -- it falls through to the (unchanged)
+    arc-tier logic, which still applies. Doflamingo (arc-tagged, not episode-tagged)
+    must still outrank Oimo (a different arc) for this episode."""
+    g = _episode_tagged_gloss()
+    terms = repair._glossary_terms(g, arc="Dressrosa", episode="S31E01").split(", ")
+    assert terms.index("Doflamingo") < terms.index("Oimo")
+
+
+def test_glossary_terms_untagged_term_still_appears():
+    g = _episode_tagged_gloss()
+    terms = repair._glossary_terms(g, arc="Dressrosa", episode="S99E99").split(", ")
+    assert "Oimo" in terms  # untagged for both dimensions, still included
+
+
+def test_glossary_terms_episode_none_matches_today_2tier_behavior():
+    g = _tagged_gloss()
+    with_episode_none = repair._glossary_terms(g, arc="Dressrosa", episode=None)
+    # Must be byte-identical to calling with no episode kwarg at all, for every
+    # existing caller that doesn't pass one.
+    assert with_episode_none == repair._glossary_terms(g, arc="Dressrosa")
 
 
 def test_build_prompt_without_an_arc_is_byte_identical_to_before(monkeypatch):

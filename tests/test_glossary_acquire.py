@@ -385,6 +385,50 @@ def test_apply_proposals_writes_hard_fixes_and_provenance():
     assert gloss.get("acquired") is None  # input not mutated
 
 
+def test_apply_proposals_tags_episodes_keyed_on_canonical():
+    gloss = {"show": "One Pace"}
+    props = [
+        {
+            "variant": "Dothamingo",
+            "canonical": "Doflamingo",
+            "variant_count": 3,
+            "canonical_count": 0,
+            "score": 0.9,
+            "verdict": "apply",
+            "reason": "canonical-unseen",
+            "bound": 0.0,
+            "contributing_stems": {"/a/S31E01", "/a/S31E02"},
+        }
+    ]
+    g = ga.apply_proposals(
+        gloss,
+        props,
+        run_id="run1",
+        episode_keys_by_stem={"/a/S31E01": "S31E01", "/a/S31E02": "S31E02"},
+    )
+    assert g["episode_tags"]["doflamingo"] == ["S31E01", "S31E02"]
+    assert "dothamingo" not in g.get("episode_tags", {})  # keyed on canonical, not variant
+
+
+def test_apply_proposals_without_episode_keys_writes_no_episode_tags():
+    gloss = {"show": "One Pace"}
+    props = [
+        {
+            "variant": "Dothamingo",
+            "canonical": "Doflamingo",
+            "variant_count": 3,
+            "canonical_count": 0,
+            "score": 0.9,
+            "verdict": "apply",
+            "reason": "canonical-unseen",
+            "bound": 0.0,
+            "contributing_stems": {"/a/S31E01"},
+        }
+    ]
+    g = ga.apply_proposals(gloss, props, run_id="run1")  # episode_keys_by_stem omitted
+    assert "episode_tags" not in g
+
+
 def test_apply_proposals_records_flagged_with_its_reason():
     props = [
         {
@@ -1169,11 +1213,280 @@ def test_candidate_record_carries_source_and_forms(tmp_path):
         "occurrence_count",
         "episode_count",
         "contexts",
+        "contributing_stems",
     }
     assert c["source"] == ga.SOURCE_TRANSCRIPT
     assert c["raw_forms"] == {"Hazzard": 1, "Hazzard" + chr(0x2019) + "s": 1}
     assert c["normalized_forms"] == ["hazzard", "hazzards"]
     assert c["occurrence_count"] == 1  # bare lane only, as harvest() has always counted
+
+
+def test_harvest_candidates_tracks_contributing_stems(tmp_path):
+    _write_conf(tmp_path, "Ep01", ["We fought Hazzard here."])
+    _write_conf(tmp_path, "Ep02", ["Hazzard returned."])
+    cands, _mid, _scope = ga.harvest_candidates(str(tmp_path))
+    c = cands["Hazzard"]
+    stems = {s.rsplit("/", 1)[-1] for s in c["contributing_stems"]}
+    assert stems == {"Ep01", "Ep02"}
+
+
+def test_harvest_candidates_single_episode_token_has_one_stem(tmp_path):
+    _write_conf(tmp_path, "Ep01", ["Only here: Marigold."])
+    cands, _mid, _scope = ga.harvest_candidates(str(tmp_path))
+    stems = {s.rsplit("/", 1)[-1] for s in cands["Marigold"]["contributing_stems"]}
+    assert stems == {"Ep01"}
+
+
+def test_admission_titles_unscoped_when_no_pattern_declared(tmp_path):
+    video = str(tmp_path / "S01E05.mkv")
+    open(video, "w").close()
+    titles, method, detail = ga.episode_admission_titles(video, {}, "https://x/api.php", "Show")
+    assert titles is None and method == "unscoped"
+
+
+def test_admission_titles_absolute_wins_when_it_resolves(tmp_path, monkeypatch):
+    video = str(tmp_path / "S31E01.mkv")
+    open(video, "w").close()
+    nfo = str(tmp_path / "S31E01.nfo")
+    open(nfo, "w").write("Covers anime episode(s): 628")
+    gloss = {"episode_page_pattern_absolute": "Episode {n}", "episode_page_pattern_relative": "Rel {e}"}
+    monkeypatch.setattr(ga.glossary_verify, "episode_page_titles", lambda api, show, pages: ({"Rebecca"}, pages, []))
+    titles, method, detail = ga.episode_admission_titles(video, gloss, "https://x/api.php", "Show")
+    assert titles == {"Rebecca"} and method == "absolute"
+
+
+def test_admission_titles_falls_back_and_reports_nfo_health(tmp_path, monkeypatch):
+    video = str(tmp_path / "S31E02.mkv")
+    open(video, "w").close()
+    # no .nfo file at all
+    gloss = {"episode_page_pattern_absolute": "Episode {n}"}
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda api, show: ["A", "B"])
+    titles, method, detail = ga.episode_admission_titles(video, gloss, "https://x/api.php", "Show")
+    assert method == "fallback-allpages"
+    assert detail["nfo_present"] is False
+
+
+def test_admission_titles_partial_mapping_keeps_resolved_pages(tmp_path, monkeypatch):
+    video = str(tmp_path / "S31E01.mkv")
+    open(video, "w").close()
+    nfo = str(tmp_path / "S31E01.nfo")
+    open(nfo, "w").write("Covers anime episode(s): 628-629")
+    gloss = {"episode_page_pattern_absolute": "Episode {n}"}
+    monkeypatch.setattr(
+        ga.glossary_verify,
+        "episode_page_titles",
+        lambda api, show, pages: ({"Rebecca"}, ["Episode 628"], ["Episode 629"]),
+    )
+    titles, method, detail = ga.episode_admission_titles(video, gloss, "https://x/api.php", "Show")
+    assert titles == {"Rebecca"} and method == "absolute"
+    assert detail["partial_pages"] == ["Episode 629"]
+
+
+def test_acquire_admission_scoping_removes_the_sao_noise(tmp_path, monkeypatch):
+    """Re-run of the 2026-08-29 SAO measurement: What->Whale, Whose->Horse must no
+    longer be proposed once admission is scoped per episode."""
+    _write_conf(tmp_path, "S01E05", ["What happened to Yolko and Schmitt?"] * 200)
+    open(str(tmp_path / "S01E05.mkv"), "w").close()  # find_video() needs a real file
+    gp = tmp_path / "SAO.json"
+    gp.write_text(json.dumps({"show": "SAO", "episode_page_pattern_relative": "SAO Episode {e:02d}"}))
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda show, override=None: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda api, show: ["Whale", "Horse", "Yolko", "Schmitt"])
+    monkeypatch.setattr(
+        ga.glossary_verify,
+        "episode_page_titles",
+        lambda api, show, pages: ({"Yolko", "Schmitt"}, pages, []),
+    )
+    out = ga.acquire(str(gp), str(tmp_path))
+    variants = {p["variant"] for p in out.get("proposals", [])}
+    assert "What" not in variants and "Whose" not in variants
+
+
+def test_acquire_per_token_union_does_not_leak_across_tokens(tmp_path, monkeypatch):
+    """The bug found during design: an unmapped episode's fallback must widen
+    admission only for TOKENS THAT APPEAR THERE, not every token in the sweep."""
+    _write_conf(tmp_path, "S01E05", ["Yolko appears here."] * 10)
+    _write_conf(tmp_path, "S01E99", ["Caesar appears here too."] * 10)  # unmapped
+    open(str(tmp_path / "S01E05.mkv"), "w").close()
+    open(str(tmp_path / "S01E99.mkv"), "w").close()
+    gp = tmp_path / "SAO.json"
+    gp.write_text(json.dumps({"show": "SAO", "episode_page_pattern_relative": "SAO Episode {e:02d}"}))
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda show, override=None: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda api, show: ["Yolko", "Whale", "Caesar"])
+
+    def fake_pages(api, show, pages):
+        if pages == ["SAO Episode 05"]:
+            return {"Yolko"}, pages, []
+        return set(), [], pages  # S01E99's pattern never resolves -> fallback
+
+    monkeypatch.setattr(ga.glossary_verify, "episode_page_titles", fake_pages)
+    out = ga.acquire(str(gp), str(tmp_path))
+    proposals = out.get("proposals", [])
+    yolko = next(p for p in proposals if p["variant"] == "Yolko")
+    assert yolko["admission_method"] == "tight"
+
+
+def test_acquire_admission_method_tight_fallback_mixed(tmp_path, monkeypatch):
+    gp = tmp_path / "S.json"
+    gp.write_text(json.dumps({"show": "S", "episode_page_pattern_relative": "S Episode {e:02d}"}))
+    _write_conf(tmp_path, "S01E01", ["Caesar seen here."] * 5)
+    _write_conf(tmp_path, "S01E02", ["Caesar seen here too."] * 5)
+    open(str(tmp_path / "S01E01.mkv"), "w").close()
+    open(str(tmp_path / "S01E02.mkv"), "w").close()
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda show, override=None: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda api, show: ["Caesar"])
+
+    def fake_pages(api, show, pages):
+        if pages == ["S Episode 01"]:
+            return {"Caesar"}, pages, []
+        return set(), [], pages  # E02 unmapped
+
+    monkeypatch.setattr(ga.glossary_verify, "episode_page_titles", fake_pages)
+    out = ga.acquire(str(gp), str(tmp_path))
+    caesar = next(p for p in out.get("proposals", []) if p["variant"] == "Caesar")
+    assert caesar["admission_method"] == "mixed"
+
+
+def test_acquire_admission_rejected_token_still_reaches_tier_b(tmp_path, monkeypatch):
+    """The corrected S-8 claim: an admission-rejected token must reach
+    unmatched()/adjudicate(), not silently vanish."""
+    # "Exclusivename" must be MID-sentence: unmatched()'s own contract is mid-sentence
+    # tokens only (repeats a sentence-initial capital reads as ordinary capitalisation,
+    # not a name).
+    _write_conf(tmp_path, "S01E05", ["We saw Exclusivename here."] * 5)
+    open(str(tmp_path / "S01E05.mkv"), "w").close()
+    gp = tmp_path / "S.json"
+    gp.write_text(json.dumps({"show": "S", "episode_page_pattern_relative": "S Episode {e:02d}"}))
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda show, override=None: "https://x/api.php")
+    # "Exclusivename" resolves against allpages but is NOT in E05's admitted set. The
+    # admitted set must be NON-EMPTY (some other name) -- an empty union falls through
+    # to fallback-allpages instead of a tight admission that excludes the token, which
+    # is a different code path entirely.
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda api, show: ["Exclusivename"])
+    monkeypatch.setattr(ga.glossary_verify, "episode_page_titles", lambda api, show, pages: ({"SomeOtherName"}, pages, []))
+    adjudicated = []
+    monkeypatch.setattr(
+        ga.glossary_verify,
+        "adjudicate",
+        lambda term, cands, show: adjudicated.append(term) or {"confidence": "none", "canonical": ""},
+    )
+    ga.acquire(str(gp), str(tmp_path))
+    assert "Exclusivename" in adjudicated
+
+
+def test_acquire_partial_mapping_exclusive_name_reaches_unmatched(tmp_path, monkeypatch):
+    """S-13's specific scenario: a name exclusive to a missing source page, in an
+    otherwise-partially-resolved episode. Both a variant that still fuzzy-resolves
+    against allpages and one that resolves to nothing must reach tier-B."""
+    # Both names mid-sentence: unmatched()'s own contract is mid-sentence tokens only.
+    _write_conf(tmp_path, "S31E01", ["We saw Missingpagename and Neverinwiki there."] * 5)
+    open(str(tmp_path / "S31E01.mkv"), "w").close()
+    nfo = str(tmp_path / "S31E01.nfo")
+    open(nfo, "w").write("Covers anime episode(s): 628-629")
+    gp = tmp_path / "Show.json"
+    gp.write_text(json.dumps({"show": "Show", "episode_page_pattern_absolute": "Episode {n}"}))
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda show, override=None: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda api, show: ["Missingpagename"])
+
+    def fake_pages(api, show, pages):
+        # episode_admission_titles calls episode_page_titles ONCE with BOTH page
+        # titles together, mirroring the real orchestrator's own per-page split:
+        # 628 resolves, 629 (where Missingpagename lives) never does.
+        assert set(pages) == {"Episode 628", "Episode 629"}
+        return {"SomeOtherName"}, ["Episode 628"], ["Episode 629"]
+
+    monkeypatch.setattr(ga.glossary_verify, "episode_page_titles", fake_pages)
+    adjudicated = []
+    monkeypatch.setattr(
+        ga.glossary_verify,
+        "adjudicate",
+        lambda term, cands, show: adjudicated.append(term) or {"confidence": "none", "canonical": ""},
+    )
+    out = ga.acquire(str(gp), str(tmp_path))
+    assert "S31E01" not in out.get("fallback_episodes", [])  # partial, not fallback
+    assert "Missingpagename" in adjudicated
+    assert "Neverinwiki" in adjudicated
+
+
+def test_acquire_warns_when_nfo_present_but_none_parse(tmp_path, monkeypatch, capsys):
+    """S-14: nfo_present > 0 and nfo_parsed == 0 must emit a warning distinct from
+    the ordinary per-episode fallback log line."""
+    _write_conf(tmp_path, "S31E01", ["Text here."] * 3)
+    open(str(tmp_path / "S31E01.mkv"), "w").close()
+    nfo = str(tmp_path / "S31E01.nfo")
+    open(nfo, "w").write("no mapping line in this file at all")
+    gp = tmp_path / "Show.json"
+    gp.write_text(json.dumps({"show": "Show", "episode_page_pattern_absolute": "Episode {n}"}))
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda show, override=None: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda api, show: ["X"])
+    out = ga.acquire(str(gp), str(tmp_path))
+    assert out["nfo_present"] == 1 and out["nfo_parsed"] == 0
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out and ".nfo" in captured.out
+
+
+def test_end_to_end_admission_tagging_and_repair_weighting(tmp_path, monkeypatch):
+    """Task 13: the cross-stage fixture Luna's review (F8) found missing -- nothing else
+    pins acquire() -> written glossary -> glossary.load() -> repair._glossary_terms() as
+    ONE chain. Two mapped episodes (one partially) and one unmapped episode all contribute
+    the same near-miss token ("Hazzard" -> the already-known anchor "Hazard"), so its
+    overall admission_method must land on "mixed"."""
+    import repair
+
+    gp = tmp_path / "Show.json"
+    gp.write_text(json.dumps({"show": "Show", "names": ["Hazard"], "episode_page_pattern_absolute": "Episode {n}"}))
+
+    # S31E01: partial mapping (628 resolves, 629 doesn't).
+    _write_conf(tmp_path, "S31E01", ["We reached Hazzard at dawn."])
+    open(str(tmp_path / "S31E01.mkv"), "w").close()
+    open(str(tmp_path / "S31E01.nfo"), "w").write("Covers anime episode(s): 628-629")
+
+    # S31E02: fully mapped.
+    _write_conf(tmp_path, "S31E02", ["Then Hazzard burned again."])
+    open(str(tmp_path / "S31E02.mkv"), "w").close()
+    open(str(tmp_path / "S31E02.nfo"), "w").write("Covers anime episode(s): 630")
+
+    # S31E03: unmapped -- no .nfo at all.
+    _write_conf(tmp_path, "S31E03", ["Then Hazzard appeared once more."])
+    open(str(tmp_path / "S31E03.mkv"), "w").close()
+
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda show, override=None: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda api, show: ["Hazard"])
+
+    def fake_pages(api, show, pages):
+        if set(pages) == {"Episode 628", "Episode 629"}:
+            return {"Hazard"}, ["Episode 628"], ["Episode 629"]  # partial
+        if pages == ["Episode 630"]:
+            return {"Hazard"}, ["Episode 630"], []
+        return set(), [], pages
+
+    monkeypatch.setattr(ga.glossary_verify, "episode_page_titles", fake_pages)
+    # acquire_cache memoizes verdicts across runs (its own dedicated behavior, tested in
+    # test_acquire_cache.py) -- without disabling it, the dry run's cached "Hazzard"
+    # verdict marks it settled/skipped on the very next call, and the apply run below
+    # would never actually see it as a proposal to write. Not what this test exercises.
+    monkeypatch.setenv("ACQUIRE_NO_CACHE", "1")
+
+    # Dry run: nothing written.
+    dry = ga.acquire(str(gp), str(tmp_path), apply=False)
+    assert dry["applied"] == 1
+    on_disk_before = json.loads(gp.read_text())
+    assert "episode_tags" not in on_disk_before and "hard_fixes" not in on_disk_before
+
+    # Apply run: writes hard_fixes, acquired (with admission_method), and episode_tags.
+    applied = ga.acquire(str(gp), str(tmp_path), apply=True)
+    assert applied["applied"] == 1
+    assert set(applied["fallback_episodes"]) == {"S31E03"}  # S31E01 is partial, not fallback
+    on_disk = json.loads(gp.read_text())
+    assert on_disk["hard_fixes"]["Hazzard"] == "Hazard"
+    assert on_disk["acquired"]["Hazzard"]["admission_method"] == "mixed"
+    assert set(on_disk["episode_tags"]["hazard"]) == {"S31E01", "S31E02", "S31E03"}
+
+    # Reload through the REAL glossary.load() path and confirm repair._glossary_terms
+    # actually consumes the written episode_tags -- the exact chain the load_dict bug
+    # (Task 7) made impossible before this spec.
+    gloss = ga.glossary.load(str(gp))
+    terms = repair._glossary_terms(gloss, episode="S31E01").split(", ")
+    assert "Hazard" in terms
 
 
 def test_harvest_still_returns_the_same_counts_it_always_did(tmp_path):

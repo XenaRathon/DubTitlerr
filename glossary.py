@@ -81,6 +81,14 @@ def load_dict(cfg: dict) -> dict:
         # run unanchored. Normalised here because load_dict drops every key it does not
         # name, so a field absent from this dict never reaches repair.skips_unanchored.
         "unanchored_repair": bool(cfg.get("unanchored_repair")),
+        # Bug fix, S-16: this dict used to have no arc_tags/episode_tags key at all, so
+        # repair.py's gloss = glossary_for(video) -> glossary.load(path) -> load_dict(...)
+        # chain could never deliver a populated arc_tags to _glossary_terms, regardless
+        # of what the glossary JSON file on disk held -- every existing arc-tag test
+        # hand-built its gloss dict with arc_tags set directly, bypassing load_dict, so
+        # this was never caught.
+        "arc_tags": dict(cfg.get("arc_tags") or {}),
+        "episode_tags": dict(cfg.get("episode_tags") or {}),
     }
 
 
@@ -137,6 +145,55 @@ def tag_names_by_arc(gloss: dict, arc: str, arc_titles: set) -> int:
             arcs.sort()
         tagged += 1
     return tagged
+
+
+def add_episode_tag(gloss: dict, term: str, episode_keys) -> None:
+    """Record which episode(s) an ACQUIRED term's canonical came from [S-9]. Unlike
+    tag_names_by_arc, this does not discover membership -- the caller already knows
+    exactly which episodes produced this proposal. Keyed on the term AS PASSED:
+    callers must pass the canonical spelling, since that is what
+    repair._glossary_terms iterates via token_fixes/phrase_fixes' values, not the
+    harvested variant."""
+    if not episode_keys:
+        return
+    tags = gloss.setdefault("episode_tags", {})
+    existing = set(tags.get(term.lower(), []))
+    tags[term.lower()] = sorted(existing | set(episode_keys))
+
+
+_SOURCE_EPISODES_RE = re.compile(r"Covers anime episode\(s\):\s*([^\n<]+)")
+
+
+def source_episodes(nfo_path: str) -> list[int]:
+    """Absolute source-episode numbers from a re-cut show's per-episode .nfo, e.g.
+    "Covers anime episode(s): 628 - 631" -> [628, 629, 630, 631]. Handles the range,
+    comma and single forms, and mixes of them.
+
+    Regex-only, no XML parser and a size-capped read -- .nfo files are untrusted
+    third-party input, matching arc_for's precedent below. [] on any absence or
+    malformed line; never raises."""
+    try:
+        with open(nfo_path, encoding="utf-8", errors="replace") as f:
+            text = f.read(64 * 1024)
+    except OSError:
+        return []
+    m = _SOURCE_EPISODES_RE.search(text)
+    if not m:
+        return []
+    out: list[int] = []
+    for part in m.group(1).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        rng = re.match(r"^(\d+)\s*-\s*(\d+)$", part)
+        if rng:
+            lo, hi = int(rng.group(1)), int(rng.group(2))
+            if lo <= hi:
+                out.extend(range(lo, hi + 1))
+            continue
+        if part.isdigit():
+            out.append(int(part))
+    return out
 
 
 def arc_for(video_path: str) -> str | None:

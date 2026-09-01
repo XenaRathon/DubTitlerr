@@ -1,5 +1,7 @@
 """Unit tests for glossary.py (C1). Pure functions; wordlist from the bundled fallback."""
 
+import json
+
 import glossary
 
 
@@ -253,6 +255,102 @@ def test_arc_for_survives_a_malformed_season_nfo(tmp_path):
     d.mkdir(parents=True)
     (d / "season.nfo").write_text("<season><title>Unclosed")
     assert glossary.arc_for(str(d / "ep.mkv")) is None
+
+
+def test_source_episodes_parses_a_range(tmp_path):
+    p = tmp_path / "ep.nfo"
+    p.write_text("<plot>Dressrosa!\n\nCovers anime episode(s): 628 - 631\n</plot>")
+    assert glossary.source_episodes(str(p)) == [628, 629, 630, 631]
+
+
+def test_source_episodes_parses_comma_and_single_and_mixed_forms(tmp_path):
+    p1 = tmp_path / "a.nfo"
+    p1.write_text("Covers anime episode(s): 628, 630, 645")
+    assert glossary.source_episodes(str(p1)) == [628, 630, 645]
+    p2 = tmp_path / "b.nfo"
+    p2.write_text("Covers anime episode(s): 628")
+    assert glossary.source_episodes(str(p2)) == [628]
+    p3 = tmp_path / "c.nfo"
+    p3.write_text("Covers anime episode(s): 628-630, 645")
+    assert glossary.source_episodes(str(p3)) == [628, 629, 630, 645]
+
+
+def test_source_episodes_absent_line_and_missing_file(tmp_path):
+    p = tmp_path / "d.nfo"
+    p.write_text("<plot>No mapping here.</plot>")
+    assert glossary.source_episodes(str(p)) == []
+    assert glossary.source_episodes(str(tmp_path / "missing.nfo")) == []
+
+
+def test_source_episodes_survives_a_truncated_file(tmp_path):
+    p = tmp_path / "e.nfo"
+    p.write_bytes(b"Covers anime episode(s): 6")  # cut mid-number, still parses as [6]
+    assert glossary.source_episodes(str(p)) == [6]
+
+
+def test_load_dict_propagates_arc_and_episode_tags():
+    cfg = {
+        "show": "One Piece",
+        "names": ["Doflamingo"],
+        "arc_tags": {"doflamingo": ["Dressrosa"]},
+        "episode_tags": {"doflamingo": ["S31E01"]},
+    }
+    out = glossary.load_dict(cfg)
+    assert out["arc_tags"] == {"doflamingo": ["Dressrosa"]}
+    assert out["episode_tags"] == {"doflamingo": ["S31E01"]}
+
+
+def test_load_dict_defaults_tags_to_empty_when_absent():
+    out = glossary.load_dict({"show": "X"})
+    assert out["arc_tags"] == {}
+    assert out["episode_tags"] == {}
+
+
+def test_load_reaches_repair_glossary_terms_through_the_real_load_path(tmp_path):
+    """The regression this task exists to fix: _glossary_terms must see
+    arc_tags written by glossary.load(path), not only a hand-built test dict.
+    Before the fix, load_dict's returned dict had no "arc_tags" key at all, so
+    repair.py:process()'s gloss = glossary_for(video) -> glossary.load(path)
+    chain could never deliver a populated arc_tags to _glossary_terms, no
+    matter what the glossary JSON file on disk held."""
+    import repair
+
+    # An UNTAGGED name defaults IN to every arc's tier (repair.py:183), so tagging
+    # only Doflamingo to Dressrosa would not demote an untagged Zoro relative to
+    # it -- both would land in the same in-arc bucket, in original list order,
+    # and the assertion below would pass even without load_dict ever seeing
+    # arc_tags at all (verified: this was my first draft and it passed by
+    # coincidence pre-fix). Zoro is explicitly tagged to a DIFFERENT arc here so
+    # it is excluded from Dressrosa's in-arc set and genuinely demoted, listed
+    # first in `names` so demotion is the only thing that can put Doflamingo
+    # ahead of it.
+    p = tmp_path / "Show.json"
+    p.write_text(
+        json.dumps(
+            {
+                "show": "Show",
+                "names": ["Zoro", "Doflamingo"],
+                "arc_tags": {"doflamingo": ["Dressrosa"], "zoro": ["Enies Lobby"]},
+            }
+        )
+    )
+    gloss = glossary.load(str(p))
+    terms = repair._glossary_terms(gloss, arc="Dressrosa").split(", ")
+    assert terms.index("Doflamingo") < terms.index("Zoro")
+
+
+def test_add_episode_tag_writes_sorted_unioned_keys():
+    g = {}
+    glossary.add_episode_tag(g, "Doflamingo", {"S31E02", "S31E01"})
+    assert g["episode_tags"]["doflamingo"] == ["S31E01", "S31E02"]
+    glossary.add_episode_tag(g, "Doflamingo", {"S31E03"})
+    assert g["episode_tags"]["doflamingo"] == ["S31E01", "S31E02", "S31E03"]
+
+
+def test_add_episode_tag_is_a_noop_with_no_episode_keys():
+    g = {}
+    glossary.add_episode_tag(g, "Doflamingo", set())
+    assert "episode_tags" not in g
 
 
 def test_tag_names_by_arc_marks_only_names_the_arc_actually_contains():

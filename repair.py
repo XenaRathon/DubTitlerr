@@ -25,8 +25,8 @@ LLM output is run back through the deterministic correction to enforce canon.
 CPU/network only — the LLM runs on the 2070 (Ollama) or, optionally, a llama.cpp server.
 Env:
   OLLAMA_URL           default http://127.0.0.1:11434/api/generate
-  REPAIR_MODEL         default nanbeige4.2-3b   (see the note at MODEL: it reverses the
-                         C1 bake-off's qwen3:8b on this file's own measurements)
+  REPAIR_MODEL         default qwen3-4b-instruct   (see the note at MODEL: a live
+                         2026-09-01 anchored bake-off against real production data)
   REPAIR_BACKEND         ollama | llamacpp  (default llamacpp; see the note at
                          REPAIR_BACKEND — V2 A1 added the dispatch, the default moved later)
   REPAIR_LLAMACPP_URL    default http://127.0.0.1:8090/v1/chat/completions
@@ -76,21 +76,27 @@ import urllib.parse
 import decisions
 import glossary
 import hallucination
+import ordering
 import qc
 import reflow
 import unresolved
 from common import MEDIA_GID, MEDIA_UID, dialogue_intervals, find_video, out_for, ts_srt
 
 OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
-# nanbeige4.2-3b, not qwen3:8b. The C1 bake-off locked qwen and this reverses that, on the
-# evidence already in this file: qwen makes MORE fixes (23 safe fixes per 120 targets against
-# nanbeige's 16) but imports the fansub reference verbatim into 84.1% of its repairs, 29.2%
-# of them three words or more, against nanbeige's 52.5% and 17.1% -- the failure that turned
-# "That's enough of that, idiots!" into "Hold it, you brats!". It also makes 14 name edits to
-# nanbeige's 2. Fewer, safer repairs is the right default for a stage whose damage is
-# invisible to every mechanical gate; it also happens to be the model that fits beside
-# whisper on one card.
-MODEL = os.environ.get("REPAIR_MODEL", "nanbeige4.2-3b")
+# qwen3-4b-instruct, not nanbeige4.2-3b -- flipped 2026-09-01 on a live anchored bake-off
+# against real production data (Trigun, MARRIAGETOXIN, Serial Experiments Lain), each
+# scored on a real embedded fansub anchor. Four real candidates were compared
+# (nanbeige4.2-3b, gemma3n-e2b, phi4-mini, qwen3-4b-instruct, all four on real repair
+# targets, not synthetic ones); qwen3-4b-instruct was the only one with zero
+# hallucinations, zero severe content drops, and zero verbatim-reference-copy instances --
+# nanbeige and gemma3n-e2b both imported the reference verbatim on the same Trigun line
+# ("4:30 p.m." -> the reference's "1:30 pm."), and phi4-mini fabricated an entire line
+# ("How'd he live?" -> "I'm confused.") on MARRIAGETOXIN. This is a DIFFERENT qwen variant
+# from the one the original C1 bake-off rejected (qwen3.5:9b, the 84.1%-verbatim-import
+# offender the comment here used to describe) -- not a reversal of that finding, a fresh
+# measurement of a model that didn't exist when C1 ran. qwen3-4b-instruct was also the
+# 2026-08-31 unanchored verdict-bake-off's exact-match leader (59/90 vs nanbeige's 43/90).
+MODEL = os.environ.get("REPAIR_MODEL", "qwen3-4b-instruct")
 # llamacpp, not ollama. The owner swapped to it on measurement -- it was the stronger
 # performer -- and it is what both arms of the quant A/B run on, so the default matches
 # what the numbers in the README will have been taken on. It costs a beta user a harder
@@ -148,8 +154,8 @@ def is_target(c, gloss):
     return c.get("avg_logprob", 0.0) < LOGPROB_MIN or has_low_prob_word(c) or glossary.name_suspect(c.get("text", ""), gloss)
 
 
-def _glossary_terms(gloss, arc=None):
-    """The reference-spelling list for the prompt, current arc first.
+def _glossary_terms(gloss, arc=None, episode=None):
+    """The reference-spelling list for the prompt, current episode first, then arc.
 
     S-13: the cap below is not cosmetic -- measured 2026-08-26 on the live One Pace
     glossary, 1000 chars holds 110 of 140 terms and silently drops 30, `Nico Robin` and
@@ -164,7 +170,15 @@ def _glossary_terms(gloss, arc=None):
 
     A term in several arcs is prioritised in all of them, so a recurring character is never
     demoted in an arc he genuinely appears in. With no arc, or a glossary carrying no tags
-    -- which is every glossary in the library today -- the order is exactly as before."""
+    -- which is every glossary in the library today -- the order is exactly as before.
+
+    [S-9/S-10]: `episode` adds a THIRD, higher tier ahead of the arc tier, populated from
+    `episode_tags`. Deliberately asymmetric versus the arc tier: an episode-UNTAGGED term
+    is NOT defaulted into the episode-first tier the way an arc-untagged term defaults into
+    the arc tier -- it simply falls through to the (unchanged) arc-tier logic below, which
+    still applies its own untagged-defaults-IN rule. This is what keeps `episode=None`
+    byte-identical to today's 2-tier behaviour: with no episode tier ever populated, the
+    rest of the function runs exactly as it did before this parameter existed."""
     terms = list(gloss["names"]) + list(gloss["phrases"])
     terms += list(gloss["token_fixes"].values()) + list(gloss["phrase_fixes"].values())
     seen, out = set(), []
@@ -172,6 +186,11 @@ def _glossary_terms(gloss, arc=None):
         if t not in seen:
             seen.add(t)
             out.append(t)
+    episode_tags = gloss.get("episode_tags") or {}
+    episode_first = []
+    if episode and episode_tags:
+        episode_first = [t for t in out if episode in (episode_tags.get(t.lower()) or ())]
+    remaining = [t for t in out if t not in set(episode_first)]
     tags = gloss.get("arc_tags") or {}
     if arc and tags:
         # stable partition: in-arc terms keep their relative order, then the rest
@@ -180,8 +199,11 @@ def _glossary_terms(gloss, arc=None):
         # glossary behind a handful of newly tagged ones, making the first weighted run a
         # strict subset of what the model already had. Only a name KNOWN to belong to other
         # arcs is demoted.
-        in_arc = [t for t in out if arc in (tags.get(t.lower()) or (arc,))]
-        out = in_arc + [t for t in out if t not in set(in_arc)]
+        in_arc = [t for t in remaining if arc in (tags.get(t.lower()) or (arc,))]
+        arc_first = in_arc
+    else:
+        arc_first = []
+    out = episode_first + arc_first + [t for t in remaining if t not in set(arc_first)]
     # C12: cap the prompt size on WHOLE-TERM boundaries -- a raw [:1000] slice can cut a
     # name in half mid-word, which would feed the model a garbled "canonical spelling".
     result = ""
@@ -223,7 +245,7 @@ def skips_unanchored(ref, gloss=None):
     return not ref and not (REPAIR_UNANCHORED or (gloss or {}).get("unanchored_repair"))
 
 
-def build_prompt(asr, sub, gloss, prev_text="", next_text="", arc=None):
+def build_prompt(asr, sub, gloss, prev_text="", next_text="", arc=None, episode=None):
     """Build the repair prompt. Every element here is the result of a measured sweep over
     real conf.json targets (3 shows x 40 targets, temperature 0), not authorship taste.
 
@@ -248,7 +270,7 @@ def build_prompt(asr, sub, gloss, prev_text="", next_text="", arc=None):
     0 -> 16 safe fixes (1 -> 2 name edits), zero prompt leaks or length blowups for either.
 
     prev_text/next_text are extra context only -- never part of what gets corrected."""
-    names = _glossary_terms(gloss, arc)
+    names = _glossary_terms(gloss, arc, episode)
     head = "You fix speech-recognition errors in one English-dub subtitle line.\n"
     name_line = (f"Reference spellings (VERIFICATION ONLY - this is NOT a list of names to insert): {names}.\n") if names else ""
     ref_intro = (
@@ -700,6 +722,9 @@ def process(conf_path):
     # S-13: the episode's arc, for weighting the reference spellings. None for most
     # of the library (no season.nfo), which leaves the term order exactly as before.
     arc = glossary.arc_for(video)
+    # [S-10]: the episode's own SxxExx, for the episode-tag weighting tier. None for any
+    # video with no SxxExx in its filename, which leaves the term order exactly as before.
+    episode = ordering.episode_key(video)
     # [S-4] The human rung, read back. Resolved ONCE per episode rather than per card: it is
     # a file read, and the per-card path already pays a network round-trip per LLM call.
     # An absent or unreadable store is {} -- every install that has never reviewed anything.
@@ -798,7 +823,7 @@ def process(conf_path):
             continue  # see skips_unanchored() for why, and for what opens this path
         prev_text = conf[i - 1]["text"] if i > 0 else ""
         next_text = conf[i + 1]["text"] if i + 1 < len(conf) else ""
-        prompt = build_prompt(c["text"], ref, gloss, prev_text, next_text, arc)
+        prompt = build_prompt(c["text"], ref, gloss, prev_text, next_text, arc, episode)
         t0 = time.monotonic()  # V2 A2: per-call latency
         new = llm(prompt)
         latency_ms = round((time.monotonic() - t0) * 1000)

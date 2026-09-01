@@ -286,6 +286,143 @@ def arc_categories(wiki_api: str, arc: str) -> list[str]:
     return out
 
 
+def _extract_links(wt: str) -> set[str]:
+    """[[...]] links from wikitext, templates/refs stripped, non-entity links dropped
+    (Category:/File:/Image:/w: namespaces, lowercase-first, bare Chapter/Episode/Volume
+    N). Shared by arc_page_links (whole page) and plot_section_links (one section) so
+    the filter cannot drift between them."""
+    for _ in range(4):  # nested templates
+        wt = re.sub(r"\{\{[^{}]*\}\}", " ", wt)
+    wt = re.sub(r"<ref[^>]*>.*?</ref>", " ", wt, flags=re.S)
+    wt = re.sub(r"<[^>]+>", " ", wt)
+    out = set()
+    for link in re.findall(r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]", wt):
+        link = link.strip()
+        if not link or link[:1].islower():
+            continue
+        if link.startswith(("Category:", "File:", "Image:", "w:")):
+            continue
+        if re.match(r"^(Chapter|Episode|Volume)\s+\d+$", link):
+            continue
+        out.add(link)
+    return out
+
+
+# Longer/more specific alternatives first so e.g. "Plot Details" is matched as itself
+# rather than the engine settling for a partial "Plot" attempt that then fails the
+# trailing \s*== and backtracks anyway -- correct either order, but this is the clearer one.
+_PLOT_SECTION_RE = re.compile(
+    r"==\s*(?:Plot Details|Short Summary|Long Summary|Plot|Synopsis|Summary)\s*==(.*?)(?=\n==[^=]|\Z)",
+    re.S | re.I,
+)
+
+
+def plot_section_links(wikitext: str) -> set[str]:
+    """Entity links from a wiki EPISODE page's plot/summary section(s) -- the per-episode
+    candidate primitive [S-2]. Measured 2026-08-29 on SAO's wiki (==Plot==): 26-30 correct
+    links per episode versus 1,281+ franchise-wide, zero navbox pollution.
+
+    Different wikis use different headings for the same content, discovered 2026-09-01
+    testing per-episode-acquire against real library data: One Piece Fandom uses "Short
+    Summary"/"Long Summary" (the latter usually an unpopulated {{Empty section}} stub, not
+    "Plot" at all) -- its OWN primary target show, silently inert until this fix. Jujutsu
+    Kaisen uses "Plot Details". Spy x Family and My Hero Academia use "Synopsis"/"Summary"
+    with no "Plot" heading. Every matching heading on the page is unioned rather than only
+    the first: Cowboy Bebop's wiki populates both "Plot" and "Synopsis" with distinct real
+    content on the same page, and an empty/stub section like {{Empty section}} naturally
+    extracts to no links via _extract_links's own template-strip, so it costs nothing to
+    include it in the union. Pure/no network; the caller supplies wikitext already fetched."""
+    links: set[str] = set()
+    for m in _PLOT_SECTION_RE.finditer(wikitext):
+        links |= _extract_links(m.group(1))
+    return links
+
+
+def resolve_redirects(wiki_api: str, titles: set[str]) -> set[str]:
+    """Both redirect directions in one MediaWiki call per chunk of <=50 titles [S-3]:
+    an input title that is itself a redirect resolves to its target (query.redirects),
+    and other pages redirecting TO a resolved target are pulled in too (each page's
+    own "redirects" list) -- 'Kirito' linked in prose resolves to 'Kirigaya Kazuto',
+    and 'Kirigaya Kazuto' linked directly still admits 'Kirito' as an alias. Fails
+    open to the unresolved input set on any error -- never drops a title outright."""
+    if not titles:
+        return set()
+    out = set(titles)
+    items = sorted(titles)
+    for i in range(0, len(items), 50):
+        chunk = items[i : i + 50]
+        url = (
+            wiki_api
+            + "?action=query&redirects=1&prop=redirects&rdlimit=500&format=json&titles="
+            + urllib.parse.quote("|".join(chunk))
+        )
+        try:
+            resp = _http_json(url)
+        except Exception:
+            continue  # this chunk's titles stay unresolved, already in `out`
+        q = resp.get("query", {})
+        for r in q.get("redirects", []):
+            frm, to = r.get("from"), r.get("to")
+            if frm and to:
+                out.discard(frm)
+                out.add(to)
+        for page in q.get("pages", {}).values():
+            title = page.get("title")
+            if not title:
+                continue
+            out.add(title)
+            for inc in page.get("redirects", []):
+                inc_title = inc.get("title")
+                if inc_title:
+                    out.add(inc_title)
+    return out
+
+
+def fetch_episode_titles(wiki_api: str, show_key: str, page_title: str) -> list[str]:
+    """Cached Plot-section entity titles for one wiki episode page [S-4]. One JSON
+    cache file per SHOW (not per page), each page entry independently WIKI_TTL-gated
+    -- mirrors fetch_titles' TTL-file pattern, not acquire_cache's token-verdict
+    cache. Only positive results are cached, mirroring fetch_titles' own asymmetry:
+    a missing page is retried every call rather than cached empty forever."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(CACHE_DIR, re.sub(r"[^A-Za-z0-9]+", "_", show_key) + "_episodes.json")
+    try:
+        doc = json.load(open(cache_path))
+    except (OSError, ValueError):
+        doc = {}
+    pages = doc.get("pages", {}) if doc.get("api") == wiki_api else {}
+    entry = pages.get(page_title)
+    if entry and (time.time() - entry.get("fetched_at", 0)) < WIKI_TTL:
+        return entry["titles"]
+    url = wiki_api + "?action=parse&prop=wikitext&format=json&page=" + urllib.parse.quote(page_title)
+    try:
+        wt = _http_json(url)["parse"]["wikitext"]["*"]
+    except Exception:
+        return []
+    titles = sorted(resolve_redirects(wiki_api, plot_section_links(wt)))
+    if titles:
+        pages[page_title] = {"fetched_at": time.time(), "titles": titles}
+        json.dump({"api": wiki_api, "pages": pages}, open(cache_path, "w"))
+    return titles
+
+
+def episode_page_titles(wiki_api: str, show_key: str, page_titles: list[str]) -> tuple[set[str], list[str], list[str]]:
+    """Union Plot-section titles across several wiki pages, reporting which pages
+    resolved and which didn't [S-5] -- the split S-13's partial-mapping status
+    needs, without a second pass over the same pages."""
+    union: set[str] = set()
+    resolved: list[str] = []
+    failed: list[str] = []
+    for title in page_titles:
+        titles = fetch_episode_titles(wiki_api, show_key, title)
+        if titles:
+            union |= set(titles)
+            resolved.append(title)
+        else:
+            failed.append(title)
+    return union, resolved, failed
+
+
 def arc_page_links(wiki_api: str, arc: str) -> set[str]:
     """Entities linked from the arc page's PROSE.
 
@@ -309,21 +446,7 @@ def arc_page_links(wiki_api: str, arc: str) -> set[str]:
         wt = _http_json(url)["parse"]["wikitext"]["*"]
     except Exception:
         return set()
-    for _ in range(4):  # nested templates
-        wt = re.sub(r"\{\{[^{}]*\}\}", " ", wt)
-    wt = re.sub(r"<ref[^>]*>.*?</ref>", " ", wt, flags=re.S)
-    wt = re.sub(r"<[^>]+>", " ", wt)
-    out = set()
-    for link in re.findall(r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]", wt):
-        link = link.strip()
-        if not link or link[:1].islower():
-            continue
-        if link.startswith(("Category:", "File:", "Image:", "w:")):
-            continue
-        if re.match(r"^(Chapter|Episode|Volume)\s+\d+$", link):
-            continue
-        out.add(link)
-    return out
+    return _extract_links(wt)
 
 
 def fetch_arc_titles(wiki_api: str, arc: str) -> set[str]:
