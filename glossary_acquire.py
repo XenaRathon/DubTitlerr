@@ -27,6 +27,7 @@ import acquire_cache
 import glossary
 import glossary_verify
 import mine_glossary
+import ordering
 from common import llm_chat, log
 
 _DISAMBIG_RE = re.compile(r"\s*\([^)]*\)\s*$")
@@ -826,6 +827,56 @@ def _write_json(path: str, obj) -> None:
         json.dump(obj, f, indent=2, ensure_ascii=False)
         f.write("\n")  # POSIX line: prettier flags a glossary without it
     os.replace(tmp, path)
+
+
+def _format_episode_page(pattern: str, **kw) -> str | None:
+    """pattern.format(**kw), or None on a malformed hand-edited pattern -- must never
+    crash a sweep."""
+    try:
+        return pattern.format(**kw)
+    except (KeyError, IndexError, ValueError):
+        return None
+
+
+def episode_admission_titles(
+    video: str, gloss: dict, wiki_api: str, show: str, source_episodes_fn=None
+) -> tuple[set[str] | None, str, dict]:
+    """The per-episode wiki title set [S-7], or None ("unscoped") when neither
+    episode_page_pattern field is declared -- today's behaviour, unchanged. Tries
+    episode_page_pattern_absolute (via source_episodes() + episode_page_titles) first,
+    then episode_page_pattern_relative (via the episode's own SxxExx) when absolute
+    yields nothing; falls back to the franchise-wide allpages set -- logged via
+    `method`, never silent -- when neither resolves, when the episode has no SxxExx at
+    all, or when neither pattern field is declared. `detail` carries nfo_present/
+    nfo_parsed/partial_pages for the caller's report."""
+    source_episodes_fn = source_episodes_fn or glossary.source_episodes
+    detail = {"nfo_present": False, "nfo_parsed": False, "partial_pages": []}
+    pat_abs = gloss.get("episode_page_pattern_absolute")
+    pat_rel = gloss.get("episode_page_pattern_relative")
+    if not pat_abs and not pat_rel:
+        return None, "unscoped", detail
+    ek = ordering.episode_key(video)
+    if pat_abs:
+        nfo_path = os.path.splitext(video)[0] + ".nfo"
+        detail["nfo_present"] = os.path.exists(nfo_path)
+        numbers = source_episodes_fn(nfo_path) if detail["nfo_present"] else []
+        detail["nfo_parsed"] = bool(numbers)
+        if numbers:
+            pages = [p for p in (_format_episode_page(pat_abs, n=n) for n in numbers) if p]
+            union, _resolved, failed = glossary_verify.episode_page_titles(wiki_api, show, pages)
+            if union:
+                detail["partial_pages"] = failed
+                return union, "absolute", detail
+    if pat_rel and ek:
+        s, e = ordering.season_ep(video)
+        page = _format_episode_page(pat_rel, s=s, e=e)
+        if page:
+            union, _resolved, _failed = glossary_verify.episode_page_titles(wiki_api, show, [page])
+            if union:
+                return union, "relative", detail
+    if not ek:
+        return set(glossary_verify.fetch_titles(wiki_api, show)), "no-episode-tag", detail
+    return set(glossary_verify.fetch_titles(wiki_api, show)), "fallback-allpages", detail
 
 
 def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str | None = None) -> dict:

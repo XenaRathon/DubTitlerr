@@ -1193,6 +1193,51 @@ def test_harvest_candidates_single_episode_token_has_one_stem(tmp_path):
     assert stems == {"Ep01"}
 
 
+def test_admission_titles_unscoped_when_no_pattern_declared(tmp_path):
+    video = str(tmp_path / "S01E05.mkv")
+    open(video, "w").close()
+    titles, method, detail = ga.episode_admission_titles(video, {}, "https://x/api.php", "Show")
+    assert titles is None and method == "unscoped"
+
+
+def test_admission_titles_absolute_wins_when_it_resolves(tmp_path, monkeypatch):
+    video = str(tmp_path / "S31E01.mkv")
+    open(video, "w").close()
+    nfo = str(tmp_path / "S31E01.nfo")
+    open(nfo, "w").write("Covers anime episode(s): 628")
+    gloss = {"episode_page_pattern_absolute": "Episode {n}", "episode_page_pattern_relative": "Rel {e}"}
+    monkeypatch.setattr(ga.glossary_verify, "episode_page_titles", lambda api, show, pages: ({"Rebecca"}, pages, []))
+    titles, method, detail = ga.episode_admission_titles(video, gloss, "https://x/api.php", "Show")
+    assert titles == {"Rebecca"} and method == "absolute"
+
+
+def test_admission_titles_falls_back_and_reports_nfo_health(tmp_path, monkeypatch):
+    video = str(tmp_path / "S31E02.mkv")
+    open(video, "w").close()
+    # no .nfo file at all
+    gloss = {"episode_page_pattern_absolute": "Episode {n}"}
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda api, show: ["A", "B"])
+    titles, method, detail = ga.episode_admission_titles(video, gloss, "https://x/api.php", "Show")
+    assert method == "fallback-allpages"
+    assert detail["nfo_present"] is False
+
+
+def test_admission_titles_partial_mapping_keeps_resolved_pages(tmp_path, monkeypatch):
+    video = str(tmp_path / "S31E01.mkv")
+    open(video, "w").close()
+    nfo = str(tmp_path / "S31E01.nfo")
+    open(nfo, "w").write("Covers anime episode(s): 628-629")
+    gloss = {"episode_page_pattern_absolute": "Episode {n}"}
+    monkeypatch.setattr(
+        ga.glossary_verify,
+        "episode_page_titles",
+        lambda api, show, pages: ({"Rebecca"}, ["Episode 628"], ["Episode 629"]),
+    )
+    titles, method, detail = ga.episode_admission_titles(video, gloss, "https://x/api.php", "Show")
+    assert titles == {"Rebecca"} and method == "absolute"
+    assert detail["partial_pages"] == ["Episode 629"]
+
+
 def test_harvest_still_returns_the_same_counts_it_always_did(tmp_path):
     _write_conf(tmp_path, "Ep01", ["I saw Shirahoshi today.", "Shirahoshi ran away."])
     counts, mid, n = ga.harvest(str(tmp_path))
