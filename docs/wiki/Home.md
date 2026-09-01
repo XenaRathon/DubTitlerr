@@ -17,12 +17,12 @@ It runs as one container, per episode, incrementally.
 
 ## Start here
 
-| I want to…                                  | Go to                                              |
-| ------------------------------------------- | -------------------------------------------------- |
-| Get it running on one show, start to finish | **[Your first show](Your-First-Show)**             |
-| Solve one specific problem                  | **[How-to guides](How-To-Guides)**                 |
-| Look up a variable, a filename, a schema    | **[Reference](Reference)**                         |
-| Understand why it behaves the way it does   | **[Why it works this way](Why-It-Works-This-Way)** |
+| I want to…                                  | Go to                                                 |
+| ------------------------------------------- | ----------------------------------------------------- |
+| Get it running on one show, start to finish | **[Your first show](Your-First-Show.md)**             |
+| Solve one specific problem                  | **[How-to guides](How-To-Guides.md)**                 |
+| Look up a variable, a filename, a schema    | **[Reference](Reference.md)**                         |
+| Understand why it behaves the way it does   | **[Why it works this way](Why-It-Works-This-Way.md)** |
 
 ---
 
@@ -59,7 +59,7 @@ the show.
 ## Requirements
 
 - An NVIDIA card with CUDA. 6 GB works; see
-  [choosing a quantisation](How-To-Guides#choose-a-quantisation-for-your-card).
+  [choosing a quantisation](How-To-Guides.md#choose-a-quantisation-for-your-card).
 - Docker with the NVIDIA container runtime.
 - Somewhere to serve a small GGUF language model over an OpenAI-compatible endpoint.
 - A library with English dub audio, laid out as `Show Name (Year)/Season 01/…S01E01…`.

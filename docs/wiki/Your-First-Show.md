@@ -9,7 +9,7 @@ episode takes roughly 5–15 minutes to transcribe depending on your card.
 
 > This is a beta. One Pace is the only configuration that has been validated end to end.
 > Other shows work, and are also where the bugs are. See
-> [Why it works this way](Why-It-Works-This-Way#why-one-pace-is-the-only-supported-configuration).
+> [Why it works this way](Why-It-Works-This-Way.md#why-one-pace-is-the-only-supported-configuration).
 
 ---
 
@@ -18,7 +18,7 @@ episode takes roughly 5–15 minutes to transcribe depending on your card.
 You need:
 
 1. **An NVIDIA card with CUDA.** 6 GB is enough if the language model lives elsewhere; see
-   [How-to guides](How-To-Guides#choose-a-quantisation-for-your-card).
+   [How-to guides](How-To-Guides.md#choose-a-quantisation-for-your-card).
 2. **Docker**, with the NVIDIA container runtime working. Check it:
    ```sh
    docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
@@ -37,15 +37,26 @@ that protocol works; the validated setup is [llama.cpp](https://github.com/ggml-
 serving a GGUF.
 
 The default model is **`nanbeige4.2-3b`**. Pick a quantisation that fits the VRAM you have
-left after Whisper — see [How-to guides](How-To-Guides#choose-a-quantisation-for-your-card).
+left after Whisper — see [How-to guides](How-To-Guides.md#choose-a-quantisation-for-your-card).
 
 ```sh
 llama-server \
   -m /path/to/nanbeige4.2-3b-Q8_0.gguf \
-  -c 16384 \
+  -c 16384 --jinja \
+  --chat-template-kwargs '{"enable_thinking":false}' \
   --host 0.0.0.0 --port 8090 \
   --alias nanbeige4.2-3b
 ```
+
+> **`--jinja` is not optional for this model.** llama.cpp has built-in chat templates for
+> common architectures, but nanbeige's is not one of them. Without `--jinja` the server
+> starts, reports healthy, and returns **empty replies** — the pipeline then repairs nothing
+> and tells you nothing. Measured 2026-08-31 on a plain launch: every request came back
+> empty.
+>
+> `--chat-template-kwargs '{"enable_thinking":false}'` is passed through that template. A
+> model left thinking spends its whole token budget on reasoning and returns no content;
+> measured on LFM2.5, 9.7 s per line for an empty reply.
 
 **Check it is really ready.** A freshly started server answers `/health` with `200` while it
 is still loading weights, then fails the first real request. Ask it something instead:
@@ -212,8 +223,8 @@ Your corrections are in the track.
 ## Where to go next
 
 - Your copies have no English subtitles for the Japanese audio? →
-  [Turn on unanchored repair](How-To-Guides#turn-on-unanchored-repair-for-a-dub-only-show)
+  [Turn on unanchored repair](How-To-Guides.md#turn-on-unanchored-repair-for-a-dub-only-show)
 - Want the whole library, in watch order? →
-  [Queue a library](How-To-Guides#queue-a-whole-library-in-watch-order)
+  [Queue a library](How-To-Guides.md#queue-a-whole-library-in-watch-order)
 - Something looks wrong and you want to know whether it is meant to →
-  [Why it works this way](Why-It-Works-This-Way)
+  [Why it works this way](Why-It-Works-This-Way.md)
