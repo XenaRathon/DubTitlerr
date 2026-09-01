@@ -347,6 +347,48 @@ def test_plot_section_links_is_case_insensitive_on_the_heading():
     assert gv.plot_section_links(wt) == {"Kirito"}
 
 
+def test_plot_section_links_matches_short_summary_heading():
+    # One Piece Fandom's episode pages use "Short Summary", not "Plot" -- discovered
+    # 2026-09-01 testing per-episode-acquire against its own primary target show, where
+    # a Plot-only regex left admission scoping permanently inert.
+    wt = "==Short Summary==\n[[Monkey D. Luffy|Luffy]] fights [[Doflamingo]].\n==Long Summary==\n{{Empty section}}\n"
+    assert gv.plot_section_links(wt) == {"Monkey D. Luffy", "Doflamingo"}
+
+
+def test_plot_section_links_skips_an_empty_long_summary_section():
+    wt = "==Short Summary==\n[[Zoro]] trains.\n==Long Summary==\n{{Empty section}}\n"
+    links = gv.plot_section_links(wt)
+    assert links == {"Zoro"}
+
+
+def test_plot_section_links_matches_plot_details_heading():
+    # Jujutsu Kaisen's wiki: "Plot Details", not bare "Plot" -- a naive substring/prefix
+    # match on "Plot" alone must not treat this as a false match for a bare "Plot" heading
+    # while still recognising the distinct "Plot Details" heading in its own right.
+    wt = "==Summary==\n[[Yuji Itadori]] enrolls.\n==Plot Details==\n[[Satoru Gojo]] appears.\n"
+    assert gv.plot_section_links(wt) == {"Yuji Itadori", "Satoru Gojo"}
+
+
+def test_plot_section_links_matches_synopsis_and_summary_with_no_plot_heading():
+    # Spy x Family's wiki has neither "Plot" nor "Plot Details" -- only "Synopsis" and
+    # "Summary", both populated on the same page.
+    wt = "==Synopsis==\n[[Loid Forger]] adopts [[Anya Forger]].\n==Summary==\n[[Yor Forger]] is a spy.\n"
+    assert gv.plot_section_links(wt) == {"Loid Forger", "Anya Forger", "Yor Forger"}
+
+
+def test_plot_section_links_matches_summary_only_heading():
+    # My Hero Academia's wiki has only "Summary" -- no "Plot", no "Synopsis".
+    wt = "==Summary==\n[[Izuku Midoriya]] meets [[All Might]].\n"
+    assert gv.plot_section_links(wt) == {"Izuku Midoriya", "All Might"}
+
+
+def test_plot_section_links_unions_multiple_populated_sections_on_the_same_page():
+    # Cowboy Bebop's wiki populates BOTH "Plot" and "Synopsis" on the same episode page --
+    # both are real content, neither should be dropped in favour of the other.
+    wt = "==Synopsis==\n[[Spike Spiegel]] hunts a bounty.\n==Plot==\n[[Jet Black]] pilots the [[Bebop]].\n"
+    assert gv.plot_section_links(wt) == {"Spike Spiegel", "Jet Black", "Bebop"}
+
+
 def test_arc_page_links_supply_the_names_categories_miss(monkeypatch):
     """Categories alone are not sufficient and this is measured, not theoretical: neither
     `Rebecca` nor `Kyros` -- the arc's two most-mentioned characters -- appears in ANY

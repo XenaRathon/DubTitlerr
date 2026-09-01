@@ -308,18 +308,34 @@ def _extract_links(wt: str) -> set[str]:
     return out
 
 
-_PLOT_SECTION_RE = re.compile(r"==\s*Plot\s*==(.*?)(?=\n==[^=]|\Z)", re.S | re.I)
+# Longer/more specific alternatives first so e.g. "Plot Details" is matched as itself
+# rather than the engine settling for a partial "Plot" attempt that then fails the
+# trailing \s*== and backtracks anyway -- correct either order, but this is the clearer one.
+_PLOT_SECTION_RE = re.compile(
+    r"==\s*(?:Plot Details|Short Summary|Long Summary|Plot|Synopsis|Summary)\s*==(.*?)(?=\n==[^=]|\Z)",
+    re.S | re.I,
+)
 
 
 def plot_section_links(wikitext: str) -> set[str]:
-    """Entity links from a wiki EPISODE page's Plot section only -- the per-episode
-    candidate primitive [S-2]. Measured 2026-08-29: 26-30 correct links per episode
-    versus 1,281+ franchise-wide, zero navbox pollution. Pure/no network; the caller
-    supplies wikitext already fetched."""
-    m = _PLOT_SECTION_RE.search(wikitext)
-    if not m:
-        return set()
-    return _extract_links(m.group(1))
+    """Entity links from a wiki EPISODE page's plot/summary section(s) -- the per-episode
+    candidate primitive [S-2]. Measured 2026-08-29 on SAO's wiki (==Plot==): 26-30 correct
+    links per episode versus 1,281+ franchise-wide, zero navbox pollution.
+
+    Different wikis use different headings for the same content, discovered 2026-09-01
+    testing per-episode-acquire against real library data: One Piece Fandom uses "Short
+    Summary"/"Long Summary" (the latter usually an unpopulated {{Empty section}} stub, not
+    "Plot" at all) -- its OWN primary target show, silently inert until this fix. Jujutsu
+    Kaisen uses "Plot Details". Spy x Family and My Hero Academia use "Synopsis"/"Summary"
+    with no "Plot" heading. Every matching heading on the page is unioned rather than only
+    the first: Cowboy Bebop's wiki populates both "Plot" and "Synopsis" with distinct real
+    content on the same page, and an empty/stub section like {{Empty section}} naturally
+    extracts to no links via _extract_links's own template-strip, so it costs nothing to
+    include it in the union. Pure/no network; the caller supplies wikitext already fetched."""
+    links: set[str] = set()
+    for m in _PLOT_SECTION_RE.finditer(wikitext):
+        links |= _extract_links(m.group(1))
+    return links
 
 
 def resolve_redirects(wiki_api: str, titles: set[str]) -> set[str]:
