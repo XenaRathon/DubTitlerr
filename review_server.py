@@ -685,6 +685,11 @@ _CSS = (
     "body{font:14px system-ui;max-width:52em;margin:2em auto}"
     "li{margin:1em 0;border-left:3px solid #ccc;padding-left:.8em}"
     ".o{color:#900}.p{color:#060}small{color:#666}"
+    # The cards either side of the current line, so a reviewer can tell a whole sentence
+    # from a fragment of one. Muted so it reads as background, not a repeat of the .o/.p
+    # pair below it -- but `.ctx b` (the current line, bolded) stays full-strength so the
+    # one line actually under review is not muted along with its neighbours.
+    ".ctx{color:#888;font-size:92%;margin-bottom:.2em}.ctx b{color:#111;font-size:105%;font-weight:600}"
     "details{margin:.4em 0}summary{cursor:pointer}details.season{margin-left:1.4em}"
     "li.ep{border:0;margin:.25em 0}.adm{color:#060;font-weight:600}.ref{color:#888;font-size:90%}"
     "#filter{padding:.3em}"

@@ -261,6 +261,28 @@ def test_episode_text_is_escaped_into_the_page(tmp_path, monkeypatch):
     assert "&lt;script&gt;" in page and "a &amp; b" in page
 
 
+def test_surrounding_context_is_visually_distinguished_from_the_current_line(tmp_path, monkeypatch):
+    """Reported 2026-09-01: a reviewer on a real episode page could not tell the surrounding
+    cards were there at all. `unresolved.card_context` really does thread real before/after
+    text into every entry (`_decorate` -> `handle_episode` -> the `ctx` div in `render_page`),
+    but `_CSS` had no rule for `.ctx` at all -- the neighbouring lines rendered in default
+    black text, indistinguishable from the bolded repeat of the CURRENT line sitting right
+    above the colored `.o`/`.p` pair. Present in the DOM is not the same as visible on the
+    page; this pins that a reviewer can actually SEE the distinction, not just that the text
+    is technically there (a prior state that already passed on text-presence alone)."""
+    stem = _episode(tmp_path)
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    page = review_server.render_page(stem)
+
+    assert "the ship sailed" in page, "card 0's only neighbour must reach the page"
+    assert ".ctx" in review_server._CSS, "the context block needs its own rule or it is invisible"
+    # The neighbour text sits in a plain <span> inside .ctx; the current line is the <b>
+    # inside the same block. A rule on bare `.ctx` alone (no `.ctx b` override) would mute
+    # the CURRENT line along with its neighbours, which is the opposite of legible.
+    assert ".ctx b" in review_server._CSS, "the current line must stay visually distinct from its muted neighbours"
+
+
 def test_the_token_is_never_placed_in_a_url(tmp_path, monkeypatch):
     """A token in a query string lands in every proxy log, browser history and Referer
     header it passes. The page must carry it in a header instead."""
