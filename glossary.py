@@ -81,6 +81,14 @@ def load_dict(cfg: dict) -> dict:
         # run unanchored. Normalised here because load_dict drops every key it does not
         # name, so a field absent from this dict never reaches repair.skips_unanchored.
         "unanchored_repair": bool(cfg.get("unanchored_repair")),
+        # Bug fix, S-16: this dict used to have no arc_tags/episode_tags key at all, so
+        # repair.py's gloss = glossary_for(video) -> glossary.load(path) -> load_dict(...)
+        # chain could never deliver a populated arc_tags to _glossary_terms, regardless
+        # of what the glossary JSON file on disk held -- every existing arc-tag test
+        # hand-built its gloss dict with arc_tags set directly, bypassing load_dict, so
+        # this was never caught.
+        "arc_tags": dict(cfg.get("arc_tags") or {}),
+        "episode_tags": dict(cfg.get("episode_tags") or {}),
     }
 
 
