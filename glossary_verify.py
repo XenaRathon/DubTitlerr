@@ -322,6 +322,46 @@ def plot_section_links(wikitext: str) -> set[str]:
     return _extract_links(m.group(1))
 
 
+def resolve_redirects(wiki_api: str, titles: set[str]) -> set[str]:
+    """Both redirect directions in one MediaWiki call per chunk of <=50 titles [S-3]:
+    an input title that is itself a redirect resolves to its target (query.redirects),
+    and other pages redirecting TO a resolved target are pulled in too (each page's
+    own "redirects" list) -- 'Kirito' linked in prose resolves to 'Kirigaya Kazuto',
+    and 'Kirigaya Kazuto' linked directly still admits 'Kirito' as an alias. Fails
+    open to the unresolved input set on any error -- never drops a title outright."""
+    if not titles:
+        return set()
+    out = set(titles)
+    items = sorted(titles)
+    for i in range(0, len(items), 50):
+        chunk = items[i : i + 50]
+        url = (
+            wiki_api
+            + "?action=query&redirects=1&prop=redirects&rdlimit=500&format=json&titles="
+            + urllib.parse.quote("|".join(chunk))
+        )
+        try:
+            resp = _http_json(url)
+        except Exception:
+            continue  # this chunk's titles stay unresolved, already in `out`
+        q = resp.get("query", {})
+        for r in q.get("redirects", []):
+            frm, to = r.get("from"), r.get("to")
+            if frm and to:
+                out.discard(frm)
+                out.add(to)
+        for page in q.get("pages", {}).values():
+            title = page.get("title")
+            if not title:
+                continue
+            out.add(title)
+            for inc in page.get("redirects", []):
+                inc_title = inc.get("title")
+                if inc_title:
+                    out.add(inc_title)
+    return out
+
+
 def arc_page_links(wiki_api: str, arc: str) -> set[str]:
     """Entities linked from the arc page's PROSE.
 

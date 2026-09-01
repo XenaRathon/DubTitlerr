@@ -374,6 +374,69 @@ def test_arc_page_links_is_empty_when_the_page_is_missing(monkeypatch):
     assert gv.arc_page_links("https://x/api.php", "Nonesuch") == set()
 
 
+def test_resolve_redirects_follows_an_input_redirect_to_its_target(monkeypatch):
+    def fake(url):
+        return {
+            "query": {
+                "redirects": [{"from": "Kirito", "to": "Kirigaya Kazuto"}],
+                "pages": {"1": {"title": "Kirigaya Kazuto", "redirects": []}},
+            }
+        }
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    out = gv.resolve_redirects("https://x/api.php", {"Kirito"})
+    assert "Kirigaya Kazuto" in out
+
+
+def test_resolve_redirects_pulls_in_incoming_redirects_of_a_direct_link(monkeypatch):
+    def fake(url):
+        return {
+            "query": {
+                "pages": {
+                    "1": {
+                        "title": "Kirigaya Kazuto",
+                        "redirects": [{"title": "Kirito"}],
+                    }
+                }
+            }
+        }
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    out = gv.resolve_redirects("https://x/api.php", {"Kirigaya Kazuto"})
+    assert {"Kirigaya Kazuto", "Kirito"} <= out
+
+
+def test_resolve_redirects_fails_open_to_the_input_set(monkeypatch):
+    def boom(url):
+        raise OSError("network down")
+
+    monkeypatch.setattr(gv, "_http_json", boom)
+    assert gv.resolve_redirects("https://x/api.php", {"Kirito", "Asuna"}) == {"Kirito", "Asuna"}
+
+
+def test_resolve_redirects_chunks_over_fifty_titles(monkeypatch):
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return {"query": {"pages": {}}}
+
+    monkeypatch.setattr(gv, "_http_json", fake)
+    gv.resolve_redirects("https://x/api.php", {f"T{i}" for i in range(120)})
+    assert len(calls) == 3  # ceil(120 / 50)
+
+
+def test_resolve_redirects_parses_a_real_captured_mediawiki_response(monkeypatch):
+    """Not a synthetic mock: tests/fixtures/mediawiki_redirects_sample.json is a live
+    response captured 2026-09-01 from swordartonline.fandom.com for the Kirito/
+    Kirigaya Kazuto pair (Luna review F5 -- a hand-tailored mock can pass while the
+    real API returns a different field combination)."""
+    fixture = json.load(open("tests/fixtures/mediawiki_redirects_sample.json"))
+    monkeypatch.setattr(gv, "_http_json", lambda url: fixture)
+    out = gv.resolve_redirects("https://swordartonline.fandom.com/api.php", {"Kirito"})
+    assert {"Kirigaya Kazuto", "Kirito", "Kazuto", "Black Swordsman"} <= out
+
+
 def test_a_character_named_season_resolves_to_nothing(monkeypatch):
     """[S-7], measured: `Gaimon` is a One Pace season.nfo title AND a character page. An
     earlier cut fell back to the bare title when `<arc> Arc` was missing, resolved the
