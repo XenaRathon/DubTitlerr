@@ -1233,6 +1233,28 @@ def test_repair_backend_defaults_to_llamacpp_when_unset(monkeypatch):
     importlib.reload(repair)  # restore ambient config for the rest of the session
 
 
+def test_repair_model_defaults_to_qwen3_4b_instruct_when_unset(monkeypatch):
+    """Asserted independently of whatever the ambient environment sets.
+
+    This used to pin `nanbeige4.2-3b` -- the C1 bake-off's own choice, reversing the
+    original C1 bake-off's qwen3.5:9b lock on the evidence that qwen3.5:9b imported the
+    fansub reference verbatim into 84.1% of its repairs. A live anchored bake-off run
+    2026-09-01 against real production data (Trigun, MARRIAGETOXIN, Serial Experiments
+    Lain) on a DIFFERENT, newer qwen candidate -- qwen3-4b-instruct, not qwen3.5:9b, and
+    not the same model the original C1 bake-off rejected -- found it the only one of four
+    real candidates (nanbeige4.2-3b, gemma3n-e2b, phi4-mini, qwen3-4b-instruct) with zero
+    hallucinations, zero severe content drops, and zero verbatim-reference-copy instances
+    across all three shows; the others each exhibited at least one of those failure modes,
+    including one outright fabricated line from phi4-mini. qwen3-4b-instruct is also the
+    model recorded as the unanchored verdict-bake-off leader on exact-match count in the
+    2026-08-31 handoff (59/90 vs nanbeige's 43/90)."""
+    import importlib
+
+    monkeypatch.delenv("REPAIR_MODEL", raising=False)
+    assert importlib.reload(repair).MODEL == "qwen3-4b-instruct"
+    importlib.reload(repair)  # restore ambient config for the rest of the session
+
+
 # --- implausible source window (VAD design S6; spec v5, S-6) -------------------
 
 

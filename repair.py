@@ -25,8 +25,8 @@ LLM output is run back through the deterministic correction to enforce canon.
 CPU/network only — the LLM runs on the 2070 (Ollama) or, optionally, a llama.cpp server.
 Env:
   OLLAMA_URL           default http://127.0.0.1:11434/api/generate
-  REPAIR_MODEL         default nanbeige4.2-3b   (see the note at MODEL: it reverses the
-                         C1 bake-off's qwen3:8b on this file's own measurements)
+  REPAIR_MODEL         default qwen3-4b-instruct   (see the note at MODEL: a live
+                         2026-09-01 anchored bake-off against real production data)
   REPAIR_BACKEND         ollama | llamacpp  (default llamacpp; see the note at
                          REPAIR_BACKEND — V2 A1 added the dispatch, the default moved later)
   REPAIR_LLAMACPP_URL    default http://127.0.0.1:8090/v1/chat/completions
@@ -83,15 +83,20 @@ import unresolved
 from common import MEDIA_GID, MEDIA_UID, dialogue_intervals, find_video, out_for, ts_srt
 
 OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
-# nanbeige4.2-3b, not qwen3:8b. The C1 bake-off locked qwen and this reverses that, on the
-# evidence already in this file: qwen makes MORE fixes (23 safe fixes per 120 targets against
-# nanbeige's 16) but imports the fansub reference verbatim into 84.1% of its repairs, 29.2%
-# of them three words or more, against nanbeige's 52.5% and 17.1% -- the failure that turned
-# "That's enough of that, idiots!" into "Hold it, you brats!". It also makes 14 name edits to
-# nanbeige's 2. Fewer, safer repairs is the right default for a stage whose damage is
-# invisible to every mechanical gate; it also happens to be the model that fits beside
-# whisper on one card.
-MODEL = os.environ.get("REPAIR_MODEL", "nanbeige4.2-3b")
+# qwen3-4b-instruct, not nanbeige4.2-3b -- flipped 2026-09-01 on a live anchored bake-off
+# against real production data (Trigun, MARRIAGETOXIN, Serial Experiments Lain), each
+# scored on a real embedded fansub anchor. Four real candidates were compared
+# (nanbeige4.2-3b, gemma3n-e2b, phi4-mini, qwen3-4b-instruct, all four on real repair
+# targets, not synthetic ones); qwen3-4b-instruct was the only one with zero
+# hallucinations, zero severe content drops, and zero verbatim-reference-copy instances --
+# nanbeige and gemma3n-e2b both imported the reference verbatim on the same Trigun line
+# ("4:30 p.m." -> the reference's "1:30 pm."), and phi4-mini fabricated an entire line
+# ("How'd he live?" -> "I'm confused.") on MARRIAGETOXIN. This is a DIFFERENT qwen variant
+# from the one the original C1 bake-off rejected (qwen3.5:9b, the 84.1%-verbatim-import
+# offender the comment here used to describe) -- not a reversal of that finding, a fresh
+# measurement of a model that didn't exist when C1 ran. qwen3-4b-instruct was also the
+# 2026-08-31 unanchored verdict-bake-off's exact-match leader (59/90 vs nanbeige's 43/90).
+MODEL = os.environ.get("REPAIR_MODEL", "qwen3-4b-instruct")
 # llamacpp, not ollama. The owner swapped to it on measurement -- it was the stronger
 # performer -- and it is what both arms of the quant A/B run on, so the default matches
 # what the numbers in the README will have been taken on. It costs a beta user a harder
