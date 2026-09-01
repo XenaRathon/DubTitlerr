@@ -1,6 +1,6 @@
 # glossary_verify.episode_page_titles union and report orchestrator
 
-Status: open
+Status: closed 2026-09-01
 Created: 2026-09-01
 
 ## Description
@@ -16,16 +16,29 @@ on Task 4.
 
 ## Acceptance criteria
 
-- [ ] `glossary_verify.episode_page_titles()` exists, matching the plan's
+- [x] `glossary_verify.episode_page_titles()` exists, matching the plan's
       Task 5 signature.
-- [ ] `pytest tests/test_glossary_verify.py -k episode_page_titles -q`
+- [x] `pytest tests/test_glossary_verify.py -k episode_page_titles -q`
       passes: given one resolvable and one unresolvable page title, the
       union contains only the resolvable page's titles, and the
       unresolvable one is named in `failed_pages`, not silently dropped.
-- [ ] `ruff check glossary_verify.py tests/test_glossary_verify.py`
+- [x] `ruff check glossary_verify.py tests/test_glossary_verify.py`
       reports 0 findings.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the task open. -->
+- RED: `rtk proxy python3 -m pytest tests/test_glossary_verify.py -k episode_page_titles -q`
+  — 1 failed, `AttributeError: module 'glossary_verify' has no attribute
+'episode_page_titles'`.
+- GREEN: `rtk proxy python3 -m pytest tests/test_glossary_verify.py -q`
+  → 41 passed.
+- Full suite: `rtk proxy python3 -m pytest -q` → 100%, no failures.
+- Lint: `rtk proxy ruff check glossary_verify.py tests/test_glossary_verify.py`
+  → "All checks passed!"
+- Mutation check (mental): a page whose fetch returns no titles being
+  added to `resolved` instead of `failed` is caught by the test's exact
+  split assertion; a union that includes a failed page's (empty) titles
+  would still pass the union assertion by coincidence, but the resolved/
+  failed lists are asserted independently and exactly, closing that gap.
+- Committed: `ae35490 feat(glossary_verify): union episode-page titles,
+reporting resolved vs failed pages`.
