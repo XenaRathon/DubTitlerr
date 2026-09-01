@@ -145,6 +145,52 @@ def test_forcing_an_unanchored_card_is_labelled_permanent(tmp_path, monkeypatch)
     assert entries[1]["permanent"] is True, "an unanchored one cannot"
 
 
+def test_duplicate_queue_entries_from_a_rerun_collapse_to_one_row(tmp_path, monkeypatch):
+    """Reported 2026-09-01 on a real review page: the same line, same reason, same
+    timestamp, rendered four times in a row. Root cause is real and not itself a bug --
+    unresolved.record() is a deliberate O(1) append (see its own docstring: the array
+    version was O(n^2) I/O on a path that fires ~86x per episode), so calling repair.py
+    again on an episode still holding open queue entries -- exactly what a glossary
+    improvement or a model swap asks for -- appends a second identical line rather than
+    updating the first. The fix belongs at READ time, not at record() time: undecided()
+    already treats a text pair as settled everywhere once ANY one occurrence is decided
+    (see its own docstring, "a line with a stored verdict IS settled, whatever its queue
+    flag says"), so collapsing duplicate rows for DISPLAY is safe -- the redundant
+    siblings need no separate resolution, they are hidden by the same text-keyed check
+    the moment the one visible row is decided."""
+    stem = str(tmp_path / "ep_dup")
+    with open(stem + ".dubtitles.conf.json", "w") as f:
+        json.dump([{"start": 0.0, "end": 2.0, "text": "I saw spondum"}], f)
+    for _ in range(4):
+        unresolved.record(stem, "repair", "rejected_guard", original_text="I saw spondum", proposed_text="I saw Spandam")
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    entries = review_server.handle_episode(stem)["entries"]
+
+    assert len(entries) == 1, "four identical reruns of the same event must render as one question, not four"
+
+
+def test_deciding_the_collapsed_row_clears_every_duplicate_next_load(tmp_path, monkeypatch):
+    """The other half of the same fix: collapsing for display only works if answering the
+    one visible row genuinely settles the ones hidden behind it, not just re-hides them
+    until the cache clears."""
+    stem = str(tmp_path / "ep_dup2")
+    with open(stem + ".dubtitles.conf.json", "w") as f:
+        json.dump([{"start": 0.0, "end": 2.0, "text": "I saw spondum"}], f)
+    for _ in range(3):
+        unresolved.record(stem, "repair", "rejected_guard", original_text="I saw spondum", proposed_text="I saw Spandam")
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+    monkeypatch.setattr(decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "show_for", lambda p: "Show")
+    collapsed_index = review_server.handle_episode(stem)["entries"][0]["index"]
+
+    res = review_server.handle_decide(stem, collapsed_index, "reject", note="regression")
+    review_server.forget(stem)
+
+    assert res.get("saved") is True
+    assert review_server.handle_episode(stem)["entries"] == [], "all three duplicates must be gone, not just the one decided"
+
+
 def test_decide_persists_a_verdict_and_resolves_the_queue_entry(tmp_path, monkeypatch):
     """Both writes, or neither is useful: the DECISION is what stops repair.py re-applying
     and re-queueing the line, the RESOLVED flag is what takes it out of the reviewer's

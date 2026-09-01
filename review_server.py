@@ -412,6 +412,32 @@ def _decorate(stem: str, e: dict, index: int, starts: dict, context: dict | None
     return d
 
 
+def _dedupe_identical(entries: list) -> list:
+    """Collapse entries that are the SAME recorded event to one, keeping the first.
+
+    unresolved.record() is a deliberate O(1) append (its own docstring: the array version
+    was O(n^2) I/O on a path that fires ~86x per episode), not an upsert -- so calling
+    repair.py again on an episode still holding open queue entries (a glossary
+    improvement, a model swap -- exactly the rerun this pipeline is supposed to support)
+    appends a second identical line rather than updating the first. Safe to collapse for
+    DISPLAY only: unresolved.undecided() already treats a text pair as settled everywhere
+    once ANY one occurrence is decided, so the redundant siblings need no separate
+    resolution of their own -- they vanish with the one row a reviewer actually answers.
+
+    Also fixes a real bug this masked: items.index(e) cannot tell identical dicts apart,
+    so every duplicate row was already secretly resolving the SAME (first) index -- a
+    reviewer deciding what looked like row 2 of 4 was actually deciding row 1."""
+    seen: set = set()
+    out = []
+    for e in entries:
+        key = (e.get("stage"), e.get("reason"), e.get("original_text"), e.get("proposed_text"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(e)
+    return out
+
+
 def handle_episode(stem: str, all_reasons: bool = False) -> dict:
     """One episode's queue. Primary view by default; the full unresolved walk on request."""
     ep = _resolve(stem)
@@ -426,6 +452,7 @@ def handle_episode(stem: str, all_reasons: bool = False) -> dict:
     # not a question here -- the same rule mux.held_for_review has applied since [S-6].
     seen = len(wanted)
     wanted = unresolved.undecided(wanted, _store_for(ep, {}))
+    wanted = _dedupe_identical(wanted)
     starts = unresolved.card_starts(ep)
     context = unresolved.card_context(ep)
     entries = [_decorate(ep, e, items.index(e), starts, context) for e in wanted]
