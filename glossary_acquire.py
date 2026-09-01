@@ -624,6 +624,7 @@ def propose(
                 "occurrence_count": counts[tok],
                 "episode_count": cand["episode_count"],
                 "raw_forms": cand["raw_forms"],
+                "contributing_stems": cand.get("contributing_stems", set()),
                 "admission_method": admission_fn(tok)[1] if admission_fn else None,
                 **d,
             }

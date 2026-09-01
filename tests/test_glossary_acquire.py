@@ -1424,6 +1424,71 @@ def test_acquire_warns_when_nfo_present_but_none_parse(tmp_path, monkeypatch, ca
     assert "WARNING" in captured.out and ".nfo" in captured.out
 
 
+def test_end_to_end_admission_tagging_and_repair_weighting(tmp_path, monkeypatch):
+    """Task 13: the cross-stage fixture Luna's review (F8) found missing -- nothing else
+    pins acquire() -> written glossary -> glossary.load() -> repair._glossary_terms() as
+    ONE chain. Two mapped episodes (one partially) and one unmapped episode all contribute
+    the same near-miss token ("Hazzard" -> the already-known anchor "Hazard"), so its
+    overall admission_method must land on "mixed"."""
+    import repair
+
+    gp = tmp_path / "Show.json"
+    gp.write_text(json.dumps({"show": "Show", "names": ["Hazard"], "episode_page_pattern_absolute": "Episode {n}"}))
+
+    # S31E01: partial mapping (628 resolves, 629 doesn't).
+    _write_conf(tmp_path, "S31E01", ["We reached Hazzard at dawn."])
+    open(str(tmp_path / "S31E01.mkv"), "w").close()
+    open(str(tmp_path / "S31E01.nfo"), "w").write("Covers anime episode(s): 628-629")
+
+    # S31E02: fully mapped.
+    _write_conf(tmp_path, "S31E02", ["Then Hazzard burned again."])
+    open(str(tmp_path / "S31E02.mkv"), "w").close()
+    open(str(tmp_path / "S31E02.nfo"), "w").write("Covers anime episode(s): 630")
+
+    # S31E03: unmapped -- no .nfo at all.
+    _write_conf(tmp_path, "S31E03", ["Then Hazzard appeared once more."])
+    open(str(tmp_path / "S31E03.mkv"), "w").close()
+
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda show, override=None: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda api, show: ["Hazard"])
+
+    def fake_pages(api, show, pages):
+        if set(pages) == {"Episode 628", "Episode 629"}:
+            return {"Hazard"}, ["Episode 628"], ["Episode 629"]  # partial
+        if pages == ["Episode 630"]:
+            return {"Hazard"}, ["Episode 630"], []
+        return set(), [], pages
+
+    monkeypatch.setattr(ga.glossary_verify, "episode_page_titles", fake_pages)
+    # acquire_cache memoizes verdicts across runs (its own dedicated behavior, tested in
+    # test_acquire_cache.py) -- without disabling it, the dry run's cached "Hazzard"
+    # verdict marks it settled/skipped on the very next call, and the apply run below
+    # would never actually see it as a proposal to write. Not what this test exercises.
+    monkeypatch.setenv("ACQUIRE_NO_CACHE", "1")
+
+    # Dry run: nothing written.
+    dry = ga.acquire(str(gp), str(tmp_path), apply=False)
+    assert dry["applied"] == 1
+    on_disk_before = json.loads(gp.read_text())
+    assert "episode_tags" not in on_disk_before and "hard_fixes" not in on_disk_before
+
+    # Apply run: writes hard_fixes, acquired (with admission_method), and episode_tags.
+    applied = ga.acquire(str(gp), str(tmp_path), apply=True)
+    assert applied["applied"] == 1
+    assert set(applied["fallback_episodes"]) == {"S31E03"}  # S31E01 is partial, not fallback
+    on_disk = json.loads(gp.read_text())
+    assert on_disk["hard_fixes"]["Hazzard"] == "Hazard"
+    assert on_disk["acquired"]["Hazzard"]["admission_method"] == "mixed"
+    assert set(on_disk["episode_tags"]["hazard"]) == {"S31E01", "S31E02", "S31E03"}
+
+    # Reload through the REAL glossary.load() path and confirm repair._glossary_terms
+    # actually consumes the written episode_tags -- the exact chain the load_dict bug
+    # (Task 7) made impossible before this spec.
+    gloss = ga.glossary.load(str(gp))
+    terms = repair._glossary_terms(gloss, episode="S31E01").split(", ")
+    assert "Hazard" in terms
+
+
 def test_harvest_still_returns_the_same_counts_it_always_did(tmp_path):
     _write_conf(tmp_path, "Ep01", ["I saw Shirahoshi today.", "Shirahoshi ran away."])
     counts, mid, n = ga.harvest(str(tmp_path))
