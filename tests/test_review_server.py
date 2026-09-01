@@ -1439,6 +1439,23 @@ def test_next_warm_delay_falls_back_to_stems_ttl_with_no_cache_yet(monkeypatch):
     assert 0 < delay <= review_server.STEMS_TTL
 
 
+def test_next_warm_delay_is_floored_against_a_fast_walks_short_ttl(monkeypatch):
+    """Found live 2026-09-01: _stems_ttl() scales the cache's OWN lifetime to how long its
+    walk took, so a walk that happens to land fast (real NFS latency varies, especially
+    while merge_pass concurrently muxes multi-GB files on the same mount) gets assigned a
+    short TTL -- which schedules another re-warm soon, which if ALSO fast keeps
+    compounding. Observed live as a burst of "cache warm ... in 0s" lines seconds apart. An
+    expiry just barely in the future (a fast walk's own short TTL) must not produce a delay
+    anywhere near that short -- it must floor at STEMS_TTL, the codebase's own answer to
+    "the shortest sane cache lifetime", the same floor _stems_ttl() itself already uses."""
+    now = 1_000_000.0
+    stems_cache = (now + 2.0, ["a"])  # a fast walk's own tiny self-assigned TTL
+
+    delay = review_server._next_warm_delay(stems_cache, now)
+
+    assert delay >= review_server.STEMS_TTL, "must not compound into a tight loop"
+
+
 def test_an_entry_carries_the_cards_either_side_of_it(tmp_path, monkeypatch):
     """A card is not a sentence -- reflow splits on duration and line length, so a queued
     line routinely starts or ends mid-clause and the reviewer cannot tell whether a repair

@@ -1200,9 +1200,18 @@ def _next_warm_delay(stems_cache, now: float) -> float:
     (STEMS_TTL_FACTOR=20 against a 16.82s walk) expired in ~336s, and every request landing
     after that paid the full cold cost again (measured live: 115-157s), not just the very
     first request after a deploy. Falls back to STEMS_TTL when there is no cache to read an
-    expiry from -- the walk failed, or this is the very first call."""
+    expiry from -- the walk failed, or this is the very first call.
+
+    Floored at STEMS_TTL, not a fixed 1s -- also found live: _stems_ttl() scales the cache's
+    OWN lifetime to how long its walk took, so a walk that happens to land fast (real NFS
+    latency varies, especially while merge_pass is concurrently muxing multi-GB files on the
+    same mount) gets assigned a short TTL, which schedules another re-warm soon, which if
+    ALSO fast keeps compounding -- observed live as a burst of "cache warm ... in 0s" lines
+    seconds apart. STEMS_TTL is already this codebase's own answer to "the shortest sane
+    cache lifetime" (see its definition); reusing it here prevents the feedback loop without
+    inventing a second constant that could drift from the first."""
     expiry = stems_cache[0] if stems_cache else now + STEMS_TTL
-    return max(1.0, expiry - now - _WARM_MARGIN_S)
+    return max(STEMS_TTL, expiry - now - _WARM_MARGIN_S)
 
 
 def _warm_cache_forever() -> None:
