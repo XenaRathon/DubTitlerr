@@ -28,7 +28,7 @@ import glossary
 import glossary_verify
 import mine_glossary
 import ordering
-from common import llm_chat, log
+from common import find_video, llm_chat, log
 
 _DISAMBIG_RE = re.compile(r"\s*\([^)]*\)\s*$")
 _REDUCE_RE = re.compile("[\\s" + chr(0x27) + chr(0x2019) + "-]")
@@ -568,6 +568,7 @@ def propose(
     resolved: dict | None = None,
     candidates: dict | None = None,
     anchors: set | None = None,
+    admission_fn=None,
 ) -> list:
     """One proposal per harvested token that resolves to a wiki title.
 
@@ -623,6 +624,7 @@ def propose(
                 "occurrence_count": counts[tok],
                 "episode_count": cand["episode_count"],
                 "raw_forms": cand["raw_forms"],
+                "admission_method": admission_fn(tok)[1] if admission_fn else None,
                 **d,
             }
         )
@@ -912,6 +914,59 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     # harvested token against the wiki exactly once and hand the same result to propose()
     # and unmatched(), instead of each independently re-running it (was ~1.5x the work).
     resolved = _resolve_tokens(counts, titles)
+    # [S-8] Per-episode admission scoping. Inactive (admission_fn=None, resolved_admitted
+    # == resolved) unless the show declares a pattern field -- byte-for-byte today's
+    # behaviour otherwise. When active, admission is scoped PER TOKEN -- the union of
+    # only THAT token's own contributing episodes' title sets, not one union across the
+    # whole run's `scope` -- because harvest_candidates walks the entire show_dir every
+    # sweep, and a flat run-wide union would let one unmapped episode's fallback widen
+    # admission for every other episode's tokens too (found during design, before any
+    # code existed).
+    nfo_present = nfo_parsed = nfo_missing = nfo_parse_failed = 0
+    fallback_episodes: list = []
+    admission_active = bool(gloss.get("episode_page_pattern_absolute") or gloss.get("episode_page_pattern_relative"))
+    stem_admission: dict = {}
+    admission_fn = None
+    resolved_admitted = resolved
+    if admission_active:
+        for s in scope:
+            video = find_video(s)
+            if not video:
+                continue
+            stem_admission[s] = episode_admission_titles(video, gloss, api, show)
+            _titles_s, method, detail = stem_admission[s]
+            if detail["nfo_present"]:
+                nfo_present += 1
+                if detail["nfo_parsed"]:
+                    nfo_parsed += 1
+                else:
+                    nfo_parse_failed += 1
+            else:
+                nfo_missing += 1
+            if method in ("fallback-allpages", "no-episode-tag"):
+                fallback_episodes.append(s)
+        if nfo_present and not nfo_parsed:
+            log(f"  WARNING {show}: {nfo_present} .nfo file(s) found, 0 parsed -- check the per-episode .nfo naming convention")
+
+        def admission_fn(tok):  # noqa: F811 -- intentional shadow, only reachable when admission_active
+            stems = cands.get(tok, {}).get("contributing_stems", ())
+            methods = {stem_admission[s][1] for s in stems if s in stem_admission}
+            if not stems or not methods:
+                return None, "unscoped"
+            union: set = set()
+            for s in stems:
+                titles_for_s = stem_admission.get(s, (None, "unscoped", {}))[0]
+                if titles_for_s:
+                    union |= titles_for_s
+            tight = methods <= {"absolute", "relative"}
+            fell = methods <= {"fallback-allpages", "no-episode-tag"}
+            return union, ("tight" if tight else ("fallback" if fell else "mixed"))
+
+        resolved_admitted = {}
+        for tok, (canon, score) in resolved.items():
+            union, _m = admission_fn(tok)
+            if union is None or normalize_title(canon) in {normalize_title(t) for t in union}:
+                resolved_admitted[tok] = (canon, score)
     anchors = anchor_terms(gloss)
     # Per-token decision cache. `settled` alone was 107 terms against 8,199 harvested, so
     # ~99% of the work -- including 371 LLM calls in escalate, 71% of this stage's runtime --
@@ -930,7 +985,9 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
         else set()
     )
     settled = settled | cached
-    proposals = propose(counts, mid, titles, settled, resolved=resolved, candidates=cands, anchors=anchors)
+    proposals = propose(
+        counts, mid, titles, settled, resolved=resolved_admitted, candidates=cands, anchors=anchors, admission_fn=admission_fn
+    )
     close = [p for p in proposals if p.get("reason") == "share-too-close"]
     if close:
         toks = sorted({p["variant"] for p in close} | {p["canonical"] for p in close})
@@ -961,7 +1018,7 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
             if p["verdict"] == "flag":
                 p["context"] = fctx.get(p["variant"], [])
     tier_b = {}
-    for term in unmatched(counts, mid, titles, resolved=resolved):
+    for term in unmatched(counts, mid, titles, resolved=resolved_admitted):
         try:
             adj = glossary_verify.adjudicate(term, glossary_verify.candidates(term, titles), show)
         except Exception as e:
@@ -1019,6 +1076,11 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
         "scope_episodes": [os.path.basename(s) for s in scope],
         "proposals": proposals,
         "tier_b": tier_b,
+        "nfo_present": nfo_present,
+        "nfo_parsed": nfo_parsed,
+        "nfo_missing": nfo_missing,
+        "nfo_parse_failed": nfo_parse_failed,
+        "fallback_episodes": [os.path.basename(s) for s in fallback_episodes],
     }
 
 
