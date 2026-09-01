@@ -339,6 +339,20 @@ def test_load_reaches_repair_glossary_terms_through_the_real_load_path(tmp_path)
     assert terms.index("Doflamingo") < terms.index("Zoro")
 
 
+def test_add_episode_tag_writes_sorted_unioned_keys():
+    g = {}
+    glossary.add_episode_tag(g, "Doflamingo", {"S31E02", "S31E01"})
+    assert g["episode_tags"]["doflamingo"] == ["S31E01", "S31E02"]
+    glossary.add_episode_tag(g, "Doflamingo", {"S31E03"})
+    assert g["episode_tags"]["doflamingo"] == ["S31E01", "S31E02", "S31E03"]
+
+
+def test_add_episode_tag_is_a_noop_with_no_episode_keys():
+    g = {}
+    glossary.add_episode_tag(g, "Doflamingo", set())
+    assert "episode_tags" not in g
+
+
 def test_tag_names_by_arc_marks_only_names_the_arc_actually_contains():
     """[S-11] Tags come from wiki arc membership, so a name the arc does not contain is
     left untagged rather than tagged falsely -- untagged defaults IN at the consumer, and a

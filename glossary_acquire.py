@@ -656,10 +656,14 @@ def _provenance(p: dict, scope: int) -> dict:
         "settled_target": p.get("settled_target"),
         "episode_count": p.get("episode_count", 0),
         "scope": scope,
+        # [S-12]: survives onto the WRITTEN glossary entry, not just the transient
+        # acquire() report -- a reviewer opening the glossary file alone must be able
+        # to tell a fallback-backed proposal from a tight one.
+        "admission_method": p.get("admission_method"),
     }
 
 
-def apply_proposals(gloss: dict, proposals: list, run_id: str, scope: int = 0) -> dict:
+def apply_proposals(gloss: dict, proposals: list, run_id: str, scope: int = 0, episode_keys_by_stem: dict | None = None) -> dict:
     """Write applied proposals into hard_fixes + acquired; record the rest in flagged.
 
     Pure: deep-copies its input the way glossary_verify.apply_results does, so curated
@@ -711,6 +715,14 @@ def apply_proposals(gloss: dict, proposals: list, run_id: str, scope: int = 0) -
             "run": run_id,
             **_provenance(p, scope),
         }
+        # [S-9]: keyed on the CANONICAL, not the variant -- repair._glossary_terms
+        # iterates token_fixes/phrase_fixes VALUES (the split form of hard_fixes,
+        # which is keyed on variant with canonical as the value), so tagging the
+        # variant would write a key _glossary_terms never looks up.
+        if episode_keys_by_stem:
+            stems = p.get("contributing_stems", ())
+            keys = {episode_keys_by_stem[s] for s in stems if s in episode_keys_by_stem}
+            glossary.add_episode_tag(g, p["canonical"], keys)
     if not flagged:
         g.pop("flagged", None)
     if known:
@@ -1040,8 +1052,17 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     ).hexdigest()[:8]
     run_id = f"{show}:{len(titles)}:{files}:{digest}"
     if apply and (proposals or tier_b):
+        # [S-9]: one stem -> SxxExx map, built once, reused by apply_proposals' episode
+        # tagging -- same pattern as `stem_admission` above (resolve once, thread through).
+        episode_keys_by_stem = {}
+        for s in scope:
+            v = find_video(s)
+            if v:
+                k = ordering.episode_key(v)
+                if k:
+                    episode_keys_by_stem[s] = k
         try:
-            out = apply_proposals(gloss, proposals, run_id, files)
+            out = apply_proposals(gloss, proposals, run_id, files, episode_keys_by_stem)
             if tier_b:
                 tctx = context_lines(show_dir, list(tier_b))
                 flagged = out.setdefault("flagged", {})

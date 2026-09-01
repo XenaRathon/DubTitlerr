@@ -385,6 +385,50 @@ def test_apply_proposals_writes_hard_fixes_and_provenance():
     assert gloss.get("acquired") is None  # input not mutated
 
 
+def test_apply_proposals_tags_episodes_keyed_on_canonical():
+    gloss = {"show": "One Pace"}
+    props = [
+        {
+            "variant": "Dothamingo",
+            "canonical": "Doflamingo",
+            "variant_count": 3,
+            "canonical_count": 0,
+            "score": 0.9,
+            "verdict": "apply",
+            "reason": "canonical-unseen",
+            "bound": 0.0,
+            "contributing_stems": {"/a/S31E01", "/a/S31E02"},
+        }
+    ]
+    g = ga.apply_proposals(
+        gloss,
+        props,
+        run_id="run1",
+        episode_keys_by_stem={"/a/S31E01": "S31E01", "/a/S31E02": "S31E02"},
+    )
+    assert g["episode_tags"]["doflamingo"] == ["S31E01", "S31E02"]
+    assert "dothamingo" not in g.get("episode_tags", {})  # keyed on canonical, not variant
+
+
+def test_apply_proposals_without_episode_keys_writes_no_episode_tags():
+    gloss = {"show": "One Pace"}
+    props = [
+        {
+            "variant": "Dothamingo",
+            "canonical": "Doflamingo",
+            "variant_count": 3,
+            "canonical_count": 0,
+            "score": 0.9,
+            "verdict": "apply",
+            "reason": "canonical-unseen",
+            "bound": 0.0,
+            "contributing_stems": {"/a/S31E01"},
+        }
+    ]
+    g = ga.apply_proposals(gloss, props, run_id="run1")  # episode_keys_by_stem omitted
+    assert "episode_tags" not in g
+
+
 def test_apply_proposals_records_flagged_with_its_reason():
     props = [
         {

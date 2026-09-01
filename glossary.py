@@ -147,6 +147,20 @@ def tag_names_by_arc(gloss: dict, arc: str, arc_titles: set) -> int:
     return tagged
 
 
+def add_episode_tag(gloss: dict, term: str, episode_keys) -> None:
+    """Record which episode(s) an ACQUIRED term's canonical came from [S-9]. Unlike
+    tag_names_by_arc, this does not discover membership -- the caller already knows
+    exactly which episodes produced this proposal. Keyed on the term AS PASSED:
+    callers must pass the canonical spelling, since that is what
+    repair._glossary_terms iterates via token_fixes/phrase_fixes' values, not the
+    harvested variant."""
+    if not episode_keys:
+        return
+    tags = gloss.setdefault("episode_tags", {})
+    existing = set(tags.get(term.lower(), []))
+    tags[term.lower()] = sorted(existing | set(episode_keys))
+
+
 _SOURCE_EPISODES_RE = re.compile(r"Covers anime episode\(s\):\s*([^\n<]+)")
 
 
