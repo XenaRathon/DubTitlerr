@@ -1457,3 +1457,22 @@ def test_shared_page_keeps_most_repeated_default_and_offers_risk_sort(tmp_path, 
     assert '<option value="risk">risk first</option>' in page
     assert "function sortShared" in page
     assert "localStorage" in page and "dubtitlerr_shared_sort" in page
+
+
+def test_every_queued_row_offers_a_way_to_clear_its_verdict(tmp_path, monkeypatch):
+    """A radio group cannot be un-set by clicking, so a reviewer who picks one and THEN
+    realises they need to check the timestamp has no way back to undecided -- they either
+    save a verdict they are not sure of, or reload and lose the rest of the page.
+
+    `chosen()` already submits only `:checked` rows, so clearing a row is enough to take it
+    out of the batch; the missing piece is the control. One per row, not one for the page:
+    the reviewer is undoing a single line, not abandoning the episode."""
+    stem = _episode(tmp_path)
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    entries = review_server.handle_episode(stem)["entries"]
+    page = review_server.render_page(stem)
+
+    assert page.count('class="clear"') == len(entries), "one clear control per queued row"
+    for e in entries:
+        assert f'data-clear="v{e["index"]}"' in page, f"row {e['index']} has no clear control"

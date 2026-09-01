@@ -691,6 +691,8 @@ _CSS = (
     "#bar{position:sticky;bottom:0;background:#fff;border-top:2px solid #333;padding:.6em 0;margin-top:1em}"
     "#bar button{padding:.4em .8em;margin-right:.5em}#tally{color:#888}"
     "label:has(input[type=radio]){margin-right:.9em;cursor:pointer}"
+    "button.clear{margin-left:.4em;font-size:.85em;padding:0 .45em;opacity:.5;cursor:pointer}"
+    "button.clear:hover{opacity:1}"
     "li.rwords{border-left-color:#c00}li.rsubstitution{border-left-color:#e90}"
     "li.rpunctuation{border-left-color:#ccc}"
 )
@@ -768,6 +770,18 @@ def render_shared() -> str:
         "SV.textContent=n?('Save '+n+' verdict'+(n==1?'':'s')):'Save verdicts';SV.disabled=!n;"
         "TAL.textContent=(t-n)+' still undecided'}"
         "document.addEventListener('change',e=>{if(e.target.type==='radio')tally()});"
+        # data-clear carries the radio GROUP name, so one handler serves both pages.
+        "document.addEventListener('click',function(ev){"
+        "const b=ev.target.closest&&ev.target.closest('button.clear');if(!b)return;"
+        "const g=b.getAttribute('data-clear');"
+        "document.querySelectorAll('#list input[type=radio]').forEach(function(r){if(r.name===g)r.checked=false});"
+        "tally()});"
+        # A second click on the already-chosen radio clears it too. The button is the
+        # discoverable route; this is for a reviewer who has learned the page.
+        "document.addEventListener('mousedown',function(ev){const r=ev.target;"
+        "if(r&&r.type==='radio')r.dataset.wasOn=r.checked?'1':''});"
+        "document.addEventListener('click',function(ev){const r=ev.target;"
+        "if(r&&r.type==='radio'&&r.dataset.wasOn){r.checked=false;r.dataset.wasOn='';tally()}});"
         "tally();SV.addEventListener('click',async()=>{const d=chosen();if(!d.length)return;"
         "SV.disabled=true;const r=await post('/api/shared',{decisions:d});"
         "if(r.error){alert(r.error);SV.disabled=false;return}"
@@ -798,6 +812,14 @@ def render_page(stem: str = "") -> str:
         buttons = "".join(
             f'<label><input type="radio" name="v{e["index"]}" value="{html.escape(v)}"> {html.escape(v)}</label> '
             for v in e.get("offered", ())
+        )
+        # A radio group cannot be un-set by clicking, so a reviewer who picks a verdict and
+        # THEN wants to check the timestamp first has no way back to undecided: they either
+        # save something they are unsure of, or reload and lose the rest of the page.
+        # chosen() already submits only :checked rows, so clearing the row is enough to hold
+        # it back. Per ROW -- the reviewer is undoing one line, not abandoning the episode.
+        buttons += (
+            f'<button type="button" class="clear" data-clear="v{e["index"]}" title="leave this line undecided">clear</button>'
         )
         # Every card the line is on. Approximate by construction -- these are ASR word
         # timings -- but a seek target within a second or two is what checking a line needs.
@@ -961,6 +983,18 @@ def render_page(stem: str = "") -> str:
         "SV.textContent=n?('Save '+n+' verdict'+(n==1?'':'s')):'Save verdicts';SV.disabled=!n;"
         "TAL.textContent=(t-n)+' still undecided'}"
         "document.addEventListener('change',e=>{if(e.target.type==='radio')tally()});"
+        # data-clear carries the radio GROUP name, so one handler serves both pages.
+        "document.addEventListener('click',function(ev){"
+        "const b=ev.target.closest&&ev.target.closest('button.clear');if(!b)return;"
+        "const g=b.getAttribute('data-clear');"
+        "document.querySelectorAll('#list input[type=radio]').forEach(function(r){if(r.name===g)r.checked=false});"
+        "tally()});"
+        # A second click on the already-chosen radio clears it too. The button is the
+        # discoverable route; this is for a reviewer who has learned the page.
+        "document.addEventListener('mousedown',function(ev){const r=ev.target;"
+        "if(r&&r.type==='radio')r.dataset.wasOn=r.checked?'1':''});"
+        "document.addEventListener('click',function(ev){const r=ev.target;"
+        "if(r&&r.type==='radio'&&r.dataset.wasOn){r.checked=false;r.dataset.wasOn='';tally()}});"
         "if(SV){tally();SV.addEventListener('click',async()=>{const d=chosen();if(!d.length)return;"
         "SV.disabled=true;const r=await post('/api/decide',{stem:STEM,decisions:d});"
         # Errors are NAMED, not counted. A reviewer told "2 refused" cannot tell which two of
