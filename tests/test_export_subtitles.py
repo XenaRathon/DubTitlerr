@@ -1,0 +1,238 @@
+"""Checks for tools/export_subtitles.py -- the relaxed sibling of export_reviewed.py.
+
+export_reviewed.py gates on decision 11 (every queued line has a human verdict); measured
+2026-08-31 against the real library, zero One Pace episodes qualify under that gate. This
+tool gates on completion instead (a valid .dubtitles.done stamp matching the current video)
+so a first "unreviewed, subject to improve" batch can ship while decision 11 stays intact
+for a future reviewed release. See docs/superpowers/specs/2026-08-31-public-beta-design.md,
+Workstream C.
+
+TDD entry point. These tests are written against synthetic temp dirs before the tool
+exists, so the first run must fail at import.
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+import common
+
+EP_SUFFIX = ".dubtitles.conf.json"
+
+
+def _stem(tmp_path, show, season, episode, ext="mkv", video_bytes=b"x"):
+    """One episode laid out two levels below its show so show_for() resolves to `show`
+    the way the live pipeline does."""
+    dir = tmp_path / show / season
+    dir.mkdir(parents=True, exist_ok=True)
+    stem = str(dir / episode)
+    with open(stem + "." + ext, "wb") as f:
+        f.write(video_bytes)
+    return stem
+
+
+def _conf(stem, cards):
+    with open(stem + EP_SUFFIX, "w") as f:
+        json.dump(cards, f)
+
+
+def _stamp(stem, video):
+    """A real .dubtitles.done stamp, written by the pipeline's own write_stamp -- so this
+    fixture can never drift from what a real stamp looks like."""
+    common.write_stamp(stem + common.STAMP_SUFFIX, video)
+
+
+def test_completed_episodes_finds_an_episode_with_a_valid_matching_stamp(tmp_path):
+    import tools.export_subtitles as es
+
+    ep = _stem(tmp_path, "One Pace", "Season 31", "One Pace - S31E01")
+    _stamp(ep, ep + ".mkv")
+
+    assert es.completed_episodes("One Pace", str(tmp_path)) == [ep]
+
+
+def test_completed_episodes_excludes_an_episode_with_no_stamp(tmp_path):
+    import tools.export_subtitles as es
+
+    _stem(tmp_path, "One Pace", "Season 31", "One Pace - S31E01")
+
+    assert es.completed_episodes("One Pace", str(tmp_path)) == []
+
+
+def test_completed_episodes_excludes_a_stamp_that_no_longer_matches_the_video(tmp_path):
+    import tools.export_subtitles as es
+
+    ep = _stem(tmp_path, "One Pace", "Season 31", "One Pace - S31E01")
+    _stamp(ep, ep + ".mkv")
+    # The video was replaced after the stamp was written (different size) -- stamp_valid's
+    # own job, this test only proves completed_episodes actually delegates to it.
+    with open(ep + ".mkv", "wb") as f:
+        f.write(b"a completely different and longer file")
+
+    assert es.completed_episodes("One Pace", str(tmp_path)) == []
+
+
+def test_completed_episodes_excludes_a_different_show(tmp_path):
+    import tools.export_subtitles as es
+
+    ep = _stem(tmp_path, "Trigun", "Season 01", "Trigun - S01E01")
+    _stamp(ep, ep + ".mkv")
+
+    assert es.completed_episodes("One Pace", str(tmp_path)) == []
+
+
+def test_completed_episodes_walks_the_media_root_exactly_once(tmp_path, monkeypatch):
+    """review_server measures this walk at 297s for 989 episodes over a network mount --
+    a stat costs what a read costs there, so a second walk doubles a five-minute operation
+    to produce nothing new. Breaks if any code path walks the media root more than once."""
+    import tools.export_subtitles as es
+
+    ep = _stem(tmp_path, "One Pace", "Season 31", "One Pace - S31E01")
+    _stamp(ep, ep + ".mkv")
+
+    walks = []
+    real_walk = os.walk
+
+    def counting_walk(top, *a, **kw):
+        walks.append(top)
+        return real_walk(top, *a, **kw)
+
+    monkeypatch.setattr(es.os, "walk", counting_walk)
+    es.completed_episodes("One Pace", str(tmp_path))
+
+    assert len(walks) == 1, f"media root walked {len(walks)} times; it must be walked once"
+
+
+def test_dialogue_srt_builds_a_correctly_numbered_timestamped_srt(tmp_path):
+    import tools.export_subtitles as es
+
+    ep = str(tmp_path / "One Pace - S31E01")
+    _conf(ep, [{"start": 0.0, "end": 2.5, "text": "hello"}, {"start": 62.25, "end": 64.0, "text": "world"}])
+
+    expected = "1\n00:00:00,000 --> 00:00:02,500\nhello\n\n2\n00:01:02,250 --> 00:01:04,000\nworld\n"
+    assert es.dialogue_srt(ep) == expected
+
+
+def test_dialogue_srt_returns_none_when_conf_json_is_missing(tmp_path):
+    import tools.export_subtitles as es
+
+    ep = str(tmp_path / "One Pace - S31E01")
+    assert es.dialogue_srt(ep) is None
+
+
+def test_probe_duration_seconds_returns_the_parsed_float(tmp_path):
+    import tools.export_subtitles as es
+
+    class Result:
+        returncode = 0
+        stdout = json.dumps({"format": {"duration": "1425.5"}})
+
+    assert es.probe_duration_seconds("video.mkv", run=lambda *a, **k: Result()) == 1425.5
+
+
+def test_probe_duration_seconds_returns_none_on_nonzero_returncode(tmp_path):
+    import tools.export_subtitles as es
+
+    class Result:
+        returncode = 1
+        stdout = ""
+
+    assert es.probe_duration_seconds("video.mkv", run=lambda *a, **k: Result()) is None
+
+
+def test_dubtitles_stream_index_finds_the_matching_stream(tmp_path):
+    import tools.export_subtitles as es
+
+    payload = {
+        "streams": [
+            {"index": 2, "tags": {"title": "Signs"}},
+            {"index": 3, "tags": {"title": "Dubtitles"}},
+        ]
+    }
+
+    class Result:
+        returncode = 0
+        stdout = json.dumps(payload)
+
+    assert es.dubtitles_stream_index("video.mkv", run=lambda *a, **k: Result()) == 3
+
+
+def test_dubtitles_stream_index_returns_none_when_no_stream_matches(tmp_path):
+    import tools.export_subtitles as es
+
+    payload = {"streams": [{"index": 2, "tags": {"title": "Signs"}}]}
+
+    class Result:
+        returncode = 0
+        stdout = json.dumps(payload)
+
+    assert es.dubtitles_stream_index("video.mkv", run=lambda *a, **k: Result()) is None
+
+
+def test_export_episode_writes_the_srt_and_returns_the_manifest_entry(tmp_path):
+    import tools.export_subtitles as es
+
+    ep = _stem(tmp_path, "One Pace", "Season 31", "One Pace - S31E01")
+    _conf(ep, [{"start": 0.0, "end": 2.0, "text": "hi"}])
+    out_root = tmp_path / "out"
+
+    entry = es.export_episode(
+        ep,
+        str(out_root),
+        probe=lambda video: 700.0,
+        stream_finder=lambda video: 3,
+        extractor=lambda video, index, out_path: True,
+    )
+
+    assert entry == {
+        "show": "One Pace",
+        "season": "Season 31",
+        "episode_title": "One Pace - S31E01",
+        "duration_seconds": 700.0,
+        "status": "unreviewed",
+    }
+    srt_path = out_root / "One Pace" / "Season 31" / "One Pace - S31E01.srt"
+    assert srt_path.exists()
+    assert srt_path.read_text() == "1\n00:00:00,000 --> 00:00:02,000\nhi\n"
+
+
+def test_export_episode_returns_none_when_no_dubtitles_stream_is_found(tmp_path):
+    import tools.export_subtitles as es
+
+    ep = _stem(tmp_path, "One Pace", "Season 31", "One Pace - S31E01")
+    _conf(ep, [{"start": 0.0, "end": 2.0, "text": "hi"}])
+    out_root = tmp_path / "out"
+
+    entry = es.export_episode(
+        ep,
+        str(out_root),
+        probe=lambda video: 700.0,
+        stream_finder=lambda video: None,
+        extractor=lambda video, index, out_path: True,
+    )
+
+    assert entry is None
+    assert not (out_root / "One Pace").exists()
+
+
+def test_the_cli_writes_a_valid_empty_manifest_end_to_end(tmp_path):
+    prog = os.path.join(os.path.dirname(__file__), "..", "tools", "export_subtitles.py")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            prog,
+            "--show",
+            "One Pace",
+            "--media-root",
+            str(tmp_path),
+            "--out",
+            str(tmp_path / "export"),
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads((tmp_path / "manifest.json").read_text()) == []
