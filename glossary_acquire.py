@@ -257,6 +257,7 @@ def _candidate(variant: str, source: str) -> dict:
         "occurrence_count": 0,
         "episode_count": 0,
         "contexts": [],
+        "contributing_stems": set(),
     }
 
 
@@ -287,6 +288,7 @@ def harvest_candidates(show_dir: str, source: str = SOURCE_TRANSCRIPT) -> tuple[
             c = cands.setdefault(tok, _candidate(tok, source))
             c["occurrence_count"] += bare.get(tok, 0)
             c["episode_count"] += 1
+            c["contributing_stems"].add(stem)
             for surface, n in forms.get(tok, {}).items():
                 c["raw_forms"][surface] = c["raw_forms"].get(surface, 0) + n
     for c in cands.values():

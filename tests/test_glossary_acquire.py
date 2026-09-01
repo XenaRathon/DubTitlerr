@@ -1169,11 +1169,28 @@ def test_candidate_record_carries_source_and_forms(tmp_path):
         "occurrence_count",
         "episode_count",
         "contexts",
+        "contributing_stems",
     }
     assert c["source"] == ga.SOURCE_TRANSCRIPT
     assert c["raw_forms"] == {"Hazzard": 1, "Hazzard" + chr(0x2019) + "s": 1}
     assert c["normalized_forms"] == ["hazzard", "hazzards"]
     assert c["occurrence_count"] == 1  # bare lane only, as harvest() has always counted
+
+
+def test_harvest_candidates_tracks_contributing_stems(tmp_path):
+    _write_conf(tmp_path, "Ep01", ["We fought Hazzard here."])
+    _write_conf(tmp_path, "Ep02", ["Hazzard returned."])
+    cands, _mid, _scope = ga.harvest_candidates(str(tmp_path))
+    c = cands["Hazzard"]
+    stems = {s.rsplit("/", 1)[-1] for s in c["contributing_stems"]}
+    assert stems == {"Ep01", "Ep02"}
+
+
+def test_harvest_candidates_single_episode_token_has_one_stem(tmp_path):
+    _write_conf(tmp_path, "Ep01", ["Only here: Marigold."])
+    cands, _mid, _scope = ga.harvest_candidates(str(tmp_path))
+    stems = {s.rsplit("/", 1)[-1] for s in cands["Marigold"]["contributing_stems"]}
+    assert stems == {"Ep01"}
 
 
 def test_harvest_still_returns_the_same_counts_it_always_did(tmp_path):
