@@ -255,6 +255,37 @@ def test_arc_for_survives_a_malformed_season_nfo(tmp_path):
     assert glossary.arc_for(str(d / "ep.mkv")) is None
 
 
+def test_source_episodes_parses_a_range(tmp_path):
+    p = tmp_path / "ep.nfo"
+    p.write_text("<plot>Dressrosa!\n\nCovers anime episode(s): 628 - 631\n</plot>")
+    assert glossary.source_episodes(str(p)) == [628, 629, 630, 631]
+
+
+def test_source_episodes_parses_comma_and_single_and_mixed_forms(tmp_path):
+    p1 = tmp_path / "a.nfo"
+    p1.write_text("Covers anime episode(s): 628, 630, 645")
+    assert glossary.source_episodes(str(p1)) == [628, 630, 645]
+    p2 = tmp_path / "b.nfo"
+    p2.write_text("Covers anime episode(s): 628")
+    assert glossary.source_episodes(str(p2)) == [628]
+    p3 = tmp_path / "c.nfo"
+    p3.write_text("Covers anime episode(s): 628-630, 645")
+    assert glossary.source_episodes(str(p3)) == [628, 629, 630, 645]
+
+
+def test_source_episodes_absent_line_and_missing_file(tmp_path):
+    p = tmp_path / "d.nfo"
+    p.write_text("<plot>No mapping here.</plot>")
+    assert glossary.source_episodes(str(p)) == []
+    assert glossary.source_episodes(str(tmp_path / "missing.nfo")) == []
+
+
+def test_source_episodes_survives_a_truncated_file(tmp_path):
+    p = tmp_path / "e.nfo"
+    p.write_bytes(b"Covers anime episode(s): 6")  # cut mid-number, still parses as [6]
+    assert glossary.source_episodes(str(p)) == [6]
+
+
 def test_tag_names_by_arc_marks_only_names_the_arc_actually_contains():
     """[S-11] Tags come from wiki arc membership, so a name the arc does not contain is
     left untagged rather than tagged falsely -- untagged defaults IN at the consumer, and a

@@ -139,6 +139,41 @@ def tag_names_by_arc(gloss: dict, arc: str, arc_titles: set) -> int:
     return tagged
 
 
+_SOURCE_EPISODES_RE = re.compile(r"Covers anime episode\(s\):\s*([^\n<]+)")
+
+
+def source_episodes(nfo_path: str) -> list[int]:
+    """Absolute source-episode numbers from a re-cut show's per-episode .nfo, e.g.
+    "Covers anime episode(s): 628 - 631" -> [628, 629, 630, 631]. Handles the range,
+    comma and single forms, and mixes of them.
+
+    Regex-only, no XML parser and a size-capped read -- .nfo files are untrusted
+    third-party input, matching arc_for's precedent below. [] on any absence or
+    malformed line; never raises."""
+    try:
+        with open(nfo_path, encoding="utf-8", errors="replace") as f:
+            text = f.read(64 * 1024)
+    except OSError:
+        return []
+    m = _SOURCE_EPISODES_RE.search(text)
+    if not m:
+        return []
+    out: list[int] = []
+    for part in m.group(1).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        rng = re.match(r"^(\d+)\s*-\s*(\d+)$", part)
+        if rng:
+            lo, hi = int(rng.group(1)), int(rng.group(2))
+            if lo <= hi:
+                out.extend(range(lo, hi + 1))
+            continue
+        if part.isdigit():
+            out.append(int(part))
+    return out
+
+
 def arc_for(video_path: str) -> str | None:
     """The arc name for an episode, from its season's ``season.nfo`` ``<title>``.
 
