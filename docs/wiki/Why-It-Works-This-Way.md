@@ -3,8 +3,8 @@
 Understanding-oriented. Nothing here is a step to follow; it is the reasoning behind
 choices that otherwise look arbitrary, or look like bugs.
 
-If you want to _do_ something, see [How-to guides](How-To-Guides). If you want a value
-looked up, see [Reference](Reference).
+If you want to _do_ something, see [How-to guides](How-To-Guides.md). If you want a value
+looked up, see [Reference](Reference.md).
 
 ---
 

@@ -1,7 +1,7 @@
 # How-to guides
 
 Recipes. Each solves a single problem and assumes a working install — if you do not have
-one, start with [Your first show](Your-First-Show).
+one, start with [Your first show](Your-First-Show.md).
 
 ---
 
@@ -39,7 +39,7 @@ them.
 
 **Know the trade.** Glossary-only repair can fabricate names — measured turning `Oimo` into
 `Zoro`. Review the results rather than turning this on and walking away. Reasoning:
-[Why it works this way](Why-It-Works-This-Way#anchored-and-unanchored-repair).
+[Why it works this way](Why-It-Works-This-Way.md#anchored-and-unanchored-repair).
 
 There is also a global `REPAIR_UNANCHORED` variable. **Do not use it.** It is recorded in no
 committed file, which is precisely how a season's corrections were once silently reverted to
@@ -144,6 +144,36 @@ The timer buys a warning, never a release — auto-releasing unreviewed output i
 the gate exists to prevent.
 
 Empty by default: an install that has not opted in behaves exactly as before.
+
+---
+
+## Fix a repair stage that silently does nothing
+
+**Problem:** the pipeline runs, the log shows repair targets, and every line comes back
+unchanged. No errors.
+
+**Check the model is actually replying:**
+
+```sh
+curl -s http://127.0.0.1:8090/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Reply with the word ok"}],"max_tokens":8}' \
+  | python3 -m json.tool
+```
+
+Look at `choices[0].message`. Two failures look identical from the pipeline's side:
+
+| What you see                              | Cause                                   | Fix                                                                    |
+| ----------------------------------------- | --------------------------------------- | ---------------------------------------------------------------------- |
+| `content` empty, `reasoning_content` full | The model is thinking and never answers | `--jinja` **and** `--chat-template-kwargs '{"enable_thinking":false}'` |
+| `content` empty, nothing else             | The chat template was never applied     | `--jinja`                                                              |
+
+**`--jinja` is required by any model whose chat template is not built into llama.cpp** —
+`nanbeige4.2-3b`, the default, is one of them. Without it the server loads, answers
+`/health` with `200`, and returns empty content forever.
+
+Do not use `/health` as a readiness check. It reports `200` while weights are still
+loading. Ask for a real completion instead, as above.
 
 ---
 

@@ -48,6 +48,8 @@ the week's deliverable still answers what was asked.
 | 15  | Internal hosts in the public repo | **Scrub the current tree only**; history keeps them                    |
 | 16  | Subtitle repository timing        | **Not this week.** Ships per-episode as review completes               |
 | 17  | Where the code lives              | **Mirrored**: forgejo and GitHub both carry every branch and the wiki  |
+| 18  | How a repair model is judged      | **Against human verdicts**, not against a change-counter               |
+| 19  | Repair model for the beta         | **`qwen3-4b-instruct`**, replacing `nanbeige4.2-3b`                    |
 
 ### Why 11 is worded that way
 
@@ -323,6 +325,78 @@ rather than on the clock**: it checks the card before each arm, aborts with a cl
 if a model is resident, and re-checks between quantisations.
 
 **Candidates:** Q4_K_M, Q5_K_M, Q6_K, against Q8_0 as control.
+
+### Model selection, settled 2026-08-31
+
+The quant sweep runs on **`qwen3-4b-instruct`**, not `nanbeige4.2-3b`. Optimising the VRAM
+of the eighth-place model would have been effort spent in the wrong place.
+
+**How the model was chosen (decision 18).** The first bake-off scored what a model DID --
+lines changed, changes that pass `accept_repair`. That is all a counter can see when nobody
+has recorded the right answer, and it ranked `nemotron-mini` first on four edits, every one
+of which changed what the line said. The owner's objection was the correct one: _"more
+changes isn't necessarily a positive if they're all bad changes, and fewer changes isn't
+necessarily good either if it's just letting more bad lines through."_
+
+The answers already existed. The decision store recovered from vm102
+(`/home/claude/dubtitle-config/decisions/One Pace.json`, 107 verdicts: 61 accept, 17
+correct, 12 force, 17 reject) is a human's ruling on these exact lines, and all 17 corrects
+carry the reviewer's typed text. `tools/verdict_bakeoff.py` scores against that: **exact,
+near, inert, wrong, trap, error.**
+
+`trap` is the bucket the counter could not have -- reproducing a proposal the human refused
+is a failure that looks like productivity. `near` is right words, wrong surface, which is
+most of what the corrections document: no capitals, no hyphen in `Flame-Flame Fruit`, a full
+stop welded onto a line that continues.
+
+**Results, 107 verdicts, Q8_0 throughout, One Pace:**
+
+| model                   | exact  | trap  | hit | wrong | s/line      |
+| ----------------------- | ------ | ----- | --- | ----- | ----------- |
+| **qwen3-4b-instruct**   | **56** | **1** | 68% | 14    | 1.59        |
+| phi4-mini               | 52     | 3     | 74% | 19    | 1.10        |
+| qwen3-8b                | 51     | 2     | 67% | 10    | 2.05        |
+| qwen3-4b                | 50     | 2     | 68% | 8     | 1.60        |
+| gemma3n-e2b             | 50     | 4     | 77% | 15    | 0.53        |
+| qwen3.5-4b              | 48     | 4     | 66% | 10    | 4.76        |
+| gemma3-4b               | 44     | 4     | 64% | 26    | 3.90        |
+| `nanbeige4.2-3b` (old)  | 43     | 4     | 63% | 13    | 0.98        |
+| smollm3-3b              | 41     | 3     | 66% | 17    | 0.43        |
+| lfm2-2.6b               | 41     | 4     | 67% | 32    | 0.82        |
+| falcon3-7b              | 40     | 3     | 67% | 25    | 2.18        |
+| granite-4.2-3b          | 38     | 2     | 53% | 16    | 0.50        |
+| nemotron-mini           | 38     | 2     | 49% | 37    | 3.20        |
+| mistral-7b              | 36     | 1     | 58% | 44    | 2.25        |
+| qwen3.5-2b              | 27     | 2     | 37% | 8     | 1.90        |
+| exaone-deep 2.4b / 7.8b | 0      | 0     | 0%  | 107   | 1.83 / 7.12 |
+| tinyllama               | 0      | 0     | 0%  | 106   | 0.57        |
+
+**Decision 19: `qwen3-4b-instruct`.** Thirteen more correct lines out of ninety than the
+incumbent, and one trap instead of four, for 3m -> 6m per episode. `gemma3n-e2b` is the
+throughput alternative -- the same 50 exact as `qwen3-4b` at 0.53 s/line -- and is recorded
+here as the documented fast route rather than discarded.
+
+**What the counter got wrong.** `nemotron-mini` ranked FIRST on change-count and eleventh of
+twelve working models here, on 49%. `smollm3-3b` ranked last on change-count and mid-table
+here. The two rankings disagree at both ends, which is the whole justification for decision 18.
+
+**Three models could not be judged**, recorded rather than dropped: `olmo2-7b` (loads, then
+cancels every task on llama.cpp b10548/sm61), `minicpm3-4b` (never served), and
+`lfm2.5-2.6b` (serves, but returns `reasoning_content` only and empty `content` on all 107
+lines with AND without `--jinja`; its template ignores `enable_thinking`).
+
+### `--jinja` is load-bearing and was undocumented
+
+`nanbeige4.2-3b` will not serve through a plainly-launched `llama-server`. llama.cpp carries
+built-in chat templates for common architectures and nanbeige's is not one of them, so
+without `--jinja` the server starts, answers `/health` with 200, and returns empty content
+forever -- the pipeline then repairs nothing and says nothing.
+
+This shipped as a beta-user landmine: `REPAIR_MODEL` defaulted to that model, and the wiki
+quickstart gave a plain launch command. Fixed in `docs/wiki/`, which now carries the flag in
+the tutorial, a troubleshooting recipe for the two distinct empty-reply failures, and a note
+on the `REPAIR_LLAMACPP_URL` row. Related: `/health` is not a readiness check -- it returns
+200 while weights load, which cost three whole bake-off runs scored as `<ERROR HTTP 503>`.
 
 **Model selection runs at the LARGEST quant that fits, not at the deployment quant.** Judging
 a candidate at Q4 risks eliminating it for quantisation damage rather than model quality,
