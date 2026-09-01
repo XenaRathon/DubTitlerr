@@ -317,6 +317,36 @@ def test_arc_categories_exclude_episode_and_chapter_listings(monkeypatch):
     assert not any("Episodes" in c or "Chapters" in c for c in cats)
 
 
+def test_plot_section_links_extracts_only_the_plot_section():
+    wt = (
+        "{{Infobox|junk=[[Navbox Junk]]}}\n"
+        "== Plot ==\n"
+        "[[Kirito]] and [[Asuna]] fight. <ref>[[Reference Junk]]</ref>\n"
+        "== Trivia ==\n"
+        "[[Should Not Appear]] is mentioned here.\n"
+    )
+    links = gv.plot_section_links(wt)
+    assert {"Kirito", "Asuna"} <= links
+    assert "Should Not Appear" not in links
+    assert "Reference Junk" not in links
+    assert "Navbox Junk" not in links
+
+
+def test_plot_section_links_filters_file_and_image_links():
+    wt = "== Plot ==\n[[Kirito]] draws [[File:Sword.png]] and [[Image:Map.png]].\n"
+    links = gv.plot_section_links(wt)
+    assert links == {"Kirito"}
+
+
+def test_plot_section_links_is_empty_with_no_plot_heading():
+    assert gv.plot_section_links("No headings here, just [[Kirito]].") == set()
+
+
+def test_plot_section_links_is_case_insensitive_on_the_heading():
+    wt = "==PLOT==\n[[Kirito]] appears.\n"
+    assert gv.plot_section_links(wt) == {"Kirito"}
+
+
 def test_arc_page_links_supply_the_names_categories_miss(monkeypatch):
     """Categories alone are not sufficient and this is measured, not theoretical: neither
     `Rebecca` nor `Kyros` -- the arc's two most-mentioned characters -- appears in ANY

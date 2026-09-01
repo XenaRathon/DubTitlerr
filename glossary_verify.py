@@ -286,6 +286,42 @@ def arc_categories(wiki_api: str, arc: str) -> list[str]:
     return out
 
 
+def _extract_links(wt: str) -> set[str]:
+    """[[...]] links from wikitext, templates/refs stripped, non-entity links dropped
+    (Category:/File:/Image:/w: namespaces, lowercase-first, bare Chapter/Episode/Volume
+    N). Shared by arc_page_links (whole page) and plot_section_links (one section) so
+    the filter cannot drift between them."""
+    for _ in range(4):  # nested templates
+        wt = re.sub(r"\{\{[^{}]*\}\}", " ", wt)
+    wt = re.sub(r"<ref[^>]*>.*?</ref>", " ", wt, flags=re.S)
+    wt = re.sub(r"<[^>]+>", " ", wt)
+    out = set()
+    for link in re.findall(r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]", wt):
+        link = link.strip()
+        if not link or link[:1].islower():
+            continue
+        if link.startswith(("Category:", "File:", "Image:", "w:")):
+            continue
+        if re.match(r"^(Chapter|Episode|Volume)\s+\d+$", link):
+            continue
+        out.add(link)
+    return out
+
+
+_PLOT_SECTION_RE = re.compile(r"==\s*Plot\s*==(.*?)(?=\n==[^=]|\Z)", re.S | re.I)
+
+
+def plot_section_links(wikitext: str) -> set[str]:
+    """Entity links from a wiki EPISODE page's Plot section only -- the per-episode
+    candidate primitive [S-2]. Measured 2026-08-29: 26-30 correct links per episode
+    versus 1,281+ franchise-wide, zero navbox pollution. Pure/no network; the caller
+    supplies wikitext already fetched."""
+    m = _PLOT_SECTION_RE.search(wikitext)
+    if not m:
+        return set()
+    return _extract_links(m.group(1))
+
+
 def arc_page_links(wiki_api: str, arc: str) -> set[str]:
     """Entities linked from the arc page's PROSE.
 
@@ -309,21 +345,7 @@ def arc_page_links(wiki_api: str, arc: str) -> set[str]:
         wt = _http_json(url)["parse"]["wikitext"]["*"]
     except Exception:
         return set()
-    for _ in range(4):  # nested templates
-        wt = re.sub(r"\{\{[^{}]*\}\}", " ", wt)
-    wt = re.sub(r"<ref[^>]*>.*?</ref>", " ", wt, flags=re.S)
-    wt = re.sub(r"<[^>]+>", " ", wt)
-    out = set()
-    for link in re.findall(r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]", wt):
-        link = link.strip()
-        if not link or link[:1].islower():
-            continue
-        if link.startswith(("Category:", "File:", "Image:", "w:")):
-            continue
-        if re.match(r"^(Chapter|Episode|Volume)\s+\d+$", link):
-            continue
-        out.add(link)
-    return out
+    return _extract_links(wt)
 
 
 def fetch_arc_titles(wiki_api: str, arc: str) -> set[str]:
