@@ -556,7 +556,15 @@ def llm_ollama(prompt, model=None):
         return out.splitlines()[0].strip().strip('"').strip() if out else ""
     except Exception as e:
         log("  llm fail:", e)
-        return ""
+        return LLM_UNREACHABLE
+
+
+# A transport failure is NOT an empty reply. Both used to return "", which made a dead
+# endpoint indistinguishable from "the model left the line alone" -- so every target on an
+# episode landed in llm_empty, `fixed` stayed 0, and the srt was rebuilt from conf.json as
+# raw ASR over whatever the last run shipped. A distinct sentinel is the smallest thing that
+# lets the caller tell the two apart.
+LLM_UNREACHABLE = "\x00unreachable"
 
 
 def llm_llamacpp(prompt, model):
@@ -589,7 +597,7 @@ def llm_llamacpp(prompt, model):
         return out.splitlines()[0].strip().strip('"').strip() if out else ""
     except Exception as e:
         log("  llm fail:", e)
-        return ""
+        return LLM_UNREACHABLE
 
 
 def llm(prompt, model=None):
@@ -733,6 +741,7 @@ def process(conf_path):
     audit, fixed, skipped_no_ref, rejected = [], 0, 0, 0
     rec = qc.Recorder()  # S-6 liveness counters, merged into the summary below
     llm_empty = 0
+    unreachable = 0
     rejected_secondary = 0  # C5: second-pass output refused by the gate
     # The model returned the line verbatim -- the single most common outcome of this stage
     # (568 of 836 targets on the SAO pass). accept_repair refuses it and the `not admitted`
@@ -799,11 +808,22 @@ def process(conf_path):
         # (source_start/source_end anchor the EVIDENCE window above; they are not what is
         # on screen.) Timing stays immutable: a repair that does not fit is rejected.
         dur = c["end"] - c["start"]
+        if new == LLM_UNREACHABLE:
+            # The BACKEND is down, which is a fact about the release, not about this card.
+            # A human cannot review "the server was unreachable", and unresolved.record's
+            # own docstring says llm_empty carries no proposal and was never a decision --
+            # so nothing is queued. The episode-level guard below refuses the rewrite.
+            unreachable += 1
+            new = ""
+            bucket = apply_human_text(c, store, stem)
+            if bucket == "rescued":
+                verdict_rescued += 1
+            elif bucket == "unfittable":
+                verdict_unfittable += 1
+            elif bucket == "owed":
+                verdict_owed += 1
+            continue
         if not new:
-            # llm() returns "" on any transport failure or timeout. The guard below is
-            # `if new and ...`, so an empty result incremented NOTHING and recorded nothing:
-            # a dead endpoint was indistinguishable from a card that needed no repair. With
-            # the backend down this is every targeted card in the episode.
             bucket = apply_human_text(c, store, stem)
             if bucket == "rescued":
                 verdict_rescued += 1
@@ -957,6 +977,14 @@ def process(conf_path):
     # Refusing is deliberately narrow: it fires only when EVERY target was skipped for want of
     # a reference AND the last run shipped repairs. An episode that genuinely has nothing to
     # fix still rewrites normally, and the first run of a new episode has no prior summary.
+    if targets and unreachable == len(targets):
+        log(
+            f"  REFUSED {os.path.basename(stem)}: the repair backend was unreachable for all"
+            f" {len(targets)} targets. Rebuilding the srt would overwrite the shipped text with"
+            " raw ASR, and a dead endpoint is not a review item, so nothing was queued."
+            " Check REPAIR_LLAMACPP_URL / REPAIR_BACKEND and re-run."
+        )
+        return "refused"
     if targets and fixed == 0 and skipped_no_ref == len(targets) and prior_repairs(stem) > 0:
         log(
             f"  REFUSED {os.path.basename(stem)}: every one of {len(targets)} targets was skipped for want of a"
@@ -985,6 +1013,7 @@ def process(conf_path):
         "repaired": fixed,
         "skipped_no_ref": skipped_no_ref,
         "llm_empty": llm_empty,
+        "unreachable": unreachable,
         "rejected_guard": rejected,  # model proposed an edit, accept_repair() refused it
         "rejected_secondary": rejected_secondary,  # C5: second pass refused, first pass kept
         "unchanged": unchanged,  # model echoed the line back; nothing proposed, nothing shipped

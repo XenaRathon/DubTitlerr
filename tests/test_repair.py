@@ -237,12 +237,16 @@ def test_llm_ollama_explicit_model_overrides_default(monkeypatch):
     assert captured["model"] == "other-model"
 
 
-def test_llm_ollama_swallows_transport_failure(monkeypatch):
+def test_llm_ollama_signals_a_transport_failure_rather_than_swallowing_it(monkeypatch):
+    """Still fail-soft -- it must never raise into the per-episode loop -- but a dead
+    endpoint is now DISTINGUISHABLE from an empty reply. Returning "" for both let a
+    backend outage rebuild an episode's srt from raw ASR over its shipped repairs."""
+
     def boom(url, body):
         raise OSError("connection refused")
 
     monkeypatch.setattr(repair, "_post_json", boom)
-    assert repair.llm_ollama("p") == ""  # same fail-soft behavior as before A1
+    assert repair.llm_ollama("p") == repair.LLM_UNREACHABLE
 
 
 def test_llm_llamacpp_request_shape_and_response_parsing(monkeypatch):
@@ -266,9 +270,9 @@ def test_llm_llamacpp_request_shape_and_response_parsing(monkeypatch):
     assert out == "quoted fix"
 
 
-def test_llm_llamacpp_swallows_transport_failure(monkeypatch):
+def test_llm_llamacpp_signals_a_transport_failure_rather_than_swallowing_it(monkeypatch):
     monkeypatch.setattr(repair, "_post_json", lambda url, body: (_ for _ in ()).throw(OSError("down")))
-    assert repair.llm_llamacpp("p", "m") == ""
+    assert repair.llm_llamacpp("p", "m") == repair.LLM_UNREACHABLE
 
 
 # --- A2: explicit connect/read timeouts + latency ----------------------------
@@ -775,15 +779,17 @@ def test_llm_llamacpp_uses_chat_endpoint_with_thinking_disabled(monkeypatch):
     assert out == "Zoro drew his blade."
 
 
-def test_llm_llamacpp_returns_empty_string_on_failure(monkeypatch):
-    """Matches llm_ollama: a backend failure must degrade to "no repair", never raise into
-    the per-episode loop."""
+def test_llm_llamacpp_returns_the_unreachable_sentinel_on_failure(monkeypatch):
+    """Matches llm_ollama: a backend failure must never raise into the per-episode loop.
+    It returns the sentinel rather than "", so the caller can tell a dead endpoint from a
+    model that had nothing to change."""
 
     def boom(url, body, timeout=180):
         raise OSError("connection refused")
 
     monkeypatch.setattr(repair, "_post_json", boom)
-    assert repair.llm_llamacpp("PROMPT", None) == ""
+    assert repair.llm_llamacpp("PROMPT", None) == repair.LLM_UNREACHABLE
+    assert repair.LLM_UNREACHABLE != "", "the sentinel must not be falsy-equal to an empty reply"
 
 
 def test_llm_llamacpp_treats_an_empty_reply_as_no_repair(monkeypatch):
@@ -2433,3 +2439,31 @@ def test_a_show_with_no_glossary_is_reported_not_silently_no_opped(tmp_path, mon
     assert repair.process(conf_path) == "repaired"
     out = capsys.readouterr().out
     assert "glossary" in out.lower() and "GLOSSARY_DIR" in out
+
+
+def test_a_dead_backend_refuses_the_episode_instead_of_rebuilding_raw_asr(tmp_path, monkeypatch):
+    """A transport failure is not "the model left the line alone".
+
+    `llm_llamacpp` returns "" for BOTH a dead endpoint and an empty reply, so with the
+    backend down every target lands in `llm_empty`, `fixed` stays 0, and process() rewrites
+    the srt from conf.json -- raw ASR over whatever the last run shipped. This is guard
+    (c)'s failure mode reached by a different road. Measured 2026-08-31: an accidental
+    merge pass with no reachable LLM queued 1,299 llm_empty entries across 11 episodes.
+    """
+    stem = str(tmp_path / "ep_deadbackend")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path, srt_path, [{"start": 0.0, "end": 2.0, "text": "garbled line", "avg_logprob": -0.9, "no_speech_prob": 0.1}]
+    )
+    shipped = open(srt_path, encoding="utf-8").read()
+
+    g = gl()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_deadbackend.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 2.0, "a reference line")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: repair.LLM_UNREACHABLE)
+
+    assert repair.process(conf_path) == "refused"
+    assert open(srt_path, encoding="utf-8").read() == shipped, "the shipped srt must not be rewritten"
+    assert not os.path.exists(stem + ".dubtitles.unresolved.jsonl"), "a dead endpoint is not a review item"
