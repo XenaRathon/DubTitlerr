@@ -118,6 +118,37 @@ def test_a_pinned_show_leads_even_if_long_unwatched(monkeypatch):
     assert order[0] == "One Pace"
 
 
+def test_a_pin_resolves_through_the_same_matching_as_a_watched_title(monkeypatch):
+    """R-6. A pin names a SHOW, not a directory: the operator writes `--pin Trigun Stampede`
+    while the directory is `TRIGUN STAMPEDE (2023) {tvdb-421378}`. Inserting the raw string
+    queued a path that does not exist and left the real one unpinned."""
+    monkeypatch.setattr(wq, "from_watchstate", lambda s: {"One Pace": 900})
+    monkeypatch.setattr(wq, "from_plex", lambda s: {})
+    monkeypatch.setattr(wq, "library_dirs", lambda r: ["One Pace", "TRIGUN STAMPEDE (2023) {tvdb-421378}"])
+    order, rep = wq.build(0, "/x", pins=["Trigun Stampede"])
+    assert order[0] == "TRIGUN STAMPEDE (2023) {tvdb-421378}"
+    assert rep["bad_pins"] == []
+
+
+def test_an_invalid_pin_cannot_manufacture_a_queue_out_of_zero_matches(monkeypatch, tmp_path):
+    """R-6, the reason this matters. The library was renamed, so no watched title matches
+    anything -- exactly the state the zero-match refusal exists for. A stale `--pin` was
+    inserted unvalidated, `order` came back non-empty, and main() happily overwrote a good
+    order file with one nonexistent directory. gen_loop.sh then skipped it every pass."""
+    out = tmp_path / "order.txt"
+    out.write_text("One Pace\n")
+    monkeypatch.setattr(wq, "from_watchstate", lambda s: {"One Pace (renamed)": 900})
+    monkeypatch.setattr(wq, "from_plex", lambda s: {})
+    monkeypatch.setattr(wq, "library_dirs", lambda r: ["One Pace"])
+
+    order, rep = wq.build(0, "/x", pins=["One Pace (renamed)"])
+    assert order == [], "a pin that names no library directory must not pad the queue"
+    assert rep["bad_pins"] == ["One Pace (renamed)"], "and it must be reported, not swallowed"
+
+    assert wq.main(["--out", str(out), "--root", "/x", "--pin", "One Pace (renamed)"]) == 2
+    assert out.read_text() == "One Pace\n", "the previous order file must survive the refusal"
+
+
 def test_dry_run_writes_nothing(monkeypatch, tmp_path):
     out = tmp_path / "order.txt"
     monkeypatch.setattr(wq, "from_watchstate", lambda s: {"One Pace": 100})

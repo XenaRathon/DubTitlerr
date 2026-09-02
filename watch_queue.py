@@ -151,10 +151,8 @@ def fold(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", clean_title(title).casefold())
 
 
-def match_dirs(titles: dict, dirs: list) -> tuple[list, list]:
-    """(ordered directory names, unmatched titles). Three tiers: exact, then the
-    `(YYYY)`/`{tvdb-}` normalisation, then `fold()`. Unmatched titles are RETURNED, never
-    dropped quietly -- a library rename would otherwise shrink the queue invisibly."""
+def _dir_index(dirs: list) -> tuple:
+    """The three lookup tiers over the library directory names, built once."""
     by_exact = {d: d for d in dirs}
     by_clean, by_fold, fold_dupes = {}, {}, set()
     for d in dirs:
@@ -164,10 +162,24 @@ def match_dirs(titles: dict, dirs: list) -> tuple[list, list]:
             fold_dupes.add(k)  # ambiguous: two directories fold together
         else:
             by_fold[k] = d
+    return by_exact, by_clean, by_fold, fold_dupes
+
+
+def resolve_dir(title: str, index: tuple) -> str | None:
+    """The library directory this title names, or None when nothing (or more than one
+    thing) matches. Exact, then the `(YYYY)`/`{tvdb-}` normalisation, then `fold()`."""
+    by_exact, by_clean, by_fold, fold_dupes = index
+    k = fold(title)
+    return by_exact.get(title) or by_clean.get(clean_title(title)) or (None if k in fold_dupes else by_fold.get(k))
+
+
+def match_dirs(titles: dict, dirs: list) -> tuple[list, list]:
+    """(ordered directory names, unmatched titles). Unmatched titles are RETURNED, never
+    dropped quietly -- a library rename would otherwise shrink the queue invisibly."""
+    index = _dir_index(dirs)
     hits, misses = {}, []
     for t, ts in titles.items():
-        k = fold(t)
-        d = by_exact.get(t) or by_clean.get(clean_title(t)) or (None if k in fold_dupes else by_fold.get(k))
+        d = resolve_dir(t, index)
         if d:
             hits[d] = max(hits.get(d, 0), ts)
         else:
@@ -185,12 +197,32 @@ def build(since: int, root: str, pins: list | None = None) -> tuple[list, dict]:
     merged: dict[str, int] = dict(ws)
     for t, ts in px.items():
         merged[t] = max(merged.get(t, 0), ts)
-    order, misses = match_dirs(merged, library_dirs(root))
+    dirs = library_dirs(root)
+    order, misses = match_dirs(merged, dirs)
+    # A pin is resolved through the SAME three tiers as a watched title, and only a pin
+    # that names a real directory is inserted. Inserting the raw string instead let any
+    # typo or stale rename manufacture a non-empty `order` out of zero real matches, which
+    # defeated main()'s zero-match refusal outright: the file was written, and gen_loop.sh
+    # then skipped the nonexistent path on every pass -- a silently idle GPU, which is the
+    # exact failure that refusal was added to prevent.
+    index = _dir_index(dirs)
+    bad_pins = []
     for p in reversed(pins or []):  # pinned shows lead, in the order given
-        if p in order:
-            order.remove(p)
-        order.insert(0, p)
-    return order, {"watchstate": len(ws), "plex": len(px), "union": len(merged), "matched": len(order), "unmatched": misses}
+        d = resolve_dir(p, index)
+        if not d:
+            bad_pins.append(p)  # reported, never inserted -- see main()
+            continue
+        if d in order:
+            order.remove(d)
+        order.insert(0, d)
+    return order, {
+        "watchstate": len(ws),
+        "plex": len(px),
+        "union": len(merged),
+        "matched": len(order),
+        "unmatched": misses,
+        "bad_pins": sorted(set(bad_pins)),
+    }
 
 
 def main(argv=None):
@@ -214,6 +246,11 @@ def main(argv=None):
         f"watch_queue: watchstate={rep['watchstate']} plex={rep['plex']} "
         f"union={rep['union']} matched={rep['matched']} window={a.window_days}d"
     )
+    if rep["bad_pins"]:
+        # Loud, but NOT fatal on its own: a mistyped pin must not stop a queue whose other
+        # shows resolved perfectly. When it was the ONLY pin and nothing else matched,
+        # `order` is now empty and the refusal below fires -- which is the point.
+        print(f"  PIN NOT IN LIBRARY, not queued: {', '.join(rep['bad_pins'])}", file=sys.stderr)
     if rep["unmatched"]:
         print(
             f"  no library directory for {len(rep['unmatched'])}: "
