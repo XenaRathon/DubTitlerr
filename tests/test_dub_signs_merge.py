@@ -469,3 +469,78 @@ def test_no_song_family_styles_means_no_drop_one_pace_case(tmp_path, monkeypatch
 
     assert status == "ok"
     assert dub == 2  # both dub cards survive -- nothing classified as a song span
+
+
+# --- _song_spans boundaries: what the 2s merge gap includes and excludes ------
+#
+# R-2 (2026-09-02 beta review). The drop deletes dialogue over a blanket interval, and the
+# only production evidence for it is a single read-only SAO S01E02 run this repository
+# cannot reproduce. These pin the boundary behaviour of the pure functions so that a change
+# to SONG_SPAN_MERGE_GAP_MS, or to the merge itself, is visible in the suite rather than in
+# a shipped track. Two of them pin a KNOWN CEILING, not desirable behaviour; each says so.
+
+
+def _spans(*pairs):
+    """_song_spans over song-family-styled events with the given (start, end) ms."""
+    evs = [pysubs2.SSAEvent(start=s, end=e, style="Opening-Romaji-L1") for s, e in pairs]
+    return dsm._song_spans(evs)
+
+
+def test_song_events_closer_than_the_gap_merge_into_one_span():
+    """The case the gap exists for: SAO E02's opening is 2,142 syllable events, and each
+    adjacent pair must collapse into the one span that matters."""
+    assert _spans((0, 1000), (1500, 2500)) == [[0, 2500]]
+
+
+def test_song_events_further_apart_than_the_gap_stay_separate_spans():
+    """An OP and an ED are minutes apart. Ordinary dialogue between them must not sit
+    inside a merged span."""
+    assert _spans((0, 1000), (90000, 95000)) == [[0, 1000], [90000, 95000]]
+
+
+def test_a_slow_ballad_leaves_its_own_gaps_uncovered_known_ceiling():
+    """KNOWN CEILING, pinned deliberately. A ballad whose lyric events are more than 2s
+    apart yields one span per line, not one span per song, so a whisper hallucination
+    sitting in the instrumental gap is NOT dropped. That is under-drop -- the shipped track
+    keeps a hallucinated card -- which is strictly safer than deleting real dialogue, and
+    is why widening the gap is not the automatic answer. If a measured ballad shows this
+    firing, the fix is per-event avg_logprob gating (see the debt: note in build()), not a
+    larger blanket interval."""
+    spans = _spans((0, 1000), (4000, 5000), (8000, 9000))
+    assert spans == [[0, 1000], [4000, 5000], [8000, 9000]]
+    assert not dsm._overlaps_any(2000, 3000, spans), "the gap is uncovered -- by design, for now"
+
+
+def test_dialogue_inside_a_bridged_gap_is_dropped_known_ceiling():
+    """KNOWN CEILING, pinned deliberately, and the sharpest edge of the whole feature: the
+    merge extends a span ACROSS the gap between two song events, so a dub card that
+    overlaps NEITHER event is still dropped. Two events 1.5s apart bridge into [0, 3500],
+    and a card at [1800, 2200] -- entirely between the two lyrics -- is deleted.
+
+    This is over-drop: it removes text, and the removal is silent apart from the count in
+    the log line. It is bounded to the sub-2s window between two song-styled events, which
+    no measured release has put dialogue into. Revisit with the same avg_logprob gate the
+    build() debt: note names."""
+    spans = _spans((0, 1000), (2500, 3500))
+    assert spans == [[0, 3500]], "the 1.5s gap is under the 2s merge threshold"
+    assert dsm._overlaps_any(1800, 2200, spans), "a card in the bridged gap is dropped"
+
+
+def test_narration_over_an_opening_is_dropped_known_ceiling(tmp_path, monkeypatch):
+    """KNOWN CEILING, pinned deliberately, end to end. A show that narrates over its OP
+    loses that narration from the dub track along with the lyrics -- the build() debt: note
+    is the record of that trade. This test is what fires when someone gates the drop on
+    confidence instead of on the span."""
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: _song_track().save(out) or True)
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text(
+        "1\n00:00:02,500 --> 00:00:04,500\nMy name is Kirito, and this is how it started.\n\n"
+        "2\n00:00:25,000 --> 00:00:27,000\nReal spoken dialogue after the OP\n\n",
+        encoding="utf-8",
+    )
+
+    status, _signs, dub = dsm.build("fake-video.mkv", str(dub_srt), str(tmp_path / "out.ass"))
+
+    assert status == "ok"
+    assert dub == 1, "the narration is dropped with the song span -- documented, not desired"
