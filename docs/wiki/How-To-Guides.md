@@ -168,9 +168,10 @@ Look at `choices[0].message`. Two failures look identical from the pipeline's si
 | `content` empty, `reasoning_content` full | The model is thinking and never answers | `--jinja` **and** `--chat-template-kwargs '{"enable_thinking":false}'` |
 | `content` empty, nothing else             | The chat template was never applied     | `--jinja`                                                              |
 
-**`--jinja` is required by any model whose chat template is not built into llama.cpp** —
-`nanbeige4.2-3b`, the default, is one of them. Without it the server loads, answers
-`/health` with `200`, and returns empty content forever.
+**`--jinja` is required** for `chat_template_kwargs` (specifically `enable_thinking:false`,
+which `repair.py` always sends) to take effect at all. Without it the server loads, answers
+`/health` with `200`, and a thinking-capable model — `qwen3-4b-instruct`, the default,
+included — spends its whole budget on reasoning and returns empty content forever.
 
 Do not use `/health` as a readiness check. It reports `200` while weights are still
 loading. Ask for a real completion instead, as above.
@@ -181,8 +182,9 @@ loading. Ask for a real completion instead, as above.
 
 **Problem:** you want Whisper and the repair model resident at once on one card.
 
-Measured: `nanbeige4.2-3b` at **Q8_0** is **4.43 GB** of weights at 16k context. On a 6 GB
-card that leaves roughly 1.4 GB — **not enough for Whisper alongside it.**
+Measured: `qwen3-4b-instruct` at **Q8_0** is **3.99 GB** of weights. On a 6 GB card that
+leaves roughly 2 GB — tight alongside Whisper, not necessarily enough depending on your
+Whisper model and compute type.
 
 Options, cheapest first:
 

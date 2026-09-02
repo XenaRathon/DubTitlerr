@@ -153,6 +153,26 @@ def test_a_correct_verdict_supplies_the_humans_text_and_still_obeys_fits_card(tm
     assert "harbour" not in open(unfit + SRT).read(), "the write-back cannot widen a card either"
 
 
+def test_a_correct_too_wide_for_one_line_but_splittable_ships_as_two_cues(tmp_path):
+    """The other writer of the same rule. repair.py's process() and review_apply.py's
+    apply_episode() must not disagree about what a legal split is, or a correction split
+    on one re-run and refused on the other. Same verified fixture as repair.py's own test:
+    at 10.0s the 84-char correction is over_line_len only (no over_cps), and the sentence-
+    boundary split gives two individually legal single-line halves."""
+    half1 = "The captain ordered everyone to abandon ship at once."
+    half2 = "Nobody thought twice about it."
+    rows = [{"start": 100.0, "end": 110.0, "text": "I saw spondum"}]
+    stem = _muxed(tmp_path, "ep_split", rows)
+    store = decisions.record({}, "I saw spondum", "I saw Spandam", "correct", text=f"{half1} {half2}")
+
+    review_apply.apply_episode(stem, store, apply=True)
+
+    cues = _cues(stem + SRT)
+    assert len(cues) == 2, "two cues, not one -- a single cue could never legally hold this text"
+    joined = "\n".join(t for _, t in cues)
+    assert "abandon ship at once" in joined and "Nobody thought twice" in joined
+
+
 def test_a_show_sweep_invalidates_only_the_episodes_that_change(tmp_path):
     """Three episodes, one verdict."""
     hit = _muxed(tmp_path, "ep_a", [{"start": 0.0, "end": 2.0, "text": "I saw spondum"}])
@@ -300,3 +320,57 @@ def test_removing_a_stale_ass_is_recorded_so_a_lost_signs_pass_is_noticeable(tmp
 
     assert had.get("ass_dropped") is True
     assert never.get("ass_dropped") is None, "the two cases must be distinguishable in the result"
+
+
+def test_an_untimed_word_in_the_card_falls_back_instead_of_raising(tmp_path):
+    """R-B2. A persisted words.json is ALLOWED to hold a word with no timing of its own --
+    punctuation.restore() inserts them, and repair's window helper is written to exclude
+    them so card_split degrades to the proportional fallback. review_apply filtered the
+    window itself with `w.get("start", 0) >= start`, which compares None against a float
+    and raises TypeError before that fallback can ever be reached: the Apply endpoint
+    returned no srt and left the stamp in place, so the reviewed correction never shipped.
+    Both writers now select the window through card_split.card_words."""
+    half1 = "The captain ordered everyone to abandon ship at once."
+    half2 = "Nobody thought twice about it."
+    rows = [{"start": 100.0, "end": 110.0, "text": "I saw spondum"}]
+    stem = _muxed(tmp_path, "ep_untimed", rows)
+    with open(stem + ".dubtitles.words.json", "w") as f:
+        json.dump(
+            {
+                "transcribe_version": common.TRANSCRIBE_VERSION,
+                "words": [
+                    {"word": "I", "start": 100.0, "end": 100.5},
+                    {"word": "saw", "start": 101.0, "end": None},  # restore() inserted, no timing
+                    {"word": "spondum", "start": 102.0, "end": 103.0},
+                ],
+            },
+            f,
+        )
+    store = decisions.record({}, "I saw spondum", "I saw Spandam", "correct", text=f"{half1} {half2}")
+
+    res = review_apply.apply_episode(stem, store, apply=True)
+
+    assert not res.get("error"), res
+    cues = _cues(stem + SRT)
+    assert len(cues) == 2, "the untimed word must degrade to proportional, not abort the split"
+    assert not os.path.exists(stem + STAMP)
+
+
+def test_the_newest_dated_correction_wins_not_the_first_one_written(tmp_path):
+    """R-5. `record` replaces per (orig, proposed) pair, so ONE original legitimately holds
+    two corrections made against different proposals -- and decisions.corrected_text picks
+    the later by `at` (decisions.py:184). review_apply used `next(...)` over file order and
+    could write the superseded wording into the reopening srt; if the merge pass then
+    stopped before repair.py re-derived it, the visible artifact was the human decision
+    they had already replaced."""
+    rows = [{"start": 0.0, "end": 4.0, "text": "I saw spondum"}]
+    stem = _muxed(tmp_path, "ep_two_corrections", rows)
+    store = decisions.record({}, "I saw spondum", "I saw Spandine", "correct", text="old wording")
+    store = decisions.record(store, "I saw spondum", "I saw Spandam", "correct", text="new wording")
+    # File order is the trap: the superseded entry is first, and it is the older `at`.
+    entries = store["decisions"]
+    assert entries[0]["text"] == "old wording" and entries[0]["at"] <= entries[1]["at"]
+
+    review_apply.apply_episode(stem, store, apply=True)
+
+    assert [t for _, t in _cues(stem + SRT)] == ["new wording"]

@@ -1,7 +1,8 @@
 # Drop whisper's song lyrics on episodes with a signs/songs track, and restore the fansub's English translation
 
-Status: open
+Status: closed
 Created: 2026-08-30
+Closed: 2026-09-02
 Owner decision: option 1 of 2 — drop the transcription AND bring back the fansub's English
 song translation, so the viewer gets translated lyrics rather than invented ones.
 
@@ -78,26 +79,48 @@ already on every card.
 
 ## Acceptance criteria
 
-- [ ] On an episode WITH a signs/songs track, dubtitle cards overlapping a song-styled S&S
+- [x] On an episode WITH a signs/songs track, dubtitle cards overlapping a song-styled S&S
       event are dropped from the shipped track.
-- [ ] `dub_signs_merge.keep_event` no longer discards the fansub's English song translation,
+- [x] `dub_signs_merge.keep_event` no longer discards the fansub's English song translation,
       so the OP/ED ship with translated lyrics instead of none.
-- [ ] The style pattern covers the Romaji, Kanji, Japanese AND English siblings — asserted on
+- [x] The style pattern covers the Romaji, Kanji, Japanese AND English siblings — asserted on
       the real style names above, not on a synthetic `Song` style.
-- [ ] An episode with NO signs/songs track is completely unaffected.
-- [ ] One Pace is byte-identical before and after — no chapters, no OP/ED, nothing to drop.
-- [ ] The edge case above is either handled or explicitly accepted in a comment naming the
+- [x] An episode with NO signs/songs track is completely unaffected.
+- [x] One Pace is byte-identical before and after — no chapters, no OP/ED, nothing to drop.
+- [x] The edge case above is either handled or explicitly accepted in a comment naming the
       condition that would revisit it.
-- [ ] SAO S01E02's 14 OP cards and 12 ED cards are gone, and its `ED1-English` events are
+- [x] SAO S01E02's 14 OP cards and 12 ED cards are gone, and its `ED1-English` events are
       present in the muxed track.
 
 ## Evidence
 
-Pending.
+Implemented in `166e88d` (fix(dub_signs_merge): drop whisper's song hallucinations, restore
+fansub lyrics).
 
-Measurements to re-derive: chapter spans via `ffprobe -show_chapters`; the OP/ED cards by
-filtering `<stem>.dubtitles.conf.json` to those spans and printing `avg_logprob`; the style
-census by loading the S&S stream with `pysubs2` and counting `event.style`.
+- `STRONG_DROP_STYLE`'s `translat` removed — the fansub's own song translation is kept, not
+  dropped. `SONG_FAMILY_STYLE` (`^(?:opening|ending)[\s_-]|^(?:op|ed)\d+[\s_-]`, case
+  insensitive) catches a song's Kanji/Japanese/English siblings via the shared style-name
+  prefix, without enumerating every language name.
+- `_song_spans()` merges song-family-styled kept events into per-song (start, end) blocks
+  (a 2,000ms adjacency gap); `build()`'s dub loop skips any card overlapping one.
+- Unit tests (`tests/test_dub_signs_merge.py`): `keep_event` keeps the translation style and
+  the Kanji/Japanese/English siblings and beats a weak-drop style guess; `build()` drops a
+  card inside a synthetic song span, keeps one outside it, keeps the fansub lyrics alongside
+  the drop, logs the dropped count, and leaves a signs-track with no song-family styles
+  (the One Pace shape) completely untouched.
+- **Verified read-only against the real SAO S01E02** production video (no mutation — the
+  dub srt was reconstructed from `conf.json`, `build()` wrote to a `/tmp` scratch path, and
+  the deployed scratch script was deleted after): 25 whisper cards dropped; all 4
+  hallucinated lines this todo quoted (`Miss ni koha...`, `I can't live in the heart.`, `I'm
+looking for short future.`, `I've been to the strong witness.`) are absent from the
+  shipped track; all 7 real song-family styles present in the merged output
+  (`Opening-Romaji-L1` 2142, `Opening-Kanji-L1` 780, `Opening-English-L0`/`L1` 12 each,
+  `ED1-Romaji` 1445, `ED1-Japanese` 504, `ED1-English` 22 — the `Opening-English-L0/L1`
+  split wasn't in this todo's own style census but is covered by the same prefix pattern).
+- Edge case (dialogue over an intro) left as a named `debt:` comment in `build()`, per the
+  todo's own acceptance option, rather than solved — no measured case has fired it yet.
+
+Full suite green, `ruff check .` clean.
 
 ## Interaction with other open work
 

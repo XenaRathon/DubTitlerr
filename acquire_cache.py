@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-token decision cache for glossary_acquire.
+"""Per-pair adjudication cache for glossary_acquire's `escalate()`.
 
 `glossary_acquire.py` re-derives the same conclusions every sweep. Measured on One Pace
 (462 episodes): `settled` holds 107 terms against 8,199 harvested, so ~99% of the work
@@ -7,27 +7,37 @@ repeats -- including 371 LLM calls in `escalate` at ~1.3s each, 71% of the stage
 It exceeded a 1800s timeout three sweeps running and has therefore never completed, which
 means it has never contributed anything either.
 
-This module remembers what was decided, so the second run costs only what is new.
+This module remembers what `escalate()`'s LLM adjudication decided for one (variant,
+canonical) pair, so the second run pays for the call only once.
+
+WHAT THIS DOES NOT CACHE, AND WHY: an earlier version of this module cached the pipeline's
+FINAL verdict per token and folded a cache hit into `settled`, which skipped the token
+entirely -- out of `propose()`, out of the report, out of everything. `glossary_acquire`
+produces exactly three verdicts (`apply`, `known`, `flag`), and all three write glossary
+state, so there is no verdict a dry run may safely skip: a cached `apply` never reaches
+`--apply`, and a cached `flag` never reaches the human review queue it exists to feed.
+Measured 2026-08-29: two byte-identical dry runs over One Pace reported `proposed 641`
+then `proposed 0`, and five accumulated cache files held 10,708 `flag` verdicts that would
+never have surfaced for a human to review. See
+`.procoder/todo/20260829-acquire-cache-suppresses-every-verdict.md`.
+
+The fix is to cache the expensive INTERMEDIATE instead: `adjudicate_merge()`'s answer to
+"are `variant` and `canonical` the same entity", keyed on that pair. Every token still flows
+through `propose()`, `escalate()` and `source_gate()` on every run -- the report is always
+complete and nothing is suppressed -- while the LLM cost is paid once per pair. A merge
+adjudication about two specific strings is also a more stable fact than a frequency-derived
+verdict: it does not need the staleness/recycling logic the old per-token cache required,
+because it never depended on how many times a token had been seen.
 
 ABSENCE IS THE CACHE MISS. There is no corpus fingerprint, no TTL and no versioned key: a
-token's verdict does not change because new episodes arrived, and a new token is simply not
-in the file. The failure mode of a fingerprint -- serving a stale answer, or invalidating
-everything at once -- is the class of bug this codebase keeps finding, so it is not built.
-
-Two things ARE conditional, and both get a per-token guard rather than a global one:
-
-  the canonical    An `apply` verdict's canonical is resolved against today's wiki titles,
-                   and glossary_verify.fetch_titles re-fetches on a 30-day TTL. A page
-                   rename would leave a cache hit writing a dead title into hard_fixes
-                   forever. `stale_canonical()` checks membership in the caller's
-                   norm_titles -- O(1), and only the affected entry misses.
-  the floor        A `below-floor` verdict depends on whether a near-miss sits in
-                   anchor_terms, and that set grows as applies accumulate. The anchor the
-                   floor rested on is stored and compared.
+pair's adjudication does not change because new episodes arrived, and a new pair is simply
+not in the file. The failure mode of a fingerprint -- serving a stale answer, or
+invalidating everything at once -- is the class of bug this codebase keeps finding, so it
+is not built.
 
 Contract, mirroring qc.write and unresolved.record: this is an OPTIMISATION. It must never
-raise and never change what the pipeline decides. A corrupt or unreadable cache degrades to
-a full run.
+raise and never change what the pipeline decides -- only how many LLM calls it takes to
+decide it. A corrupt or unreadable cache degrades to a full run.
 """
 
 from __future__ import annotations
@@ -40,28 +50,14 @@ from common import SIDECAR_MODE
 
 SUFFIX = ".acquire-cache.json"
 
-# How much a token's occurrence count must grow before a frequency-derived junk verdict is
-# reconsidered. One Pace is the show that punishes a permanent junk ruling: a token seen
-# twice in 20 episodes can be a real name that recurs heavily 200 episodes later.
-JUNK_RECHECK_GROWTH = 3
-
-# Reasons whose facts CANNOT change with more data, so their verdicts never recycle:
-# wordlist membership, exact-match equality, and positional distribution respectively.
-# Everything else -- below-floor, unseen-needs-evidence, share-too-close, transcript-new-term,
-# growth-over-cap -- is conditional on corpus size or coverage and does recycle. Naming only
-# `below-floor` (as the first draft of the spec did) would have permanently junked four other
-# corpus-derived verdicts, defeating the recycling rule for exactly the long-tail names it
-# exists to rescue.
-STRUCTURAL_REASONS = frozenset({"english-word", "already-canonical", "sentence-initial-only"})
-
 
 def path_for(gloss_path: str) -> str:
     return gloss_path[:-5] + SUFFIX if gloss_path.endswith(".json") else gloss_path + SUFFIX
 
 
 def load(gloss_path: str) -> dict:
-    """Every remembered verdict. Returns {} rather than raising -- a cache that cannot be
-    read is a slow run, never a failed one."""
+    """Every remembered adjudication. Returns {} rather than raising -- a cache that cannot
+    be read is a slow run, never a failed one."""
     try:
         with open(path_for(gloss_path), encoding="utf-8") as f:
             doc = json.load(f)
@@ -90,79 +86,24 @@ def save(gloss_path: str, cache: dict) -> bool:
         return False
 
 
-def recycles(reason: str) -> bool:
-    """True if this junk reason could flip given a bigger corpus."""
-    return reason not in STRUCTURAL_REASONS
+def escalation_for(cache: dict, variant: str, canonical: str) -> dict | None:
+    """The remembered `adjudicate_merge(variant, canonical, ...)` result, or None.
+
+    A malformed entry (wrong shape, a stale file from the old per-token cache) is a miss,
+    never an error -- the caller just pays for the LLM call again."""
+    try:
+        entry = cache.get(variant, {}).get(canonical)
+    except AttributeError:  # cache[variant] is not a dict -- the old cache's shape
+        return None
+    if not isinstance(entry, dict) or "same_entity" not in entry or "confidence" not in entry:
+        return None
+    return {"same_entity": bool(entry["same_entity"]), "confidence": entry["confidence"]}
 
 
-def stale_canonical(entry: dict, norm_titles: set, normalize) -> bool:
-    """True if the entry's canonical is no longer a wiki title.
-
-    The one thing `absence is the cache miss` does not cover: the verdict label is stable,
-    the canonical it carries is not. Checked per token against a set the caller already
-    built -- a title-set hash was rejected because it re-runs the whole escalate cost on any
-    rename anywhere, which is the other half of the failure this design avoids.
-
-    Detects DISAPPEARANCE, not re-resolution. A canonical that changes to a different valid
-    title is a case a human should re-litigate, not one the cache should quietly swap."""
-    canon = entry.get("canonical")
-    if not canon or not norm_titles:
-        return False
-    return normalize(canon) not in norm_titles
-
-
-def is_fresh(entry: dict, count: int, floor_anchor, norm_titles: set, normalize) -> bool:
-    """Whether a cached verdict may be served for a token seen `count` times this run."""
-    if not isinstance(entry, dict) or "verdict" not in entry:
-        return False
-    if stale_canonical(entry, norm_titles, normalize):
-        return False
-    if entry["verdict"] != "junk":
-        return True
-    reason = entry.get("reason", "")
-    if not recycles(reason):
-        return True  # structural: the fact cannot change
-    if count > int(entry.get("count", 0)) * JUNK_RECHECK_GROWTH:
-        return False  # materially more evidence than last time
-    if entry.get("floor_anchor") != floor_anchor:
-        return False  # the anchor its floor rested on moved
-    return True
-
-
-def skippable(cache: dict, counts: dict, anchor_for, norm_titles: set, normalize) -> set:
-    """Tokens whose cached verdict still stands -- the caller folds these into `settled`.
-
-    `anchor_for(token)` returns the token's current settled_target, so a junk verdict whose
-    floor rested on an anchor that has since moved is not served."""
-    out = set()
-    for tok, entry in cache.items():
-        try:
-            if is_fresh(entry, counts.get(tok, 0), anchor_for(tok), norm_titles, normalize):
-                out.add(tok)
-        except Exception:  # a malformed entry costs that token, not the run
-            continue
-    return out
-
-
-def remember(cache: dict, proposals: list, counts: dict) -> dict:
-    """Fold this run's finished proposals into the cache. Returns the same dict.
-
-    Called AFTER source_gate, so what is stored is the verdict the pipeline actually reached
-    -- including the post-escalate outcome, which is the 71% this exists to stop repaying."""
-    for p in proposals:
-        tok = p.get("variant")
-        if not tok:
-            continue
-        verdict = p.get("verdict")
-        entry = {
-            "verdict": "junk" if verdict == "flag" else verdict,
-            "count": int(counts.get(tok, p.get("variant_count", 0)) or 0),
-        }
-        if p.get("reason"):
-            entry["reason"] = p["reason"]
-        if p.get("canonical"):
-            entry["canonical"] = p["canonical"]
-        if p.get("settled_target") is not None:
-            entry["floor_anchor"] = p["settled_target"]
-        cache[tok] = entry
+def remember_escalation(cache: dict, variant: str, canonical: str, adjudication: dict) -> dict:
+    """Fold one `adjudicate_merge` answer into the cache. Returns the same dict."""
+    cache.setdefault(variant, {})[canonical] = {
+        "same_entity": bool(adjudication.get("same_entity")),
+        "confidence": adjudication.get("confidence"),
+    }
     return cache

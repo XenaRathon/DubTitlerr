@@ -1,6 +1,6 @@
 # REPAIR_UNANCHORED is load-bearing for One Pace and is set nowhere in the repo
 
-Status: open
+Status: closed
 Created: 2026-08-30
 Severity: a merge pass run from the committed scripts SILENTLY STRIPS repairs
 

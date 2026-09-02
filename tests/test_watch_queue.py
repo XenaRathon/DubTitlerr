@@ -59,6 +59,30 @@ def test_unreachable_out_file_is_left_untouched(monkeypatch, tmp_path, capsys):
     assert out.read_text() == "One Pace\n"  # byte-identical
 
 
+def test_zero_matched_shows_refuses_to_write_and_leaves_the_file_alone(monkeypatch, tmp_path, capsys):
+    """A renamed library folder is real data on both sources that matches zero directories --
+    a different fact from 'nothing watched' (empty sources, which build() itself refuses) and
+    just as dangerous to write: an order file with zero shows idles the whole GPU sweep for
+    RESCAN_INTERVAL with no log signal, while docker ps shows healthy."""
+    out = tmp_path / "anime_order.txt"
+    out.write_text("One Pace\n")
+    monkeypatch.setattr(wq, "from_watchstate", lambda s: {"One Pace (renamed)": 100})
+    monkeypatch.setattr(wq, "from_plex", lambda s: {})
+    monkeypatch.setattr(wq, "library_dirs", lambda r: ["One Pace"])  # the old name -- nothing matches
+    assert wq.main(["--out", str(out)]) == 2
+    assert out.read_text() == "One Pace\n"  # byte-identical, not truncated to empty
+    assert "REFUSING TO WRITE" in capsys.readouterr().err
+
+
+def test_the_write_is_atomic_no_tmp_file_left_behind(monkeypatch, tmp_path):
+    out = tmp_path / "order.txt"
+    monkeypatch.setattr(wq, "from_watchstate", lambda s: {"One Pace": 100})
+    monkeypatch.setattr(wq, "from_plex", lambda s: {"One Pace": 90})
+    monkeypatch.setattr(wq, "library_dirs", lambda r: ["One Pace"])
+    assert wq.main(["--out", str(out)]) == 0
+    assert [p.name for p in tmp_path.iterdir()] == ["order.txt"]  # no order.txt.<x>.tmp survives
+
+
 def test_title_matches_a_tvdb_suffixed_directory():
     dirs = ["SPY x FAMILY (2022) {tvdb-405920}", "One Pace"]
     order, misses = wq.match_dirs({"SPY x FAMILY": 5}, dirs)
@@ -92,6 +116,37 @@ def test_a_pinned_show_leads_even_if_long_unwatched(monkeypatch):
     monkeypatch.setattr(wq, "library_dirs", lambda r: ["Trigun", "One Pace"])
     order, _ = wq.build(0, "/x", pins=["One Pace"])
     assert order[0] == "One Pace"
+
+
+def test_a_pin_resolves_through_the_same_matching_as_a_watched_title(monkeypatch):
+    """R-6. A pin names a SHOW, not a directory: the operator writes `--pin Trigun Stampede`
+    while the directory is `TRIGUN STAMPEDE (2023) {tvdb-421378}`. Inserting the raw string
+    queued a path that does not exist and left the real one unpinned."""
+    monkeypatch.setattr(wq, "from_watchstate", lambda s: {"One Pace": 900})
+    monkeypatch.setattr(wq, "from_plex", lambda s: {})
+    monkeypatch.setattr(wq, "library_dirs", lambda r: ["One Pace", "TRIGUN STAMPEDE (2023) {tvdb-421378}"])
+    order, rep = wq.build(0, "/x", pins=["Trigun Stampede"])
+    assert order[0] == "TRIGUN STAMPEDE (2023) {tvdb-421378}"
+    assert rep["bad_pins"] == []
+
+
+def test_an_invalid_pin_cannot_manufacture_a_queue_out_of_zero_matches(monkeypatch, tmp_path):
+    """R-6, the reason this matters. The library was renamed, so no watched title matches
+    anything -- exactly the state the zero-match refusal exists for. A stale `--pin` was
+    inserted unvalidated, `order` came back non-empty, and main() happily overwrote a good
+    order file with one nonexistent directory. gen_loop.sh then skipped it every pass."""
+    out = tmp_path / "order.txt"
+    out.write_text("One Pace\n")
+    monkeypatch.setattr(wq, "from_watchstate", lambda s: {"One Pace (renamed)": 900})
+    monkeypatch.setattr(wq, "from_plex", lambda s: {})
+    monkeypatch.setattr(wq, "library_dirs", lambda r: ["One Pace"])
+
+    order, rep = wq.build(0, "/x", pins=["One Pace (renamed)"])
+    assert order == [], "a pin that names no library directory must not pad the queue"
+    assert rep["bad_pins"] == ["One Pace (renamed)"], "and it must be reported, not swallowed"
+
+    assert wq.main(["--out", str(out), "--root", "/x", "--pin", "One Pace (renamed)"]) == 2
+    assert out.read_text() == "One Pace\n", "the previous order file must survive the refusal"
 
 
 def test_dry_run_writes_nothing(monkeypatch, tmp_path):

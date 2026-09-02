@@ -1,11 +1,15 @@
-"""Per-token decision cache for glossary_acquire.
+"""Per-pair adjudication cache for glossary_acquire's `escalate()`.
 
 Measured on One Pace (462 episodes): `settled` was 107 terms against 8,199 harvested, so
 ~99% of the work repeated every sweep -- including 371 LLM calls in escalate, 71% of the
 stage's runtime. It blew a 1800s timeout three sweeps running and never once completed.
 
-The design's load-bearing claim is "absence is the cache miss" -- no fingerprint, no TTL.
-These tests pin the two places that claim does NOT cover."""
+An earlier version of this module cached the pipeline's FINAL verdict per token and folded
+a hit into `settled`, which skipped the token everywhere downstream -- including out of the
+review queue a dry run was supposed to report. Two byte-identical dry runs over One Pace
+measured `proposed 641` then `proposed 0`. These tests pin the replacement: only
+`escalate()`'s LLM adjudication is cached, keyed on the (variant, canonical) pair, so every
+token still reaches propose()/source_gate() in full on every run."""
 
 import os
 import stat
@@ -13,112 +17,53 @@ import stat
 import acquire_cache as ac
 
 
-def NORM(s):  # stand-in for normalize_title in these unit tests
-    return s.strip()
-
-
 def test_absence_is_the_cache_miss(tmp_path):
     g = str(tmp_path / "Show.json")
     assert ac.load(g) == {}
-    assert ac.skippable({}, {"luffy": 5}, lambda t: None, {"Luffy"}, NORM) == set()
+    assert ac.escalation_for({}, "dothamingo", "Doflamingo") is None
 
 
-def test_a_cached_verdict_short_circuits_the_token(tmp_path):
-    cache = {"luffy": {"verdict": "apply", "canonical": "Luffy", "count": 40}}
-    assert ac.skippable(cache, {"luffy": 41}, lambda t: None, {"Luffy"}, NORM) == {"luffy"}
+def test_a_remembered_adjudication_is_served_back():
+    cache = ac.remember_escalation({}, "dothamingo", "Doflamingo", {"same_entity": True, "confidence": "high"})
+    assert ac.escalation_for(cache, "dothamingo", "Doflamingo") == {"same_entity": True, "confidence": "high"}
 
 
-def test_a_renamed_canonical_invalidates_only_that_entry():
-    """The gap 'absence is the cache miss' does not cover. fetch_titles re-fetches on a
-    30-day TTL, so a wiki rename would otherwise write a dead title into hard_fixes
-    forever."""
-    cache = {
-        "luffy": {"verdict": "apply", "canonical": "Luffy", "count": 40},
-        "zoro": {"verdict": "apply", "canonical": "Zoro", "count": 30},
-    }
-    titles = {"Luffy"}  # "Zoro" was renamed away
-    assert ac.skippable(cache, {"luffy": 40, "zoro": 30}, lambda t: None, titles, NORM) == {"luffy"}
+def test_the_pair_is_the_key_not_either_side_alone():
+    """The same variant escalated against a DIFFERENT canonical is a different question and
+    must not reuse the first answer."""
+    cache = ac.remember_escalation({}, "kaido", "Kaido", {"same_entity": True, "confidence": "high"})
+    assert ac.escalation_for(cache, "kaido", "Kaidou") is None
 
 
-def test_structural_junk_never_recycles_at_any_count():
-    for reason in ("english-word", "already-canonical", "sentence-initial-only"):
-        e = {"verdict": "junk", "reason": reason, "count": 2}
-        assert ac.is_fresh(e, 100000, None, set(), NORM) is True, reason
-        assert ac.recycles(reason) is False
+def test_a_low_confidence_or_negative_adjudication_is_cached_too():
+    """A cache is a memo of the LLM's answer, not just of confirmations -- re-asking a
+    question the model was unsure about wastes the same call the cache exists to avoid."""
+    cache = ac.remember_escalation({}, "a", "B", {"same_entity": False, "confidence": "low"})
+    assert ac.escalation_for(cache, "a", "B") == {"same_entity": False, "confidence": "low"}
 
 
-def test_every_non_structural_junk_reason_recycles():
-    """Naming only `below-floor` would permanently junk four other corpus-derived
-    verdicts -- the long-tail names the recycling rule exists to rescue."""
-    for reason in ("below-floor", "unseen-needs-evidence", "share-too-close", "transcript-new-term", "growth-over-cap"):
-        assert ac.recycles(reason) is True, reason
-        e = {"verdict": "junk", "reason": reason, "count": 2}
-        assert ac.is_fresh(e, 7, None, set(), NORM) is False, reason
+def test_re_remembering_a_pair_replaces_its_entry():
+    cache = ac.remember_escalation({}, "a", "B", {"same_entity": False, "confidence": "low"})
+    cache = ac.remember_escalation(cache, "a", "B", {"same_entity": True, "confidence": "high"})
+    assert ac.escalation_for(cache, "a", "B") == {"same_entity": True, "confidence": "high"}
 
 
-def test_junk_recycles_only_on_MATERIAL_growth():
-    e = {"verdict": "junk", "reason": "below-floor", "count": 10}
-    assert ac.is_fresh(e, 25, None, set(), NORM) is True  # 2.5x -- not yet
-    assert ac.is_fresh(e, 31, None, set(), NORM) is False  # past 3x -- reconsider
-
-
-def test_junk_recycles_when_its_floor_anchor_moved():
-    """A below-floor verdict rests on whether a near-miss is in anchor_terms, and that set
-    grows as applies accumulate."""
-    e = {"verdict": "junk", "reason": "below-floor", "count": 5, "floor_anchor": None}
-    assert ac.is_fresh(e, 5, None, set(), NORM) is True
-    assert ac.is_fresh(e, 5, "Shirahoshi", set(), NORM) is False
-
-
-def test_an_unrelated_junk_entry_stays_cached_when_another_anchor_moves():
-    cache = {
-        "a": {"verdict": "junk", "reason": "below-floor", "count": 5, "floor_anchor": None},
-        "b": {"verdict": "junk", "reason": "below-floor", "count": 5, "floor_anchor": None},
-    }
-    anchors = {"a": "Shirahoshi", "b": None}
-    got = ac.skippable(cache, {"a": 5, "b": 5}, lambda t: anchors[t], set(), NORM)
-    assert got == {"b"}
-
-
-def test_remember_stores_the_POST_escalate_verdict():
-    """Called after source_gate, so the LLM outcome is what gets cached -- that is the 71%
-    this module exists to stop repaying."""
-    props = [
-        {
-            "variant": "gum-gum",
-            "verdict": "apply",
-            "canonical": "Gum-Gum",
-            "reason": "wiki-exact",
-            "settled_target": None,
-            "variant_count": 41,
-        }
-    ]
-    cache = ac.remember({}, props, {"gum-gum": 41})
-    assert cache["gum-gum"]["verdict"] == "apply"
-    assert cache["gum-gum"]["canonical"] == "Gum-Gum"
-    assert cache["gum-gum"]["count"] == 41
-
-
-def test_a_flag_verdict_is_stored_as_junk_with_its_reason():
-    props = [
-        {
-            "variant": "spandom",
-            "verdict": "flag",
-            "reason": "below-floor",
-            "canonical": "Spandam",
-            "settled_target": None,
-            "variant_count": 1,
-        }
-    ]
-    cache = ac.remember({}, props, {"spandom": 1})
-    assert cache["spandom"]["verdict"] == "junk"
-    assert cache["spandom"]["reason"] == "below-floor"
+def test_a_malformed_or_old_shape_entry_is_a_miss_not_an_error():
+    """The old per-token cache stored `{token: {verdict, count, ...}}` -- a flat dict with
+    no canonical-keyed nesting. Loading one of those files must degrade to a full run for
+    every pair, never raise."""
+    old_shape = {"luffy": {"verdict": "apply", "canonical": "Luffy", "count": 40}}
+    assert ac.escalation_for(old_shape, "luffy", "Luffy") is None
+    assert ac.escalation_for({"a": "not-a-dict"}, "a", "B") is None
+    assert ac.escalation_for({"a": {"B": "not-a-dict"}}, "a", "B") is None
+    assert ac.escalation_for({"a": {"B": {"confidence": "high"}}}, "a", "B") is None  # missing same_entity
 
 
 def test_roundtrip_and_group_writable(tmp_path):
     g = str(tmp_path / "Show.json")
-    assert ac.save(g, {"luffy": {"verdict": "apply", "canonical": "Luffy", "count": 3}})
-    assert ac.load(g)["luffy"]["canonical"] == "Luffy"
+    cache = ac.remember_escalation({}, "a", "B", {"same_entity": True, "confidence": "high"})
+    assert ac.save(g, cache)
+    assert ac.load(g) == cache
     import common
 
     mode = stat.S_IMODE(os.stat(ac.path_for(g)).st_mode)
@@ -131,26 +76,5 @@ def test_a_corrupt_cache_degrades_to_a_full_run(tmp_path):
     assert ac.load(g) == {}
 
 
-def test_a_malformed_entry_costs_that_token_not_the_run():
-    cache = {"good": {"verdict": "apply", "canonical": "Luffy", "count": 1}, "bad": "not-a-dict"}
-    assert ac.skippable(cache, {"good": 1, "bad": 1}, lambda t: None, {"Luffy"}, NORM) == {"good"}
-
-
 def test_save_never_raises_on_an_unwritable_path():
-    assert ac.save("/nonexistent/dir/Show.json", {"a": {"verdict": "junk"}}) is False
-
-
-def test_the_cache_is_written_on_a_DRY_run(tmp_path, monkeypatch):
-    """gen_loop.sh only passes --apply when ACQUIRE_APPLY is set, and it is not -- so acquire
-    runs dry every sweep. Gating the cache write on `apply` meant the 25-minute run that
-    finally completed on 2026-08-21 banked nothing. The cache is a memo of computed verdicts,
-    not a glossary mutation."""
-    import inspect
-
-    import glossary_acquire as ga
-
-    src = inspect.getsource(ga.acquire)
-    i_save = src.index("acquire_cache.save")
-    # the save must not sit under an `if apply:` guard
-    preceding = src[:i_save].rstrip().splitlines()[-1]
-    assert "if apply" not in preceding, f"cache write is gated by: {preceding!r}"
+    assert ac.save("/nonexistent/dir/Show.json", {"a": {"B": {"same_entity": True, "confidence": "high"}}}) is False

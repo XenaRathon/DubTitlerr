@@ -43,10 +43,30 @@ def test_keep_event_keeps_animated_fade():
     assert dsm.keep_event(ev(text=r"{\fade(255,0,0,0,500,1000,1500)}fading sign", style="Text"))
 
 
-def test_keep_event_drops_translation_style_despite_karaoke():
-    # DROP_STYLE precedence: even with karaoke tags, a Translation-style event is dropped
-    # because it's the fansub's English song translation, replaced by whisper's Dubtitles.
-    assert not dsm.keep_event(ev(text=r"{\k30}some{\k30}translated{\k30}lyrics", style="Song Translation"))
+def test_keep_event_keeps_the_fansub_translation_style():
+    # Reversed 2026-09-02 (.procoder/todo/20260830-drop-transcribed-song-lyrics-restore-
+    # fansub-translation.md): a "Song Translation" style used to be dropped on the
+    # assumption whisper's transcribed lyrics would replace it, which only holds if the
+    # dub re-sings the song in English. On a Japanese-sung opening nothing replaces it, and
+    # what lands instead is hallucination -- so the fansub's own translation is kept now,
+    # and build() drops the whisper cards over that span instead (see _song_spans tests).
+    assert dsm.keep_event(ev(text=r"{\k30}some{\k30}translated{\k30}lyrics", style="Song Translation"))
+
+
+def test_keep_event_keeps_song_family_kanji_and_english_siblings():
+    # Real style names from SAO's own wiki: the Romaji sibling already matched KEEP_STYLE's
+    # "romaji", but Kanji/Japanese/English siblings matched nothing and fell through to
+    # "assume dialogue, drop" -- half of each song's on-screen text silently missing.
+    assert dsm.keep_event(ev(text="karaoke text", style="Opening-Kanji-L1"))
+    assert dsm.keep_event(ev(text="karaoke text", style="ED1-Japanese"))
+    assert dsm.keep_event(ev(text="karaoke text", style="ED1-English"))
+
+
+def test_keep_event_song_family_beats_weak_drop_guess():
+    # "ED1-Default" isn't a real observed style name, but it exercises the same precedence
+    # bug WEAK_DROP_STYLE's "default" guess caused elsewhere: an unambiguous song-family
+    # prefix must win over a style-name guess, the same way an unambiguous tag already does.
+    assert dsm.keep_event(ev(text="plain lyric, no tags", style="ED1-Default"))
 
 
 def test_keep_event_keeps_positioned_sign_even_on_a_style_named_default():
@@ -364,3 +384,163 @@ def test_build_still_dedups_the_same_sign_carried_by_two_tracks(tmp_path, monkey
     assert status == "ok"
     result = pysubs2.load(out_ass)
     assert len([e for e in result.events if e.style == "Credits"]) == 2
+
+
+# --- song-span drop: whisper's OP/ED hallucinations dropped, fansub lyrics kept --------
+#
+# .procoder/todo/20260830-drop-transcribed-song-lyrics-restore-fansub-translation.md.
+# Measured on SAO S01E02: whisper mangles a Japanese-sung opening into pseudo-romaji and
+# then invents English outright (avg_logprob -1.7 to -4.1 against -0.3/-0.7 for ordinary
+# dialogue). The fansub's own Romaji/Kanji/English lyrics are kept (KEEP_STYLE/
+# SONG_FAMILY_STYLE); the whisper cards timed inside that span are dropped instead.
+
+
+def _song_track():
+    """One signs track with an 'Opening' song block (0-5000ms) built from several
+    syllable-timed events, the way a real karaoke track is -- not one event per song."""
+    t = pysubs2.SSAFile()
+    t.styles["Opening-Romaji-L1"] = pysubs2.SSAStyle()
+    t.styles["Opening-English"] = pysubs2.SSAStyle()
+    t.styles["Signs"] = pysubs2.SSAStyle()
+    t.events = [
+        pysubs2.SSAEvent(start=0, end=2000, style="Opening-Romaji-L1", text=r"{\k100}mi{\k100}so{\k100}ra"),
+        pysubs2.SSAEvent(start=2000, end=5000, style="Opening-English", text="the translated lyric"),
+        pysubs2.SSAEvent(start=20000, end=21000, style="Signs", text=r"{\pos(100,200)}a shop sign"),
+    ]
+    return t
+
+
+def _dub_srt_with_cards(tmp_path):
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text(
+        "1\n00:00:01,000 --> 00:00:03,000\nWhisper hallucination during the OP\n\n"
+        "2\n00:00:25,000 --> 00:00:27,000\nReal spoken dialogue after the OP\n\n",
+        encoding="utf-8",
+    )
+    return str(dub_srt)
+
+
+def test_dub_card_inside_a_song_span_is_dropped(tmp_path, monkeypatch):
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: _song_track().save(out) or True)
+    out_ass = str(tmp_path / "out.ass")
+
+    status, signs, dub = dsm.build("fake-video.mkv", _dub_srt_with_cards(tmp_path), out_ass)
+
+    assert status == "ok"
+    result = pysubs2.load(out_ass)
+    dub_texts = {e.plaintext.strip() for e in result.events if e.style == "Dubtitles"}
+    assert "Whisper hallucination during the OP" not in dub_texts
+    assert "Real spoken dialogue after the OP" in dub_texts
+    assert dub == 1  # only the surviving card counted
+
+
+def test_fansub_song_lyrics_survive_alongside_the_drop(tmp_path, monkeypatch):
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: _song_track().save(out) or True)
+    out_ass = str(tmp_path / "out.ass")
+
+    dsm.build("fake-video.mkv", _dub_srt_with_cards(tmp_path), out_ass)
+
+    result = pysubs2.load(out_ass)
+    kept_texts = {e.plaintext.strip() for e in result.events if e.style != "Dubtitles"}
+    assert "misora" in kept_texts  # Romaji sibling
+    assert "the translated lyric" in kept_texts  # English sibling -- the reversed behaviour
+    assert "a shop sign" in kept_texts  # ordinary sign, unaffected
+
+
+def test_song_span_drop_logs_the_count(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: _song_track().save(out) or True)
+    dsm.build("fake-video.mkv", _dub_srt_with_cards(tmp_path), str(tmp_path / "out.ass"))
+    assert "song-span dropped 1 whisper dub card" in capsys.readouterr().out
+
+
+def test_no_song_family_styles_means_no_drop_one_pace_case(tmp_path, monkeypatch):
+    """One Pace has no chapters and no OP/ED at all -- a signs track with ordinary sign
+    events only must leave every dub card untouched."""
+    track = pysubs2.SSAFile()
+    track.styles["Signs"] = pysubs2.SSAStyle()
+    track.events = [pysubs2.SSAEvent(start=0, end=1000, style="Signs", text=r"{\pos(1,1)}a sign")]
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: track.save(out) or True)
+
+    status, signs, dub = dsm.build("fake-video.mkv", _dub_srt_with_cards(tmp_path), str(tmp_path / "out.ass"))
+
+    assert status == "ok"
+    assert dub == 2  # both dub cards survive -- nothing classified as a song span
+
+
+# --- _song_spans boundaries: what the 2s merge gap includes and excludes ------
+#
+# R-2 (2026-09-02 beta review). The drop deletes dialogue over a blanket interval, and the
+# only production evidence for it is a single read-only SAO S01E02 run this repository
+# cannot reproduce. These pin the boundary behaviour of the pure functions so that a change
+# to SONG_SPAN_MERGE_GAP_MS, or to the merge itself, is visible in the suite rather than in
+# a shipped track. Two of them pin a KNOWN CEILING, not desirable behaviour; each says so.
+
+
+def _spans(*pairs):
+    """_song_spans over song-family-styled events with the given (start, end) ms."""
+    evs = [pysubs2.SSAEvent(start=s, end=e, style="Opening-Romaji-L1") for s, e in pairs]
+    return dsm._song_spans(evs)
+
+
+def test_song_events_closer_than_the_gap_merge_into_one_span():
+    """The case the gap exists for: SAO E02's opening is 2,142 syllable events, and each
+    adjacent pair must collapse into the one span that matters."""
+    assert _spans((0, 1000), (1500, 2500)) == [[0, 2500]]
+
+
+def test_song_events_further_apart_than_the_gap_stay_separate_spans():
+    """An OP and an ED are minutes apart. Ordinary dialogue between them must not sit
+    inside a merged span."""
+    assert _spans((0, 1000), (90000, 95000)) == [[0, 1000], [90000, 95000]]
+
+
+def test_a_slow_ballad_leaves_its_own_gaps_uncovered_known_ceiling():
+    """KNOWN CEILING, pinned deliberately. A ballad whose lyric events are more than 2s
+    apart yields one span per line, not one span per song, so a whisper hallucination
+    sitting in the instrumental gap is NOT dropped. That is under-drop -- the shipped track
+    keeps a hallucinated card -- which is strictly safer than deleting real dialogue, and
+    is why widening the gap is not the automatic answer. If a measured ballad shows this
+    firing, the fix is per-event avg_logprob gating (see the debt: note in build()), not a
+    larger blanket interval."""
+    spans = _spans((0, 1000), (4000, 5000), (8000, 9000))
+    assert spans == [[0, 1000], [4000, 5000], [8000, 9000]]
+    assert not dsm._overlaps_any(2000, 3000, spans), "the gap is uncovered -- by design, for now"
+
+
+def test_dialogue_inside_a_bridged_gap_is_dropped_known_ceiling():
+    """KNOWN CEILING, pinned deliberately, and the sharpest edge of the whole feature: the
+    merge extends a span ACROSS the gap between two song events, so a dub card that
+    overlaps NEITHER event is still dropped. Two events 1.5s apart bridge into [0, 3500],
+    and a card at [1800, 2200] -- entirely between the two lyrics -- is deleted.
+
+    This is over-drop: it removes text, and the removal is silent apart from the count in
+    the log line. It is bounded to the sub-2s window between two song-styled events, which
+    no measured release has put dialogue into. Revisit with the same avg_logprob gate the
+    build() debt: note names."""
+    spans = _spans((0, 1000), (2500, 3500))
+    assert spans == [[0, 3500]], "the 1.5s gap is under the 2s merge threshold"
+    assert dsm._overlaps_any(1800, 2200, spans), "a card in the bridged gap is dropped"
+
+
+def test_narration_over_an_opening_is_dropped_known_ceiling(tmp_path, monkeypatch):
+    """KNOWN CEILING, pinned deliberately, end to end. A show that narrates over its OP
+    loses that narration from the dub track along with the lyrics -- the build() debt: note
+    is the record of that trade. This test is what fires when someone gates the drop on
+    confidence instead of on the span."""
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: _song_track().save(out) or True)
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text(
+        "1\n00:00:02,500 --> 00:00:04,500\nMy name is Kirito, and this is how it started.\n\n"
+        "2\n00:00:25,000 --> 00:00:27,000\nReal spoken dialogue after the OP\n\n",
+        encoding="utf-8",
+    )
+
+    status, _signs, dub = dsm.build("fake-video.mkv", str(dub_srt), str(tmp_path / "out.ass"))
+
+    assert status == "ok"
+    assert dub == 1, "the narration is dropped with the song span -- documented, not desired"

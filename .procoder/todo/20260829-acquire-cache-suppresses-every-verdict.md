@@ -1,8 +1,9 @@
 # Acquire cache: memoise the escalate adjudications, not the final verdicts
 
-Status: open
+Status: closed
 Created: 2026-08-29
-Interim shipped: `ACQUIRE_NO_CACHE=1` on dry runs in `gen_loop.sh`
+Closed: 2026-09-02
+Interim removed: `ACQUIRE_NO_CACHE=1` on dry runs in `gen_loop.sh` (no longer needed)
 
 ## Description
 
@@ -76,14 +77,45 @@ needs the full join to know which tokens resolve to nothing), so measure before 
 
 ## Acceptance criteria
 
-- [ ] A dry run and an `--apply` run over the same corpus propose the SAME set of terms.
-- [ ] Two consecutive dry runs report the same `proposed` count (today: 641 then 0).
-- [ ] A cached escalate adjudication is reused — asserted on the LLM call count, not runtime.
-- [ ] `acquire_cache`'s docstring contract ("must never change what the pipeline decides")
+- [x] A dry run and an `--apply` run over the same corpus propose the SAME set of terms.
+- [x] Two consecutive dry runs report the same `proposed` count (today: 641 then 0).
+- [x] A cached escalate adjudication is reused — asserted on the LLM call count, not runtime.
+- [x] `acquire_cache`'s docstring contract ("must never change what the pipeline decides")
       holds under test, with a non-empty cache.
-- [ ] The four remaining cache files are handled (deleted, or migrated to the new shape).
-- [ ] The `ACQUIRE_NO_CACHE=1` interim is removed from `gen_loop.sh`.
+- [x] The four remaining cache files are handled (deleted, or migrated to the new shape).
+- [x] The `ACQUIRE_NO_CACHE=1` interim is removed from `gen_loop.sh`.
 
 ## Evidence
 
-Pending.
+Implemented in `1bf78a8` (fix(acquire_cache): memoise escalate's LLM adjudication, not the
+verdict). `acquire_cache.py` rewritten: `skippable`/`is_fresh`/`stale_canonical`/`recycles`/
+`STRUCTURAL_REASONS`/`JUNK_RECHECK_GROWTH`/`remember` (the old per-token verdict cache and
+its staleness apparatus) removed; `escalation_for`/`remember_escalation` added, keyed on the
+`(variant, canonical)` pair. `glossary_acquire.escalate()` now consults/updates this cache
+per-pair instead of skipping tokens via `settled`; `acquire()` no longer folds any cache
+result into `settled` at all -- every token reaches `propose()`/`source_gate()` on every run.
+
+All 6 acceptance criteria:
+
+- Dry run == apply run proposal set: `test_a_dry_run_and_an_apply_run_propose_the_same_terms`
+  reproduces the exact 2026-08-29 regression shape (Smokey/Smoker fixture) and asserts the
+  flagged-term set is identical across a dry run, a second dry run, and an apply run.
+- Two dry runs same `proposed` count: same test, `first["proposed"] == second["proposed"]`.
+- Cached escalate adjudication reused, asserted on LLM call count:
+  `test_escalate_reuses_a_cached_adjudication_instead_of_calling_the_llm_again` -- `calls ==
+["Deccan"]` after two `escalate()` calls sharing one cache dict.
+- Cache pair-keyed, not per-side: `test_escalate_caches_by_the_pair_not_either_side_alone`.
+- `acquire_cache`'s contract holds under a non-empty cache: covered by the same test (the
+  second `escalate()` call runs against the cache the first call populated).
+- The four cache files named in the blast-radius measurement (SPY x FAMILY, JUJUTSU KAISEN,
+  Reborn as a Vending Machine, One Pace) deleted from vm102's live `GLOSSARY_DIR`
+  (`/home/claude/dubtitle-config/glossaries/`) -- nothing to migrate, since the old shape
+  never stored a per-pair adjudication. Two more of the same old shape (One Pace,
+  MARRIAGETOXIN) found and deleted from fasc's own local glossaries dir as the same class of
+  now-stale file, though outside the originally-measured set.
+- `ACQUIRE_NO_CACHE=1` removed from `gen_loop.sh`'s acquire invocation.
+
+Full suite green (`.venv/bin/python -m pytest -q`), `ruff check .` clean. The existing
+`test_end_to_end_admission_tagging_and_repair_weighting` fixture's `ACQUIRE_NO_CACHE=1`
+workaround (needed under the old cache) was removed and the test still passes unmodified
+otherwise -- direct confirmation the fix closes the gap that workaround existed for.

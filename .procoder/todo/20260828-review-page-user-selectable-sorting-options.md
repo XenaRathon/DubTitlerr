@@ -1,7 +1,10 @@
 # Review page: user-selectable sorting options
 
-Status: open
+Status: closed
 Created: 2026-08-28
+Closed: 2026-09-02 — shipped in `c3464e7` (feat(review): user-selectable sorting on the
+episode and shared-lines pages). Status was never flipped when the work landed — caught
+during today's beta-readiness scoping pass.
 
 ## Description
 

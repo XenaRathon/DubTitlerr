@@ -373,7 +373,7 @@ def adjudicate_merge(variant: str, canonical: str, ctx_v: list, ctx_c: list, sho
     return {"same_entity": d.get("same_entity") is True, "confidence": conf if conf in ("high", "low", "none") else "low"}
 
 
-def escalate(proposals: list, ctx: dict, show: str) -> list:
+def escalate(proposals: list, ctx: dict, show: str, cache: dict | None = None) -> list:
     """Re-decide share-too-close proposals with context. Other verdicts pass through.
 
     ONLY share-too-close escalates. below-floor, sentence-initial-only, already-canonical,
@@ -381,13 +381,21 @@ def escalate(proposals: list, ctx: dict, show: str) -> list:
     evidence-shaped, and short-form (an expansion) is structurally wrong -- no amount of
     context evidence redeems it. unseen-needs-evidence specifically has no `canonical`
     context to escalate WITH -- canonical_count is 0 by definition of the branch that
-    produced it, so there is nothing on the canonical side for tier-C to compare against."""
+    produced it, so there is nothing on the canonical side for tier-C to compare against.
+
+    `cache`, if given, memoises the LLM call per (variant, canonical) pair -- see
+    acquire_cache's module docstring for why the PAIR's adjudication is cached and not the
+    proposal's final verdict. Mutated in place; the caller owns saving it."""
     out = []
     for p in proposals:
         if p.get("reason") != "share-too-close":
             out.append(p)
             continue
-        adj = adjudicate_merge(p["variant"], p["canonical"], ctx.get(p["variant"], []), ctx.get(p["canonical"], []), show)
+        adj = cache is not None and acquire_cache.escalation_for(cache, p["variant"], p["canonical"])
+        if not adj:
+            adj = adjudicate_merge(p["variant"], p["canonical"], ctx.get(p["variant"], []), ctx.get(p["canonical"], []), show)
+            if cache is not None:
+                acquire_cache.remember_escalation(cache, p["variant"], p["canonical"], adj)
         if adj["same_entity"] and adj["confidence"] == "high":
             out.append({**p, "verdict": "apply", "reason": "context-merged"})
         elif not adj["same_entity"] and adj["confidence"] == "high":
@@ -981,47 +989,31 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
             if union is None or normalize_title(canon) in {normalize_title(t) for t in union}:
                 resolved_admitted[tok] = (canon, score)
     anchors = anchor_terms(gloss)
-    # Per-token decision cache. `settled` alone was 107 terms against 8,199 harvested, so
-    # ~99% of the work -- including 371 LLM calls in escalate, 71% of this stage's runtime --
-    # was re-derived every sweep, and the stage exceeded its timeout three sweeps running
-    # without ever completing. A cached verdict folds into the same skip `settled` uses, so
-    # nothing downstream needs to know the cache exists.
-    #
-    # ACQUIRE_NO_CACHE=1 forces a full run without editing the file, for the case where an
-    # operator wants to re-derive everything after changing a threshold.
-    cache = {} if os.environ.get("ACQUIRE_NO_CACHE") else acquire_cache.load(gloss_path)
-    cached = (
-        acquire_cache.skippable(
-            cache, counts, lambda t: settled_target(t, resolved.get(t, ("", 0))[0], anchors), norm_titles, normalize_title
-        )
-        if cache
-        else set()
-    )
-    settled = settled | cached
     proposals = propose(
         counts, mid, titles, settled, resolved=resolved_admitted, candidates=cands, anchors=anchors, admission_fn=admission_fn
     )
     close = [p for p in proposals if p.get("reason") == "share-too-close"]
     if close:
+        # Per-pair escalation cache. escalate()'s LLM call is 71% of this stage's runtime
+        # (measured: 371 calls at ~1.3s each on One Pace), so it is the one thing worth
+        # memoising -- see acquire_cache's module docstring for why the pipeline's FINAL
+        # verdict must not be (a cached verdict used to fold into `settled` and skip the
+        # token everywhere downstream, which suppressed review-queue entries a dry run was
+        # supposed to report). Every proposal still reaches propose()/source_gate() in full.
+        #
+        # ACQUIRE_NO_CACHE=1 forces a full run without editing the file, for the case where
+        # an operator wants to re-derive every adjudication after changing a threshold.
+        cache = {} if os.environ.get("ACQUIRE_NO_CACHE") else acquire_cache.load(gloss_path)
         toks = sorted({p["variant"] for p in close} | {p["canonical"] for p in close})
-        proposals = escalate(proposals, context_lines(show_dir, toks), show)
+        proposals = escalate(proposals, context_lines(show_dir, toks), show, cache=cache)
+        # Never fatal: a cache that cannot be written is a slow next run, not a failed this
+        # one. Not gated on `apply` -- the cache is a memo of LLM answers, not a glossary
+        # mutation, so the dry-run safety convention does not apply to it.
+        acquire_cache.save(gloss_path, cache)
     # D3: the source-aware apply rule runs LAST, over finished proposals -- after the tier
     # logic and after escalate(), which can otherwise promote a confident context
     # adjudication for a brand-new transcript term straight into the glossary.
     proposals = source_gate(proposals)
-    # Remember what this run decided, AFTER source_gate -- what gets stored is the verdict
-    # the pipeline actually reached, including the post-escalate outcome, which is the LLM
-    # cost this cache exists to stop repaying. Never fatal: a cache that cannot be written
-    # is a slow next run, not a failed this one.
-    #
-    # DELIBERATELY NOT gated on `apply`. The cache is a memo of computed verdicts, not a
-    # glossary mutation -- the dry-run safety convention does not apply to it, and gating it
-    # was a real bug: gen_loop.sh only passes --apply when ACQUIRE_APPLY is set, which it is
-    # not, so acquire runs dry every sweep. The cache would therefore never have been written
-    # at all, and the 25-minute run that finally completed on 2026-08-21 banked nothing.
-    # A dry run computes the same verdicts; `apply` only controls whether apply_proposals
-    # writes them into the glossary.
-    acquire_cache.save(gloss_path, acquire_cache.remember(cache, proposals, counts))
     # I4: attach real transcript evidence to every flagged proposal so the review queue
     # (and --review's CLI) has something to show a human, instead of an empty context: [].
     flag_terms = sorted({p["variant"] for p in proposals if p["verdict"] == "flag"})

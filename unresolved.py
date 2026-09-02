@@ -435,10 +435,11 @@ def _record_verdict(stem: str, e: dict, ans: str, note: str) -> bool:
         print("  NOT SAVED: cannot resolve a show for this episode — check GLOSSARY_DIR")
         return False
     ddir = decisions.DECISIONS_DIR
-    store = decisions.record(decisions.load(show, ddir), e.get("original_text", ""), e["proposed_text"], verdict, note=note)
-    if not decisions.save(store, show, ddir):
-        print(f"  NOT SAVED: the verdict for this line could not be written to {ddir}")
-        return False
+    with decisions.locked(show, ddir):
+        store = decisions.record(decisions.load(show, ddir), e.get("original_text", ""), e["proposed_text"], verdict, note=note)
+        if not decisions.save(store, show, ddir):
+            print(f"  NOT SAVED: the verdict for this line could not be written to {ddir}")
+            return False
     print(f"  recorded {verdict} for {show}")
     return True
 
