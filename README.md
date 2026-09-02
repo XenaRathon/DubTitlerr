@@ -159,7 +159,11 @@ detect those, so accepted repairs are queued for a human instead.
 The page is at `http://<host>:8842`. On first start the container logs a token; paste it
 into the box at the top once and the browser remembers it. `REVIEW_TOKEN` sets it
 explicitly; leaving it _unset_ generates one (the server runs as root and its write routes
-rewrite subtitles, so "unset" cannot mean "no auth").
+rewrite subtitles, so "unset" cannot mean "no auth"). Setting `REVIEW_TOKEN=` to an
+**explicitly empty** value disables auth entirely — only do this on a network you fully
+trust; the server logs a warning at startup if you do this while also bound to `0.0.0.0`
+(the default), since that combination means anything on the LAN can rewrite your subtitles.
+See [SECURITY.md](SECURITY.md) for the full auth model.
 
 The index groups episodes by show and season and leads with the ones holding **admitted**
 repairs — changes that already shipped with nothing checking their meaning. Refusals, where
