@@ -1,6 +1,6 @@
 # Changing the repair model orphans existing human verdicts
 
-Status: open
+Status: closed 2026-09-02
 Created: 2026-09-02
 
 ## Description

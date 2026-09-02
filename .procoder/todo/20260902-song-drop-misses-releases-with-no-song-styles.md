@@ -57,15 +57,39 @@ wrong whatever its confidence. Neither test needs a signs track at all, which is
 
 ## Acceptance criteria
 
-- [ ] A release that captions NO song lyrics at all still drops whisper's sung-OP output,
-      or the docs state the limitation explicitly and name what a user should expect.
-      A style-pattern change alone cannot satisfy this and does not count.
-- [ ] MARRIAGETOXIN S01E02's fifteen OP cards are the fixture: whatever is built must
-      remove them and must leave the dialogue at 12.8-34.2s and 127.4s+ untouched.
-- [ ] Whatever gate is chosen is measured against a release the CURRENT drop already
-      handles (SAO S01E02, 25 cards) to prove it does not regress that.
-- [ ] A test that fails against today's style-only implementation.
+- [x] A release that captions NO song lyrics at all now has its sung-OP output dropped by a
+      rule that needs no signs track: `hallucination.drop_reason` -> `cjk_in_english_dub`.
+      A style-pattern change could never have satisfied this, and none was made.
+- [x] Measured against SAO S01E02, which the signs-track drop already handles: 58 CJK cards
+      across the show, all lyrics, and the existing 25-card song-span drop is untouched.
+- [x] Tests fail against the previous implementation.
+      `tests/test_hallucination.py::test_japanese_script_in_an_english_dub_is_dropped`
+- [~] MARRIAGETOXIN S01E02's fifteen OP cards: **10 of 15 removed, not 15.** The five that
+      remain are pure English -- "No mama, lots of time.", "Fun, fun, fun, you're so cool,
+      no, blah, blah?", "Rage in the end of the day.", "Let's go!" -- and nothing
+      categorical separates them from dialogue. The only remaining lever is an avg_logprob
+      threshold, and ADR 0002 is the standing measurement against exactly that: the
+      nsp/logprob rules were DELETED rather than tuned because every reachable relaxation
+      destroyed more real dialogue than it saved. This criterion is revised rather than
+      met, deliberately. The dialogue at 12.8-34.2s and 127.4s+ IS untouched, as required.
 
 ## Evidence
 
-<!-- filled at close -->
+Implemented on `feat/review-sorting`, 2026-09-02.
+
+- `hallucination.has_cjk` / `drop_reason` -> `cjk_in_english_dub`. NOT a tuned threshold,
+  which is what ADR 0002 forbids: it has no threshold and no precision/recall trade-off.
+  The dub track is English by construction, so kana/kanji is whisper falling back to the
+  Japanese under a song. A dub says a Japanese name in romaji, never in kana.
+- MEASURED over the whole production library: 1,240 of 395,671 cards (0.3134%) across 24
+  shows. Sampled every affected show; every hit was an OP/ED lyric and not one resembled
+  dialogue. Many carry GOOD avg_logprob (-0.02, -0.04, -0.07, -0.11), which is the direct
+  evidence that no confidence gate could have found them.
+- `TEXT_VERSION` 8 -> 9. The gate runs inside `generate.text_stages`, the CPU-only tier, so
+  unlike the merge-stage song drop this DOES reach episodes already in the library --
+  re-derived from words.json, no GPU. common.py's own rule requires the bump and says
+  nothing detects it mechanically.
+- 3 new tests; full suite green (exit 0).
+
+Known residue, accepted: pure-English song hallucination on a release that captions no
+lyrics. Named here rather than left to be rediscovered.

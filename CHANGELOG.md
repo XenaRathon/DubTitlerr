@@ -74,6 +74,12 @@ episode already in your library is stale.
 
 ### Pipeline output-version history (see `common.py` for the authoritative log)
 
+- **v9** (2026-09-02) — the hallucination gate drops a card carrying Japanese script: in an
+  English dub that is whisper falling back to the Japanese it heard under a song, not a
+  low-confidence English line. 1,240 of 395,671 cards across 24 shows, every sampled one an
+  OP/ED lyric. Unlike the signs-track song drop, this reaches releases that caption no song
+  lyrics at all — and unlike that fix, a `TEXT_VERSION` bump DOES carry it into episodes
+  already in your library, on CPU, without re-transcribing.
 - **v8** (2026-08-29) — two reflow character-welding fixes (thousands separators, decimal
   points wrongly joined to the previous word).
 - **v7** (2026-08-26) — the phonetic name guard widens from substitutions to any gained
