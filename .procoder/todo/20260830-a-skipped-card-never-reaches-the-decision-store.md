@@ -1,7 +1,11 @@
 # A card repair skips never reaches the decision store, so the human's text is discarded
 
-Status: open
+Status: closed
 Created: 2026-08-30
+Closed: 2026-09-02 — implemented in `5ade487` (dead backend refuses the episode) and
+`e59c58a` (a skipped card no longer discards the human's correction); `apply_human_text`
+in `repair.py` is the fix the Evidence section below already describes. Status was never
+flipped when the work landed — caught during today's beta-readiness scoping pass.
 
 ## Description
 

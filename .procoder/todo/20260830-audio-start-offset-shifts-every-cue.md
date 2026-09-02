@@ -1,7 +1,12 @@
 # Transcription ignores a delayed audio stream, shifting every cue by that delay
 
-Status: open
+Status: closed
 Created: 2026-08-30
+Closed: 2026-09-02 — shipped in `ae56642` (fix(generate): carry a delayed audio stream's
+start offset onto the video timeline). Status was never flipped when the work landed —
+caught during today's beta-readiness scoping pass. Outstanding: the owner's own SAO S01E01
+playback re-check was deliberately left as a post-landing manual step and has not been
+confirmed done.
 Found by: owner, watching SAO S01E01 — "approximately 1600ms too early"
 
 ## Description

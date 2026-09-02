@@ -22,3 +22,9 @@ glossaries/*.lastrun.json
 # the code index and session state are rebuilt on demand and never belong in a commit.
 .procoder/index/
 .procoder/state/
+
+# agent-harness scratch worktrees (created under the repo root, never meant to ship)
+.claude/worktrees/
+
+# skill-tooling lockfile scaffold, regenerated locally, not a project artifact
+skills-lock.json
