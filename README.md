@@ -4,6 +4,16 @@
 
 DubTitlerr is a self-hosted, *-arr-style service that watches your anime library and, for every show with an **English dub**, transcribes the dub into accurate captions ("dubtitles"), repairs them with a local LLM, and **merges the on-screen signs & song lyrics into the same subtitle track** — so one track shows everything. It runs as one container, grows a per-show name **dictionary** automatically, and refreshes Plex per-episode.
 
+> **Beta status.** The code is general, but **[One Pace](https://onepace.net/) is the only
+> configuration validated so far** — everything else is "try it, and file an issue if
+> something looks wrong." Version stamps may be invalidated without notice during the beta;
+> pin your image tag, and if you've already pulled a newer image but aren't ready to
+> re-transcribe, stop the container until you are.
+>
+> **Use it on media you own for personal viewing.** This tool transcribes dub audio and
+> merges fansub-derived signs/songs typography you already have — it doesn't fetch, host, or
+> distribute video, audio, or subtitles for anyone else.
+
 > The original `dub-signs-merge` was just the signs+dub _merge_ step (documented below); the project has grown into the full pipeline (transcribe → repair → merge → mux) with additive per-show dictionaries. **See the [Wiki](https://github.com/xenarathon/DubTitlerr/wiki) for setup & usage.**
 
 <details>
@@ -39,7 +49,7 @@ show with an **English dub**, runs a full pipeline per episode:
 2. **Name correction** — fix proper nouns against a **per-show glossary** (curated `hard_fixes` +
    a guarded fuzzy that won't touch real English words). The glossary is **auto-built by mining**
    the embedded subs and **wiki-verified** (canonical, dub-preferred spellings — see below).
-3. **LLM repair** — a local model (qwen3:8b) fixes mid-/low-confidence and name-suspect lines,
+3. **LLM repair** — a local model (`qwen3-4b-instruct` by default) fixes mid-/low-confidence and name-suspect lines,
    anchored on the embedded fansub dialogue when present. **If your copies of a show have no
    English subtitles for the Japanese audio there is nothing to anchor on, and by default every
    line is left alone** — glossary-only repair invents names, so the gate is shut unless a show
@@ -89,8 +99,15 @@ docker run --rm -u 0 --gpus all -v "/path/to/your/media:/media" -v "/path/to/con
 ```
 
 `Dockerfile` (signs+dub merge only, no transcribe/repair) is deprecated — see the comment
-at its top. Its old cron-based quick start (`docker build -t dub-signs-merge .` +
-`run-dub-merge.sh`) still works for that narrower use case but isn't the recommended path.
+at its top. It builds a plain image whose only content is `dub_signs_merge.py`, which walks
+`MERGE_ROOTS` (or takes explicit `.srt` paths as arguments) with no flags needed:
+
+```sh
+docker build -t dub-signs-merge .
+docker run --rm -v /path/to/media:/media -e MERGE_ROOTS=/media dub-signs-merge python3 dub_signs_merge.py
+```
+
+`Dockerfile.builder` above is the recommended path for everyone else.
 
 <details>
 <summary><b>Make it yours — settings</b></summary>
@@ -200,7 +217,10 @@ because the next repair run reads them.
 
 ## Requirements
 
-`ffmpeg`/`ffprobe` and the [`pysubs2`](https://pypi.org/project/pysubs2/) Python package — both baked into the provided `Dockerfile`.
+`ffmpeg`/`ffprobe`, [`pysubs2`](https://pypi.org/project/pysubs2/), and
+[`jellyfish`](https://pypi.org/project/jellyfish/) — all baked into `Dockerfile.builder`,
+the image the Quick start above builds. The deprecated `Dockerfile` only needs
+`ffmpeg`/`pysubs2`, since it doesn't run the phonetic name-matching that `jellyfish` backs.
 
 ## Roadmap
 
@@ -208,10 +228,11 @@ because the next repair run reads them.
   status, live logs), queue or reorder shows, kick off a re-scan, and edit per-show glossaries
   — instead of tailing logs over SSH.
 - **Per-show glossary editor** — manage the name/spelling glossaries from the UI.
-- **Community glossary repo** — the shared repository of per-show glossaries exists; what is
-  still on the roadmap is the pipeline fetching it on startup and submitting mined dictionaries
-  back automatically. Today it is a `git clone` into your `GLOSSARY_DIR` and a `git pull` to
-  update, which `decisions.py` already documents as the intended flow.
+- **Community glossary repo** — [XenaRathon/DubTitlerr-glossaries](https://github.com/XenaRathon/DubTitlerr-glossaries)
+  is the shared repository of per-show glossaries; what is still on the roadmap is the pipeline
+  fetching it on startup and submitting mined dictionaries back automatically. Today it is a
+  `git clone` into your `GLOSSARY_DIR` and a `git pull` to update, which `decisions.py` already
+  documents as the intended flow.
 
   **This repository's `glossaries/` directory is a snapshot**, used by the tests and by the
   examples in these docs. The pipeline reads whatever is mounted at `GLOSSARY_DIR` and never
