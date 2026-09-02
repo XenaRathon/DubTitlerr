@@ -1,6 +1,6 @@
 # A `force` verdict loses to the phonetic name guard
 
-Status: open
+Status: closed 2026-09-02
 Created: 2026-09-02
 
 ## Description

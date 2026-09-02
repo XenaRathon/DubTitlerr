@@ -101,7 +101,19 @@ def escalation_for(cache: dict, variant: str, canonical: str) -> dict | None:
 
 
 def remember_escalation(cache: dict, variant: str, canonical: str, adjudication: dict) -> dict:
-    """Fold one `adjudicate_merge` answer into the cache. Returns the same dict."""
+    """Fold one `adjudicate_merge` answer into the cache. Returns the same dict.
+
+    An `unavailable` result is DROPPED rather than stored. It is not an adjudication -- the
+    backend raised, returned nothing, or returned something unparseable -- and this cache
+    has no TTL, no failure marker and no invalidation, so storing one would answer
+    `escalation_for` forever and `escalate`'s `if not adj` would never call the LLM again.
+    A single transient outage would strand the pair permanently, and `ACQUIRE_NO_CACHE=1`
+    is an escape hatch an operator has to know to reach for, not recovery.
+
+    The guard lives here, not at the call site, because this is where every path that could
+    write a failure converges -- a caller that forgets the check cannot reintroduce the bug."""
+    if adjudication.get("unavailable"):
+        return cache
     cache.setdefault(variant, {})[canonical] = {
         "same_entity": bool(adjudication.get("same_entity")),
         "confidence": adjudication.get("confidence"),

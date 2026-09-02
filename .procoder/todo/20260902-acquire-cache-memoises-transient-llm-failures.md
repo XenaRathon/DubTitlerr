@@ -29,14 +29,30 @@ indistinguishable from a decision.
 
 ## Acceptance criteria
 
-- [ ] A raising backend leaves nothing reusable in the cache: the next run calls the LLM
+- [x] A raising backend leaves nothing reusable in the cache: the next run calls the LLM
       again for that pair.
-- [ ] An unparseable response is treated the same way.
-- [ ] A genuine low-confidence / negative model answer is still cached (the existing tests
-      for that behaviour keep passing unchanged).
-- [ ] Each of the above has a test that fails against the current unconditional
-      `remember_escalation`.
+      `tests/test_acquire_cache.py::test_an_unavailable_result_is_not_memoised`
+- [x] An unparseable response is treated the same way -- all four unusable paths covered.
+      `tests/test_glossary_acquire.py::test_every_unusable_llm_response_is_marked_unavailable`
+- [x] A genuine low-confidence / negative model answer is still cached; the existing
+      caching tests pass unchanged.
+      `tests/test_acquire_cache.py::test_a_genuine_none_confidence_answer_is_still_cached`
+      and `test_a_parsed_answer_is_never_marked_unavailable`
+- [x] Mutation-checked: removing the guard in `remember_escalation` fails the first test.
 
 ## Evidence
 
-<!-- filled at close -->
+Implemented on `feat/review-sorting`, 2026-09-02.
+
+- `adjudicate_merge`'s four unusable paths (backend raised, empty response, no JSON object
+  found, object does not parse) now return the negative shape plus `"unavailable": True`.
+  The shape is unchanged for every existing caller's `same_entity`/`confidence` reads.
+- `acquire_cache.remember_escalation` drops an `unavailable` result instead of storing it.
+  The guard is there rather than at the call site because that is where every path which
+  could write a failure converges -- a caller that forgets the check cannot reintroduce it.
+- The marker never reaches a stored entry, so a later reader of the cache file does not
+  have to know what it means.
+- 6 new tests; full suite green, `ruff check .` clean.
+
+Deliberately NOT done: no TTL, no cache version, no invalidation. None is needed once a
+failure is never written -- and each would be a second mechanism to get wrong.

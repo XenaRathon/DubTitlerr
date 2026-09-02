@@ -831,7 +831,41 @@ def test_adjudicate_merge_parses_a_merge_verdict(monkeypatch):
 
 
 def test_adjudicate_merge_is_a_noop_when_the_llm_is_down(monkeypatch):
+    """Shaped like a negative answer so every caller's same_entity/confidence read keeps
+    working -- but carrying `unavailable`, which is what stops acquire_cache memoising a
+    transport failure as though the model had ruled. Without the marker one outage strands
+    the pair forever: the cache has no TTL and `escalate`'s `if not adj` would never retry."""
     monkeypatch.setattr(ga, "llm_chat", lambda *a, **k: "")
+    assert ga.adjudicate_merge("a", "b", ["x"], ["y"], "S") == {
+        "same_entity": False,
+        "confidence": "none",
+        "unavailable": True,
+    }
+
+
+def test_every_unusable_llm_response_is_marked_unavailable(monkeypatch):
+    """All four paths, not just the empty one: a raising backend, an empty string, a
+    response with no JSON object in it, and one whose object does not parse. None of them
+    is an adjudication and none may be cached."""
+
+    def boom(*a, **k):
+        raise OSError("backend down")
+
+    for name, fake in (
+        ("raises", boom),
+        ("empty", lambda *a, **k: ""),
+        ("no json", lambda *a, **k: "I think they are the same person, honestly"),
+        ("bad json", lambda *a, **k: '{"same_entity": tru'),
+    ):
+        monkeypatch.setattr(ga, "llm_chat", fake)
+        got = ga.adjudicate_merge("a", "b", ["x"], ["y"], "S")
+        assert got.get("unavailable") is True, f"{name} must be marked unavailable, got {got}"
+
+
+def test_a_parsed_answer_is_never_marked_unavailable(monkeypatch):
+    """The boundary. A model that looked and said "none" HAS adjudicated, and that answer is
+    worth caching -- only the four unusable paths above are dropped."""
+    monkeypatch.setattr(ga, "llm_chat", lambda *a, **k: '{"same_entity": false, "confidence": "none"}')
     assert ga.adjudicate_merge("a", "b", ["x"], ["y"], "S") == {"same_entity": False, "confidence": "none"}
 
 
