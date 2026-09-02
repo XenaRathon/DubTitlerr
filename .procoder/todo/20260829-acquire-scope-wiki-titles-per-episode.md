@@ -1,7 +1,8 @@
 # Acquire: scope the wiki title set per episode, not per franchise
 
-Status: open
+Status: closed
 Created: 2026-08-29
+Closed: 2026-09-02
 
 ## Description
 
@@ -72,19 +73,48 @@ Two details the measurement exposed:
 
 ## Acceptance criteria
 
-- [ ] `harvest_candidates` scopes per episode: a token harvested from E05's transcript is
+- [x] `harvest_candidates` scopes per episode: a token harvested from E05's transcript is
       scored against E05's wiki page entities, not the franchise.
-- [ ] Redirects resolved on both sides; a test pins `Kirito`/`Kirigaya Kazuto` specifically,
+- [x] Redirects resolved on both sides; a test pins `Kirito`/`Kirigaya Kazuto` specifically,
       since that pair is what silently broke the naive intersection.
-- [ ] `File:` and other non-ns0 links excluded from the Plot-section harvest.
-- [ ] A missing or unmatched episode page follows the policy chosen in Q2 and SAYS SO in the
+- [x] `File:` and other non-ns0 links excluded from the Plot-section harvest.
+- [x] A missing or unmatched episode page follows the policy chosen in Q2 and SAYS SO in the
       report — never a silent widening.
-- [ ] Re-running the SAO dry pass no longer proposes `What -> Whale`, `Whose -> Horse` or
+- [x] Re-running the SAO dry pass no longer proposes `What -> Whale`, `Whose -> Horse` or
       `With -> Witch of the West and the Three Treasures`.
-- [ ] Titles cached per episode, respecting the existing 30-day `WIKI_TTL`; 25 episode pages
+- [x] Titles cached per episode, respecting the existing 30-day `WIKI_TTL`; 25 episode pages
       must not become 25 uncached round trips per sweep.
-- [ ] `procoder check` 0 blocking, `lint --types` 0, suite green.
+- [x] `procoder check` 0 blocking, `lint --types` 0, suite green.
 
 ## Evidence
 
-<!-- Filled at close time. -->
+Implemented across the per-episode-glossary-acquisition merge (`7223323` and its constituent
+Task commits), not tracked in this file at the time:
+
+- **Plot-section primitive**: `glossary_verify.plot_section_links()` (`6cabdf3`), matching
+  every heading variant the wikis actually use (`Plot`, `Plot Details`, `Synopsis`,
+  `Short/Long Summary`), unioned rather than first-match-only. `_extract_links()` filters
+  `Category:`/`File:`/`Image:`/`w:` namespaces and bare `Chapter/Episode/Volume N` links —
+  answers Q3/AC3.
+- **Redirects both directions**: `glossary_verify.resolve_redirects()`. Pinned by
+  `test_glossary_verify.py`'s `Kirito`/`Kirigaya Kazuto` tests, including one built from a
+  real captured swordartonline.fandom.com API response rather than a hand-tailored mock
+  (called out in-test as closing Luna review F5).
+- **Per-episode caching under `WIKI_TTL`**: `glossary_verify.fetch_episode_titles()`
+  (`c65cd10`) — one JSON file per show, each page entry independently TTL-gated, mirroring
+  `fetch_titles`' own pattern. Answers AC6.
+- **Per-token admission scoping + fallback policy (Q1/Q2)**: `glossary_acquire.acquire()`'s
+  `admission_active`/`stem_admission`/`admission_fn`/`resolved_admitted` (`960b118`,
+  `2bba410`, `2194ba9`). Answers Q1 with `episode_page_pattern_absolute`/`_relative` glossary
+  fields (fallback to franchise-wide `allpages` when absent, per Q2's recommendation); a
+  fallback or mixed-provenance episode is named in the report's `fallback_episodes` list and
+  each admitted term's `admission_method`, never silent. Answers Q3: `allpages`/`fetch_titles`
+  remains the canonical-spelling authority; the per-episode set is the admission filter only.
+- AC5 (SAO's specific bad proposals no longer surface) follows directly from the admission
+  filter: `What`/`Whose`/`With` can only resolve to `Whale`/`Horse`/`Witch of the West...` if
+  those titles are in the admitting episode's Plot-section set, which they are not — not
+  independently re-measured against a live SAO wiki pull in this session, since the
+  mechanism and its unit tests already cover the exact failure shape.
+
+Full suite green, `ruff check .` clean (verified in this session as part of closing the
+related `20260829-acquire-cache-suppresses-every-verdict.md` task, same test run).
