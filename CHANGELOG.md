@@ -8,6 +8,12 @@ that history alongside everything else that shipped since.
 
 ## [Unreleased]
 
+## 0.1.0 - 2026-09-02
+
+The first public beta. Everything below shipped before the first tag; the pipeline's own
+output versions (v2-v8) are listed at the end, since they are what decides whether an
+episode already in your library is stale.
+
 ### Added
 
 - Per-show glossary acquisition, arc/episode-scoped: wiki-mined proper nouns admitted per
@@ -79,4 +85,4 @@ that history alongside everything else that shipped since.
 - **v2** (2026-07-27) — fixed a signs-merge bug that rendered captions as solid black
   and duplicated signs across tracks.
 
-[Unreleased]: https://github.com/XenaRathon/DubTitlerr/commits/main
+[Unreleased]: https://github.com/XenaRathon/DubTitlerr/compare/v0.1.0...HEAD
