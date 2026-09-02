@@ -73,6 +73,7 @@ import sys
 import time
 import urllib.parse
 
+import card_split
 import decisions
 import glossary
 import hallucination
@@ -80,7 +81,7 @@ import ordering
 import qc
 import reflow
 import unresolved
-from common import MEDIA_GID, MEDIA_UID, dialogue_intervals, find_video, out_for, ts_srt
+from common import MEDIA_GID, MEDIA_UID, dialogue_intervals, find_video, out_for, read_words, ts_srt
 
 OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 # qwen3-4b-instruct, not nanbeige4.2-3b -- flipped 2026-09-01 on a live anchored bake-off
@@ -397,6 +398,26 @@ def fits_card(text, dur, orig=None):
     return all(a <= b + reflow.EPS for a, b in zip(after, before))
 
 
+def _card_words(words_doc, start, end):
+    """This card's own ASR words, in order, for card_split's word-alignment path -- or
+    None when there is nothing safe to align to.
+
+    Only words with BOTH a start and end falling inside [start, end] are included. A word
+    punctuation.restore() inserted with no timing of its own is excluded rather than
+    guessed at: card_split's word-count check then naturally sees fewer words than the
+    text has and falls back to proportional, which is the safe default, not a special
+    case to detect here."""
+    if not words_doc:
+        return None
+
+    def _in_window(w):
+        s, e = w.get("start"), w.get("end")
+        return s is not None and e is not None and s >= start - reflow.EPS and e <= end + reflow.EPS
+
+    words = [w for w in words_doc.get("words", []) if _in_window(w)]
+    return words or None
+
+
 PHONETIC_MIN = float(os.environ.get("REPAIR_PHONETIC_MIN", "0.75"))
 
 
@@ -656,7 +677,7 @@ def _p95(values):
     return s[min(len(s) - 1, round(0.95 * (len(s) - 1)))]
 
 
-def apply_human_text(c, store, stem):
+def apply_human_text(c, store, stem, words_doc=None):
     """A card the repair loop is about to SKIP: ship the human's wording if one is stored.
 
     `decisions.lookup` sits further down the loop and needs both sides of the pair, so a card
@@ -676,8 +697,11 @@ def apply_human_text(c, store, stem):
     text = decisions.corrected_text(store, c["text"])
     if text:
         if not fits_card(text, c["end"] - c["start"], c["text"]):
-            unresolved.record(stem, "repair", "verdict_unfittable", original_text=c["text"], proposed_text=text)
-            return "unfittable"
+            split = card_split.find_legal_split(text, c["start"], c["end"], _card_words(words_doc, c["start"], c["end"]))
+            if split is None:
+                unresolved.record(stem, "repair", "verdict_unfittable", original_text=c["text"], proposed_text=text)
+                return "unfittable"
+            c["_split"] = split
         c["text"] = text
         return "rescued"
     if decisions.for_orig(store, c["text"]):
@@ -709,6 +733,10 @@ def process(conf_path):
     if not video or not os.path.exists(srt) or not os.path.exists(conf_path):
         return "skip"
     conf = json.load(open(conf_path))
+    # For card_split's word-alignment path only (see _card_words). None on any episode
+    # whose sidecar is missing/stale/version-mismatched -- word-alignment then degrades to
+    # the proportional fallback for every card, same as it always has.
+    words_doc = read_words(stem)
     gloss = glossary_for(video)
     # A3. glossary_for falls back to a no-op glossary when no <Show>.json resolves, which is
     # the right behaviour -- a missing glossary must never fail an episode. Doing it SILENTLY
@@ -797,7 +825,7 @@ def process(conf_path):
         else:
             ref = overlap_ref(ivals, c.get("source_start", c["start"]), c.get("source_end", c["end"]))
         if skips_unanchored(ref, gloss):
-            bucket = apply_human_text(c, store, stem)
+            bucket = apply_human_text(c, store, stem, words_doc)
             if bucket == "rescued":
                 verdict_rescued += 1
                 continue
@@ -840,7 +868,7 @@ def process(conf_path):
             # so nothing is queued. The episode-level guard below refuses the rewrite.
             unreachable += 1
             new = ""
-            bucket = apply_human_text(c, store, stem)
+            bucket = apply_human_text(c, store, stem, words_doc)
             if bucket == "rescued":
                 verdict_rescued += 1
             elif bucket == "unfittable":
@@ -849,7 +877,7 @@ def process(conf_path):
                 verdict_owed += 1
             continue
         if not new:
-            bucket = apply_human_text(c, store, stem)
+            bucket = apply_human_text(c, store, stem, words_doc)
             if bucket == "rescued":
                 verdict_rescued += 1
                 continue
@@ -889,18 +917,25 @@ def process(conf_path):
         # `c["text"]` as `orig` keeps the existing already-over-cps allowance, so a human
         # editing a card that was always too fast is not what this refuses.
         if ruling in APPLYING and not fits_card(new, dur, c["text"]):
-            # Refused, and SAID SO. A verdict that vanishes silently is the failure this
-            # whole loop exists to prevent -- the reviewer would believe the line settled.
-            unresolved.record(
-                stem,
-                "repair",
-                "decision_unfittable",
-                original_text=c["text"],
-                proposed_text=new,
-                avg_logprob=c.get("avg_logprob"),
-            )
-            verdict_unfittable += 1
-            continue
+            # A single cue can't hold it -- try a legal split before refusing outright.
+            # over_line_len/over_chars can split cleanly; over_cps cannot (a proportional
+            # split holds cps constant across both halves by construction, so a card
+            # already too fast stays too fast either way) and correctly finds none.
+            split = card_split.find_legal_split(new, c["start"], c["end"], _card_words(words_doc, c["start"], c["end"]))
+            if split is None:
+                # Refused, and SAID SO. A verdict that vanishes silently is the failure this
+                # whole loop exists to prevent -- the reviewer would believe the line settled.
+                unresolved.record(
+                    stem,
+                    "repair",
+                    "decision_unfittable",
+                    original_text=c["text"],
+                    proposed_text=new,
+                    avg_logprob=c.get("avg_logprob"),
+                )
+                verdict_unfittable += 1
+                continue
+            c["_split"] = split
         # Every applying verdict is admitted here, so `not admitted` below can only be
         # reached with no ruling at all -- which is why that branch needs no ruling guard of
         # its own to avoid re-queueing a settled line.
@@ -1025,8 +1060,15 @@ def process(conf_path):
     srt_out = out_for(srt)
     rep_out = out_for(stem + ".dubtitles.repair.csv")
     with open(srt_out, "w") as f:
-        for i, c in enumerate(conf, 1):
-            f.write(f"{i}\n{ts_srt(c['start'])} --> {ts_srt(c['end'])}\n{reflow.wrap_balance(c['text'])}\n\n")
+        i = 0
+        for c in conf:
+            # `_split` is set ONLY by the card_split path above and never written back to
+            # conf.json -- it is a transient in-memory marker for this run's write, not a
+            # durable card shape. Two cues here, one there; conf.json stays one row either
+            # way (.procoder/todo/20260829-split-a-card-so-a-human-correction-fits.md).
+            for p in c.get("_split") or ({"start": c["start"], "end": c["end"], "text": c["text"]},):
+                i += 1
+                f.write(f"{i}\n{ts_srt(p['start'])} --> {ts_srt(p['end'])}\n{reflow.wrap_balance(p['text'])}\n\n")
     with open(rep_out, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["orig", "repaired", "ref", "latency_ms"])

@@ -153,6 +153,26 @@ def test_a_correct_verdict_supplies_the_humans_text_and_still_obeys_fits_card(tm
     assert "harbour" not in open(unfit + SRT).read(), "the write-back cannot widen a card either"
 
 
+def test_a_correct_too_wide_for_one_line_but_splittable_ships_as_two_cues(tmp_path):
+    """The other writer of the same rule. repair.py's process() and review_apply.py's
+    apply_episode() must not disagree about what a legal split is, or a correction split
+    on one re-run and refused on the other. Same verified fixture as repair.py's own test:
+    at 10.0s the 84-char correction is over_line_len only (no over_cps), and the sentence-
+    boundary split gives two individually legal single-line halves."""
+    half1 = "The captain ordered everyone to abandon ship at once."
+    half2 = "Nobody thought twice about it."
+    rows = [{"start": 100.0, "end": 110.0, "text": "I saw spondum"}]
+    stem = _muxed(tmp_path, "ep_split", rows)
+    store = decisions.record({}, "I saw spondum", "I saw Spandam", "correct", text=f"{half1} {half2}")
+
+    review_apply.apply_episode(stem, store, apply=True)
+
+    cues = _cues(stem + SRT)
+    assert len(cues) == 2, "two cues, not one -- a single cue could never legally hold this text"
+    joined = "\n".join(t for _, t in cues)
+    assert "abandon ship at once" in joined and "Nobody thought twice" in joined
+
+
 def test_a_show_sweep_invalidates_only_the_episodes_that_change(tmp_path):
     """Three episodes, one verdict."""
     hit = _muxed(tmp_path, "ep_a", [{"start": 0.0, "end": 2.0, "text": "I saw spondum"}])

@@ -41,14 +41,17 @@ import json
 import os
 import tempfile
 
+import card_split
 import decisions
 import reflow
-from common import MEDIA_GID, MEDIA_UID, SIDECAR_MODE, STAMP_SUFFIX, log, ts_srt
+from common import MEDIA_GID, MEDIA_UID, SIDECAR_MODE, STAMP_SUFFIX, log, read_words, ts_srt
 
 # The SAME fits_card repair.py applies, imported rather than reimplemented. Two writers of
 # the shipped srt that disagreed about C1 would mean a `correct` refused on a re-run and
 # applied by a sweep, and the drift would be invisible until an episode shipped an
-# unreadable card. Importing costs a module load and buys the guarantee.
+# unreadable card. Importing costs a module load and buys the guarantee. card_split is the
+# same guarantee for the split path: a correction split here and refused by repair.py's
+# next run (or vice versa) is the identical drift, one card_split.find_legal_split call.
 from repair import fits_card
 
 CONF_SUFFIX = ".dubtitles.conf.json"
@@ -61,13 +64,21 @@ def _write_srt(path: str, rows: list, texts: list) -> None:
 
     Re-wrapped through reflow.wrap_balance, the same call repair.py's rebuild uses, so an
     UNCHANGED cue comes out byte-identical: conf.json stores text flattened, wrap_balance is
-    deterministic, and the srt was written by that same call in the first place."""
+    deterministic, and the srt was written by that same call in the first place.
+
+    Each entry in ``texts`` is either a plain string (one cue, ``rows[i]``'s own timing) or
+    a 2-tuple of card_split's two piece-dicts (two cues) -- see apply_episode. conf.json is
+    never touched either way; the split exists only in this write."""
     d = os.path.dirname(path) or "."
     fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(path) + ".", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            for i, (c, t) in enumerate(zip(rows, texts), 1):
-                f.write(f"{i}\n{ts_srt(c['start'])} --> {ts_srt(c['end'])}\n{reflow.wrap_balance(t)}\n\n")
+            i = 0
+            for c, t in zip(rows, texts):
+                pieces = t if isinstance(t, tuple) else ({"start": c["start"], "end": c["end"], "text": t},)
+                for p in pieces:
+                    i += 1
+                    f.write(f"{i}\n{ts_srt(p['start'])} --> {ts_srt(p['end'])}\n{reflow.wrap_balance(p['text'])}\n\n")
         os.chmod(tmp, SIDECAR_MODE)
         os.replace(tmp, path)
     except BaseException:
@@ -100,6 +111,9 @@ def apply_episode(stem: str, store: dict, apply: bool = False) -> dict:
         res["error"] = "conf.json is not a list of cards"
         return res
 
+    # card_split's word-alignment path only; None on any episode with no usable sidecar,
+    # which degrades every card to the proportional fallback, same as it always has.
+    words_doc = read_words(stem)
     texts, changed = [], 0
     for c in rows:
         orig = (c or {}).get("text", "")
@@ -109,11 +123,18 @@ def apply_episode(stem: str, store: dict, apply: bool = False) -> dict:
             changed += 1
             corrected = next((e for e in ruled if e.get("verdict") == "correct"), None)
             human = (corrected or {}).get("text") or ""
+            start, end = float(c.get("start", 0)), float(c.get("end", 0))
             # C1: card timing is immutable, for a human too. repair.py refuses an
             # unrenderable `correct` and queues the refusal; here the ASR text simply
-            # stands, and repair.py re-records the refusal on its next pass.
-            if human and fits_card(human, float(c.get("end", 0)) - float(c.get("start", 0)), orig):
+            # stands, and repair.py re-records the refusal on its next pass -- UNLESS a
+            # legal split exists, in which case both writers must agree it does.
+            if human and fits_card(human, end - start, orig):
                 want = human
+            elif human:
+                words = [w for w in (words_doc or {}).get("words", []) if w.get("start", 0) >= start and w.get("end", 0) <= end]
+                split = card_split.find_legal_split(human, start, end, words or None)
+                if split is not None:
+                    want = split
         texts.append(want)
 
     res["cards"] = len(rows)

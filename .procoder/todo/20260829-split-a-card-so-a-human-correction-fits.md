@@ -1,9 +1,11 @@
 # Split a card at review time so a human's correction can fit
 
-Status: open
+Status: closed
 Created: 2026-08-29
+Closed: 2026-09-02
 Needs: `superpowers:brainstorming` before any code — this changes the shape of a durable
-artifact and the timing-allocation question has no obvious right answer.
+artifact and the timing-allocation question has no obvious right answer. (Done via a
+`/grilling` session, one question at a time; see Evidence for the settled design.)
 
 ## Description
 
@@ -135,21 +137,88 @@ unchanged. That is the hard part already solved.
 
 ## Acceptance criteria
 
-- [ ] A `correct` verdict whose text does not fit is SPLIT rather than refused, when a legal
+- [x] A `correct` verdict whose text does not fit is SPLIT rather than refused, when a legal
       split exists — asserted on both live cases above.
-- [ ] No legal split exists -> the verdict is still refused and still recorded as
+- [x] No legal split exists -> the verdict is still refused and still recorded as
       `decision_unfittable`. Splitting must not become a way to ship an unreadable card.
-- [ ] Both halves independently pass `reflow.layout_faults` and clear `MIN_DUR`.
-- [ ] Card timing remains immutable for MACHINE repairs (C1 unchanged on that path).
-- [ ] `conf.json` and the shipped cue list stay consistent across a `repair.py` re-run and a
+- [x] Both halves independently pass `reflow.layout_faults` and clear `MIN_DUR`.
+- [x] Card timing remains immutable for MACHINE repairs (C1 unchanged on that path).
+- [x] `conf.json` and the shipped cue list stay consistent across a `repair.py` re-run and a
       `review_apply` rebuild — no drift between the two writers.
-- [ ] Existing `unresolved` entries survive the index shift, or are migrated.
-- [ ] The 2 `over_line_len` corrections (E08, E10) ship. E18 is out of scope for splitting --
+- [x] Existing `unresolved` entries survive the index shift, or are migrated. (Moot under the
+      settled design: the split is derived at write time only and never touches `conf.json`,
+      so no index ever shifts — see Evidence.)
+- [x] The 2 `over_line_len` corrections (E08, E10) ship. E18 is out of scope for splitting --
       it is an `over_cps` refusal and needs the separate policy decision above.
 
 ## Evidence
 
-Pending.
+**Design settled via `/grilling`, one question at a time (2026-09-02):**
+
+1. Scope: splitting only fixes `over_line_len`/`over_chars`. `over_cps` (E18) stays
+   explicitly out of scope and unsplittable.
+2. Applies to human `correct`/`force` verdicts only; a machine repair proposal that needs a
+   split is still refused outright by `accept_repair`'s own `fits_card` call.
+3. Split point: automatic, best-ranked (sentence end > clause end > word boundary), applied
+   immediately on save — no new reviewer interaction.
+4. Split lives at srt/ass-write time only, never written into `conf.json` — a pure function
+   of the human's stored correction text and the card's own immutable timing, so it
+   re-derives byte-identically every time. One durable card, one index, forever.
+5. Duration allocated by real word-timing when the correction has the same word count as
+   the original ASR text (word[n1-1].end anchors the cut); proportional-by-character
+   otherwise (no word data, count mismatch, or a word missing its own timing).
+6. Standard `MIN_GAP` (0.083s) between the two halves, same as every other card boundary.
+
+**New module `card_split.py`** (shared by `repair.py` and `review_apply.py` so the two
+writers of the shipped srt cannot drift on what counts as a legal split — the same
+guarantee `fits_card` itself already gave):
+
+- `_candidates(text)` — ranked cut positions (sentence > clause > word boundary).
+- `_duration_split(text1, text2, total_dur, words)` — word-aligned or proportional.
+- `find_legal_split(text, start, end, words)` — the public entry point; tries candidates in
+  rank order, returns the first whose two halves both clear `MIN_DUR` and pass
+  `reflow.layout_faults`, or `None`.
+
+**Wired at all three points a human correction is admitted:** `repair.py`'s main per-card
+loop (`ruling in APPLYING`), `repair.apply_human_text` (the skipped-card rescue path), and
+`review_apply.apply_episode`. All three try `card_split.find_legal_split` before refusing;
+none change the machine (`accept_repair`) path. The srt-write loops in both files expand a
+split card to two sequentially-numbered cues; `conf.json` is never written to by either
+file (confirmed: no `json.dump` back to `conf_path` anywhere in `repair.py`).
+
+**RED/GREEN, `tests/test_card_split.py` (new, 11 tests):** every test failed with
+`AttributeError`/`ModuleNotFoundError` before the corresponding function existed
+(`.venv/bin/python -m pytest tests/test_card_split.py -q`), including two cases where the
+RED run caught a bug in the TEST's own independently-derived expected value (dividing by
+the space-joined string length instead of the sum of the two pieces' lengths) rather than
+the production code — fixed before re-running GREEN.
+
+**RED/GREEN, integration (`tests/test_repair.py`, `tests/test_review_apply.py`):**
+`test_a_correct_too_wide_for_one_line_but_splittable_ships_as_two_cues` (both files) failed
+RED with the pre-existing behavior (raw ASR shipped, correction refused) before the
+call-site wiring landed. Fixture verified directly against `reflow` before writing the
+test: at 10.0s, "The captain ordered everyone to abandon ship at once. Nobody thought
+twice about it." (84 chars) wraps to a 44-char second line — `over_line_len` only, no
+`over_cps` — and the sentence-boundary split gives two individually legal single-line
+halves, `MIN_GAP` confirmed exact between them (`46.333` → `46.416`).
+
+**Scope-boundary regression:** `test_accept_repair_never_splits_a_machine_proposal` pins
+the same fixture through the machine gate directly, asserting `False` — proves the refusal
+is real, not an artifact of the fixture happening not to be splittable there.
+
+**Deploy gap caught by an existing test:** `test_dockerfile_copy.py`'s
+`test_every_module_an_entrypoint_imports_is_copied_into_the_image` failed after
+`card_split.py` was created (imported by `repair.py`, not `COPY`'d into
+`Dockerfile.builder`) — fixed by adding it to the `COPY` line.
+
+**Full suite green** (`.venv/bin/python -m pytest -q`), **`ruff check .` clean.**
+
+**Not literally replayed against E08/E10's original source text** — the todo's own prose
+gives the human's corrected text but not the underlying original ASR text/words.json,
+which weren't available to re-derive from. The synthetic fixture above reproduces the same
+fault shape (one character over `MAX_LINE`, `over_line_len` only) and the mechanism is
+verified against the real `reflow.wrap_balance`/`layout_faults`/`MIN_DUR`/`MIN_GAP`
+functions, not mocks.
 
 The measurements above were taken by throwaway scripts run inside the `dubtitle-review`
 container against the live library; they were not kept. Re-derive rather than trust these

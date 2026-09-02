@@ -1891,6 +1891,55 @@ def test_a_correct_that_does_not_fit_the_card_is_refused_and_recorded(tmp_path, 
     assert refusals[0]["proposed_text"] == too_long
 
 
+def test_accept_repair_never_splits_a_machine_proposal():
+    """Scope boundary, settled 2026-09-02: card_split applies to human correct/force
+    verdicts only. A machine repair proposal that would need a split to fit is still
+    refused outright -- accept_repair's own fits_card call never routes through
+    card_split, and C1 stays absolute for this path. Same fixture the human-verdict split
+    tests use, verified independently to be splittable, so a False here can only mean the
+    machine path really never tries."""
+    orig = "The captain gave an order and everyone listened closely today."
+    new = "The captain ordered everyone to abandon ship at once. Nobody thought twice about it."
+    assert repair.accept_repair(orig, new, "", 10.0, gl()) is False
+
+
+def test_a_correct_too_wide_for_one_line_but_splittable_ships_as_two_cues(tmp_path, monkeypatch):
+    """.procoder/todo/20260829-split-a-card-so-a-human-correction-fits.md: an over_line_len
+    refusal (NOT over_cps -- that stays out of scope and unsplittable, see
+    test_a_correct_that_does_not_fit_the_card_is_refused_and_recorded) now ships as two
+    cues instead of being thrown away. Fixture verified directly against reflow: at 10.0s
+    the 84-char correction wraps to a 44-char second line (over_line_len only), and the
+    sentence-boundary split gives two individually legal single-line halves."""
+    half1 = "The captain ordered everyone to abandon ship at once."
+    half2 = "Nobody thought twice about it."
+    full_text = f"{half1} {half2}"
+    stem = str(tmp_path / "ep_split")
+    conf_path = stem + repair.CONF_SUFFIX
+    _write_conf(
+        conf_path,
+        stem + repair.SRT_SUFFIX,
+        [{"start": 100.0, "end": 110.0, "text": "I saw spondum", "avg_logprob": -0.6, "no_speech_prob": 0.1}],
+    )
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_split.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"], hard_fixes={"Spandom": "Spandam"}))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "I saw Spandom")
+    monkeypatch.setattr(
+        decisions,
+        "decisions_for",
+        lambda *a, **k: (_store("I saw spondum", "I saw Spandam", "correct", text=full_text), "Show"),
+    )
+
+    repair.process(conf_path)
+
+    srt = open(stem + repair.SRT_SUFFIX).read()
+    # Tokens, not the whole strings: wrap_balance inserts a newline in half1 (2 lines), so
+    # the space-joined half1 never appears verbatim even when it HAS shipped correctly.
+    assert "abandon ship at once" in srt and "Nobody thought twice" in srt, "both halves must ship, not raw ASR"
+    assert srt.count(" --> ") == 2, "two cues, not one -- a single cue could never legally hold this text"
+    assert not [e for e in unresolved.items(stem) if e["reason"] == "decision_unfittable"], "a legal split is not a refusal"
+
+
 def _run_force_case(tmp_path, monkeypatch, name, store):
     """One episode whose proposal accept_repair REFUSES (30 chars against 13 is a 2.3 length
     ratio, outside the 0.6-1.5 band) but which renders fine in the 2.0s card (15 cps)."""
@@ -2367,6 +2416,37 @@ def test_an_unanchored_card_still_ships_a_stored_human_correction(tmp_path, monk
     summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
     assert summary["verdict_rescued"] == 1
     assert summary["skipped_no_ref"] == 0
+
+
+def test_a_rescued_correction_too_wide_for_one_line_ships_as_two_cues(tmp_path, monkeypatch):
+    """The split path applies here too -- apply_human_text is the OTHER writer of a human
+    correction (repair.process's own main loop is the first), and the two must not drift
+    on what counts as fittable. Same verified fixture as the main-loop split test."""
+    half1 = "The captain ordered everyone to abandon ship at once."
+    half2 = "Nobody thought twice about it."
+    full_text = f"{half1} {half2}"
+    stem = str(tmp_path / "ep_rescue_split")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path,
+        srt_path,
+        [{"start": 100.0, "end": 110.0, "text": "I saw spondum", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    store = _store("I saw spondum", "I saw Spandam", "correct", text=full_text)
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (store, "Show"))
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_rescue_split.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"]))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])  # no anchor -> the skip branch
+
+    assert repair.process(conf_path) == "repaired"
+    srt = open(srt_path).read()
+    assert "abandon ship at once" in srt and "Nobody thought twice" in srt
+    assert srt.count(" --> ") == 2
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["verdict_rescued"] == 1
+    assert summary["verdict_unfittable"] == 0
 
 
 def test_a_rescued_correction_that_cannot_be_rendered_is_still_refused(tmp_path, monkeypatch):

@@ -71,7 +71,7 @@ WORKDIR /app
 # "skip" when the srt is absent -- so a model/prompt change cannot be rolled out to the
 # existing library without this in the image.
 COPY generate.py reflow.py glossary.py glossary_verify.py glossary_acquire.py hallucination.py ordering.py common.py common_words.txt \
-     repair.py dub_signs_merge.py mux.py plex_refresh.py mine_glossary.py recreate_srt.py merge_pass.sh \
+     repair.py dub_signs_merge.py mux.py plex_refresh.py mine_glossary.py recreate_srt.py merge_pass.sh card_split.py \
      qc.py punctuation.py unresolved.py decisions.py review_apply.py review_server.py watch_queue.py acquire_cache.py gen_loop.sh container_run.sh /app/
 COPY data/ /app/data/
 COPY shell/ /app/shell/
