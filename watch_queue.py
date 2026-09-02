@@ -32,6 +32,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 
@@ -223,8 +224,28 @@ def main(argv=None):
     if a.dry_run:
         print("  (dry run -- nothing written)")
         return 0
-    with open(a.out, "w", encoding="utf-8") as f:
-        f.write("\n".join(order) + "\n")
+    if not order:
+        # `build()` only reaches here when at least one source had real entries (both-empty
+        # raises Unreachable above), so a zero-hit match is a rename or config problem, never
+        # a legitimately empty library. Refusing leaves the PREVIOUS order file in place --
+        # gen_loop.sh keeps sweeping what it already had rather than going silent for
+        # RESCAN_INTERVAL on an order file that parses to zero shows.
+        print("watch_queue: REFUSING TO WRITE -- 0 shows matched a library directory (see unmatched above)", file=sys.stderr)
+        return 2
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(a.out) or ".", prefix=os.path.basename(a.out) + ".", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("\n".join(order) + "\n")
+        os.replace(tmp, a.out)
+    except OSError as e:
+        print(f"watch_queue: REFUSING TO WRITE -- {e}", file=sys.stderr)
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        return 2
     print(f"  wrote {a.out}")
     return 0
 

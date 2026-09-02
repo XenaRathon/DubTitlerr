@@ -59,6 +59,30 @@ def test_unreachable_out_file_is_left_untouched(monkeypatch, tmp_path, capsys):
     assert out.read_text() == "One Pace\n"  # byte-identical
 
 
+def test_zero_matched_shows_refuses_to_write_and_leaves_the_file_alone(monkeypatch, tmp_path, capsys):
+    """A renamed library folder is real data on both sources that matches zero directories --
+    a different fact from 'nothing watched' (empty sources, which build() itself refuses) and
+    just as dangerous to write: an order file with zero shows idles the whole GPU sweep for
+    RESCAN_INTERVAL with no log signal, while docker ps shows healthy."""
+    out = tmp_path / "anime_order.txt"
+    out.write_text("One Pace\n")
+    monkeypatch.setattr(wq, "from_watchstate", lambda s: {"One Pace (renamed)": 100})
+    monkeypatch.setattr(wq, "from_plex", lambda s: {})
+    monkeypatch.setattr(wq, "library_dirs", lambda r: ["One Pace"])  # the old name -- nothing matches
+    assert wq.main(["--out", str(out)]) == 2
+    assert out.read_text() == "One Pace\n"  # byte-identical, not truncated to empty
+    assert "REFUSING TO WRITE" in capsys.readouterr().err
+
+
+def test_the_write_is_atomic_no_tmp_file_left_behind(monkeypatch, tmp_path):
+    out = tmp_path / "order.txt"
+    monkeypatch.setattr(wq, "from_watchstate", lambda s: {"One Pace": 100})
+    monkeypatch.setattr(wq, "from_plex", lambda s: {"One Pace": 90})
+    monkeypatch.setattr(wq, "library_dirs", lambda r: ["One Pace"])
+    assert wq.main(["--out", str(out)]) == 0
+    assert [p.name for p in tmp_path.iterdir()] == ["order.txt"]  # no order.txt.<x>.tmp survives
+
+
 def test_title_matches_a_tvdb_suffixed_directory():
     dirs = ["SPY x FAMILY (2022) {tvdb-405920}", "One Pace"]
     order, misses = wq.match_dirs({"SPY x FAMILY": 5}, dirs)
