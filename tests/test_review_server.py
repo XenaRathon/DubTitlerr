@@ -69,6 +69,27 @@ def test_an_explicitly_empty_token_disables_auth_but_unset_does_not(tmp_path, mo
     assert review_server.resolve_token(str(tmp_path)) == "hunter2", "an explicit token wins over the persisted one"
 
 
+def test_a_disabled_token_on_the_wide_bind_gets_a_startup_warning(tmp_path, monkeypatch, capsys):
+    """The empty-token opt-out and the default 0.0.0.0 bind are each individually fine and
+    documented; together they mean every write route is open to the network. That
+    combination lived only in the module docstring -- an operator who finds the opt-out in
+    a forum thread should see the risk in their own logs."""
+    monkeypatch.setenv("REVIEW_TOKEN", "")
+    review_server.announce_token(str(tmp_path), bind="0.0.0.0")
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "0.0.0.0" in out
+
+
+def test_no_warning_when_the_bind_is_host_only_or_a_real_token_is_set(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("REVIEW_TOKEN", "")
+    review_server.announce_token(str(tmp_path), bind="127.0.0.1")
+    assert "WARNING" not in capsys.readouterr().out
+
+    monkeypatch.setenv("REVIEW_TOKEN", "hunter2")
+    review_server.announce_token(str(tmp_path), bind="0.0.0.0")
+    assert "WARNING" not in capsys.readouterr().out
+
+
 def test_a_write_route_without_the_token_is_refused_and_a_read_route_is_not(tmp_path, monkeypatch):
     """Read routes stay open: they expose only what is already on the operator's disk, and
     gating them would make the page useless without adding protection. WRITES are what

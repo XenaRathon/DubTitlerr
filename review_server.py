@@ -175,13 +175,27 @@ def resolve_token(token_dir: str = "") -> str:
     return tok
 
 
-def announce_token(token_dir: str = "") -> None:
+def announce_token(token_dir: str = "", bind: str = "") -> None:
     """Say WHERE the token is on every start; say what it IS only when it is new.
 
     resolve_token prints the value at the moment it generates one, and never again -- so an
     operator returning after the container log had rotated had no way to find it short of
-    knowing the docker exec incantation. A path and a command are not a credential."""
+    knowing the docker exec incantation. A path and a command are not a credential.
+
+    Also warns, loudly, on the one combination the module docstring calls "the operator's
+    decision about their own network" but the README never mentions: an explicitly empty
+    REVIEW_TOKEN (auth off) on the default 0.0.0.0 bind. The empty-token opt-out is one
+    character away from the safe default, and an operator who finds it in a forum thread
+    (the natural answer to "my token never arrived, I restarted before I saw it") should
+    see the risk in their own logs, not only in source they may never read."""
     d = token_dir or TOKEN_DIR
+    if not auth_required(d) and (bind or REVIEW_BIND) == "0.0.0.0":
+        log(
+            "review server: WARNING — REVIEW_TOKEN is explicitly empty (auth disabled) and "
+            "REVIEW_BIND is 0.0.0.0: every write route is open to anything that can reach "
+            "this port. Set REVIEW_TOKEN to a real value, or REVIEW_BIND to a host-only "
+            "address, unless this network is one you fully trust."
+        )
     if "REVIEW_TOKEN" in os.environ:
         log("review server: using REVIEW_TOKEN from the environment")
         return
