@@ -2510,6 +2510,64 @@ def test_a_skipped_card_a_human_ruled_on_is_never_silent(tmp_path, monkeypatch):
     assert "I saw spondum" in open(srt_path).read(), "a rejection leaves the ASR text standing"
 
 
+def test_a_forced_verdict_on_a_skipped_card_still_ships(tmp_path, monkeypatch):
+    """R-force, measured on MARRIAGETOXIN S01E10. `force` is the verdict a reviewer escalates
+    to when the automated checks would refuse the line -- so losing it is the worst version
+    of the skipped-card bug, not a lesser one. The rescue answered only `correct`, so every
+    forced verdict on a card the repair stage skipped shipped raw ASR while the store said
+    the line was settled.
+
+    Breaks if apply_human_text drops the forced_text fallback, or if forced_text reads the
+    folded `proposed` key instead of the verbatim `text` (which would ship the line
+    lowercased -- assert the casing here, not just the presence)."""
+    stem = str(tmp_path / "ep_forced")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path,
+        srt_path,
+        [{"start": 0.0, "end": 4.0, "text": "Hammy Rat Network is online!", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    store = _store("Hammy Rat Network is online!", "Hammy-Rat Network is online!", "force")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (store, "Show"))
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_forced.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=[]))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])
+
+    assert repair.process(conf_path) == "repaired"
+    shipped = open(srt_path).read()
+    assert "Hammy-Rat Network is online!" in shipped, "the forced wording must reach the srt"
+    assert "hammy-rat network" not in shipped, "and must not arrive as the folded match key"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["verdict_rescued"] == 1 and summary["verdict_owed"] == 0
+
+
+def test_an_accept_verdict_on_a_skipped_card_is_owed_not_guessed(tmp_path, monkeypatch):
+    """The boundary of the rescue. `accept` endorses the MODEL's wording for a proposal this
+    card no longer has -- answering it on the original alone would ship text the reviewer
+    approved in a context that no longer exists. It stays owed, and stays visible."""
+    stem = str(tmp_path / "ep_accept")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path,
+        srt_path,
+        [{"start": 0.0, "end": 4.0, "text": "I saw spondum", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    store = _store("I saw spondum", "I saw Spandam", "accept")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (store, "Show"))
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_accept.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"]))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])
+
+    assert repair.process(conf_path) == "repaired"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["verdict_owed"] == 1, "owed, so the reviewer is told rather than guessed for"
+    assert "I saw spondum" in open(srt_path).read()
+
+
 def test_a_first_run_with_no_anchor_says_so_loudly(tmp_path, monkeypatch, capsys):
     """A3. The beta-user case: dub-only copies, `unanchored_repair` never declared, and no
     prior repairs -- so guard (c) cannot fire, because it only protects work that already

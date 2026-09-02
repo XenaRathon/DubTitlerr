@@ -670,11 +670,18 @@ def apply_human_text(c, store, stem, words_doc=None):
     caller keeps its own. "owed" is the outcome that must never be silent again: a human had
     ruled on the line, and this path could not act on it.
 
+    `force` is rescued here too, via `decisions.forced_text`. It is the verdict a reviewer
+    escalates to precisely because the automated checks would refuse the line, so losing it
+    on a skipped card is the worst version of this bug, not a lesser one -- measured on
+    MARRIAGETOXIN S01E10, where every forced verdict on a skipped card shipped raw ASR.
+    `accept` is deliberately NOT rescued: it endorses the MODEL's wording for a proposal
+    this card no longer has, which is the case `corrected_text`'s docstring rules out.
+
     fits_card is NOT bypassed. C1 keeps card timing immutable for humans too, exactly as it
     does for the verdict path below."""
     if not DECISIONS_APPLY:
         return None
-    text = decisions.corrected_text(store, c["text"])
+    text = decisions.corrected_text(store, c["text"]) or decisions.forced_text(store, c["text"])
     if text:
         if not fits_card(text, c["end"] - c["start"], c["text"]):
             cw = card_split.card_words(words_doc, c["start"], c["end"])

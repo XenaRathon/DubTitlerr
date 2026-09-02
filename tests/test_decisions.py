@@ -465,3 +465,67 @@ def test_two_writers_racing_under_the_lock_both_survive(tmp_path):
     t2.join()
     store = decisions.load(show, dir)
     assert len(store.get("decisions", [])) == 2
+
+
+# --- forced_text: the `force` sibling of corrected_text --------------------------------
+
+
+def test_forced_text_answers_on_the_original_alone():
+    """R-force. `force` means "ship this exact text for this exact original, I have looked
+    at it". The wording is in the entry under `proposed`, so a card the repair stage
+    SKIPPED -- which has no proposal to pair on -- can still be answered."""
+    store = decisions.record({}, "Hammy Rat Network is online!", "Hammy-Rat Network is online!", "force")
+    assert decisions.forced_text(store, "Hammy Rat Network is online!") == "Hammy-Rat Network is online!"
+
+
+def test_forced_text_ignores_every_other_verdict():
+    """`accept` endorses the MODEL's wording for a proposal a skipped card no longer has,
+    and `reject` means the ASR stands -- answering either on the orig alone is the failure
+    `corrected_text`'s docstring exists to prevent. Only `force` is safe here."""
+    store = decisions.record({}, "the ship sailed", "the Ship sailed", "accept")
+    store = decisions.record(store, "he went thataway", "he went that way", "reject")
+    assert decisions.forced_text(store, "the ship sailed") is None
+    assert decisions.forced_text(store, "he went thataway") is None
+
+
+def test_forced_text_takes_the_newest_when_one_original_has_two():
+    """`record` replaces per (orig, proposed) pair, so one original holds two forced
+    wordings made against different proposals. The later is the reviewer's current intent."""
+    store = decisions.record({}, "I saw spondum", "I saw Spandine", "force")
+    store = decisions.record(store, "I saw spondum", "I saw Spandam", "force")
+    store["decisions"][0]["at"], store["decisions"][1]["at"] = 100.0, 200.0
+    assert decisions.forced_text(store, "I saw spondum") == "I saw Spandam"
+
+
+def test_two_undated_forced_wordings_that_disagree_refuse_rather_than_guess():
+    """Same rule as corrected_text: the caller counts a non-empty for_orig with no text as
+    owed-but-unresolved, which is the outcome that must never be silent."""
+    store = decisions.record({}, "I saw spondum", "I saw Spandine", "force")
+    store = decisions.record(store, "I saw spondum", "I saw Spandam", "force")
+    for e in store["decisions"]:
+        e.pop("at", None)
+    assert decisions.forced_text(store, "I saw spondum") is None
+    assert decisions.for_orig(store, "I saw spondum"), "still owed, so the caller can say so"
+
+
+def test_a_force_entry_written_before_verbatim_storage_is_owed_not_mangled():
+    """An entry from before `record` kept the verbatim wording has only the folded match
+    key. Shipping that would lowercase the line into the subtitle, which is worse than the
+    bug forced_text fixes -- so it refuses, and the caller reports it as still owed."""
+    legacy = {"decisions": [{"orig": "hammy rat network is online!",
+                             "proposed": "hammy-rat network is online!",
+                             "verdict": "force", "run": "review", "at": 1788356796.7}]}
+    assert decisions.forced_text(legacy, "Hammy Rat Network is online!") is None
+    assert decisions.for_orig(legacy, "Hammy Rat Network is online!"), "visible as owed"
+
+
+def test_recording_a_force_keeps_the_wording_verbatim_not_the_folded_key():
+    store = decisions.record({}, "Hammy Rat Network is online!", "Hammy-Rat Network is online!", "force")
+    e = store["decisions"][0]
+    assert e["proposed"] == "hammy-rat network is online!", "the match key stays folded"
+    assert e["text"] == "Hammy-Rat Network is online!", "the shippable wording stays verbatim"
+
+
+def test_an_explicit_force_text_is_not_overwritten_by_the_proposal():
+    store = decisions.record({}, "orig line", "model wording", "force", text="the human's own wording")
+    assert store["decisions"][0]["text"] == "the human's own wording"
