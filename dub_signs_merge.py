@@ -48,7 +48,18 @@ POSITIONED = re.compile(r"\\(?:pos|move)\(|\\an[134567 89]")
 # KEEP the Japanese romaji karaoke (top) + signs/credits. DROP the fansub English song
 # TRANSLATION — it's replaced by whisper's transcribed English-dub lyrics (bottom Dubtitles).
 KEEP_STYLE = re.compile(r"karaoke|sign|song|caption|title|credit|note|lyric|romaji|kashi|insert", re.I)
-DROP_STYLE = re.compile(r"main|dialog|default|flashback|thought|secondary|monolog|narrat|warning|italics|translat|^alt", re.I)
+# STRONG_DROP_STYLE: an unambiguous role, independent of the release's own style-naming
+# quirks -- these win even over a keep-signal tag (a "Song Translation" style is the
+# fansub's OWN translated lyrics, dropped in favour of whisper's Dubtitles regardless of
+# whether it happens to carry karaoke timing; a "Warning" style is a player-support
+# notice, never actual signs content).
+STRONG_DROP_STYLE = re.compile(r"warning|translat", re.I)
+# WEAK_DROP_STYLE: a GUESS that a style name means plain dialogue. Real releases reuse
+# "Default" for both a dialogue track AND a signs/songs track depending on the group's
+# own convention (MARRIAGETOXIN S01E01: the signs/songs track's own style is "Default"),
+# so this guess must yield to an unambiguous tag signal (\pos/\move/\k/\p) rather than
+# overriding it -- see keep_event().
+WEAK_DROP_STYLE = re.compile(r"main|dialog|default|flashback|thought|secondary|monolog|narrat|italics|^alt", re.I)
 
 
 def keep_event(ev):
@@ -59,9 +70,12 @@ def keep_event(ev):
     if not ev.plaintext.strip():
         return False
     style = ev.style or ""
-    if DROP_STYLE.search(style):  # dialogue / warning / song-translation -> drop FIRST
-        return False  # (checked before positioning so Translation drops too)
+    if STRONG_DROP_STYLE.search(style):
+        return False
     t = ev.text
+    tagged = bool(KARAOKE.search(t) or HAS_DRAWING.search(t) or POSITIONED.search(t) or ANIMATED.search(t))
+    if WEAK_DROP_STYLE.search(style) and not tagged:  # a style-name GUESS, only when nothing else says otherwise
+        return False
     if KARAOKE.search(t):  # Japanese romaji karaoke (top) -> keep
         return True
     if HAS_DRAWING.search(t):  # vector-drawn sign (\p/\clip/\iclip) -> keep
@@ -70,7 +84,7 @@ def keep_event(ev):
         return True  # (ANIMATED's \move overlaps POSITIONED; merged into one check)
     if KEEP_STYLE.search(style):
         return True
-    return False  # unknown plain event -> assume dialogue, Whisper has it
+    return False  # unknown plain event, no tag, no keep-style -> assume dialogue, Whisper has it
 
 
 def build(video, dub_srt, out_ass):

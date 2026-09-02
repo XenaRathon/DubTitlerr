@@ -49,6 +49,21 @@ def test_keep_event_drops_translation_style_despite_karaoke():
     assert not dsm.keep_event(ev(text=r"{\k30}some{\k30}translated{\k30}lyrics", style="Song Translation"))
 
 
+def test_keep_event_keeps_positioned_sign_even_on_a_style_named_default():
+    # Real bug, MARRIAGETOXIN S01E01: the release's OWN signs/songs track uses "Default"
+    # as its style name (many groups do -- it isn't reserved for dialogue). DROP_STYLE's
+    # generic dialogue-name guess ("default") used to fire unconditionally and drop the
+    # event before its \pos tag was ever checked -- 15 of 16 real signs in that episode
+    # all silently vanished. A style-name GUESS must yield to an unambiguous tag signal.
+    assert dsm.keep_event(ev(text=r"{\pos(100,200)}Sign text", style="Default"))
+
+
+def test_keep_event_still_drops_untagged_plain_text_on_a_weak_drop_style():
+    # The residual, ACCEPTED gap: with no tag signal at all, an ambiguous style name still
+    # falls back to "assume dialogue" -- there is nothing else to disambiguate it on.
+    assert not dsm.keep_event(ev(text="Just a caption, no tags.", style="Default"))
+
+
 # --- layer ordering in build() -----------------------------------------------
 
 
