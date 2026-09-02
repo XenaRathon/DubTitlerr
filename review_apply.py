@@ -121,8 +121,13 @@ def apply_episode(stem: str, store: dict, apply: bool = False) -> dict:
         ruled = decisions.for_orig(store, orig) if orig else []
         if ruled:
             changed += 1
-            corrected = next((e for e in ruled if e.get("verdict") == "correct"), None)
-            human = (corrected or {}).get("text") or ""
+            # `corrected_text`, not the first `correct` in file order: `record` replaces
+            # per (orig, proposed) pair, so one orig legitimately holds two corrections
+            # made against different proposals and the LATER one is the human's current
+            # wording (decisions.py:184). Picking by list order shipped whichever was
+            # written first, and disagreed with repair.py about which human decision is
+            # authoritative -- the drift this module exists to avoid.
+            human = decisions.corrected_text(store, orig) or ""
             start, end = float(c.get("start", 0)), float(c.get("end", 0))
             # C1: card timing is immutable, for a human too. repair.py refuses an
             # unrenderable `correct` and queues the refusal; here the ASR text simply
@@ -131,8 +136,7 @@ def apply_episode(stem: str, store: dict, apply: bool = False) -> dict:
             if human and fits_card(human, end - start, orig):
                 want = human
             elif human:
-                words = [w for w in (words_doc or {}).get("words", []) if w.get("start", 0) >= start and w.get("end", 0) <= end]
-                split = card_split.find_legal_split(human, start, end, words or None)
+                split = card_split.find_legal_split(human, start, end, card_split.card_words(words_doc, start, end))
                 if split is not None:
                     want = split
         texts.append(want)

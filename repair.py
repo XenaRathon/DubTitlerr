@@ -398,26 +398,6 @@ def fits_card(text, dur, orig=None):
     return all(a <= b + reflow.EPS for a, b in zip(after, before))
 
 
-def _card_words(words_doc, start, end):
-    """This card's own ASR words, in order, for card_split's word-alignment path -- or
-    None when there is nothing safe to align to.
-
-    Only words with BOTH a start and end falling inside [start, end] are included. A word
-    punctuation.restore() inserted with no timing of its own is excluded rather than
-    guessed at: card_split's word-count check then naturally sees fewer words than the
-    text has and falls back to proportional, which is the safe default, not a special
-    case to detect here."""
-    if not words_doc:
-        return None
-
-    def _in_window(w):
-        s, e = w.get("start"), w.get("end")
-        return s is not None and e is not None and s >= start - reflow.EPS and e <= end + reflow.EPS
-
-    words = [w for w in words_doc.get("words", []) if _in_window(w)]
-    return words or None
-
-
 PHONETIC_MIN = float(os.environ.get("REPAIR_PHONETIC_MIN", "0.75"))
 
 
@@ -697,7 +677,8 @@ def apply_human_text(c, store, stem, words_doc=None):
     text = decisions.corrected_text(store, c["text"])
     if text:
         if not fits_card(text, c["end"] - c["start"], c["text"]):
-            split = card_split.find_legal_split(text, c["start"], c["end"], _card_words(words_doc, c["start"], c["end"]))
+            cw = card_split.card_words(words_doc, c["start"], c["end"])
+            split = card_split.find_legal_split(text, c["start"], c["end"], cw)
             if split is None:
                 unresolved.record(stem, "repair", "verdict_unfittable", original_text=c["text"], proposed_text=text)
                 return "unfittable"
@@ -733,7 +714,7 @@ def process(conf_path):
     if not video or not os.path.exists(srt) or not os.path.exists(conf_path):
         return "skip"
     conf = json.load(open(conf_path))
-    # For card_split's word-alignment path only (see _card_words). None on any episode
+    # For card_split's word-alignment path only (see card_split.card_words). None on any episode
     # whose sidecar is missing/stale/version-mismatched -- word-alignment then degrades to
     # the proportional fallback for every card, same as it always has.
     words_doc = read_words(stem)
@@ -921,7 +902,8 @@ def process(conf_path):
             # over_line_len/over_chars can split cleanly; over_cps cannot (a proportional
             # split holds cps constant across both halves by construction, so a card
             # already too fast stays too fast either way) and correctly finds none.
-            split = card_split.find_legal_split(new, c["start"], c["end"], _card_words(words_doc, c["start"], c["end"]))
+            cw = card_split.card_words(words_doc, c["start"], c["end"])
+            split = card_split.find_legal_split(new, c["start"], c["end"], cw)
             if split is None:
                 # Refused, and SAID SO. A verdict that vanishes silently is the failure this
                 # whole loop exists to prevent -- the reviewer would believe the line settled.

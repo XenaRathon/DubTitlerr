@@ -36,6 +36,32 @@ _CLAUSE_END = re.compile(r"(?<=[,;:])\s+")
 _WORD_BOUNDARY = re.compile(r"\s+")
 
 
+def card_words(words_doc, start, end):
+    """This card's own ASR words, in order, for the word-alignment path in
+    ``_duration_split`` -- or None when there is nothing safe to align to.
+
+    Only words with BOTH a start and end falling inside [start, end] are included. A word
+    punctuation.restore() inserted with no timing of its own is excluded rather than
+    guessed at: the word-count check then naturally sees fewer words than the text has and
+    falls back to proportional, which is the safe default, not a special case to detect
+    here.
+
+    Lives here, beside its only consumer, because BOTH writers of the shipped srt select
+    this window -- `repair.process` and `review_apply.apply_episode`. When review_apply
+    filtered independently it compared a `None` timestamp against a float and raised
+    before the proportional fallback could be reached; two writers of one window is the
+    same drift `fits_card` is imported to prevent."""
+    if not words_doc:
+        return None
+
+    def _in_window(w):
+        s, e = w.get("start"), w.get("end")
+        return s is not None and e is not None and s >= start - reflow.EPS and e <= end + reflow.EPS
+
+    words = [w for w in words_doc.get("words", []) if _in_window(w)]
+    return words or None
+
+
 def _candidates(text: str) -> list[int]:
     """Character offsets into `text` where the second half would start, ranked best
     first (sentence end, then clause end, then any word boundary), each offset
