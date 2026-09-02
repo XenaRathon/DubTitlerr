@@ -1,6 +1,6 @@
 # A reject verdict reopens the episode and forces a full remux for no text change
 
-Status: open
+Status: closed (won't fix -- premise falsified)
 Created: 2026-09-02
 
 ## Description
@@ -24,7 +24,35 @@ The tempting general fix -- comparing the verdict's `at` against the stamp mtime
 the standing evidence that mtime is not proof a previous mux contains the approved text.
 Narrow this to no-op verdicts only.
 
-## Acceptance criteria
+## Outcome: WON'T FIX. The premise is false.
+
+Investigated 2026-09-02. A rejection is NOT a no-op, and the remux it triggers is the
+whole point of it.
+
+`repair.py` never rewrites `conf.json` -- it writes only its `.repair-summary.json`
+sidecar. So conf.json holds RAW ASR, while the shipped track holds repair's output, which
+routinely includes repairs `accept_repair` admitted automatically with no human involved.
+When a reviewer rejects one of those, "the ASR text stands" is a CHANGE to the video:
+review_apply rebuilds the srt from conf.json, repair.py's next pass consults the store,
+sees the rejection and declines to re-apply, and the episode re-muxes carrying the ASR
+text. Skipping the reopen would leave the rejected repair on screen forever while the
+store claimed the reviewer had settled it -- the same class of failure as the 11-of-20
+measurement, arrived at from the other direction.
+
+The codebase said so before the analysis did: narrowing `changed` to exclude `reject`
+broke TEN existing tests in `tests/test_review_apply.py`, which use a rejection as their
+standard vehicle for "an episode with a verdict". That was not tests needing an update; it
+was the suite refusing a wrong change.
+
+No safe narrowing exists. Telling a wasteful rejection (the line shipped as ASR anyway)
+from a load-bearing one (the line shipped as an auto-admitted repair) requires knowing what
+is actually in the muxed track, and the 2026-08-29 measurement is the standing evidence
+that mtime cannot answer that.
+
+Kept: `tests/test_review_apply.py::test_a_rejection_reopens_because_it_reverts_a_repair_that_already_shipped`
+pins the behaviour and records why, so this is not "optimised" again.
+
+## Original acceptance criteria (not implemented -- see above)
 
 - [ ] A store holding ONLY `reject` entries for an episode's originals leaves the stamp
       in place and writes no sidecar (`changed == 0`).
