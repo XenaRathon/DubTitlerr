@@ -41,12 +41,17 @@ have left after Whisper — see [How-to guides](How-To-Guides.md#choose-a-quanti
 
 ```sh
 llama-server \
-  -m /path/to/qwen3-4b-instruct-Q8_0.gguf \
+  -m /path/to/qwen3-4b-instruct-Q6_K.gguf \
   -c 16384 --jinja \
-  --chat-template-kwargs '{"enable_thinking":false}' \
   --host 0.0.0.0 --port 8090 \
   --alias qwen3-4b-instruct
 ```
+
+`Q6_K` is what this project runs. There is no `--chat-template-kwargs
+'{"enable_thinking":false}'` here: that flag exists to stop a *thinking* model emitting
+`<think>` blocks, and `qwen3-4b-instruct` has no thinking mode to disable. Verified
+2026-09-02 — the instruct model returns clean completions without it. If you swap in
+`qwen3-4b` or `qwen3.5-*`, which do think, add the flag back.
 
 > **`--jinja` is required.** Without it, `chat_template_kwargs` is silently ignored — the
 > server starts, reports healthy, and a thinking-capable model spends its whole token budget

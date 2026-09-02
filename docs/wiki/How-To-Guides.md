@@ -182,14 +182,23 @@ loading. Ask for a real completion instead, as above.
 
 **Problem:** you want Whisper and the repair model resident at once on one card.
 
-Measured: `qwen3-4b-instruct` at **Q8_0** is **3.99 GB** of weights. On a 6 GB card that
-leaves roughly 2 GB — tight alongside Whisper, not necessarily enough depending on your
-Whisper model and compute type.
+This project runs **Q6_K**. On-disk weights, measured 2026-09-02:
+
+| Quantisation | Size on disk |
+| ------------ | ------------ |
+| `Q8_0`       | 4.0 GB       |
+| **`Q6_K`**   | **3.1 GB**   |
+| `Q5_K_M`     | 2.7 GB       |
+| `Q4_K_M`     | 2.4 GB       |
+
+On a 6 GB card, Q8_0 leaves roughly 2 GB — tight alongside Whisper, and not necessarily
+enough depending on your Whisper model and compute type. Q6_K buys back most of a
+gigabyte, which is why it is the one this project settled on.
 
 Options, cheapest first:
 
-1. **A smaller quantisation.** Q4_K_M or Q5_K_M plausibly leave room. The quality cost is
-   being measured; this page carries the table when it lands.
+1. **A smaller quantisation.** Q5_K_M or Q4_K_M go further still. The quality cost below
+   Q6_K is not measured here; the table above is sizes, not quality.
 2. **Two cards.** Whisper on one, the repair model on the other. Nothing assumes they share
    a device — the repair stage talks to an HTTP endpoint.
 3. **Sequential.** Run the transcription sweep and the merge sweep at different times, one
