@@ -582,6 +582,100 @@ def test_acquire_never_escalates_a_gate_failure_to_the_llm(tmp_path, monkeypatch
     assert calls == []  # matched a title then failed R3 -> flagged, never adjudicated
 
 
+def test_a_dry_run_and_an_apply_run_propose_the_same_terms(tmp_path, monkeypatch):
+    """The regression this todo exists to close: an earlier acquire_cache cached the
+    pipeline's FINAL verdict per token and folded a hit into `settled`, which skipped the
+    token everywhere downstream. Measured 2026-08-29: two byte-identical dry runs over One
+    Pace reported `proposed 641` then `proposed 0` -- the second run's cache silently
+    suppressed everything the first had just computed, including flag verdicts that would
+    never have reached the human review queue. A dry run must never change what a later run
+    (dry or --apply) sees."""
+    gp = tmp_path / "One Pace.json"
+    gp.write_text(json.dumps({"show": "One Pace"}))
+    _write_conf(
+        tmp_path,
+        "Ep01",
+        [
+            "Hey Smokey.",
+            "Smokey again.",
+            "Smokey thrice.",
+            "Smoker is here.",
+            "Smoker again.",
+            "Smoker thrice.",
+            "Smoker once more.",
+        ]
+        * 6,
+    )
+    monkeypatch.setattr(ga.glossary_verify, "resolve_wiki", lambda *a, **k: "https://x/api.php")
+    monkeypatch.setattr(ga.glossary_verify, "fetch_titles", lambda *a, **k: ["Smoker"])
+
+    first = ga.acquire(str(gp), str(tmp_path), apply=False)
+    second = ga.acquire(str(gp), str(tmp_path), apply=False)
+    assert first["proposed"] == second["proposed"] and first["proposed"] > 0
+    assert first["flagged"] == second["flagged"] > 0
+    flagged_terms = lambda rep: {p["variant"] for p in rep["proposals"] if p["verdict"] == "flag"}  # noqa: E731
+    assert flagged_terms(first) == flagged_terms(second)
+
+    applied = ga.acquire(str(gp), str(tmp_path), apply=True)
+    assert applied["proposed"] == first["proposed"]
+
+
+def test_escalate_reuses_a_cached_adjudication_instead_of_calling_the_llm_again(monkeypatch):
+    """acquire_cache exists because escalate()'s LLM call was 71% of the stage's measured
+    runtime (371 calls at ~1.3s each on One Pace). Caching the ADJUDICATION -- not the
+    proposal's final verdict -- is what lets a second run skip the call while still
+    reaching propose()/source_gate() in full for every token; see acquire_cache's module
+    docstring."""
+    calls = []
+    monkeypatch.setattr(
+        ga, "adjudicate_merge", lambda v, c, cv, cc, s: calls.append(v) or {"same_entity": True, "confidence": "high"}
+    )
+    props = [
+        {
+            "variant": "Deccan",
+            "canonical": "Decken",
+            "variant_count": 21,
+            "canonical_count": 8,
+            "score": 0.844,
+            "verdict": "flag",
+            "reason": "share-too-close",
+            "bound": 0.147,
+        }
+    ]
+    ctx = {"Deccan": ["after Deccan."], "Decken": ["Van Der Decken."]}
+    cache = {}
+    first = ga.escalate(props, ctx, "One Pace", cache=cache)
+    second = ga.escalate(props, ctx, "One Pace", cache=cache)
+    assert calls == ["Deccan"]  # the LLM was asked once, not twice
+    assert first[0]["verdict"] == second[0]["verdict"] == "apply"
+
+
+def test_escalate_caches_by_the_pair_not_either_side_alone(monkeypatch):
+    """The same variant escalated against a different canonical is a different question and
+    must still reach the LLM."""
+    calls = []
+    monkeypatch.setattr(
+        ga,
+        "adjudicate_merge",
+        lambda v, c, cv, cc, s: calls.append((v, c)) or {"same_entity": True, "confidence": "high"},
+    )
+    ctx = {"Deccan": [], "Decken": [], "Deckard": []}
+    cache = {}
+    ga.escalate(
+        [{"variant": "Deccan", "canonical": "Decken", "verdict": "flag", "reason": "share-too-close"}],
+        ctx,
+        "One Pace",
+        cache=cache,
+    )
+    ga.escalate(
+        [{"variant": "Deccan", "canonical": "Deckard", "verdict": "flag", "reason": "share-too-close"}],
+        ctx,
+        "One Pace",
+        cache=cache,
+    )
+    assert calls == [("Deccan", "Decken"), ("Deccan", "Deckard")]
+
+
 def test_acquire_reports_titles_failure_without_raising(tmp_path, monkeypatch):
     gp = tmp_path / "One Pace.json"
     orig = json.dumps({"show": "One Pace"})
@@ -1460,11 +1554,12 @@ def test_end_to_end_admission_tagging_and_repair_weighting(tmp_path, monkeypatch
         return set(), [], pages
 
     monkeypatch.setattr(ga.glossary_verify, "episode_page_titles", fake_pages)
-    # acquire_cache memoizes verdicts across runs (its own dedicated behavior, tested in
-    # test_acquire_cache.py) -- without disabling it, the dry run's cached "Hazzard"
-    # verdict marks it settled/skipped on the very next call, and the apply run below
-    # would never actually see it as a proposal to write. Not what this test exercises.
-    monkeypatch.setenv("ACQUIRE_NO_CACHE", "1")
+    # No ACQUIRE_NO_CACHE needed here: acquire_cache only memoises escalate()'s LLM
+    # adjudication now (tested in test_acquire_cache.py), never a proposal's final verdict,
+    # so the dry run below and the apply run after it independently re-derive "Hazzard" as
+    # a proposal -- see test_a_dry_run_and_an_apply_run_propose_the_same_terms for the
+    # regression this guards (a per-token verdict cache used to fold a dry-run "apply"
+    # into `settled`, so the apply run never saw the term to write).
 
     # Dry run: nothing written.
     dry = ga.acquire(str(gp), str(tmp_path), apply=False)
