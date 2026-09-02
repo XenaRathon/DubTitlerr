@@ -6,6 +6,9 @@ verdicts lived only as prose in `docs/Adversarial Reviews/`. These tests cover t
 that makes them software.
 """
 
+import threading
+import time
+
 import decisions
 
 
@@ -414,3 +417,51 @@ def test_two_corrections_for_one_line_resolve_by_time_and_refuse_when_undated():
     }
     assert decisions.corrected_text(both_undated, "y") is None
     assert len(decisions.for_orig(both_undated, "y")) == 2, "the caller must still see that something was owed"
+
+
+def _racing_write(dir, show, orig, proposed, verdict, hold):
+    """One load-modify-save, with a gap between load and save so a second writer's load can
+    land inside it -- the shape `unresolved.py`'s CLI writer and `review_server`'s HTTP
+    writer both have today, with nothing but an in-process `threading.Lock` (which cannot
+    see across processes) between them."""
+    store = decisions.load(show, dir)
+    time.sleep(hold)
+    store = decisions.record(store, orig, proposed, verdict)
+    decisions.save(store, show, dir)
+
+
+def test_two_writers_racing_with_no_lock_lose_one_verdict(tmp_path):
+    """Reproduces the race `decisions.save`'s own docstring warns about: two callers that
+    both `load()` before either `save()`s lose one of the two verdicts. This is
+    `unresolved.py`'s current call shape -- it takes no lock at all."""
+    dir, show = str(tmp_path), "Show"
+    t1 = threading.Thread(target=_racing_write, args=(dir, show, "line one", "fixed one", "accept", 0.05))
+    t2 = threading.Thread(target=_racing_write, args=(dir, show, "line two", "fixed two", "accept", 0.0))
+    t1.start()
+    time.sleep(0.01)  # t1 is past its load() and sleeping before save(); t2 loads now
+    t2.start()
+    t1.join()
+    t2.join()
+    store = decisions.load(show, dir)
+    assert len(store.get("decisions", [])) == 1, "the race must actually reproduce, or this test proves nothing"
+
+
+def test_two_writers_racing_under_the_lock_both_survive(tmp_path):
+    """The fix: wrapping the same load-modify-save in `decisions.locked()` serializes the
+    two writers instead of losing one's verdict. `unresolved.py` and `review_server.py`
+    both take this lock around their load/record/save now."""
+    dir, show = str(tmp_path), "Show"
+
+    def locked_write(orig, proposed, verdict, hold):
+        with decisions.locked(show, dir):
+            _racing_write(dir, show, orig, proposed, verdict, hold)
+
+    t1 = threading.Thread(target=locked_write, args=("line one", "fixed one", "accept", 0.05))
+    t2 = threading.Thread(target=locked_write, args=("line two", "fixed two", "accept", 0.0))
+    t1.start()
+    time.sleep(0.01)
+    t2.start()
+    t1.join()
+    t2.join()
+    store = decisions.load(show, dir)
+    assert len(store.get("decisions", [])) == 2

@@ -555,15 +555,16 @@ def handle_shared_decide(verdicts: list) -> dict:
             by_show.setdefault(r["show"], []).append((r, verdict, str(d.get("text", ""))))
         saved, ddir = 0, decisions.DECISIONS_DIR
         for show, wanted in by_show.items():
-            store = decisions.load(show, ddir)
-            for r, verdict, text in wanted:
-                store = decisions.record(store, r["original_text"], r["proposed_text"], verdict, text=text)
-            if not decisions.save(store, show, ddir):
-                # Named per show, not swallowed: with two shows on the page one store can
-                # fail while the other lands, and the reviewer must know which.
-                errors.append({"pair": None, "error": f"the decisions for {show} could not be saved"})
-                continue
-            saved += len(wanted)
+            with decisions.locked(show, ddir):
+                store = decisions.load(show, ddir)
+                for r, verdict, text in wanted:
+                    store = decisions.record(store, r["original_text"], r["proposed_text"], verdict, text=text)
+                if not decisions.save(store, show, ddir):
+                    # Named per show, not swallowed: with two shows on the page one store
+                    # can fail while the other lands, and the reviewer must know which.
+                    errors.append({"pair": None, "error": f"the decisions for {show} could not be saved"})
+                    continue
+                saved += len(wanted)
     return {"saved": saved, "errors": errors}
 
 
@@ -595,33 +596,37 @@ def handle_decide_batch(stem: str, verdicts: list) -> dict:
         # DECISIONS_DIR in their signatures at import, so the mount cannot be changed (or
         # pointed at a test directory) after this module loads unless it is passed through.
         ddir = decisions.DECISIONS_DIR
-        store = decisions.load(show, ddir)
         updates: list = []
-        for d in verdicts if isinstance(verdicts, list) else []:
-            if not isinstance(d, dict):
-                errors.append({"index": None, "error": "not a verdict"})
-                continue
-            index, verdict = d.get("index"), str(d.get("verdict", ""))
-            # bool is an int in Python, and `True` would index item 1 of somebody else's queue.
-            if isinstance(index, bool) or not isinstance(index, int) or not (0 <= index < len(items)):
-                errors.append({"index": index, "error": "no such entry"})
-                continue
-            e = items[index]
-            # Enforced here, not merely rendered: a client is not a trust boundary, and
-            # `force` on an accepted entry would be an unlabelled bypass of the gate.
-            if verdict not in OFFERED.get((str(e.get("stage", "")), str(e.get("reason", ""))), DEFAULT_OFFERED):
-                errors.append({"index": index, "error": "verdict not offered for this entry"})
-                continue
-            text, note = str(d.get("text", "")), str(d.get("note", ""))
-            store = decisions.record(store, e.get("original_text", ""), e.get("proposed_text", ""), verdict, text=text, note=note)
-            updates.append((index, verdict != "reject", note))
-        if not updates:
-            return {"saved": 0, "errors": errors}
-        if not decisions.save(store, show, ddir):
-            # Reported as NOT saved rather than swallowed: a review that silently discards
-            # the human's decisions is worse than one that errors, because they believe they
-            # are settled. Nothing is cleared from the queue either, so they stay reviewable.
-            return {"error": "the decisions could not be saved", "errors": errors}
+        with decisions.locked(show, ddir):
+            store = decisions.load(show, ddir)
+            for d in verdicts if isinstance(verdicts, list) else []:
+                if not isinstance(d, dict):
+                    errors.append({"index": None, "error": "not a verdict"})
+                    continue
+                index, verdict = d.get("index"), str(d.get("verdict", ""))
+                # bool is an int in Python, and `True` would index item 1 of somebody else's queue.
+                if isinstance(index, bool) or not isinstance(index, int) or not (0 <= index < len(items)):
+                    errors.append({"index": index, "error": "no such entry"})
+                    continue
+                e = items[index]
+                # Enforced here, not merely rendered: a client is not a trust boundary, and
+                # `force` on an accepted entry would be an unlabelled bypass of the gate.
+                if verdict not in OFFERED.get((str(e.get("stage", "")), str(e.get("reason", ""))), DEFAULT_OFFERED):
+                    errors.append({"index": index, "error": "verdict not offered for this entry"})
+                    continue
+                text, note = str(d.get("text", "")), str(d.get("note", ""))
+                store = decisions.record(
+                    store, e.get("original_text", ""), e.get("proposed_text", ""), verdict, text=text, note=note
+                )
+                updates.append((index, verdict != "reject", note))
+            if not updates:
+                return {"saved": 0, "errors": errors}
+            if not decisions.save(store, show, ddir):
+                # Reported as NOT saved rather than swallowed: a review that silently
+                # discards the human's decisions is worse than one that errors, because
+                # they believe they are settled. Nothing is cleared from the queue either,
+                # so they stay reviewable.
+                return {"error": "the decisions could not be saved", "errors": errors}
         # The verdicts are durable from here. The queue flags are a SECOND file and the two
         # cannot be made atomic across them -- but the report can be honest. The gate is
         # unaffected either way: mux trusts the durable verdict, not this flag.

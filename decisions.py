@@ -22,6 +22,8 @@ Env:
                   current)
 """
 
+import contextlib
+import fcntl
 import json
 import os
 import tempfile
@@ -204,6 +206,36 @@ def load(show: str, dir: str = DECISIONS_DIR) -> dict:
     except (OSError, ValueError):
         return {}
     return doc if isinstance(doc, dict) else {}
+
+
+@contextlib.contextmanager
+def locked(show: str, dir: str = DECISIONS_DIR):
+    """Hold this show's cross-process lock for a load-modify-save sequence.
+
+    `save`'s own docstring names the gap: "two callers that both load() before either
+    save()s will lose one of the two verdicts... if that ever stops being true this needs
+    a lock." It stopped being true when `unresolved.py --review` (a CLI process) and
+    `review_server.py` (a long-running server process) became two independent writers to
+    the same store -- `review_server`'s `_WRITE_LOCK` is a `threading.Lock`, which cannot
+    see a second process at all.
+
+    `fcntl.flock` on a per-show sidecar file, not the store file itself: locking the store
+    file directly would collide with `save`'s mkstemp+`os.replace`, which by design creates
+    a NEW inode every write, so a lock held on the old inode would stop protecting anything
+    the moment it was replaced. The sidecar's inode never changes, so the lock stays on the
+    same file across every write.
+
+    Advisory, not mandatory: a caller that skips this and calls `load`/`save` directly is
+    unprotected, same as before this existed. Every writer in this repo (`review_server.py`,
+    `unresolved.py`) takes it; that is the whole of the guarantee."""
+    os.makedirs(dir, exist_ok=True)
+    fd = os.open(path_for(show, dir) + ".lock", os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def save(store: dict, show: str, dir: str = DECISIONS_DIR) -> bool:
