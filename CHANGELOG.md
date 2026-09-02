@@ -41,8 +41,12 @@ episode already in your library is stale.
   for ordinary dialogue), and the fansub translation it displaced was being discarded. A
   song's Kanji/Japanese/English sibling styles are now recognised by their shared
   `Opening-`/`ED<N>-` prefix rather than by keyword, so half of each song's on-screen text
-  is no longer missing. Only releases with a conventional OP/ED are affected; a track with
-  no song-family styles is untouched.
+  is no longer missing. Only releases whose signs track carries song-family styles are
+  affected; a track without them is untouched. Measured 2026-09-02 against the production
+  library: SAO, JUJUTSU KAISEN, SPY x FAMILY and Reborn as a Vending Machine as expected,
+  and also One Pace seasons 17 and 27 (25-26 dropped cards per S27 episode), which earlier
+  notes in this repository wrongly described as having no OP/ED at all. Most other One Pace
+  seasons do produce no spans.
   **Forward-only, with a targeted re-open.** This changes the merge stage, not the words or
   the text, so `TEXT_VERSION` does not cover it and an already-muxed episode has no sidecar
   left for the merge to rebuild — it keeps its hallucinated song cards. To correct an

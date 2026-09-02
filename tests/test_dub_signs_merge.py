@@ -456,9 +456,15 @@ def test_song_span_drop_logs_the_count(tmp_path, monkeypatch, capsys):
     assert "song-span dropped 1 whisper dub card" in capsys.readouterr().out
 
 
-def test_no_song_family_styles_means_no_drop_one_pace_case(tmp_path, monkeypatch):
-    """One Pace has no chapters and no OP/ED at all -- a signs track with ordinary sign
-    events only must leave every dub card untouched."""
+def test_no_song_family_styles_means_no_drop(tmp_path, monkeypatch):
+    """A signs track with ordinary sign events only must leave every dub card untouched.
+
+    This test was originally named "..._one_pace_case" on the belief that One Pace had no
+    OP/ED at all. Measured 2026-09-02: false. Most One Pace seasons do produce no spans,
+    but S17 and S27 do, and S27 drops 25-26 cards an episode. The shape below is still
+    worth pinning -- it is what makes the drop a no-op on a track with no song styles --
+    but it is not "the One Pace case", and naming it that hid an unmeasured behaviour on
+    the library's largest show."""
     track = pysubs2.SSAFile()
     track.styles["Signs"] = pysubs2.SSAStyle()
     track.events = [pysubs2.SSAEvent(start=0, end=1000, style="Signs", text=r"{\pos(1,1)}a sign")]

@@ -118,8 +118,17 @@ def _song_spans(kept_events):
     """Merged (start, end) ms intervals covered by song-family-styled kept events -- the
     OP/ED's own timespan(s), independent of how many per-syllable events make one up.
 
-    Empty on a track with no song-family styles (One Pace: no chapters, no OP/ED at all),
-    which is what makes the drop below a no-op there without a separate guard."""
+    Empty on a track whose signs stream carries no song-family styles, which is what makes
+    the drop below a no-op there without a separate guard.
+
+    MEASURED 2026-09-02, correcting this docstring's original claim that One Pace had "no
+    chapters, no OP/ED at all": most One Pace seasons do produce no spans, but S17 and S27
+    do. S27's signs track yields three spans covering 18.6-145.2s and drops 25-26 dub cards
+    per episode; S17 yields two spans and drops 2-4. The dropped cards were inspected and
+    are whisper's song output -- raw Japanese lyrics, bilingual mush ("So決めたこと悔いはない
+    Oh I know what I'm supposed to do"), and invented English ("Let's start with the new
+    world") -- so the drop is doing its job there. But "no-op on One Pace" was never true,
+    and the library's largest show was carrying this behaviour unmeasured."""
     spans = sorted((ev.start, ev.end) for ev in kept_events if SONG_FAMILY_STYLE.search(ev.style or ""))
     merged: list = []
     for start, end in spans:
@@ -213,13 +222,17 @@ def build(video, dub_srt, out_ass):
     for ev in dub:
         if ev.is_comment:
             continue
-        # debt: a card of real spoken dialogue over an opening/ending would be dropped
-        # along with the lyrics, since the whole song span is cut regardless of what's
-        # actually sung under it. Every measured case (SAO S01E02) has silence under the
-        # song's instrumental intro, so this hasn't fired on real content yet. Revisit if
-        # a show surfaces narration over its OP/ED -- avg_logprob already distinguishes
-        # sung hallucination (-1.7 to -4.1) from ordinary dialogue (-0.3/-0.7) and could
-        # gate the drop instead of the blanket span cut.
+        # debt: a card of real spoken dialogue over an opening/ending is dropped along with
+        # the lyrics, since the whole song span is cut regardless of what's actually sung
+        # under it. This HAS now fired on real content -- One Pace S17/S27, measured
+        # 2026-09-02 -- correcting the original note here, which claimed SAO S01E02 was the
+        # only measured case and that it had silence under the intro. Every dropped card
+        # inspected so far is genuine whisper song output, but two were ambiguous ("If
+        # you're in it, I'll protect you from the moment", S17E03 63.5s; "I'll see you /
+        # next time.", S27E04 112.6s) and nothing distinguishes them from dialogue except
+        # reading them. Revisit by gating on avg_logprob, which already separates sung
+        # hallucination (-1.7 to -4.1) from ordinary dialogue (-0.3/-0.7), instead of
+        # cutting a blanket span.
         if _overlaps_any(ev.start, ev.end, song_spans):
             dropped_song += 1
             continue
