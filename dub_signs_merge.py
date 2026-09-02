@@ -13,8 +13,13 @@ plus a credits track, with no stream literally titled "Signs and Songs".
 
   KEEP  : events with \\k (song karaoke) or \\pos/\\move (positioned sign), and
           styles matching sign/song/caption/title/credit/translation/lyric/romaji
-  DROP  : dialogue styles (main/flashback/thought/secondary/monologue/narration)
-          and player-support "warning" notices — Whisper covers the dialogue
+          (including a song's Kanji/Japanese/English siblings under an
+          "Opening-"/"ED<N>-" style prefix, whatever language each one is in)
+  DROP  : dialogue styles (main/flashback/thought/secondary/monologue/narration),
+          player-support "warning" notices, and — inside a detected song span only
+          — the whisper-transcribed dub cards, in favour of the fansub's own
+          lyrics/translation kept above (see _song_spans; a dub re-sung in English
+          would previously have replaced them, but nothing does on a Japanese OP)
 
 For every ``…eng.dubtitles.srt`` it:
   1. finds the matching video,
@@ -45,15 +50,28 @@ KARAOKE = re.compile(r"\\[kK][fo]?\d")
 HAS_DRAWING = re.compile(r"\\p\d|\\clip|\\iclip")
 ANIMATED = re.compile(r"\\t\(|\\fade?\(|\\move\(")
 POSITIONED = re.compile(r"\\(?:pos|move)\(|\\an[134567 89]")
-# KEEP the Japanese romaji karaoke (top) + signs/credits. DROP the fansub English song
-# TRANSLATION — it's replaced by whisper's transcribed English-dub lyrics (bottom Dubtitles).
+# KEEP the Japanese romaji karaoke (top) + signs/credits + the fansub's own English song
+# TRANSLATION. Reversed 2026-09-02 (.procoder/todo/20260830-drop-transcribed-song-lyrics-
+# restore-fansub-translation.md): the translation used to be dropped on the assumption that
+# whisper's transcribed English-dub lyrics would replace it, which only holds if the dub
+# re-sings the song in English. Measured on SAO S01E02 (opening sung in Japanese): whisper
+# mangles the Japanese into pseudo-romaji and then invents English outright (avg_logprob
+# -1.7 to -4.1 against -0.3/-0.7 for ordinary dialogue) -- nothing replaces the translation
+# that was thrown away, and hallucination lands in its place. See _song_spans() below,
+# which now drops those whisper cards from the dub track instead.
 KEEP_STYLE = re.compile(r"karaoke|sign|song|caption|title|credit|note|lyric|romaji|kashi|insert", re.I)
+# A song's per-language sibling styles don't all carry a common keyword -- SAO's own wiki
+# names them "Opening-Romaji-L1", "Opening-Kanji-L1", "ED1-Romaji", "ED1-Japanese",
+# "ED1-English": the Romaji one matches KEEP_STYLE's "romaji" already, but Kanji/Japanese/
+# English siblings match nothing there and fell through to "assume dialogue, drop" -- half
+# of each song's on-screen text was silently missing. The "Opening-"/"ED<N>-" prefix
+# convention covers the whole family regardless of which language suffix a given release
+# uses, without needing to enumerate every language name.
+SONG_FAMILY_STYLE = re.compile(r"^(?:opening|ending)[\s_-]|^(?:op|ed)\d+[\s_-]", re.I)
 # STRONG_DROP_STYLE: an unambiguous role, independent of the release's own style-naming
-# quirks -- these win even over a keep-signal tag (a "Song Translation" style is the
-# fansub's OWN translated lyrics, dropped in favour of whisper's Dubtitles regardless of
-# whether it happens to carry karaoke timing; a "Warning" style is a player-support
-# notice, never actual signs content).
-STRONG_DROP_STYLE = re.compile(r"warning|translat", re.I)
+# quirks -- a "Warning" style is a player-support notice, never actual signs content, and
+# wins even over a keep-signal tag.
+STRONG_DROP_STYLE = re.compile(r"warning", re.I)
 # WEAK_DROP_STYLE: a GUESS that a style name means plain dialogue. Real releases reuse
 # "Default" for both a dialogue track AND a signs/songs track depending on the group's
 # own convention (MARRIAGETOXIN S01E01: the signs/songs track's own style is "Default"),
@@ -72,6 +90,8 @@ def keep_event(ev):
     style = ev.style or ""
     if STRONG_DROP_STYLE.search(style):
         return False
+    if SONG_FAMILY_STYLE.search(style):  # Opening-/ED<N>- sibling, any language -> keep
+        return True
     t = ev.text
     tagged = bool(KARAOKE.search(t) or HAS_DRAWING.search(t) or POSITIONED.search(t) or ANIMATED.search(t))
     if WEAK_DROP_STYLE.search(style) and not tagged:  # a style-name GUESS, only when nothing else says otherwise
@@ -85,6 +105,33 @@ def keep_event(ev):
     if KEEP_STYLE.search(style):
         return True
     return False  # unknown plain event, no tag, no keep-style -> assume dialogue, Whisper has it
+
+
+# Song events inside one OP/ED are timed syllable-by-syllable (SAO E02: 2,142 separate
+# events for one opening) but still fall inside the one span that matters. Adjacent events
+# this close together merge into the same span; the OP and ED themselves are minutes apart
+# and stay separate spans, so ordinary dialogue between them is untouched.
+SONG_SPAN_MERGE_GAP_MS = 2000
+
+
+def _song_spans(kept_events):
+    """Merged (start, end) ms intervals covered by song-family-styled kept events -- the
+    OP/ED's own timespan(s), independent of how many per-syllable events make one up.
+
+    Empty on a track with no song-family styles (One Pace: no chapters, no OP/ED at all),
+    which is what makes the drop below a no-op there without a separate guard."""
+    spans = sorted((ev.start, ev.end) for ev in kept_events if SONG_FAMILY_STYLE.search(ev.style or ""))
+    merged: list = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1] + SONG_SPAN_MERGE_GAP_MS:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return merged
+
+
+def _overlaps_any(start, end, spans):
+    return any(start < s_end and end > s_start for s_start, s_end in spans)
 
 
 def build(video, dub_srt, out_ass):
@@ -161,13 +208,26 @@ def build(video, dub_srt, out_ass):
     st.marginv = max(10, round(play_y / 22))
     base.styles["Dubtitles"] = st
     dub = pysubs2.load(dub_srt)
-    added = 0
+    song_spans = _song_spans(kept)
+    added = dropped_song = 0
     for ev in dub:
         if ev.is_comment:
+            continue
+        # debt: a card of real spoken dialogue over an opening/ending would be dropped
+        # along with the lyrics, since the whole song span is cut regardless of what's
+        # actually sung under it. Every measured case (SAO S01E02) has silence under the
+        # song's instrumental intro, so this hasn't fired on real content yet. Revisit if
+        # a show surfaces narration over its OP/ED -- avg_logprob already distinguishes
+        # sung hallucination (-1.7 to -4.1) from ordinary dialogue (-0.3/-0.7) and could
+        # gate the drop instead of the blanket span cut.
+        if _overlaps_any(ev.start, ev.end, song_spans):
+            dropped_song += 1
             continue
         ev.style = "Dubtitles"
         base.events.append(ev)
         added += 1
+    if dropped_song:
+        log(f"  song-span dropped {dropped_song} whisper dub card(s) (fansub translation kept instead)")
     # Dubtitles dialogue on the floor (layer 0); every sign/song event bumped one
     # layer up so it renders on top. Shift (not zero) keeps the relative z-order
     # among multi-layer sign compositions.
