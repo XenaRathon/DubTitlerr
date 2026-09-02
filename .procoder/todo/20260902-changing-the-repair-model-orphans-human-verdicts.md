@@ -37,20 +37,39 @@ re-review instead of silently shipping a different wording under an old approval
 
 ## Acceptance criteria
 
-- [ ] Re-running an episode under a different `REPAIR_MODEL` does not silently ship a
-      proposal the human never saw under the authority of a verdict for a different one.
-- [ ] Whatever the answer is -- re-queue for review, match on the original, record the
-      model in the entry -- the reviewer can tell which of their decisions still hold.
-- [ ] The `(orig, proposed)` keying still prevents one rejection suppressing a different
-      proposal (the reason the pair key exists).
-- [ ] A test with two different proposals for one original across a model change.
-
-## Notes
-
-`REPAIR_MODEL` is not recorded in the decision entry today, so there is no way to tell
-after the fact which model a verdict was made against. Recording it is probably the
-cheapest first step and is useful regardless of which fix is chosen.
+- [x] Re-running under a different `REPAIR_MODEL` no longer ships silently: an orphaned
+      APPROVAL is queued as `verdict_stale_proposal` and counted in the run summary.
+      `tests/test_repair.py::test_an_approval_orphaned_by_a_new_proposal_is_queued_not_silent`
+- [x] The reviewer can tell which decisions still hold: the queue entry carries
+      `approved_text` (what they endorsed), `proposed_text` (what the model now says) and
+      `model` (which model moved), and the review page offers the full verdict set on it.
+- [x] The `(orig, proposed)` keying is untouched, and a superseded REJECTION is explicitly
+      not flagged -- that is the designed flow `lookup`'s docstring protects.
+      `tests/test_repair.py::test_a_superseded_rejection_is_not_flagged_as_stale`
+- [x] Mutation-checked both ways: dropping the check fails the first test, widening it to
+      all verdicts fails the boundary test.
 
 ## Evidence
 
-<!-- filled at close -->
+Implemented on `feat/review-sorting`, 2026-09-02.
+
+Chosen approach: SURFACE, do not guess. Matching on the original alone was rejected --
+`accept`/`force` endorse the model's wording, and re-applying an old approval to new
+wording would be the same class of error in the other direction.
+
+- `repair.process`: when `lookup` misses but the original carries an APPLYING verdict, the
+  card is queued as `verdict_stale_proposal` with `approved_text`, `proposed_text` and
+  `model`, and counted in the run summary. Narrowed to approvals: a superseded rejection is
+  the designed flow and flagging it would bury the signal in noise.
+- `review_server.OFFERED` gains the reason with the full verdict set, so the reviewer can
+  rule on the NEW wording -- `force` included, since new wording may trip a gate the old
+  wording did not.
+- `decisions.record` now keeps the verbatim wording for `accept` as well as `force`, so the
+  queue shows what was approved rather than the case-folded match key. This does not make
+  `accept` rescuable: `forced_text` filters on the verdict, not on the presence of `text`.
+- 3 new tests, mutation-checked in both directions. Full suite green, ruff clean.
+
+The original note suggested recording `REPAIR_MODEL` in the decision entry as the cheapest
+first step. It is recorded on the QUEUE entry instead, which is where it is actually read:
+the decision store answers "what did the human decide", and the model that produced a
+proposal is a property of the proposal, not of the decision.

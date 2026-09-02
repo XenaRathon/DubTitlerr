@@ -795,6 +795,7 @@ def process(conf_path):
     verdict_rescued = 0  # a SKIPPED card whose stored human text was shipped anyway (A4)
     verdict_owed = 0  # skipped, a human had ruled, and this path could not act on it (A4)
     verdict_unfittable = 0  # an applying verdict refused by fits_card (C1)
+    verdict_stale = 0  # the human approved OTHER wording for this line; the model moved on
     repaired_lines = []  # A10: per-line detail for the summary
     for i, c in targets:
         # C6: select the reference on the SOURCE window -- where the audio actually was --
@@ -890,6 +891,36 @@ def process(conf_path):
         verdict = decisions.lookup(store, c["text"], new) if DECISIONS_APPLY else None
         ruling = verdict.get("verdict") if verdict else None
         human_text = verdict.get("text", "") if verdict else ""
+        if verdict is None and DECISIONS_APPLY:
+            # The human APPROVED wording for this original, and the model has since
+            # proposed different wording. `lookup` needs both sides, so their approval does
+            # not apply here -- and `accept_repair` below will judge the new proposal on its
+            # own merits and may well ship it. That is not wrong, but it is invisible: the
+            # store still shows the line as settled, and the reviewer is never told that
+            # what shipped is not what they approved.
+            #
+            # Measured 2026-09-02 on MARRIAGETOXIN S01E10, moving REPAIR_MODEL from
+            # nanbeige4.2-3b to qwen3-4b-instruct: two approved verdicts were orphaned this
+            # way and the log recorded `repair_applied / accepted` for wording the reviewer
+            # had never seen. The proposal side of the key is MODEL OUTPUT, so changing the
+            # model rewrites the key for every line in the library at once.
+            #
+            # Only an ORPHANED APPROVAL is recorded. A superseded `reject` is the designed
+            # flow -- `lookup`'s docstring exists to stop one rejection suppressing the
+            # proposal that fixes the line -- and flagging those would bury this in noise.
+            stale = [e for e in decisions.for_orig(store, c["text"]) if e.get("verdict") in APPLYING]
+            if stale:
+                unresolved.record(
+                    stem,
+                    "repair",
+                    "verdict_stale_proposal",
+                    original_text=c["text"],
+                    proposed_text=new,
+                    approved_text=(stale[-1].get("text") or stale[-1].get("proposed") or ""),
+                    model=MODEL,
+                    avg_logprob=c.get("avg_logprob"),
+                )
+                verdict_stale += 1
         if ruling == "reject":
             # Settled: not applied, and NOT re-queued. Re-queueing it would show the
             # reviewer a line they have already ruled on, every run, forever.
@@ -1084,6 +1115,10 @@ def process(conf_path):
         "verdict_rescued": verdict_rescued,  # skipped, but the human's stored text shipped (A4)
         "verdict_owed": verdict_owed,  # skipped while a human verdict existed and could not be applied (A4)
         "verdict_unfittable": verdict_unfittable,  # human's text cannot be rendered (C1)
+        # An approval orphaned by the model proposing different wording for the same line.
+        # Non-zero after a REPAIR_MODEL change is expected, not alarming -- it is the count
+        # of decisions the reviewer needs to look at again.
+        "verdict_stale_proposal": verdict_stale,
         "mean_latency_ms": round(sum(lat_values) / len(lat_values)) if lat_values else 0,
         "p95_latency_ms": round(_p95(lat_values)) if lat_values else 0,
         "model": MODEL,

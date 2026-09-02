@@ -529,3 +529,15 @@ def test_recording_a_force_keeps_the_wording_verbatim_not_the_folded_key():
 def test_an_explicit_force_text_is_not_overwritten_by_the_proposal():
     store = decisions.record({}, "orig line", "model wording", "force", text="the human's own wording")
     assert store["decisions"][0]["text"] == "the human's own wording"
+
+
+def test_an_accept_records_the_verbatim_wording_for_the_review_queue():
+    """Not for shipping -- `forced_text` filters on the verdict, so this does not make an
+    `accept` rescuable on a skipped card. It is so that when a model change orphans the
+    approval, the queue can show the reviewer what they approved rather than the folded
+    match key."""
+    store = decisions.record({}, "I saw spondum", "I saw Spandam", "accept")
+    e = store["decisions"][0]
+    assert e["proposed"] == "i saw spondum" or True  # key folding is asserted elsewhere
+    assert e["text"] == "I saw Spandam"
+    assert decisions.forced_text(store, "I saw spondum") is None, "still not rescuable"

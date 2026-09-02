@@ -1,6 +1,6 @@
 # The acquisition cache memoises a transient LLM failure as if it were a decision
 
-Status: open
+Status: closed 2026-09-02
 Created: 2026-09-02
 
 ## Description
