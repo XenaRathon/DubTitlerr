@@ -36,27 +36,27 @@ The pipeline calls an **OpenAI-compatible chat-completions endpoint**. Anything 
 that protocol works; the validated setup is [llama.cpp](https://github.com/ggml-org/llama.cpp)
 serving a GGUF.
 
-The default model is **`nanbeige4.2-3b`**. Pick a quantisation that fits the VRAM you have
-left after Whisper — see [How-to guides](How-To-Guides.md#choose-a-quantisation-for-your-card).
+The default model is **`qwen3-4b-instruct`**. Pick a quantisation that fits the VRAM you
+have left after Whisper — see [How-to guides](How-To-Guides.md#choose-a-quantisation-for-your-card).
 
 ```sh
 llama-server \
-  -m /path/to/nanbeige4.2-3b-Q8_0.gguf \
+  -m /path/to/qwen3-4b-instruct-Q8_0.gguf \
   -c 16384 --jinja \
   --chat-template-kwargs '{"enable_thinking":false}' \
   --host 0.0.0.0 --port 8090 \
-  --alias nanbeige4.2-3b
+  --alias qwen3-4b-instruct
 ```
 
-> **`--jinja` is not optional for this model.** llama.cpp has built-in chat templates for
-> common architectures, but nanbeige's is not one of them. Without `--jinja` the server
-> starts, reports healthy, and returns **empty replies** — the pipeline then repairs nothing
-> and tells you nothing. Measured 2026-08-31 on a plain launch: every request came back
-> empty.
+> **`--jinja` is required.** Without it, `chat_template_kwargs` is silently ignored — the
+> server starts, reports healthy, and a thinking-capable model spends its whole token budget
+> on reasoning and returns an **empty reply**, which the pipeline treats as "no repair" and
+> tells you nothing. Measured (`repair.py`'s `llm_llamacpp`): empty after 114s at
+> `max_tokens=512` with thinking on; correct output in 4.3s with it off.
 >
-> `--chat-template-kwargs '{"enable_thinking":false}'` is passed through that template. A
-> model left thinking spends its whole token budget on reasoning and returns no content;
-> measured on LFM2.5, 9.7 s per line for an empty reply.
+> `--chat-template-kwargs '{"enable_thinking":false}'` is what turns thinking off, and it
+> only takes effect with `--jinja` — the flag applies the model's own chat template, which is
+> where `enable_thinking` is read.
 
 **Check it is really ready.** A freshly started server answers `/health` with `200` while it
 is still loading weights, then fails the first real request. Ask it something instead:
@@ -64,7 +64,7 @@ is still loading weights, then fails the first real request. Ask it something in
 ```sh
 curl -s http://127.0.0.1:8090/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"nanbeige4.2-3b","messages":[{"role":"user","content":"hi"}],"max_tokens":4}'
+  -d '{"model":"qwen3-4b-instruct","messages":[{"role":"user","content":"hi"}],"max_tokens":4}'
 ```
 
 When that returns JSON with a message in it, the model is loaded.
@@ -115,7 +115,7 @@ services:
 
       # --- repair model, from step 1 ---
       REPAIR_BACKEND: llamacpp
-      REPAIR_MODEL: nanbeige4.2-3b
+      REPAIR_MODEL: qwen3-4b-instruct
       REPAIR_LLAMACPP_URL: http://host.docker.internal:8090/v1/chat/completions
 
       # --- ownership of what it writes ---
