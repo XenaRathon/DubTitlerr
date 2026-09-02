@@ -29,9 +29,29 @@ that history alongside everything else that shipped since.
 - `dub_signs_merge`: a style-name guess (e.g. a style named like a dialogue track) now
   yields to an unambiguous keep-tag (positioned, karaoke, drawing, animated) — previously
   such signs/song events were silently dropped from the merged track.
+- `dub_signs_merge`: whisper's transcription of a sung OP/ED is dropped from the dub track
+  and the fansub's own song translation is kept instead. Whisper does not transcribe
+  Japanese singing, it hallucinates over it (`avg_logprob` -1.7 to -4.1 against -0.3/-0.7
+  for ordinary dialogue), and the fansub translation it displaced was being discarded. A
+  song's Kanji/Japanese/English sibling styles are now recognised by their shared
+  `Opening-`/`ED<N>-` prefix rather than by keyword, so half of each song's on-screen text
+  is no longer missing. Only releases with a conventional OP/ED are affected; a track with
+  no song-family styles is untouched.
+  **Forward-only, with a targeted re-open.** This changes the merge stage, not the words or
+  the text, so `TEXT_VERSION` does not cover it and an already-muxed episode has no sidecar
+  left for the merge to rebuild — it keeps its hallucinated song cards. To correct an
+  existing library, point `tools/reopen_for_signs.py` at the shows that have an OP/ED
+  (dry run first) and let the next `merge_pass.sh` sweep re-merge and re-mux them. A
+  `TEXT_VERSION` bump would also work and would re-mux every episode in the library,
+  including the many with no song styles at all.
 - `generate.py`: a delayed audio stream's start offset is now carried onto the video
   timeline (measured up to +1745ms on one show), instead of shipping every cue early by
-  that delay.
+  that delay. **Forward-only.** The offset is applied to the word timestamps before they
+  are persisted, so an episode transcribed before this fix has the uncorrected times baked
+  into its `words.json` and no text-tier rebuild can recover them — only a re-transcribe
+  can, which is why `TRANSCRIBE_VERSION` was deliberately NOT bumped (it would put the
+  whole library back through the GPU). Episodes already in your library keep the old
+  timing; new ones get the fix.
 - `repair.py`: a card the repair stage skips (no fansub anchor, or an unreachable LLM
   backend) no longer discards a human's stored `correct`/`force` verdict for that line —
   it ships the human's text instead of reverting to raw ASR.
