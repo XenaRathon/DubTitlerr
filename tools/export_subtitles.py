@@ -23,6 +23,7 @@ mux.py wrote INTO the file, not a copy that can drift from it).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -31,6 +32,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import reflow
+import unresolved
 from common import STAMP_SUFFIX, TRACK_NAME, read_stamp, stamp_valid, ts_srt
 
 CONF_SUFFIX = ".dubtitles.conf.json"
@@ -155,13 +157,61 @@ def extract_ass(video: str, stream_index: int, out_path: str, run=subprocess.run
         return False
 
 
-def manifest_entry(stem: str, show: str, season: str, episode_title: str, duration: float | None) -> dict:
+def entry_key(show: str, season: str, episode_title: str) -> str:
+    """Stable identity for one published episode, independent of where the media lives."""
+    return f"{show}/{season}/{episode_title}"
+
+
+def content_hash(ass_text: str | None, srt: str | None) -> str:
+    """sha256 over exactly what gets published, and nothing else.
+
+    This is the CHANGE-DETECTION AUTHORITY. A stamp being rewritten means the pipeline ran
+    again, not that the subtitle differs -- and those are very different questions. The
+    2026-09-02 TEXT_VERSION 8->9 bump re-derives and re-muxes every episode in the library
+    while changing the actual output of only the 24 shows that carry Japanese song lyrics
+    (1,240 cards of 395,671). An mtime rule would have republished the entire repository to
+    ship that; this republishes the shows that changed."""
+    h = hashlib.sha256()
+    h.update((ass_text or "").encode("utf-8"))
+    h.update(b"\x00")
+    h.update((srt or "").encode("utf-8"))
+    return h.hexdigest()
+
+
+def source_fingerprint(stem: str) -> str | None:
+    """The muxed video's identity per its own stamp, as a cheap "might have changed" filter.
+
+    Not authoritative -- see `content_hash`. Its only job is to let a periodic sweep skip
+    the ffprobe+ffmpeg extraction for an episode whose video has not been re-muxed since the
+    last publish, which is nearly all of them on nearly every run. Conservative by
+    construction: a changed fingerprint means "re-extract and let the hash decide", never
+    "republish"."""
+    stamp = read_stamp(stem + STAMP_SUFFIX)
+    if not isinstance(stamp, dict):
+        return None
+    size, mtime = stamp.get("size"), stamp.get("mtime")
+    return None if size is None or mtime is None else f"{size}:{mtime}"
+
+
+def manifest_entry(
+    stem: str,
+    show: str,
+    season: str,
+    episode_title: str,
+    duration: float | None,
+    *,
+    status: str = "unreviewed",
+    sha256: str = "",
+    source: str | None = None,
+) -> dict:
     return {
         "show": show,
         "season": season,
         "episode_title": episode_title,
         "duration_seconds": duration,
-        "status": "unreviewed",
+        "status": status,
+        "sha256": sha256,
+        "source": source,
     }
 
 
@@ -172,10 +222,15 @@ def export_episode(
     probe=probe_duration_seconds,
     stream_finder=dubtitles_stream_index,
     extractor=extract_ass,
+    status: str = "unreviewed",
 ) -> dict | None:
     """Export one episode's subtitles into `out_root/<show>/<season>/`. None when the
     video has no TRACK_NAME stream to extract -- despite a valid completion stamp, that
-    means there is nothing here actually worth shipping."""
+    means there is nothing here actually worth shipping.
+
+    Writes the `.ass` and `.srt` and returns the manifest entry carrying their content hash.
+    Deciding whether that hash is NEW is the caller's job (`plan_export`), because only the
+    caller has the previous manifest."""
     video = find_video(stem)
     if video is None:
         return None
@@ -196,13 +251,96 @@ def export_episode(
         except OSError:
             pass
         return None
+    try:
+        with open(ass_path, encoding="utf-8", errors="replace") as f:
+            ass_text = f.read()
+    except OSError:
+        # The extractor reported success, so the episode still exports -- the pre-existing
+        # contract trusts it, and refusing here would newly drop episodes for a read error.
+        # The hash then covers the srt alone, which is conservative in the right direction:
+        # it can only ever say "changed" when it should not, never the reverse.
+        ass_text = None
 
     srt = dialogue_srt(stem)
     if srt is not None:
         with open(os.path.join(out_dir, episode_title + ".srt"), "w", encoding="utf-8") as f:
             f.write(srt)
 
-    return manifest_entry(stem, show, season, episode_title, probe(video))
+    return manifest_entry(
+        stem,
+        show,
+        season,
+        episode_title,
+        probe(video),
+        status=status,
+        sha256=content_hash(ass_text, srt),
+        source=source_fingerprint(stem),
+    )
+
+
+def read_manifest(path: str) -> dict:
+    """The previous publish, keyed by `entry_key`. {} when there is no manifest yet or it
+    cannot be parsed -- a first run and an unreadable manifest both mean "publish
+    everything", which is the safe direction: it over-publishes rather than silently
+    withholding an episode that changed."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            entries = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(entries, list):
+        return {}
+    out = {}
+    for e in entries:
+        if isinstance(e, dict) and e.get("episode_title"):
+            out[entry_key(e.get("show", ""), e.get("season", ""), e["episode_title"])] = e
+    return out
+
+
+def is_reviewed(stem: str, store: dict) -> bool:
+    """Decision 11: this episode has a review queue and every queued line has a verdict.
+
+    Imported semantics, not a second implementation -- `unresolved.undecided` is the same
+    call `export_reviewed.qualifying_episodes` makes. Measured 2026-08-31: ZERO episodes in
+    the library pass this today (255 One Pace episodes carry a queue, 7,222 queued lines
+    have no verdict), which is why the completion gate exists and why this is a per-episode
+    STATUS rather than a separate tool and a separate, empty repository."""
+    queue = unresolved.items(stem)
+    return bool(queue) and not unresolved.undecided(queue, store)
+
+
+def plan_export(stems: list, out_root: str, published: dict, *, store=None, **kw) -> tuple:
+    """(entries, stats). Exports each stem and classifies it against the previous manifest.
+
+    `unchanged` episodes are skipped BEFORE the ffprobe/ffmpeg extraction: their muxed video
+    carries the same stamp fingerprint it did at the last publish, so the content cannot
+    have moved. That is what makes a periodic sweep cheap on the ~99% of runs where nothing
+    was re-muxed.
+
+    `rederived` means the video WAS re-muxed but the published bytes came out identical --
+    the case a TEXT_VERSION bump creates for every show it does not actually affect. Those
+    keep their existing files and produce no repository churn."""
+    entries, stats = [], {"new": 0, "updated": 0, "rederived": 0, "unchanged": 0, "skipped": 0}
+    for stem in stems:
+        key = entry_key(show_for(stem), os.path.basename(os.path.dirname(stem)), os.path.basename(stem))
+        prior = published.get(key)
+        if prior and prior.get("source") and prior["source"] == source_fingerprint(stem):
+            entries.append(prior)
+            stats["unchanged"] += 1
+            continue
+        status = "reviewed" if (store is not None and is_reviewed(stem, store)) else "unreviewed"
+        entry = export_episode(stem, out_root, status=status, **kw)
+        if entry is None:
+            stats["skipped"] += 1
+            continue
+        if not prior:
+            stats["new"] += 1
+        elif prior.get("sha256") == entry["sha256"]:
+            stats["rederived"] += 1
+        else:
+            stats["updated"] += 1
+        entries.append(entry)
+    return entries, stats
 
 
 def write_manifest(path: str, entries: list) -> None:
@@ -218,12 +356,28 @@ def main(argv=None):
     parser.add_argument("--media-root", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--manifest", required=True)
+    parser.add_argument(
+        "--decisions-dir",
+        default=os.environ.get("DECISIONS_DIR", "/config/decisions"),
+        help="mark episodes whose every queued line has a verdict as status=reviewed",
+    )
     args = parser.parse_args(argv)
 
+    import decisions  # local: only the reviewed-status path needs the store
+
     stems = completed_episodes(args.show, args.media_root)
-    entries = [entry for stem in stems if (entry := export_episode(stem, args.out)) is not None]
+    published = read_manifest(args.manifest)
+    store = decisions.load(args.show, args.decisions_dir)
+    entries, stats = plan_export(stems, args.out, published, store=store)
     write_manifest(args.manifest, entries)
-    print(f"exported {len(entries)} of {len(stems)} completed episodes")
+    reviewed = sum(1 for e in entries if e.get("status") == "reviewed")
+    print(
+        f"exported {len(entries)} of {len(stems)} completed episodes ({reviewed} reviewed, {len(entries) - reviewed} unreviewed)"
+    )
+    print("  new={new} updated={updated} rederived-identical={rederived} unchanged={unchanged} skipped={skipped}".format(**stats))
+    # Only these two mean the repository content actually moved. A periodic sweep that
+    # prints 0/0 here has nothing to commit, which is the normal case.
+    print(f"  republish needed: {stats['new'] + stats['updated']} episode(s)")
     return 0
 
 

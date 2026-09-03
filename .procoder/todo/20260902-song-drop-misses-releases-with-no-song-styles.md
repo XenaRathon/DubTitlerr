@@ -1,6 +1,6 @@
 # The song-span drop cannot fire on a release whose signs track has no song styles
 
-Status: open
+Status: closed 2026-09-02
 Created: 2026-09-02
 
 ## Description
@@ -65,13 +65,13 @@ wrong whatever its confidence. Neither test needs a signs track at all, which is
 - [x] Tests fail against the previous implementation.
       `tests/test_hallucination.py::test_japanese_script_in_an_english_dub_is_dropped`
 - [~] MARRIAGETOXIN S01E02's fifteen OP cards: **10 of 15 removed, not 15.** The five that
-      remain are pure English -- "No mama, lots of time.", "Fun, fun, fun, you're so cool,
-      no, blah, blah?", "Rage in the end of the day.", "Let's go!" -- and nothing
-      categorical separates them from dialogue. The only remaining lever is an avg_logprob
-      threshold, and ADR 0002 is the standing measurement against exactly that: the
-      nsp/logprob rules were DELETED rather than tuned because every reachable relaxation
-      destroyed more real dialogue than it saved. This criterion is revised rather than
-      met, deliberately. The dialogue at 12.8-34.2s and 127.4s+ IS untouched, as required.
+  remain are pure English -- "No mama, lots of time.", "Fun, fun, fun, you're so cool,
+  no, blah, blah?", "Rage in the end of the day.", "Let's go!" -- and nothing
+  categorical separates them from dialogue. The only remaining lever is an avg_logprob
+  threshold, and ADR 0002 is the standing measurement against exactly that: the
+  nsp/logprob rules were DELETED rather than tuned because every reachable relaxation
+  destroyed more real dialogue than it saved. This criterion is revised rather than
+  met, deliberately. The dialogue at 12.8-34.2s and 127.4s+ IS untouched, as required.
 
 ## Evidence
 

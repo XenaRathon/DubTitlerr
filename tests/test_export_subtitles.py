@@ -185,13 +185,14 @@ def test_export_episode_writes_the_srt_and_returns_the_manifest_entry(tmp_path):
         extractor=lambda video, index, out_path: True,
     )
 
-    assert entry == {
+    assert {k: entry[k] for k in ("show", "season", "episode_title", "duration_seconds", "status")} == {
         "show": "One Pace",
         "season": "Season 31",
         "episode_title": "One Pace - S31E01",
         "duration_seconds": 700.0,
         "status": "unreviewed",
     }
+    assert entry["sha256"], "the entry carries the content hash change detection keys on"
     srt_path = out_root / "One Pace" / "Season 31" / "One Pace - S31E01.srt"
     assert srt_path.exists()
     assert srt_path.read_text() == "1\n00:00:00,000 --> 00:00:02,000\nhi\n"
@@ -259,3 +260,102 @@ def test_the_cli_writes_a_valid_empty_manifest_end_to_end(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     assert json.loads((tmp_path / "manifest.json").read_text()) == []
+
+
+# --- incremental publish: what counts as "changed" ------------------------------------
+
+
+def _ass_writer(text):
+    def extractor(video, index, out_path):
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return True
+
+    return extractor
+
+
+def _plan(tmp_path, ep, published, ass_text, **kw):
+    import tools.export_subtitles as es
+
+    return es.plan_export(
+        [ep],
+        str(tmp_path / "out"),
+        published,
+        probe=lambda video: 700.0,
+        stream_finder=lambda video: 3,
+        extractor=_ass_writer(ass_text),
+        **kw,
+    )
+
+
+def test_an_unchanged_episode_is_skipped_without_touching_ffmpeg(tmp_path):
+    """The cheap pre-filter. A periodic sweep runs constantly and almost nothing has been
+    re-muxed since the last one, so an episode whose stamp fingerprint still matches must
+    not pay for an ffprobe+ffmpeg extraction to prove it did not change."""
+    import tools.export_subtitles as es
+
+    ep = _stem(tmp_path, "One Pace", "Season 31", "One Pace - S31E01")
+    _conf(ep, [{"start": 0.0, "end": 2.0, "text": "hi"}])
+    video = ep + ".mkv"
+    with open(ep + ".dubtitles.done", "w") as f:
+        json.dump({"size": os.path.getsize(video), "mtime": os.path.getmtime(video), "muxed": True}, f)
+    prior = {
+        "show": "One Pace",
+        "season": "Season 31",
+        "episode_title": "One Pace - S31E01",
+        "duration_seconds": 700.0,
+        "status": "unreviewed",
+        "sha256": "whatever",
+        "source": es.source_fingerprint(ep),
+    }
+    published = {es.entry_key("One Pace", "Season 31", "One Pace - S31E01"): prior}
+
+    def explode(*a, **k):
+        raise AssertionError("an unchanged episode must not be extracted")
+
+    entries, stats = es.plan_export([ep], str(tmp_path / "out"), published, stream_finder=explode)
+
+    assert stats["unchanged"] == 1
+    assert entries == [prior], "the published entry is carried forward verbatim"
+
+
+def test_a_remux_that_produces_identical_bytes_is_not_republished(tmp_path):
+    """The case a TEXT_VERSION bump creates for every show it does not actually affect.
+    8->9 re-derives and re-muxes the WHOLE library while changing the output of only the 24
+    shows carrying Japanese song lyrics. An mtime rule would republish everything to ship
+    that; the content hash republishes what moved."""
+    ep = _stem(tmp_path, "One Pace", "Season 31", "One Pace - S31E01")
+    _conf(ep, [{"start": 0.0, "end": 2.0, "text": "hi"}])
+
+    first, _ = _plan(tmp_path, ep, {}, "[Events]\nsame")
+    key = first[0]["show"] + "/" + first[0]["season"] + "/" + first[0]["episode_title"]
+    # the video was re-muxed (fingerprint moves) but the exported bytes are identical
+    stale = dict(first[0], source="0:0")
+    entries, stats = _plan(tmp_path, ep, {key: stale}, "[Events]\nsame")
+
+    assert stats["rederived"] == 1 and stats["updated"] == 0
+    assert entries[0]["sha256"] == first[0]["sha256"]
+
+
+def test_changed_content_is_reported_as_needing_republish(tmp_path):
+    ep = _stem(tmp_path, "One Pace", "Season 31", "One Pace - S31E01")
+    _conf(ep, [{"start": 0.0, "end": 2.0, "text": "hi"}])
+
+    first, _ = _plan(tmp_path, ep, {}, "[Events]\nbefore")
+    key = first[0]["show"] + "/" + first[0]["season"] + "/" + first[0]["episode_title"]
+    stale = dict(first[0], source="0:0")
+    entries, stats = _plan(tmp_path, ep, {key: stale}, "[Events]\nafter")
+
+    assert stats["updated"] == 1 and stats["rederived"] == 0
+    assert entries[0]["sha256"] != first[0]["sha256"]
+
+
+def test_a_missing_or_corrupt_manifest_publishes_everything(tmp_path):
+    """Both mean "no reliable record of what is out there". Over-publishing is the safe
+    direction; the alternative is silently withholding an episode that changed."""
+    import tools.export_subtitles as es
+
+    assert es.read_manifest(str(tmp_path / "nope.json")) == {}
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert es.read_manifest(str(bad)) == {}

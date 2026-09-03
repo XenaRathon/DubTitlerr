@@ -1,0 +1,20 @@
+[Unit]
+Description=Publish DubTitlerr subtitles twice daily
+Documentation=file:///app/tools/publish_subtitles.sh
+
+[Timer]
+# 08:00 picks up everything the generate/merge loops finished overnight.
+# 22:00 picks up everything a human reviewed during the day -- a verdict reopens its
+# episode, so the re-mux has to land before the export can see the corrected text.
+OnCalendar=*-*-* 08:00:00
+OnCalendar=*-*-* 22:00:00
+# A missed run (host down, container busy) publishes at the next boot rather than waiting
+# for the next slot: the point of the schedule is bounded staleness, not the exact minute.
+Persistent=true
+# Both slots are shared with nothing else, but a few minutes of jitter keeps a restart
+# storm from putting every timer on the box at the same second.
+RandomizedDelaySec=5m
+Unit=dubtitlerr-publish.service
+
+[Install]
+WantedBy=timers.target
