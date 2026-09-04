@@ -344,6 +344,12 @@ def is_reviewed(stem: str, store: dict) -> bool:
     return bool(queue) and not unresolved.undecided(queue, store)
 
 
+def _published_files_exist(out_root: str, entry: dict) -> bool:
+    """True while the repository still carries either file for this manifest entry."""
+    stem = os.path.join(out_root, entry.get("show", ""), entry.get("season", ""), entry.get("episode_title", ""))
+    return os.path.exists(stem + ".srt") or os.path.exists(stem + ".ass")
+
+
 def plan_export(stems: list, out_root: str, published: dict, *, store=None, **kw) -> tuple:
     """(entries, stats). Exports each stem and classifies it against the previous manifest.
 
@@ -364,6 +370,7 @@ def plan_export(stems: list, out_root: str, published: dict, *, store=None, **kw
             "unchanged": 0,
             "skipped": 0,
             "duplicate": 0,
+            "retained": 0,
         },
     )
     published_once = set()
@@ -402,6 +409,17 @@ def plan_export(stems: list, out_root: str, published: dict, *, store=None, **kw
         else:
             stats["updated"] += 1
         entries.append(entry)
+
+    # An episode this run could not export is not thereby unpublished. The manifest
+    # describes what the REPOSITORY carries, and its files are still sitting there --
+    # measured 2026-09-04, when a library gone stale against a TEXT_VERSION bump qualified
+    # nothing and emptied a manifest covering 48 episodes whose 96 files were untouched.
+    # An entry is dropped only once its files are actually gone.
+    for key, prior in published.items():
+        if key in published_once or not _published_files_exist(out_root, prior):
+            continue
+        entries.append(prior)
+        stats["retained"] += 1
     return entries, stats
 
 
@@ -444,7 +462,7 @@ def main(argv=None):
     )
     print(
         "  new={new} updated={updated} rederived-identical={rederived} unchanged={unchanged}"
-        " skipped={skipped} duplicate-encode={duplicate}".format(**stats)
+        " skipped={skipped} duplicate-encode={duplicate} retained={retained}".format(**stats)
     )
     # Only these two mean the repository content actually moved. A periodic sweep that
     # prints 0/0 here has nothing to commit, which is the normal case.

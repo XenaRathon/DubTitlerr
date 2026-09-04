@@ -510,6 +510,51 @@ def test_an_unchanged_episode_is_matched_through_its_published_title(tmp_path):
     assert stats["unchanged"] == 1 and len(entries) == 1
 
 
+def test_an_episode_whose_files_are_still_published_is_kept_in_the_manifest(tmp_path):
+    """The break this catches, and it reached the public repository on 2026-09-04: the
+    manifest is rebuilt from what THIS run could export, so a library that went stale
+    against a TEXT_VERSION bump emptied a manifest describing 48 episodes whose 96 files
+    were sitting untouched beside it. "I could not export it now" is not "it is not
+    published"."""
+    import tools.export_subtitles as es
+
+    out_root = tmp_path / "out"
+    season = out_root / "One Pace" / "Season 31"
+    season.mkdir(parents=True)
+    (season / "One Pace - S31E01 - Title.srt").write_text("1\n")
+    prior = {
+        "show": "One Pace",
+        "season": "Season 31",
+        "episode_title": "One Pace - S31E01 - Title",
+        "sha256": "abc",
+    }
+    published = {es.entry_key("One Pace", "Season 31", "One Pace - S31E01 - Title"): prior}
+
+    entries, stats = es.plan_export([], str(out_root), published)
+
+    assert entries == [prior]
+    assert stats["retained"] == 1
+
+
+def test_an_episode_whose_files_are_gone_leaves_the_manifest(tmp_path):
+    """The other half: a manifest must not keep advertising subtitles the repository no
+    longer carries."""
+    import tools.export_subtitles as es
+
+    published = {
+        es.entry_key("One Pace", "Season 31", "gone"): {
+            "show": "One Pace",
+            "season": "Season 31",
+            "episode_title": "gone",
+        }
+    }
+
+    entries, stats = es.plan_export([], str(tmp_path / "out"), published)
+
+    assert entries == []
+    assert stats["retained"] == 0
+
+
 def test_a_missing_or_corrupt_manifest_publishes_everything(tmp_path):
     """Both mean "no reliable record of what is out there". Over-publishing is the safe
     direction; the alternative is silently withholding an episode that changed."""

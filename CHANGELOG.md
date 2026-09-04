@@ -16,6 +16,12 @@ that history alongside everything else that shipped since.
   subtitle download. Measured against the production library: 386 of 845 completed episodes
   are renamed, 459 already matched and are untouched — including all 48 episodes already
   published, so nothing in the repository moves for this.
+- `export_subtitles`: an episode this run could not export is not thereby unpublished. The
+  manifest was rebuilt from what a single run managed to export, so a library gone stale
+  against a `TEXT_VERSION` bump qualified nothing and emptied a manifest describing 48
+  episodes whose 96 files were sitting untouched beside it -- reached the public repository
+  on 2026-09-04 and was reverted. An entry is now carried forward while its files are still
+  in the repository, and dropped only once they are gone.
 - `export_subtitles`: a show that publishes nothing no longer has a manifest file created
   for it. The file's existence is the claim "this show is published", and the publish script
   runs the exporter over every directory in the library -- 95 of them on 2026-09-04, all
