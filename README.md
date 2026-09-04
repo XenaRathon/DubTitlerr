@@ -39,7 +39,11 @@ DubTitlerr runs as one restart-safe container that watches your anime library an
 show with an **English dub**, runs a full pipeline per episode:
 
 1. **Transcribe** — pick the English-dub audio and run Whisper (large-v3-turbo; build with
-   `--build-arg WHISPER_MODEL=large-v3` if your card has ~6GB or more). **Upgrading from a
+   `--build-arg WHISPER_MODEL=large-v3` for the better transcript — measured 18.9% word error
+   rate against 20.8% for turbo on a 6GB GTX 1060, and it fits there at the default `int8`, so
+   6GB is enough for either. Whisper beat every Parakeet, Canary and Qwen3-ASR entrant on both
+   cards tested; see [Choosing an ASR model](https://github.com/xenarathon/DubTitlerr/wiki/Choosing-an-ASR-Model)).
+   **Upgrading from a
    build that used the old `large-v3` default changes the decoder without bumping
    `TRANSCRIBE_VERSION`**, so existing episodes keep their stamps and are not
    re-transcribed: old episodes stay large-v3 while new ones use turbo. Re-transcribe

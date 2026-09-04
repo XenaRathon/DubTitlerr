@@ -83,16 +83,16 @@ Per **show** rather than per episode: `.lastrun.json` and the glossary's
 
 ### Transcription
 
-| Var                                  | Default          | Meaning                                             |
-| ------------------------------------ | ---------------- | --------------------------------------------------- |
-| `WHISPER_MODEL`                      | `large-v3-turbo` | Whisper model                                       |
-| `COMPUTE_TYPE`                       | `int8`           | Precision. `float16` for maximum quality            |
-| `WHISPER_BEAM_SIZE`                  | `7`              | Beam width                                          |
-| `REQUIRE_ENG`                        | `1`              | Skip episodes with no English audio track           |
-| `SKIP_IF_SRT`                        | `1`              | Skip an episode that already has a dubtitle sidecar |
-| `SHOW_NAME`                          | _(empty)_        | Override the show name derived from the path        |
-| `GLOSSARY_FILE`                      | _(empty)_        | Override the glossary resolved from the show        |
-| `FFMPEG_TIMEOUT` / `FFPROBE_TIMEOUT` | `600` / `60`     | Seconds                                             |
+| Var                                  | Default          | Meaning                                                                                        |
+| ------------------------------------ | ---------------- | ---------------------------------------------------------------------------------------------- |
+| `WHISPER_MODEL`                      | `large-v3-turbo` | Whisper model. `large-v3` scores higher; see [Choosing an ASR model](Choosing-an-ASR-Model.md) |
+| `COMPUTE_TYPE`                       | `int8`           | Precision. On Pascal cards `float16` does not load at all — this is not a quality knob there   |
+| `WHISPER_BEAM_SIZE`                  | `7`              | Beam width                                                                                     |
+| `REQUIRE_ENG`                        | `1`              | Skip episodes with no English audio track                                                      |
+| `SKIP_IF_SRT`                        | `1`              | Skip an episode that already has a dubtitle sidecar                                            |
+| `SHOW_NAME`                          | _(empty)_        | Override the show name derived from the path                                                   |
+| `GLOSSARY_FILE`                      | _(empty)_        | Override the glossary resolved from the show                                                   |
+| `FFMPEG_TIMEOUT` / `FFPROBE_TIMEOUT` | `600` / `60`     | Seconds                                                                                        |
 
 ### Repair
 
