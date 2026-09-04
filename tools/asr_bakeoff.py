@@ -395,49 +395,33 @@ NEMO_CHUNK_S = 300.0
 NEMO_CANARY_CHUNK_S = 40.0
 
 
-def _wav_duration_s(path: str) -> float:
-    import wave
-
-    with wave.open(path, "rb") as w:
-        return w.getnframes() / w.getframerate()
-
-
 def chunk_wav(wav_path: str, chunk_s: float, out_dir: str) -> list[tuple[float, str]]:
     """Split a wav into fixed-length pieces, returning (offset_s, chunk_path) pairs.
 
-    ``-ss``/``-t`` go AFTER ``-i`` (output seeking), not before: input seeking against
-    this pipeline's extracted wavs silently produces a 0-byte file with rc=0 -- verified
-    directly, not just for -ss 0, for every offset tried. Output seeking costs a decode
-    up to the seek point, cheap for -c copy PCM, and is what actually contains data."""
-    total = _wav_duration_s(wav_path)
+    stdlib ``wave``, not ffmpeg: the input is always this pipeline's own 16k mono PCM
+    extraction, so a chunk is a frame-range copy that needs no decoder and no subprocess.
+    That also retires an ffmpeg trap this function was first written around -- with
+    ``-c copy``, input seeking (``-ss`` before ``-i``) silently produced a 0-byte file with
+    rc=0 at every offset tried, so the arguments had to be ordered for output seeking."""
+    import wave
+
     chunks: list[tuple[float, str]] = []
-    start = 0.0
-    i = 0
-    while start < total:
-        dur = min(chunk_s, total - start)
-        out_path = os.path.join(out_dir, f"chunk_{i:03d}.wav")
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-nostdin",
-                "-loglevel",
-                "error",
-                "-i",
-                wav_path,
-                "-ss",
-                str(start),
-                "-t",
-                str(dur),
-                "-c",
-                "copy",
-                out_path,
-            ],
-            check=True,
-        )
-        chunks.append((start, out_path))
-        start += chunk_s
-        i += 1
+    with wave.open(wav_path, "rb") as src:
+        rate = src.getframerate()
+        per_chunk = max(1, int(round(chunk_s * rate)))
+        i = 0
+        while True:
+            frames = src.readframes(per_chunk)
+            if not frames:
+                break
+            out_path = os.path.join(out_dir, f"chunk_{i:03d}.wav")
+            with wave.open(out_path, "wb") as dst:
+                dst.setnchannels(src.getnchannels())
+                dst.setsampwidth(src.getsampwidth())
+                dst.setframerate(rate)
+                dst.writeframes(frames)
+            chunks.append((i * per_chunk / rate, out_path))
+            i += 1
     return chunks
 
 

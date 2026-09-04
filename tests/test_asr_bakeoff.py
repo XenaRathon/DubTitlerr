@@ -337,6 +337,11 @@ def test_parse_transcript_unrecognised_shape_degrades_to_empty():
 # ------------------------------------------------------------- chunk_wav (long-audio)
 
 
+def _wav_duration_s(path):
+    with wave.open(str(path), "rb") as w:
+        return w.getnframes() / w.getframerate()
+
+
 def _write_silence_wav(path, seconds, rate=16000):
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1)
@@ -351,7 +356,7 @@ def test_chunk_wav_splits_into_expected_number_of_pieces(tmp_path):
     chunks = ab.chunk_wav(str(src), chunk_s=2, out_dir=str(tmp_path))
     # 5s / 2s chunks -> [0, 2), [2, 4), [4, 5) = 3 pieces, last one short
     assert [round(off) for off, _ in chunks] == [0, 2, 4]
-    assert all(ab._wav_duration_s(p) > 0 for _, p in chunks)
+    assert all(_wav_duration_s(p) > 0 for _, p in chunks)
 
 
 def test_chunk_wav_shorter_than_one_chunk_yields_a_single_piece(tmp_path):
