@@ -59,6 +59,16 @@ echo "$shows" | while IFS= read -r show; do
 done
 
 cd "$SUBS_REPO"
+
+# git is what publishes. Without it every command below is an empty string, and the
+# porcelain check then reads "nothing changed" and exits 0 -- a silent success that
+# publishes nothing, forever. Observed 2026-09-04: the container image carried no git and
+# a full library sweep reported success while committing nothing.
+command -v git >/dev/null 2>&1 || {
+	echo "publish: git is not installed in this environment — refusing" >&2
+	exit 3
+}
+
 if [ -z "$(git status --porcelain)" ]; then
 	echo "publish: nothing changed — no commit"
 	exit 0

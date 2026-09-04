@@ -16,6 +16,10 @@ that history alongside everything else that shipped since.
   subtitle download. Measured against the production library: 386 of 845 completed episodes
   are renamed, 459 already matched and are untouched — including all 48 episodes already
   published, so nothing in the repository moves for this.
+- `publish_subtitles.sh`: an environment without `git` is refused (exit 3) instead of
+  reading as "nothing changed - no commit". Observed 2026-09-04 on vm102: the container
+  image carried no git, so a full library sweep reported success and published nothing.
+  `git` is now installed in `Dockerfile.builder`, which is where the publish path runs.
 - `export_subtitles`: two encodes of one episode (they differ only by a release tag, e.g. a
   `[JA+EN]` re-release — 19 titles across 38 files in the library) now publish once and are
   counted as `duplicate-encode`. Previously the second silently overwrote the first's files

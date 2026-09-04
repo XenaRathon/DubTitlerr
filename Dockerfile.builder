@@ -20,7 +20,7 @@ FROM mccloud/subgen:2026.06.2
 # to pyproject.toml, which is where this project declares its ranges.
 # hadolint ignore=DL3008,DL3013
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3-pip wamerican mkvtoolnix \
+    && apt-get install -y --no-install-recommends python3-pip wamerican mkvtoolnix git \
     && python3 -m pip install --no-cache-dir pysubs2 jellyfish \
     && (python3 -m pip install --no-cache-dir webrtcvad || echo "webrtcvad install failed -- analytics-only, use --vad ffmpeg-silencedetect; NOT fatal for generation") \
     && rm -rf /var/lib/apt/lists/*
