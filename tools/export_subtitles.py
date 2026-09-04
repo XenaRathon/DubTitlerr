@@ -26,6 +26,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -157,6 +158,40 @@ def extract_ass(video: str, stream_index: int, out_path: str, run=subprocess.run
         return False
 
 
+# A TRAILING run of bracket blocks, optionally welded to a release group (`]-Trix`). Only
+# the tail: a bracket mid-title is the show's own punctuation, not somebody's rip metadata.
+RELEASE_TAG_TAIL = re.compile(r"(?:\s*\[[^\]]*\])+(?:-[^\s\[\]]+)?\s*$")
+
+
+# Bare, unbracketed tags -- this library holds both shapes. Deliberately a CLOSED
+# vocabulary of things no episode title ends with (resolutions, codecs, sources, channel
+# counts, bit depths) rather than a general "looks technical" rule: `Opus`, `Proper` and
+# `Multi` are release tags AND ordinary English, so they are omitted here and caught by
+# RELEASE_TAG_TAIL when they appear bracketed, which is how this library writes them.
+RELEASE_TOKEN = (
+    r"(?:\d{3,4}p|x26[45]|h\.?26[45]|hevc|av1|\d+ch|\d+bit|web-?dl|webrip|bluray|bdrip"
+    r"|hdtv|dvdrip|remux|aac(?:\d(?:\.\d)?)?|flac|dts(?:-hd)?|truehd|repack|hdr\d*)"
+)
+BARE_TAG_TAIL = re.compile(rf"(?:[\s._-]+{RELEASE_TOKEN})+\s*$", re.IGNORECASE)
+
+
+def published_title(basename: str) -> str:
+    """The episode's name as it appears in the public repository: `Show - SxxExx - Title`.
+
+    The media filename carries the encode's provenance -- resolution, source, codec, group
+    -- which is meaningful in a library and is noise to somebody downloading a subtitle.
+    Stripping it here rather than at publish time keeps ONE name: the manifest's
+    `episode_title`, its `entry_key`, and the `.ass`/`.srt` filenames are all this string,
+    so they cannot drift apart.
+
+    Idempotent by construction, which is load-bearing: `entry_key` is built from this, so a
+    title that changed shape would present every already-published episode as new."""
+    stripped = BARE_TAG_TAIL.sub("", RELEASE_TAG_TAIL.sub("", basename)).strip()
+    # A name that is nothing BUT tags leaves the raw basename: visibly wrong beats a file
+    # published with an empty name.
+    return stripped or basename
+
+
 def entry_key(show: str, season: str, episode_title: str) -> str:
     """Stable identity for one published episode, independent of where the media lives."""
     return f"{show}/{season}/{episode_title}"
@@ -236,7 +271,7 @@ def export_episode(
         return None
     show = show_for(stem)
     season = os.path.basename(os.path.dirname(stem))
-    episode_title = os.path.basename(stem)
+    episode_title = published_title(os.path.basename(stem))
 
     index = stream_finder(video)
     if index is None:
@@ -320,19 +355,46 @@ def plan_export(stems: list, out_root: str, published: dict, *, store=None, **kw
     `rederived` means the video WAS re-muxed but the published bytes came out identical --
     the case a TEXT_VERSION bump creates for every show it does not actually affect. Those
     keep their existing files and produce no repository churn."""
-    entries, stats = [], {"new": 0, "updated": 0, "rederived": 0, "unchanged": 0, "skipped": 0}
-    for stem in stems:
-        key = entry_key(show_for(stem), os.path.basename(os.path.dirname(stem)), os.path.basename(stem))
+    entries, stats = (
+        [],
+        {
+            "new": 0,
+            "updated": 0,
+            "rederived": 0,
+            "unchanged": 0,
+            "skipped": 0,
+            "duplicate": 0,
+        },
+    )
+    published_once = set()
+    # Sorted, because two encodes of one episode publish ONE name and the walk order must
+    # not decide which: an alternating winner republishes the pair on every sweep forever.
+    for stem in sorted(stems):
+        key = entry_key(
+            show_for(stem),
+            os.path.basename(os.path.dirname(stem)),
+            published_title(os.path.basename(stem)),
+        )
+        if key in published_once:
+            # A second library file for an episode already published this run -- they differ
+            # only in release tags, which is exactly what published_title drops. Measured
+            # 2026-09-04: 19 such titles across 38 files, all `[JA+EN]` re-releases.
+            stats["duplicate"] += 1
+            continue
         prior = published.get(key)
         if prior and prior.get("source") and prior["source"] == source_fingerprint(stem):
             entries.append(prior)
+            published_once.add(key)
             stats["unchanged"] += 1
             continue
         status = "reviewed" if (store is not None and is_reviewed(stem, store)) else "unreviewed"
         entry = export_episode(stem, out_root, status=status, **kw)
         if entry is None:
+            # The key is deliberately NOT claimed: an episode this encode cannot export
+            # leaves the other encode free to try.
             stats["skipped"] += 1
             continue
+        published_once.add(key)
         if not prior:
             stats["new"] += 1
         elif prior.get("sha256") == entry["sha256"]:
@@ -374,7 +436,10 @@ def main(argv=None):
     print(
         f"exported {len(entries)} of {len(stems)} completed episodes ({reviewed} reviewed, {len(entries) - reviewed} unreviewed)"
     )
-    print("  new={new} updated={updated} rederived-identical={rederived} unchanged={unchanged} skipped={skipped}".format(**stats))
+    print(
+        "  new={new} updated={updated} rederived-identical={rederived} unchanged={unchanged}"
+        " skipped={skipped} duplicate-encode={duplicate}".format(**stats)
+    )
     # Only these two mean the repository content actually moved. A periodic sweep that
     # prints 0/0 here has nothing to commit, which is the normal case.
     print(f"  republish needed: {stats['new'] + stats['updated']} episode(s)")

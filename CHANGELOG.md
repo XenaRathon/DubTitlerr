@@ -8,6 +8,20 @@ that history alongside everything else that shipped since.
 
 ## [Unreleased]
 
+### Fixed
+
+- `export_subtitles`: the public repository publishes `Show - SxxExx - Episode Title`, not
+  the media filename. The encode's provenance (`[WEBDL-1080p][8bit][AAC 2.0][x264]-VARYG`,
+  and the unbracketed `1080p 6ch x265` shape) is meaningful in a library and is noise on a
+  subtitle download. Measured against the production library: 386 of 845 completed episodes
+  are renamed, 459 already matched and are untouched — including all 48 episodes already
+  published, so nothing in the repository moves for this.
+- `export_subtitles`: two encodes of one episode (they differ only by a release tag, e.g. a
+  `[JA+EN]` re-release — 19 titles across 38 files in the library) now publish once and are
+  counted as `duplicate-encode`. Previously the second silently overwrote the first's files
+  and the manifest carried two entries under one key, which republished the pair on every
+  sweep as the winner alternated.
+
 ## 0.1.0 - 2026-09-04
 
 The first public beta. Everything below shipped before the first tag; the pipeline's own
