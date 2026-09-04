@@ -92,5 +92,15 @@ fi
 
 git -c user.name="dubtitlerr" -c user.email="dubtitlerr@localhost" \
 	commit -q -m "subtitles: sync $(date -u +%Y-%m-%dT%H:%MZ) ($n file(s))"
-git push -q
+
+# GITHUB_PAT, when the deployment supplies one, is read by a credential helper straight
+# from the environment. It is never written into the checkout's remote URL (which would
+# leave the token in .git/config on disk) and never passed as an argument (which would put
+# it in `ps` output for every user on the box). Without it, `git push` uses whatever
+# credentials the environment already has -- an ssh remote, a helper, a mounted netrc.
+if [ -n "${GITHUB_PAT:-}" ]; then
+	git -c credential.helper='!f() { printf "username=%s\npassword=%s\n" "${GITHUB_USER:-x-access-token}" "$GITHUB_PAT"; }; f' push -q
+else
+	git push -q
+fi
 echo "publish: pushed $n file(s)"

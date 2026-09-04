@@ -21,6 +21,11 @@ that history alongside everything else that shipped since.
   runs the exporter over every directory in the library -- 95 of them on 2026-09-04, all
   with nothing to ship. An existing manifest is still rewritten, so a set that shrinks to
   zero is recorded rather than left stale.
+- `publish_subtitles.sh`: `GITHUB_PAT`/`GITHUB_USER`, when the deployment supplies them,
+  authenticate the push through a credential helper that reads them from the environment.
+  The token is never written into the checkout's remote URL and never passed as an
+  argument, so it cannot leak through `.git/config` or `ps`. Unset, the push uses whatever
+  credentials the environment already carries.
 - `publish_subtitles.sh`: the subtitle checkout is declared a safe directory before it is
   read. It is a bind mount into a container running as root, so git refused the host-owned
   repository as "dubious ownership" -- verified on the real deployment, where every

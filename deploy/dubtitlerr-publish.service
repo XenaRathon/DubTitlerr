@@ -15,6 +15,11 @@ Type=oneshot
 # episodes -- and the 08:00 run may have a night's worth of new episodes to extract.
 TimeoutStartSec=3h
 Environment=PUBLISH_APPLY=1
+# GITHUB_USER/GITHUB_PAT for the push live here, not in the repository and not in the
+# checkout's remote URL. Optional: unset, they arrive empty and publish_subtitles.sh falls
+# back to whatever credentials the environment already carries.
+Environment=GITHUB_USER=
+Environment=GITHUB_PAT=
 EnvironmentFile=-/etc/default/dubtitlerr-publish
 ExecStart=/usr/bin/docker run --rm \
     --name dubtitlerr-publish \
@@ -23,6 +28,8 @@ ExecStart=/usr/bin/docker run --rm \
     -e DECISIONS_DIR=/config/decisions \
     -e SUBS_REPO=/subs \
     -e PUBLISH_APPLY=${PUBLISH_APPLY} \
+    -e GITHUB_USER=${GITHUB_USER} \
+    -e GITHUB_PAT=${GITHUB_PAT} \
     -v /home/claude/DubTitlerr:/app \
     -v "/mnt/r520-media-full/Anime Library:/media/Anime Library:ro" \
     -v /home/claude/dubtitle-config:/config:ro \
