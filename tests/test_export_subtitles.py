@@ -552,3 +552,68 @@ def test_publish_refuses_an_environment_without_git(tmp_path):
 
     assert proc.returncode == 3, proc.stdout + proc.stderr
     assert "git is not installed" in proc.stderr
+
+
+def _seeded_checkout(tmp_path):
+    """A real remote and a real clone with upstream tracking, so the publish script's
+    commit-and-push path runs for real against a file:// remote."""
+    bare = tmp_path / "remote.git"
+    subs = tmp_path / "subs"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    subprocess.run(["git", "clone", "-q", str(bare), str(subs)], check=True)
+    cfg = ["-c", "user.name=t", "-c", "user.email=t@t"]
+    (subs / "README.md").write_text("seed\n")
+    subprocess.run(["git", "-C", str(subs), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(subs), *cfg, "commit", "-qm", "seed"], check=True)
+    subprocess.run(["git", "-C", str(subs), "push", "-q", "-u", "origin", "HEAD"], check=True)
+    return bare, subs
+
+
+def _run_publish(subs, tmp_path, **extra_env):
+    script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "publish_subtitles.sh")
+    media = tmp_path / "media"
+    media.mkdir(exist_ok=True)
+    env = {
+        "PATH": os.environ["PATH"],
+        "SUBS_REPO": str(subs),
+        "MEDIA_ROOT": str(media),
+        "APP_DIR": str(tmp_path),
+        "HOME": str(tmp_path),
+        **extra_env,
+    }
+    return subprocess.run(["sh", script], env=env, capture_output=True, text=True)
+
+
+def test_publish_commits_and_pushes_with_a_token_supplied(tmp_path):
+    """The break this catches: the credential-helper branch failing to push at all. The
+    token is read from the environment by the helper -- never written into the checkout's
+    remote and never passed as an argument, so it cannot leak through .git/config or ps."""
+    bare, subs = _seeded_checkout(tmp_path)
+    (subs / "new.srt").write_text("1\n")
+
+    proc = _run_publish(subs, tmp_path, PUBLISH_APPLY="1", GITHUB_USER="u", GITHUB_PAT="not-a-real-token")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "pushed" in proc.stdout
+    landed = subprocess.run(
+        ["git", "-C", str(bare), "log", "--oneline", "-1", "--name-only"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "new.srt" in landed
+    assert (
+        "not-a-real-token"
+        not in subprocess.run(["git", "-C", str(subs), "config", "--local", "--list"], capture_output=True, text=True).stdout
+    )
+
+
+def test_publish_pushes_without_a_token_when_none_is_supplied(tmp_path):
+    """The other branch: a deployment whose credentials come from ssh or a helper must not
+    need GITHUB_PAT set to publish."""
+    bare, subs = _seeded_checkout(tmp_path)
+    (subs / "new.srt").write_text("1\n")
+
+    proc = _run_publish(subs, tmp_path, PUBLISH_APPLY="1")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "pushed" in proc.stdout
