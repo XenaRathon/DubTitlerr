@@ -21,6 +21,12 @@ that history alongside everything else that shipped since.
   runs the exporter over every directory in the library -- 95 of them on 2026-09-04, all
   with nothing to ship. An existing manifest is still rewritten, so a set that shrinks to
   zero is recorded rather than left stale.
+- `publish_subtitles.sh`: the subtitle checkout is declared a safe directory before it is
+  read. It is a bind mount into a container running as root, so git refused the host-owned
+  repository as "dubious ownership" -- verified on the real deployment, where every
+  scheduled run would have died at `git status`. The missing-git check also moved to the
+  top of the script: the library walk takes minutes, and a run that discovers its missing
+  tool at the end has already spent them.
 - `publish_subtitles.sh`: an environment without `git` is refused (exit 3) instead of
   reading as "nothing changed - no commit". Observed 2026-09-04 on vm102: the container
   image carried no git, so a full library sweep reported success and published nothing.

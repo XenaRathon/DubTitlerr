@@ -38,6 +38,22 @@ DECISIONS_DIR="${DECISIONS_DIR:-/config/decisions}"
 	exit 2
 }
 
+# git is what publishes, and it is checked HERE rather than at the commit -- the library
+# walk takes minutes, and a run that discovers its missing tool at the end has already
+# spent them. Without git every command in the commit block is an empty string, so the
+# porcelain check reads "nothing changed" and the script exits 0: a silent success that
+# publishes nothing, forever. Observed 2026-09-04 on the real deployment.
+command -v git >/dev/null 2>&1 || {
+	echo "publish: git is not installed in this environment — refusing" >&2
+	exit 3
+}
+
+# The checkout is a bind mount into a container that runs as root, so the repository is
+# owned by the HOST user and git refuses it as "dubious ownership". That default is right
+# in general and wrong here: this mount is precisely the repository we were told to
+# publish. Verified on vm102 -- without this line every scheduled run dies at `git status`.
+git config --global --add safe.directory "$SUBS_REPO" >/dev/null 2>&1 || true
+
 shows="${SHOWS:-}"
 if [ -z "$shows" ]; then
 	shows=$(find "$MEDIA_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
@@ -59,15 +75,6 @@ echo "$shows" | while IFS= read -r show; do
 done
 
 cd "$SUBS_REPO"
-
-# git is what publishes. Without it every command below is an empty string, and the
-# porcelain check then reads "nothing changed" and exits 0 -- a silent success that
-# publishes nothing, forever. Observed 2026-09-04: the container image carried no git and
-# a full library sweep reported success while committing nothing.
-command -v git >/dev/null 2>&1 || {
-	echo "publish: git is not installed in this environment — refusing" >&2
-	exit 3
-}
 
 if [ -z "$(git status --porcelain)" ]; then
 	echo "publish: nothing changed — no commit"
