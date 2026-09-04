@@ -170,6 +170,78 @@ def test_dubtitles_stream_index_returns_none_when_no_stream_matches(tmp_path):
     assert es.dubtitles_stream_index("video.mkv", run=lambda *a, **k: Result()) is None
 
 
+# ------------------------------------------------------ published_title (release tags)
+
+
+def test_published_title_strips_a_release_tag_block():
+    import tools.export_subtitles as export_subtitles
+
+    # The break this catches: the public repository publishing somebody's rip metadata as
+    # the episode's name.
+    assert (
+        export_subtitles.published_title(
+            "Solo Leveling (2024) - S02E04 - I Need to Stop Faking [HDTV-1080p][10bit][Opus 2.0][x265]"
+        )
+        == "Solo Leveling (2024) - S02E04 - I Need to Stop Faking"
+    )
+
+
+def test_published_title_strips_a_release_group_welded_to_the_tag_block():
+    import tools.export_subtitles as export_subtitles
+
+    assert (
+        export_subtitles.published_title("One Pace - S31E24 - Usoland the Liar [WEBRip-1080p x265 10bit]-Trix")
+        == "One Pace - S31E24 - Usoland the Liar"
+    )
+
+
+def test_published_title_leaves_an_already_clean_name_untouched():
+    import tools.export_subtitles as export_subtitles
+
+    # Idempotence is what keeps the 48 episodes already published from being renamed --
+    # a changed title is a changed entry_key, which republishes the whole repository.
+    clean = "One Pace - S31E01 - Arriving at Dressrosa! The Country of Passion, Love, and Toys!"
+    assert export_subtitles.published_title(clean) == clean
+
+
+def test_published_title_keeps_a_bracket_that_is_part_of_the_episode_title():
+    import tools.export_subtitles as export_subtitles
+
+    # Only a TRAILING tag block is release metadata. A bracket inside the title is the
+    # show's own punctuation and must survive.
+    assert (
+        export_subtitles.published_title("Show - S01E01 - The [Redacted] Incident [WEBRip-1080p]")
+        == "Show - S01E01 - The [Redacted] Incident"
+    )
+
+
+def test_published_title_strips_bare_unbracketed_release_tokens():
+    import tools.export_subtitles as export_subtitles
+
+    # Not every release brackets its tags. This library holds both shapes.
+    assert export_subtitles.published_title("Cosmic Princess Kaguya! (2026) 1080p 6ch x265") == "Cosmic Princess Kaguya! (2026)"
+
+
+def test_published_title_does_not_eat_ordinary_title_words():
+    import tools.export_subtitles as export_subtitles
+
+    # The break this catches: a vocabulary loose enough to swallow the end of a real title.
+    for name in (
+        "Show - S01E01 - The Great Escape",
+        "Show - S01E02 - Magnum Opus",
+        "Show - S01E03 - Proper Introductions",
+    ):
+        assert export_subtitles.published_title(name) == name
+
+
+def test_published_title_of_a_name_that_is_only_a_tag_block_falls_back_to_the_original():
+    import tools.export_subtitles as export_subtitles
+
+    # Never publish an empty filename: if stripping would leave nothing, the raw basename
+    # is the lesser evil and is visibly wrong rather than silently missing.
+    assert export_subtitles.published_title("[WEBRip-1080p]") == "[WEBRip-1080p]"
+
+
 def test_export_episode_writes_the_srt_and_returns_the_manifest_entry(tmp_path):
     import tools.export_subtitles as es
 
@@ -348,6 +420,63 @@ def test_changed_content_is_reported_as_needing_republish(tmp_path):
 
     assert stats["updated"] == 1 and stats["rederived"] == 0
     assert entries[0]["sha256"] != first[0]["sha256"]
+
+
+def test_two_encodes_of_one_episode_publish_once_and_are_counted(tmp_path):
+    """The break this catches: two library files whose release tags differ collapse to one
+    published name, so the second silently overwrites the first and the manifest keeps two
+    entries under one key -- which republishes forever as the two encodes alternate.
+
+    Measured 2026-09-04 on the real library: 19 titles, 38 files, all JUJUTSU KAISEN /
+    MARRIAGETOXIN duplicates that differ only by a `[JA+EN]` tag."""
+    import tools.export_subtitles as es
+
+    a = _stem(tmp_path, "Show", "Season 01", "Show - S01E01 - Title [WEBDL-1080p][x264]-Grp")
+    b = _stem(tmp_path, "Show", "Season 01", "Show - S01E01 - Title [WEBDL-1080p][x264][JA+EN]-Grp")
+    for ep in (a, b):
+        _conf(ep, [{"start": 0.0, "end": 2.0, "text": "hi"}])
+    out_root = tmp_path / "out"
+
+    entries, stats = es.plan_export(
+        [b, a],  # reversed on purpose: the winner must not depend on walk order
+        str(out_root),
+        {},
+        probe=lambda video: 700.0,
+        stream_finder=lambda video: 3,
+        extractor=lambda video, index, out_path: True,
+    )
+
+    assert [e["episode_title"] for e in entries] == ["Show - S01E01 - Title"]
+    assert stats["duplicate"] == 1
+    assert stats["new"] == 1
+
+
+def test_an_unchanged_episode_is_matched_through_its_published_title(tmp_path):
+    """The break this catches: plan_export keying on the RAW basename while the manifest
+    holds the stripped one -- every episode would then look new on every single run."""
+    import tools.export_subtitles as es
+
+    ep = _stem(tmp_path, "Show", "Season 01", "Show - S01E01 - Title [WEBDL-1080p][x264]-Grp")
+    _conf(ep, [{"start": 0.0, "end": 2.0, "text": "hi"}])
+    _stamp(ep, ep + ".mkv")
+    published = {
+        es.entry_key("Show", "Season 01", "Show - S01E01 - Title"): {
+            "show": "Show",
+            "season": "Season 01",
+            "episode_title": "Show - S01E01 - Title",
+            "source": es.source_fingerprint(ep),
+            "sha256": "whatever",
+        }
+    }
+
+    entries, stats = es.plan_export(
+        [ep],
+        str(tmp_path / "out"),
+        published,
+        stream_finder=lambda video: (_ for _ in ()).throw(AssertionError("must not extract")),
+    )
+
+    assert stats["unchanged"] == 1 and len(entries) == 1
 
 
 def test_a_missing_or_corrupt_manifest_publishes_everything(tmp_path):
