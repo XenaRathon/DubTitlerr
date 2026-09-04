@@ -155,11 +155,20 @@ TRACK_NAME = "Dubtitles"
 # kilos" -- because it checked the joining token and not the one joined onto (R5,
 # REVIEW-2026-08-29). Text tier only: re-derives from words.json, no GPU.
 #
-# Adoption is 4/8, NOT 8/8. The 576 stamps live at v4 were produced by the current
+# v9 (2026-09-02): the hallucination gate drops a card carrying Japanese script. The dub
+# track is English by construction, so kana/kanji is whisper falling back to the Japanese it
+# heard under a song it could not transcribe -- not a low-confidence English line. Measured
+# across the production library: 1,240 of 395,671 cards (0.31%) in 24 shows, every sampled
+# one an OP/ED lyric, many with GOOD avg_logprob (-0.02 to -0.11) so no confidence threshold
+# would have found them. This is the ONLY tier that reaches releases which caption no song
+# lyrics at all -- the signs-track song-span drop cannot help those, having nothing to
+# derive a span from. Text tier only: re-derives from words.json, no GPU.
+#
+# Adoption is 4/9, NOT 9/9. The 576 stamps live at v4 were produced by the current
 # decoder, so they are transcribe-fresh and only text-stale: they migrate at
 # watch-gated pace instead of burning ~2 GPU-days to record a bookkeeping change.
 TRANSCRIBE_VERSION = 4
-TEXT_VERSION = 8
+TEXT_VERSION = 9
 # GRANDFATHER_VERSION: fixed constant, never changes. The version assumed for a stamp
 # written before versioning existed (no "version" key). At introduction it equalled
 # the pipeline version, so that rollout regenerated nothing.

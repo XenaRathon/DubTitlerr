@@ -1,0 +1,254 @@
+{
+  "agreement_wer": {
+    "Qwen/Qwen3-ASR-0.6B (fp16)|Qwen/Qwen3-ASR-1.7B (fp16)": 0.14900808229243204,
+    "large-v3 (int8)|Qwen/Qwen3-ASR-0.6B (fp16)": 0.18482957273163705,
+    "large-v3 (int8)|Qwen/Qwen3-ASR-1.7B (fp16)": 0.13759001440230437,
+    "large-v3 (int8)|nvidia/canary-180m-flash (fp16)": 0.6485837734037446,
+    "large-v3 (int8)|nvidia/canary-1b-v2 (fp16)": null,
+    "large-v3-turbo (int8)|Qwen/Qwen3-ASR-0.6B (fp16)": 0.19341272091484737,
+    "large-v3-turbo (int8)|Qwen/Qwen3-ASR-1.7B (fp16)": 0.15234854928645686,
+    "large-v3-turbo (int8)|large-v3 (int8)": 0.12035724411681316,
+    "large-v3-turbo (int8)|nvidia/canary-180m-flash (fp16)": 0.6523012947736508,
+    "large-v3-turbo (int8)|nvidia/canary-1b-v2 (fp16)": null,
+    "nvidia/canary-180m-flash (fp16)|Qwen/Qwen3-ASR-0.6B (fp16)": 1.5348112227225494,
+    "nvidia/canary-180m-flash (fp16)|Qwen/Qwen3-ASR-1.7B (fp16)": 1.511950121233114,
+    "nvidia/canary-1b-v2 (fp16)|Qwen/Qwen3-ASR-0.6B (fp16)": null,
+    "nvidia/canary-1b-v2 (fp16)|Qwen/Qwen3-ASR-1.7B (fp16)": null,
+    "nvidia/canary-1b-v2 (fp16)|nvidia/canary-180m-flash (fp16)": null
+  },
+  "entrants": [
+    {
+      "blocklist_hits": 8,
+      "episodes": [
+        {
+          "episode": "Solo Leveling (2024) - S02E04 - I Need to Stop Faking",
+          "segments": 293,
+          "wall_s": 93.9
+        },
+        {
+          "episode": "FateZero (2011) - S01E01 - The Summoning of Heroes",
+          "segments": 617,
+          "wall_s": 115.3
+        },
+        {
+          "episode": "Cosmic Princess Kaguya! (2026)",
+          "segments": 1814,
+          "wall_s": 557.0,
+          "wer_vs_ref": 0.2170672901293198
+        }
+      ],
+      "family": "faster-whisper",
+      "has_word_timestamps": true,
+      "load_s": 7.3,
+      "logprob_median": -0.251508,
+      "logprob_p05": -0.77036,
+      "maybe_silence_would_fire": 0,
+      "model": "large-v3-turbo (int8)",
+      "music_rule_would_fire": 0,
+      "nsp_alive_frac": 0.0,
+      "nsp_max": 0.0,
+      "nsp_median": 0.0,
+      "nsp_min": 0.0,
+      "nsp_over_0_5": 0,
+      "nsp_over_0_95": 0,
+      "peak_vram_mib": 3245,
+      "segments": 2724,
+      "verdict": "ok",
+      "word_count": 21179
+    },
+    {
+      "blocklist_hits": 22,
+      "episodes": [
+        {
+          "episode": "Solo Leveling (2024) - S02E04 - I Need to Stop Faking",
+          "segments": 311,
+          "wall_s": 113.0
+        },
+        {
+          "episode": "FateZero (2011) - S01E01 - The Summoning of Heroes",
+          "segments": 589,
+          "wall_s": 205.2
+        },
+        {
+          "episode": "Cosmic Princess Kaguya! (2026)",
+          "segments": 1688,
+          "wall_s": 593.2,
+          "wer_vs_ref": 0.18250895009863374
+        }
+      ],
+      "family": "faster-whisper",
+      "has_word_timestamps": true,
+      "load_s": 22.0,
+      "logprob_median": -0.223884,
+      "logprob_p05": -0.516026,
+      "maybe_silence_would_fire": 1429,
+      "model": "large-v3 (int8)",
+      "music_rule_would_fire": 0,
+      "nsp_alive_frac": 1.0,
+      "nsp_max": 0.960938,
+      "nsp_median": 0.54248,
+      "nsp_min": 0.001935958862,
+      "nsp_over_0_5": 1429,
+      "nsp_over_0_95": 33,
+      "peak_vram_mib": 2888,
+      "segments": 2588,
+      "verdict": "ok",
+      "word_count": 20862
+    },
+    {
+      "blocklist_hits": 0,
+      "episodes": [
+        {
+          "episode": "Solo Leveling (2024) - S02E04 - I Need to Stop Faking",
+          "error": "SyntaxError: invalid syntax (streaming_utils.py, line 2467)",
+          "wall_s": 98.7
+        },
+        {
+          "episode": "FateZero (2011) - S01E01 - The Summoning of Heroes",
+          "error": "SyntaxError: invalid syntax (streaming_utils.py, line 2467)",
+          "wall_s": 24.8
+        },
+        {
+          "episode": "Cosmic Princess Kaguya! (2026)",
+          "error": "SyntaxError: invalid syntax (streaming_utils.py, line 2467)",
+          "wall_s": 124.0
+        }
+      ],
+      "family": "nemo",
+      "has_word_timestamps": false,
+      "load_s": 3200.4,
+      "logprob_median": null,
+      "logprob_p05": null,
+      "maybe_silence_would_fire": 0,
+      "model": "nvidia/canary-1b-v2 (fp16)",
+      "music_rule_would_fire": 0,
+      "nsp_alive_frac": null,
+      "nsp_max": null,
+      "nsp_median": null,
+      "nsp_min": null,
+      "nsp_over_0_5": 0,
+      "nsp_over_0_95": 0,
+      "peak_vram_mib": 7843,
+      "segments": 0,
+      "verdict": "ok",
+      "word_count": 0
+    },
+    {
+      "blocklist_hits": 0,
+      "episodes": [
+        {
+          "episode": "Solo Leveling (2024) - S02E04 - I Need to Stop Faking",
+          "segments": 36,
+          "wall_s": 47.8
+        },
+        {
+          "episode": "FateZero (2011) - S01E01 - The Summoning of Heroes",
+          "segments": 72,
+          "wall_s": 101.5
+        },
+        {
+          "episode": "Cosmic Princess Kaguya! (2026)",
+          "segments": 212,
+          "wall_s": 350.2,
+          "wer_vs_ref": 0.7330313436107255
+        }
+      ],
+      "family": "nemo",
+      "has_word_timestamps": true,
+      "load_s": 23.1,
+      "logprob_median": null,
+      "logprob_p05": null,
+      "maybe_silence_would_fire": 0,
+      "model": "nvidia/canary-180m-flash (fp16)",
+      "music_rule_would_fire": 0,
+      "nsp_alive_frac": null,
+      "nsp_max": null,
+      "nsp_median": null,
+      "nsp_min": null,
+      "nsp_over_0_5": 0,
+      "nsp_over_0_95": 0,
+      "peak_vram_mib": 3956,
+      "segments": 320,
+      "verdict": "ok",
+      "word_count": 8156
+    },
+    {
+      "blocklist_hits": 0,
+      "episodes": [
+        {
+          "episode": "Solo Leveling (2024) - S02E04 - I Need to Stop Faking",
+          "segments": 24,
+          "wall_s": 214.3
+        },
+        {
+          "episode": "FateZero (2011) - S01E01 - The Summoning of Heroes",
+          "segments": 48,
+          "wall_s": 395.3
+        },
+        {
+          "episode": "Cosmic Princess Kaguya! (2026)",
+          "segments": 143,
+          "wall_s": 1423.2,
+          "wer_vs_ref": 0.2910791261781252
+        }
+      ],
+      "family": "qwen3-asr",
+      "has_word_timestamps": true,
+      "load_s": 14.9,
+      "logprob_median": null,
+      "logprob_p05": null,
+      "maybe_silence_would_fire": 0,
+      "model": "Qwen/Qwen3-ASR-0.6B (fp16)",
+      "music_rule_would_fire": 0,
+      "nsp_alive_frac": null,
+      "nsp_max": null,
+      "nsp_median": null,
+      "nsp_min": null,
+      "nsp_over_0_5": 0,
+      "nsp_over_0_95": 0,
+      "peak_vram_mib": 2707,
+      "segments": 215,
+      "verdict": "ok",
+      "word_count": 20551
+    },
+    {
+      "blocklist_hits": 0,
+      "episodes": [
+        {
+          "episode": "Solo Leveling (2024) - S02E04 - I Need to Stop Faking",
+          "segments": 24,
+          "wall_s": 209.7
+        },
+        {
+          "episode": "FateZero (2011) - S01E01 - The Summoning of Heroes",
+          "segments": 48,
+          "wall_s": 418.3
+        },
+        {
+          "episode": "Cosmic Princess Kaguya! (2026)",
+          "segments": 143,
+          "wall_s": 1407.3,
+          "wer_vs_ref": 0.23474830130781033
+        }
+      ],
+      "family": "qwen3-asr",
+      "has_word_timestamps": true,
+      "load_s": 82.5,
+      "logprob_median": null,
+      "logprob_p05": null,
+      "maybe_silence_would_fire": 0,
+      "model": "Qwen/Qwen3-ASR-1.7B (fp16)",
+      "music_rule_would_fire": 0,
+      "nsp_alive_frac": null,
+      "nsp_max": null,
+      "nsp_median": null,
+      "nsp_min": null,
+      "nsp_over_0_5": 0,
+      "nsp_over_0_95": 0,
+      "peak_vram_mib": 5440,
+      "segments": 215,
+      "verdict": "ok",
+      "word_count": 20346
+    }
+  ]
+}

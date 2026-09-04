@@ -345,8 +345,18 @@ def build_merge_prompt(variant: str, canonical: str, ctx_v: list, ctx_c: list, s
 
 
 def adjudicate_merge(variant: str, canonical: str, ctx_v: list, ctx_c: list, show: str) -> dict:
-    """LLM merge decision -> {'same_entity': bool, 'confidence': 'high'|'low'|'none'}."""
-    none = {"same_entity": False, "confidence": "none"}
+    """LLM merge decision -> {'same_entity': bool, 'confidence': 'high'|'low'|'none'}.
+
+    A result carrying ``unavailable`` is NOT an adjudication: the backend raised, returned
+    nothing, or returned something no JSON object could be found in. It is shaped like a
+    negative answer so every caller's `same_entity`/`confidence` reads keep working, but
+    `acquire_cache.remember_escalation` refuses to memoise it -- otherwise one transient
+    outage strands the pair forever, since `escalation_for` would return a non-empty dict
+    and `escalate`'s `if not adj` would never ask again. There is no TTL to save it.
+
+    A PARSED answer whose confidence is genuinely "none" is a real adjudication and is
+    cached: the model looked and was unsure, which is worth not paying for twice."""
+    none = {"same_entity": False, "confidence": "none", "unavailable": True}
     try:
         out = llm_chat(
             build_merge_prompt(variant, canonical, ctx_v, ctx_c, show),

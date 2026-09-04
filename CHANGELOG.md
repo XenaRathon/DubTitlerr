@@ -8,7 +8,7 @@ that history alongside everything else that shipped since.
 
 ## [Unreleased]
 
-## 0.1.0 - 2026-09-02
+## 0.1.0 - 2026-09-04
 
 The first public beta. Everything below shipped before the first tag; the pipeline's own
 output versions (v2-v8) are listed at the end, since they are what decides whether an
@@ -29,6 +29,12 @@ episode already in your library is stale.
   the community glossary repository.
 - `decisions.locked()` — a cross-process file lock around a show's decision-store
   load-modify-save, closing a race between the review server and the `unresolved.py` CLI.
+- `tools/asr_bakeoff.py` — the ASR bakeoff harness: runs faster-whisper, NeMo (Parakeet,
+  Canary) and Qwen3-ASR entrants over the same episodes on one card, and scores them against
+  a real reference transcript rather than against each other. Measured results for a 6GB
+  GTX 1060 and an 8GB RTX 2070 Super are in `docs/asr-bakeoff/`, and the reasoning behind the
+  `WHISPER_MODEL`/`COMPUTE_TYPE` defaults is now written down in the wiki's
+  _Choosing an ASR model_ rather than assumed.
 
 ### Fixed
 
@@ -71,9 +77,18 @@ episode already in your library is stale.
   correction actually reaches the video, instead of only updating the decision store.
 - `export_subtitles`: no manifest entry is written for an episode whose `.ass` extraction
   failed.
+- Docs: the `COMPUTE_TYPE` reference row claimed `float16` was the quality setting. The
+  bakeoff disproved it — on Pascal cards `float16` does not load at all, and where both load
+  the transcripts are equivalent. Precision is a compatibility knob here, not a quality one.
 
 ### Pipeline output-version history (see `common.py` for the authoritative log)
 
+- **v9** (2026-09-02) — the hallucination gate drops a card carrying Japanese script: in an
+  English dub that is whisper falling back to the Japanese it heard under a song, not a
+  low-confidence English line. 1,240 of 395,671 cards across 24 shows, every sampled one an
+  OP/ED lyric. Unlike the signs-track song drop, this reaches releases that caption no song
+  lyrics at all — and unlike that fix, a `TEXT_VERSION` bump DOES carry it into episodes
+  already in your library, on CPU, without re-transcribing.
 - **v8** (2026-08-29) — two reflow character-welding fixes (thousands separators, decimal
   points wrongly joined to the previous word).
 - **v7** (2026-08-26) — the phonetic name guard widens from substitutions to any gained

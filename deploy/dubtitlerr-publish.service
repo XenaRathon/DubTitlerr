@@ -1,0 +1,34 @@
+[Unit]
+# One publish of the subtitle export to the public repository.
+#
+# Type=oneshot, driven by dubtitlerr-publish.timer. NOT wired into merge_pass.sh: publishing
+# is outward-facing and effectively irreversible once anyone has cloned, so it is decoupled
+# from the pipeline. A bad sweep gets a window to be noticed before it ships, and a
+# TEXT_VERSION bump lands as one batch rather than hundreds of pushes.
+Description=Publish DubTitlerr subtitle exports to the public repository
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# The export walks the whole library over a network mount -- measured at 297s for 989
+# episodes -- and the 08:00 run may have a night's worth of new episodes to extract.
+TimeoutStartSec=3h
+Environment=PUBLISH_APPLY=1
+EnvironmentFile=-/etc/default/dubtitlerr-publish
+ExecStart=/usr/bin/docker run --rm \
+    --name dubtitlerr-publish \
+    -e APP_DIR=/app \
+    -e "MEDIA_ROOT=/media/Anime Library" \
+    -e DECISIONS_DIR=/config/decisions \
+    -e SUBS_REPO=/subs \
+    -e PUBLISH_APPLY=${PUBLISH_APPLY} \
+    -v /home/claude/DubTitlerr:/app \
+    -v "/mnt/r520-media-full/Anime Library:/media/Anime Library:ro" \
+    -v /home/claude/dubtitle-config:/config:ro \
+    -v /home/claude/DubTitlerr-subtitles:/subs \
+    --entrypoint /bin/sh \
+    dubtitle-builder:0.1.0 /app/tools/publish_subtitles.sh
+
+[Install]
+WantedBy=multi-user.target

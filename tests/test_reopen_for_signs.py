@@ -76,5 +76,17 @@ def test_a_dry_run_writes_nothing(tmp_path):
     assert not os.path.exists(stem + SRT)
 
 
+def test_a_dry_run_counts_the_stale_ass_it_did_not_remove(tmp_path):
+    """A dry run used to report "0 stale .ass removed" because the count was only ever set
+    on the apply path -- a number that reads as "there are none" while meaning "did not
+    look". The count is taken before the dry-run return now, and the summary says "to
+    remove" rather than "removed"."""
+    _muxed(tmp_path, "ep_e", ass=True)
+    _muxed(tmp_path, "ep_f", ass=False)
+
+    assert rfs.process(str(tmp_path / "ep_e") + CONF, apply=False)["stale_ass"] is True
+    assert rfs.process(str(tmp_path / "ep_f") + CONF, apply=False)["stale_ass"] is False
+
+
 def test_no_conf_json_anywhere_is_reported_not_a_silent_success(tmp_path):
     assert rfs.main([str(tmp_path), "--apply"]) == 1

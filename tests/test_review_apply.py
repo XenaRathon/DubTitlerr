@@ -374,3 +374,27 @@ def test_the_newest_dated_correction_wins_not_the_first_one_written(tmp_path):
     review_apply.apply_episode(stem, store, apply=True)
 
     assert [t for _, t in _cues(stem + SRT)] == ["new wording"]
+
+
+def test_a_rejection_reopens_because_it_reverts_a_repair_that_already_shipped(tmp_path):
+    """R-4, closed as won't-fix 2026-09-02, and pinned here so it is not "optimised" again.
+
+    It looks like a rejection cannot change anything -- it leaves the ASR text standing, so
+    reopening for one looks like a multi-gigabyte remux for byte-identical output. That is
+    wrong, and the reason is that `repair.py` NEVER REWRITES conf.json (it writes only its
+    summary sidecar). So conf.json holds raw ASR while the SHIPPED track holds repair's
+    output, which may be an auto-admitted repair no human ever approved.
+
+    Rejecting that repair means "the ASR text stands", and the only way to make the video
+    say so is to reopen, rebuild the srt from conf.json, and re-mux. The remux is the whole
+    point: it REVERTS. Skipping it would leave the rejected repair on screen forever, with
+    the store claiming the reviewer had settled the line."""
+    rows = [{"start": 0.0, "end": 2.0, "text": "I saw spondum"}]
+    stem = _muxed(tmp_path, "ep_reject_reverts", rows)
+    store = decisions.record({}, "I saw spondum", "I saw Spandam", "reject")
+
+    res = review_apply.apply_episode(stem, store, apply=True)
+
+    assert res["changed"] == 1, "a rejection must still reopen -- it reverts what shipped"
+    assert not os.path.exists(stem + STAMP)
+    assert "I saw spondum" in open(stem + SRT).read(), "and the rebuilt srt carries the ASR text"

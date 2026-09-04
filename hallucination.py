@@ -130,14 +130,39 @@ def bad_source_window(card: dict, rec=None) -> bool:
     return hit
 
 
+# Hiragana, katakana, CJK ideographs (plus ext-A) and halfwidth katakana. NOT a confidence
+# threshold: the dub track is English BY CONSTRUCTION -- whisper is transcribing an English
+# dub -- so a card carrying Japanese script is not a low-confidence English line, it is
+# whisper falling back to the Japanese it heard under a song it could not transcribe.
+# A dub says a Japanese NAME in romaji, never in kana, so this does not collide with real
+# dialogue.
+CJK = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uff66-\uff9d]")
+
+
+def has_cjk(text: str) -> bool:
+    """Japanese script in a line that is supposed to be English."""
+    return bool(CJK.search(text or ""))
+
+
 def drop_reason(card: dict, rec=None) -> str | None:
-    """'blocklist' | 'repetition' | None — near-certain garbage only. The nsp-gated
-    'music' rule was deleted 2026-08-24 -- see ADR 0002."""
+    """'blocklist' | 'cjk_in_english_dub' | 'repetition' | None — near-certain garbage only.
+    The nsp-gated 'music' rule was deleted 2026-08-24 -- see ADR 0002.
+
+    ADR 0002's warning is about re-adding a TUNED THRESHOLD from intuition, and it stands.
+    `cjk_in_english_dub` is not one: it has no threshold to tune and no precision/recall
+    trade-off to get wrong. Either the line contains Japanese script or it does not, and in
+    an English dub it should not. Measured 2026-09-02 on MARRIAGETOXIN S01E02, whose release
+    captions no song lyrics at all and so cannot be helped by the signs-track song-span
+    drop: it removes 10 of the 15 hallucinated OP cards and touches no dialogue."""
     text = card.get("text", "")
     hit = bool(BLOCKLIST.search(text))
     _tick(rec, "blocklist", hit)
     if hit:
         return "blocklist"
+    hit = has_cjk(text)
+    _tick(rec, "cjk_in_english_dub", hit)
+    if hit:
+        return "cjk_in_english_dub"
     hit = is_repetition(text)
     _tick(rec, "repetition", hit)
     if hit:

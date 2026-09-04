@@ -276,3 +276,52 @@ def test_a_high_nsp_card_is_no_longer_flagged():
     import hallucination as h
 
     assert h.flag_reason({"avg_logprob": -0.1, "no_speech_prob": 0.99}) is None
+
+
+# --- CJK in an English dub -------------------------------------------------------------
+
+
+def test_japanese_script_in_an_english_dub_is_dropped():
+    """R-song-drop. The dub track is English BY CONSTRUCTION, so a card carrying Japanese
+    script is not a low-confidence English line -- it is whisper falling back to the
+    Japanese it heard under a song it could not transcribe. Measured on MARRIAGETOXIN
+    S01E02, whose release captions no song lyrics at all and therefore cannot be helped by
+    the signs-track song-span drop."""
+    for text in (
+        "Run, run, run, 背中合わせ, run!",
+        "欲しいの Toxic ずっとここにいるよ不思議なほど",
+        "Tock of, 抱えたままで.",
+        "そこにいるよ君はどうする?",
+        "Stemina, 僕らを振れ!",
+    ):
+        assert h.drop_reason({"text": text}) == "cjk_in_english_dub", text
+
+
+def test_ordinary_english_dialogue_is_untouched_by_the_cjk_rule():
+    """The whole risk of this rule is deleting real dialogue. It has no threshold, so the
+    only way it can misfire is on a genuinely English line -- including one naming Japanese
+    people and places, which a dub says in romaji, never in kana."""
+    for text in (
+        "I saw Spandam at the gate.",
+        "Hikaru Gero. Here comes the real treat.",
+        "We're heading to Osaka, then Kyoto.",
+        "Let's get one thing straight: you and I are not friends.",
+        "No mama, lots of time.",
+    ):
+        assert h.drop_reason({"text": text}) != "cjk_in_english_dub", text
+
+
+def test_the_cjk_rule_is_counted_like_every_other_gate():
+    """It has to show up in the run's counters, or a rule that starts deleting the wrong
+    thing does it invisibly."""
+
+    class Rec:
+        def __init__(self):
+            self.n = {}
+
+        def count(self, k, v=1):
+            self.n[k] = self.n.get(k, 0) + v
+
+    rec = Rec()
+    h.drop_reason({"text": "君はどうする?"}, rec=rec)
+    assert any("cjk" in k for k in rec.n), rec.n

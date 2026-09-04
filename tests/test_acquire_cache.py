@@ -78,3 +78,39 @@ def test_a_corrupt_cache_degrades_to_a_full_run(tmp_path):
 
 def test_save_never_raises_on_an_unwritable_path():
     assert ac.save("/nonexistent/dir/Show.json", {"a": {"B": {"same_entity": True, "confidence": "high"}}}) is False
+
+
+# --- a transient failure is not an adjudication ---------------------------------------
+
+
+def test_an_unavailable_result_is_not_memoised():
+    """R-3. `adjudicate_merge` returns the same negative shape for a raising backend, an
+    empty response and an unparseable one as it does for a real answer. This cache has no
+    TTL and no invalidation, so storing one would answer `escalation_for` forever and
+    `escalate`'s `if not adj` would never ask the LLM again -- one transient outage
+    stranding the pair permanently."""
+    cache = {}
+    ac.remember_escalation(cache, "Dothamingo", "Doflamingo",
+                                      {"same_entity": False, "confidence": "none", "unavailable": True})
+    assert cache == {}, "nothing stored"
+    assert ac.escalation_for(cache, "Dothamingo", "Doflamingo") is None, "so the next run retries"
+
+
+def test_a_genuine_none_confidence_answer_is_still_cached():
+    """The boundary. A PARSED answer whose confidence is "none" is a real adjudication --
+    the model looked and was unsure -- and is worth not paying for twice. Only the
+    unavailable marker is dropped."""
+    cache = {}
+    ac.remember_escalation(cache, "Dothamingo", "Doflamingo",
+                                      {"same_entity": False, "confidence": "none"})
+    assert ac.escalation_for(cache, "Dothamingo", "Doflamingo") == {
+        "same_entity": False, "confidence": "none"
+    }
+
+
+def test_the_unavailable_marker_never_reaches_the_stored_entry():
+    """Even for an answer that IS cached, the marker is a transport detail and must not be
+    written into the store, where a later reader would have to know what it means."""
+    cache = {}
+    ac.remember_escalation(cache, "v", "c", {"same_entity": True, "confidence": "high"})
+    assert set(cache["v"]["c"]) == {"same_entity", "confidence"}

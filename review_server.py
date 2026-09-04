@@ -126,6 +126,11 @@ OFFERED = {
     ("repair", "rejected_guard"): ("force", "reject", "correct"),
     ("repair", "rejected_name_invented"): ("force", "reject", "correct"),
     ("repair", "decision_unfittable"): ("correct", "reject"),
+    # An approval the model orphaned by proposing different wording for the same line
+    # (usually a REPAIR_MODEL change). The reviewer is being asked to rule again, on the
+    # NEW proposal, so this is the same choice they had the first time -- `force` included,
+    # because the new wording may trip a gate the old wording did not.
+    ("repair", "verdict_stale_proposal"): ("accept", "force", "reject", "correct"),
 }
 DEFAULT_OFFERED = ("reject", "correct")
 

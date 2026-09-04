@@ -69,13 +69,18 @@ def process(conf_path: str, apply: bool) -> dict:
     """Re-open one episode. `skip` names why nothing was done, so a run that changes
     nothing says which reason applied rather than reporting a silent success."""
     stem = conf_path[: -len(CONF_SUFFIX)]
-    res = {"stem": stem, "skip": None, "ass_removed": False}
+    res = {"stem": stem, "skip": None, "stale_ass": False}
     stamp = stem + STAMP_SUFFIX
     if not os.path.exists(stamp):
         # Already open: it is in the merge queue (or mid-run) and will pick the fix up on
         # its own. Rebuilding the srt under a live pass would race that pass's own writer.
         res["skip"] = "no stamp -- already open"
         return res
+
+    ass = stem + ASS_SUFFIX
+    # Counted BEFORE the dry-run return, or a dry run reports "0 stale .ass" when it means
+    # "did not look" -- a count that reads as a fact and is not one.
+    res["stale_ass"] = os.path.exists(ass)
     if not apply:
         return res
 
@@ -88,10 +93,8 @@ def process(conf_path: str, apply: bool) -> dict:
     except OSError:
         pass  # non-root, or a filesystem without it
 
-    ass = stem + ASS_SUFFIX
-    if os.path.exists(ass):
+    if res["stale_ass"]:
         os.remove(ass)
-        res["ass_removed"] = True
 
     os.remove(stamp)  # LAST -- see the module docstring
     return res
@@ -113,9 +116,10 @@ def main(argv=None) -> int:
     for r in results:
         if r["skip"]:
             log(f"  skip {os.path.basename(r['stem'])}: {r['skip']}")
+    stale = sum(1 for r in reopened if r["stale_ass"])
     log(
         f"{'REOPENED' if a.apply else 'WOULD REOPEN'} {len(reopened)} of {len(confs)} episode(s); "
-        f"{sum(1 for r in reopened if r['ass_removed'])} stale .ass removed"
+        f"{stale} stale .ass {'removed' if a.apply else 'to remove'}"
     )
     if not a.apply and reopened:
         log("  (dry run -- re-run with --apply, then let merge_pass.sh sweep)")

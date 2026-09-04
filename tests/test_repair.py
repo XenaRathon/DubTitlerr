@@ -2510,6 +2510,130 @@ def test_a_skipped_card_a_human_ruled_on_is_never_silent(tmp_path, monkeypatch):
     assert "I saw spondum" in open(srt_path).read(), "a rejection leaves the ASR text standing"
 
 
+def test_a_forced_verdict_on_a_skipped_card_still_ships(tmp_path, monkeypatch):
+    """R-force, measured on MARRIAGETOXIN S01E10. `force` is the verdict a reviewer escalates
+    to when the automated checks would refuse the line -- so losing it is the worst version
+    of the skipped-card bug, not a lesser one. The rescue answered only `correct`, so every
+    forced verdict on a card the repair stage skipped shipped raw ASR while the store said
+    the line was settled.
+
+    Breaks if apply_human_text drops the forced_text fallback, or if forced_text reads the
+    folded `proposed` key instead of the verbatim `text` (which would ship the line
+    lowercased -- assert the casing here, not just the presence)."""
+    stem = str(tmp_path / "ep_forced")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path,
+        srt_path,
+        [{"start": 0.0, "end": 4.0, "text": "Hammy Rat Network is online!", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    store = _store("Hammy Rat Network is online!", "Hammy-Rat Network is online!", "force")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (store, "Show"))
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_forced.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=[]))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])
+
+    assert repair.process(conf_path) == "repaired"
+    shipped = open(srt_path).read()
+    assert "Hammy-Rat Network is online!" in shipped, "the forced wording must reach the srt"
+    assert "hammy-rat network" not in shipped, "and must not arrive as the folded match key"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["verdict_rescued"] == 1 and summary["verdict_owed"] == 0
+
+
+def test_an_accept_verdict_on_a_skipped_card_is_owed_not_guessed(tmp_path, monkeypatch):
+    """The boundary of the rescue. `accept` endorses the MODEL's wording for a proposal this
+    card no longer has -- answering it on the original alone would ship text the reviewer
+    approved in a context that no longer exists. It stays owed, and stays visible."""
+    stem = str(tmp_path / "ep_accept")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path,
+        srt_path,
+        [{"start": 0.0, "end": 4.0, "text": "I saw spondum", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    store = _store("I saw spondum", "I saw Spandam", "accept")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (store, "Show"))
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_accept.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam"]))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])
+
+    assert repair.process(conf_path) == "repaired"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["verdict_owed"] == 1, "owed, so the reviewer is told rather than guessed for"
+    assert "I saw spondum" in open(srt_path).read()
+
+
+def test_an_approval_orphaned_by_a_new_proposal_is_queued_not_silent(tmp_path, monkeypatch):
+    """R-model-change, measured on MARRIAGETOXIN S01E10 when REPAIR_MODEL moved from
+    nanbeige4.2-3b to qwen3-4b-instruct.
+
+    A verdict keys on (orig, proposed), and the proposed side is MODEL OUTPUT -- so changing
+    the model rewrites the key for every line in the library at once. `lookup` then misses,
+    `accept_repair` judges the new wording on its own merits and may ship it, and the store
+    still shows the line as settled. The reviewer is never told that what shipped is not
+    what they approved; the log even reads `repair_applied / accepted`.
+
+    Breaks if the stale-approval check is dropped, or narrowed to fire only when the new
+    proposal is rejected."""
+    stem = str(tmp_path / "ep_stale")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path,
+        srt_path,
+        [{"start": 0.0, "end": 4.0, "text": "I saw spondum", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    # The human approved the OLD model's wording; the new model proposes something else.
+    store = _store("I saw spondum", "I saw Spandam", "accept")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (store, "Show"))
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", True)
+    monkeypatch.setattr(repair, "llm", lambda *a, **k: "I saw Spandine")
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_stale.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam", "Spandine"]))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])
+
+    assert repair.process(conf_path) == "repaired"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["verdict_stale_proposal"] == 1, "the orphaned approval must be counted"
+    queued = [json.loads(x) for x in open(stem + ".dubtitles.unresolved.jsonl") if x.strip()]
+    stale = [q for q in queued if q.get("reason") == "verdict_stale_proposal"]
+    assert stale, "and queued, so the reviewer can rule on the new wording"
+    assert stale[0]["approved_text"] == "I saw Spandam", "what they had approved"
+    assert stale[0]["proposed_text"] == "I saw Spandine", "against what the model now says"
+    assert stale[0]["model"] == repair.MODEL, "and which model moved the goalposts"
+
+
+def test_a_superseded_rejection_is_not_flagged_as_stale(tmp_path, monkeypatch):
+    """The boundary, and the reason this is narrowed to APPROVALS. `lookup`'s docstring
+    exists to stop one rejection suppressing the proposal that fixes the line -- a new
+    proposal arriving after a rejection is the DESIGNED flow, not drift. Flagging those
+    would bury the real signal in noise."""
+    stem = str(tmp_path / "ep_superseded")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path,
+        srt_path,
+        [{"start": 0.0, "end": 4.0, "text": "I saw spondum", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    store = _store("I saw spondum", "I saw Spandam", "reject")
+    monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: (store, "Show"))
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", True)
+    monkeypatch.setattr(repair, "llm", lambda *a, **k: "I saw Spandine")
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_superseded.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl(names=["Spandam", "Spandine"]))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])
+
+    assert repair.process(conf_path) == "repaired"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["verdict_stale_proposal"] == 0
+
+
 def test_a_first_run_with_no_anchor_says_so_loudly(tmp_path, monkeypatch, capsys):
     """A3. The beta-user case: dub-only copies, `unanchored_repair` never declared, and no
     prior repairs -- so guard (c) cannot fire, because it only protects work that already

@@ -1,0 +1,320 @@
+{
+  "agreement_wer": {
+    "Qwen/Qwen3-ASR-0.6B (fp16)|Qwen/Qwen3-ASR-1.7B (fp16)": 0.14898829062760277,
+    "large-v3 (int8)|Qwen/Qwen3-ASR-0.6B (fp16)": 0.18481437125748504,
+    "large-v3 (int8)|Qwen/Qwen3-ASR-1.7B (fp16)": 0.1444311377245509,
+    "large-v3 (int8)|nvidia/canary-180m-flash (fp16)": 0.6395209580838324,
+    "large-v3 (int8)|nvidia/parakeet-tdt-0.6b-v3 (fp16)": 0.18232335329341318,
+    "large-v3 (int8)|nvidia/parakeet-tdt_ctc-110m (fp16)": 0.17796407185628743,
+    "large-v3-turbo (int8)|Qwen/Qwen3-ASR-0.6B (fp16)": 0.19096362597600458,
+    "large-v3-turbo (int8)|Qwen/Qwen3-ASR-1.7B (fp16)": 0.15059036374023996,
+    "large-v3-turbo (int8)|large-v3 (int8)": 0.12040563702151971,
+    "large-v3-turbo (int8)|nvidia/canary-180m-flash (fp16)": 0.6404494382022472,
+    "large-v3-turbo (int8)|nvidia/parakeet-tdt-0.6b-v3 (fp16)": 0.19234431536850125,
+    "large-v3-turbo (int8)|nvidia/parakeet-tdt_ctc-110m (fp16)": 0.18548847838506952,
+    "nvidia/canary-180m-flash (fp16)|Qwen/Qwen3-ASR-0.6B (fp16)": 1.4925863044708545,
+    "nvidia/canary-180m-flash (fp16)|Qwen/Qwen3-ASR-1.7B (fp16)": 1.4605546123372948,
+    "nvidia/parakeet-tdt-0.6b-v3 (fp16)|Qwen/Qwen3-ASR-0.6B (fp16)": 0.214500078976465,
+    "nvidia/parakeet-tdt-0.6b-v3 (fp16)|Qwen/Qwen3-ASR-1.7B (fp16)": 0.18301479492444586,
+    "nvidia/parakeet-tdt-0.6b-v3 (fp16)|nvidia/canary-180m-flash (fp16)": 0.6448691623229611,
+    "nvidia/parakeet-tdt-0.6b-v3 (fp16)|nvidia/parakeet-tdt_ctc-110m (fp16)": 0.18001368925393565,
+    "nvidia/parakeet-tdt_ctc-110m (fp16)|Qwen/Qwen3-ASR-0.6B (fp16)": 0.1877131342358169,
+    "nvidia/parakeet-tdt_ctc-110m (fp16)|Qwen/Qwen3-ASR-1.7B (fp16)": 0.16048362095690813,
+    "nvidia/parakeet-tdt_ctc-110m (fp16)|nvidia/canary-180m-flash (fp16)": 0.6357858840549757
+  },
+  "entrants": [
+    {
+      "blocklist_hits": 5,
+      "episodes": [
+        {
+          "episode": "Solo Leveling (2024) - S02E04 - I Need to Stop Faking",
+          "segments": 300,
+          "wall_s": 88.8
+        },
+        {
+          "episode": "FateZero (2011) - S01E01 - The Summoning of Heroes",
+          "segments": 606,
+          "wall_s": 186.0
+        },
+        {
+          "episode": "Cosmic Princess Kaguya! (2026)",
+          "segments": 1781,
+          "wall_s": 616.2,
+          "wer_vs_ref": 0.20756922627310587
+        }
+      ],
+      "family": "faster-whisper",
+      "has_word_timestamps": true,
+      "load_s": 38.2,
+      "logprob_median": -0.246194,
+      "logprob_p05": -0.851978,
+      "maybe_silence_would_fire": 0,
+      "model": "large-v3-turbo (int8)",
+      "music_rule_would_fire": 0,
+      "nsp_alive_frac": 0.0,
+      "nsp_max": 0.0,
+      "nsp_median": 0.0,
+      "nsp_min": 0.0,
+      "nsp_over_0_5": 0,
+      "nsp_over_0_95": 0,
+      "peak_vram_mib": 941,
+      "segments": 2687,
+      "verdict": "ok",
+      "word_count": 21043
+    },
+    {
+      "blocklist_hits": 20,
+      "episodes": [
+        {
+          "episode": "Solo Leveling (2024) - S02E04 - I Need to Stop Faking",
+          "segments": 297,
+          "wall_s": 187.6
+        },
+        {
+          "episode": "FateZero (2011) - S01E01 - The Summoning of Heroes",
+          "segments": 598,
+          "wall_s": 395.3
+        },
+        {
+          "episode": "Cosmic Princess Kaguya! (2026)",
+          "segments": 1694,
+          "wall_s": 1132.6,
+          "wer_vs_ref": 0.18930371885730984
+        }
+      ],
+      "family": "faster-whisper",
+      "has_word_timestamps": true,
+      "load_s": 73.6,
+      "logprob_median": -0.237244,
+      "logprob_p05": -0.543541,
+      "maybe_silence_would_fire": 1378,
+      "model": "large-v3 (int8)",
+      "music_rule_would_fire": 0,
+      "nsp_alive_frac": 1.0,
+      "nsp_max": 0.958882,
+      "nsp_median": 0.533563,
+      "nsp_min": 0.005820057355,
+      "nsp_over_0_5": 1378,
+      "nsp_over_0_95": 39,
+      "peak_vram_mib": 1645,
+      "segments": 2589,
+      "verdict": "ok",
+      "word_count": 20903
+    },
+    {
+      "blocklist_hits": 0,
+      "episodes": [
+        {
+          "episode": "Solo Leveling (2024) - S02E04 - I Need to Stop Faking",
+          "segments": 5,
+          "wall_s": 40.5
+        },
+        {
+          "episode": "FateZero (2011) - S01E01 - The Summoning of Heroes",
+          "segments": 10,
+          "wall_s": 74.7
+        },
+        {
+          "episode": "Cosmic Princess Kaguya! (2026)",
+          "segments": 28,
+          "wall_s": 291.6,
+          "wer_vs_ref": 0.28552641192372324
+        }
+      ],
+      "family": "nemo",
+      "has_word_timestamps": true,
+      "load_s": 64.0,
+      "logprob_median": null,
+      "logprob_p05": null,
+      "maybe_silence_would_fire": 0,
+      "model": "nvidia/parakeet-tdt-0.6b-v3 (fp16)",
+      "music_rule_would_fire": 0,
+      "nsp_alive_frac": null,
+      "nsp_max": null,
+      "nsp_median": null,
+      "nsp_min": null,
+      "nsp_over_0_5": 0,
+      "nsp_over_0_95": 0,
+      "peak_vram_mib": 4949,
+      "segments": 43,
+      "verdict": "ok",
+      "word_count": 18958
+    },
+    {
+      "blocklist_hits": 0,
+      "episodes": [
+        {
+          "episode": "Solo Leveling (2024) - S02E04 - I Need to Stop Faking",
+          "segments": 5,
+          "wall_s": 29.2
+        },
+        {
+          "episode": "FateZero (2011) - S01E01 - The Summoning of Heroes",
+          "segments": 10,
+          "wall_s": 50.8
+        },
+        {
+          "episode": "Cosmic Princess Kaguya! (2026)",
+          "segments": 29,
+          "wall_s": 233.8,
+          "wer_vs_ref": 0.2904215679111566
+        }
+      ],
+      "family": "nemo",
+      "has_word_timestamps": true,
+      "load_s": 28.3,
+      "logprob_median": null,
+      "logprob_p05": null,
+      "maybe_silence_would_fire": 0,
+      "model": "nvidia/parakeet-tdt_ctc-110m (fp16)",
+      "music_rule_would_fire": 0,
+      "nsp_alive_frac": null,
+      "nsp_max": null,
+      "nsp_median": null,
+      "nsp_min": null,
+      "nsp_over_0_5": 0,
+      "nsp_over_0_95": 0,
+      "peak_vram_mib": 4587,
+      "segments": 44,
+      "verdict": "ok",
+      "word_count": 19354
+    },
+    {
+      "episodes": [],
+      "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 5.92 GiB of which 7.31 MiB is free. Process 863830 has 5.91 GiB memory in use. Of the allocated memory 5.85 GiB is allocated by PyTorch, and 5.19 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+      "family": "nemo",
+      "has_word_timestamps": false,
+      "load_s": null,
+      "model": "nvidia/canary-1b-v2 (fp16)",
+      "peak_vram_mib": null,
+      "verdict": "did not load"
+    },
+    {
+      "blocklist_hits": 0,
+      "episodes": [
+        {
+          "episode": "Solo Leveling (2024) - S02E04 - I Need to Stop Faking",
+          "segments": 36,
+          "wall_s": 97.5
+        },
+        {
+          "episode": "FateZero (2011) - S01E01 - The Summoning of Heroes",
+          "segments": 72,
+          "wall_s": 200.0
+        },
+        {
+          "episode": "Cosmic Princess Kaguya! (2026)",
+          "segments": 212,
+          "wall_s": 684.1,
+          "wer_vs_ref": 0.7271863812376708
+        }
+      ],
+      "family": "nemo",
+      "has_word_timestamps": true,
+      "load_s": 34.0,
+      "logprob_median": null,
+      "logprob_p05": null,
+      "maybe_silence_would_fire": 0,
+      "model": "nvidia/canary-180m-flash (fp16)",
+      "music_rule_would_fire": 0,
+      "nsp_alive_frac": null,
+      "nsp_max": null,
+      "nsp_median": null,
+      "nsp_min": null,
+      "nsp_over_0_5": 0,
+      "nsp_over_0_95": 0,
+      "peak_vram_mib": 5133,
+      "segments": 320,
+      "verdict": "ok",
+      "word_count": 8337
+    },
+    {
+      "episodes": [],
+      "error": "ValueError: Requested float16 compute type, but the target device or backend do not support efficient float16 computation.",
+      "family": "faster-whisper",
+      "has_word_timestamps": false,
+      "load_s": null,
+      "model": "large-v3-turbo (float16)",
+      "peak_vram_mib": null,
+      "verdict": "did not load"
+    },
+    {
+      "blocklist_hits": 0,
+      "episodes": [
+        {
+          "episode": "Solo Leveling (2024) - S02E04 - I Need to Stop Faking",
+          "segments": 24,
+          "wall_s": 629.0
+        },
+        {
+          "episode": "FateZero (2011) - S01E01 - The Summoning of Heroes",
+          "segments": 48,
+          "wall_s": 1236.9
+        },
+        {
+          "episode": "Cosmic Princess Kaguya! (2026)",
+          "segments": 143,
+          "wall_s": 4435.7,
+          "wer_vs_ref": 0.2910791261781252
+        }
+      ],
+      "family": "qwen3-asr",
+      "has_word_timestamps": true,
+      "load_s": 51.5,
+      "logprob_median": null,
+      "logprob_p05": null,
+      "maybe_silence_would_fire": 0,
+      "model": "Qwen/Qwen3-ASR-0.6B (fp16)",
+      "music_rule_would_fire": 0,
+      "nsp_alive_frac": null,
+      "nsp_max": null,
+      "nsp_median": null,
+      "nsp_min": null,
+      "nsp_over_0_5": 0,
+      "nsp_over_0_95": 0,
+      "peak_vram_mib": 2065,
+      "segments": 215,
+      "verdict": "ok",
+      "word_count": 20541
+    },
+    {
+      "blocklist_hits": 0,
+      "episodes": [
+        {
+          "episode": "Solo Leveling (2024) - S02E04 - I Need to Stop Faking",
+          "segments": 24,
+          "wall_s": 674.3
+        },
+        {
+          "episode": "FateZero (2011) - S01E01 - The Summoning of Heroes",
+          "segments": 48,
+          "wall_s": 1250.2
+        },
+        {
+          "episode": "Cosmic Princess Kaguya! (2026)",
+          "segments": 143,
+          "wall_s": 4753.6,
+          "wer_vs_ref": 0.23694016219770586
+        }
+      ],
+      "family": "qwen3-asr",
+      "has_word_timestamps": true,
+      "load_s": 79.8,
+      "logprob_median": null,
+      "logprob_p05": null,
+      "maybe_silence_would_fire": 0,
+      "model": "Qwen/Qwen3-ASR-1.7B (fp16)",
+      "music_rule_would_fire": 0,
+      "nsp_alive_frac": null,
+      "nsp_max": null,
+      "nsp_median": null,
+      "nsp_min": null,
+      "nsp_over_0_5": 0,
+      "nsp_over_0_95": 0,
+      "peak_vram_mib": 4599,
+      "segments": 215,
+      "verdict": "ok",
+      "word_count": 20273
+    }
+  ]
+}

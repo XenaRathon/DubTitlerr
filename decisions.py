@@ -100,6 +100,20 @@ def record(store: dict, orig: str, proposed: str, verdict: str, text: str = "", 
     # so the comparison against a stamp is a subtraction rather than a parse.
     # Entries written before 2026-08-29 have no `at`; lookup() and for_orig() never read
     # it, so those verdicts keep applying exactly as before.
+    # `force` and `accept` keep the wording they endorsed, VERBATIM. Both key sides are
+    # case- and whitespace-folded by `key()`, so `proposed` is a match key and not something
+    # that can ever be shown or shipped -- rendering it would lowercase the line. `correct`
+    # already stores the human's own text here for exactly this reason.
+    #
+    # `force` needs it to be SHIPPABLE: `repair.apply_human_text` answers on a card the
+    # repair stage SKIPPED, where no proposal survives to un-fold it from (measured
+    # 2026-09-02 -- MARRIAGETOXIN S01E10's forced verdicts were unrescuable without it).
+    # `accept` needs it to be SHOWABLE: when a model change orphans an approval, the review
+    # queue has to tell the reviewer what they had approved, and the folded key is not that.
+    # Storing it does not make `accept` rescuable -- `forced_text` filters on the verdict,
+    # not on the presence of `text`.
+    if verdict in ("force", "accept") and not (text or "").strip():
+        text = proposed
     entry = {"orig": o, "proposed": p, "verdict": verdict, "run": "review", "at": time.time()}
     if text:
         entry["text"] = text  # the human's wording, verbatim and un-normalised
@@ -181,6 +195,46 @@ def corrected_text(store: dict, orig: str):
     non-empty `for_orig` with no text and counts that as owed-but-unresolved, which is the
     outcome that must never be silent."""
     hits = [e for e in for_orig(store, orig) if e.get("verdict") == "correct" and (e.get("text") or "").strip()]
+    if not hits:
+        return None
+    if len(hits) == 1:
+        return hits[0]["text"]
+    dated = [e for e in hits if isinstance(e.get("at"), (int, float))]
+    if not dated:
+        return None
+    return max(dated, key=lambda e: e["at"])["text"]
+
+
+def forced_text(store: dict, orig: str):
+    """The human's FORCED wording for this ORIGINAL line, or None. The `force` sibling of
+    `corrected_text`, and it exists for the same caller: `repair.apply_human_text`, which
+    runs on a card the repair loop SKIPS and therefore has no proposal to pair on.
+
+    `corrected_text`'s docstring rules `accept` and `force` out of orig-only answering
+    because they "carry the MODEL's proposal, which a skipped card does not have". That is
+    exactly right for `accept`, where the human endorsed wording the model produced and
+    said nothing about any other wording. It is NOT right for `force`.
+
+    `force` is the verdict a reviewer reaches for when the automated checks would refuse
+    the line: it means "ship this exact text for this exact original, I have looked at it".
+    There is nothing to re-derive and no model to consult. Measured 2026-09-02 on
+    MARRIAGETOXIN S01E10: eight forced verdicts, and every one on a card the repair stage
+    skipped was lost, shipping raw ASR under a verdict the reviewer had explicitly
+    escalated. `reject` and `accept` stay out, for the reasons `corrected_text` gives.
+
+    Reads `text`, never `proposed`. `proposed` is a case- and whitespace-folded MATCH KEY;
+    shipping it would lowercase the line. `record` now copies the verbatim wording into
+    `text` when a `force` is stored, so an entry written before that has no verbatim
+    wording to recover and this returns None for it -- the caller then reports it as
+    owed-but-unresolved, which is the honest outcome. Silently shipping the folded key
+    would be worse than the bug this function fixes.
+
+    Same tie-break as `corrected_text`, and for the same reason: `record` replaces per
+    (orig, proposed) pair, so one original can hold two forced wordings made against
+    different proposals. The later one is the reviewer's current intent; two undated ones
+    that disagree return None rather than guessing, and the caller counts that as
+    owed-but-unresolved."""
+    hits = [e for e in for_orig(store, orig) if e.get("verdict") == "force" and (e.get("text") or "").strip()]
     if not hits:
         return None
     if len(hits) == 1:
