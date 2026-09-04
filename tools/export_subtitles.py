@@ -431,7 +431,13 @@ def main(argv=None):
     published = read_manifest(args.manifest)
     store = decisions.load(args.show, args.decisions_dir)
     entries, stats = plan_export(stems, args.out, published, store=store)
-    write_manifest(args.manifest, entries)
+    # A manifest file's EXISTENCE is the claim "this show is published". Creating one for a
+    # show that exported nothing makes that claim falsely -- and the publish script runs
+    # this over every directory in the library, which on 2026-09-04 was 95 shows with
+    # nothing to ship. An existing manifest is still rewritten, so a set that shrinks to
+    # zero is recorded rather than left stale.
+    if entries or os.path.exists(args.manifest):
+        write_manifest(args.manifest, entries)
     reviewed = sum(1 for e in entries if e.get("status") == "reviewed")
     print(
         f"exported {len(entries)} of {len(stems)} completed episodes ({reviewed} reviewed, {len(entries) - reviewed} unreviewed)"

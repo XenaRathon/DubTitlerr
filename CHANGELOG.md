@@ -16,6 +16,11 @@ that history alongside everything else that shipped since.
   subtitle download. Measured against the production library: 386 of 845 completed episodes
   are renamed, 459 already matched and are untouched — including all 48 episodes already
   published, so nothing in the repository moves for this.
+- `export_subtitles`: a show that publishes nothing no longer has a manifest file created
+  for it. The file's existence is the claim "this show is published", and the publish script
+  runs the exporter over every directory in the library -- 95 of them on 2026-09-04, all
+  with nothing to ship. An existing manifest is still rewritten, so a set that shrinks to
+  zero is recorded rather than left stale.
 - `publish_subtitles.sh`: an environment without `git` is refused (exit 3) instead of
   reading as "nothing changed - no commit". Observed 2026-09-04 on vm102: the container
   image carried no git, so a full library sweep reported success and published nothing.
