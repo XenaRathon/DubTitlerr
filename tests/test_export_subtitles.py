@@ -488,3 +488,36 @@ def test_a_missing_or_corrupt_manifest_publishes_everything(tmp_path):
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
     assert es.read_manifest(str(bad)) == {}
+
+
+def test_publish_refuses_an_environment_without_git(tmp_path):
+    """The break this catches: publish_subtitles.sh treating a missing git as "nothing
+    changed" and exiting 0. Observed 2026-09-04 -- the container image carried no git, so a
+    full library sweep reported success and published nothing, twice a day, silently."""
+    import shutil
+
+    repo = tmp_path / "subs"
+    (repo / ".git").mkdir(parents=True)
+    (tmp_path / "media").mkdir()
+    empty_path = tmp_path / "bin"
+    empty_path.mkdir()
+    for tool in ("sh", "find", "sort", "wc", "python3", "date"):
+        found = shutil.which(tool)
+        if found:
+            os.symlink(found, empty_path / tool)
+
+    script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "publish_subtitles.sh")
+    proc = subprocess.run(
+        ["sh", script],
+        env={
+            "PATH": str(empty_path),
+            "SUBS_REPO": str(repo),
+            "MEDIA_ROOT": str(tmp_path / "media"),
+            "APP_DIR": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "git is not installed" in proc.stderr
