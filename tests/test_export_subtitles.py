@@ -312,7 +312,10 @@ def test_export_episode_returns_none_when_ass_extraction_fails(tmp_path):
     assert not (out_root / "One Pace" / "Season 31" / "One Pace - S31E01.srt").exists()
 
 
-def test_the_cli_writes_a_valid_empty_manifest_end_to_end(tmp_path):
+def test_the_cli_writes_no_manifest_for_a_show_with_nothing_to_publish(tmp_path):
+    """The break this catches: a manifest file created for every show in the library
+    whether or not it publishes anything. The file's existence is the claim "this show is
+    published"; on 2026-09-04 that would have committed 95 empty manifests."""
     prog = os.path.join(os.path.dirname(__file__), "..", "tools", "export_subtitles.py")
     proc = subprocess.run(
         [
@@ -331,7 +334,35 @@ def test_the_cli_writes_a_valid_empty_manifest_end_to_end(tmp_path):
         text=True,
     )
     assert proc.returncode == 0, proc.stderr
-    assert json.loads((tmp_path / "manifest.json").read_text()) == []
+    assert not (tmp_path / "manifest.json").exists()
+
+
+def test_an_existing_manifest_is_still_rewritten_when_the_show_drops_to_zero(tmp_path):
+    """The other half of the rule above: skipping the write must not leave a stale manifest
+    claiming episodes that are no longer published."""
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps([{"show": "One Pace", "episode_title": "gone"}]))
+    prog = os.path.join(os.path.dirname(__file__), "..", "tools", "export_subtitles.py")
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            prog,
+            "--show",
+            "One Pace",
+            "--media-root",
+            str(tmp_path),
+            "--out",
+            str(tmp_path / "export"),
+            "--manifest",
+            str(manifest),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(manifest.read_text()) == []
 
 
 # --- incremental publish: what counts as "changed" ------------------------------------
