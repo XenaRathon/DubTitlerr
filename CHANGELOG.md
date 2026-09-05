@@ -10,6 +10,22 @@ that history alongside everything else that shipped since.
 
 ### Fixed
 
+- `gen_loop.sh`: a verify pass that ran past `VERIFY_TIMEOUT` (1200s) took the container
+  down with exit code 124. The wrapper `timeout ...; rc=$?` was a _standalone_ command under
+  "verify TIMED OUT … (continuing)" message that was already written to handle exactly this
+  case — the message's `[ $rc -eq 124 ] && echo …` never got a chance to run because the
+  shell had already exited. Same `&& rc=0 || rc=$?` pattern `generate.py` (line 96) already
+  uses to keep crash-resume alive: the compound's last subcommand is always 0, so `set -e`
+  cannot trip on the `timeout`'s 124, and the real rc is captured for the message. Measured
+  on vm102 across the 14h ending 2026-09-05 14:00 EDT: every container restart in the
+  window exited with code 124 (journal-confirmed via `journalctl -u docker … exitCode=124`),
+  and `VERIFY_TIMEOUT` firing on One Pace (the WATCH_QUEUE_PIN show, run first) lands
+  within 2s of every measured exit. After the fix, a timed-out verify logs the existing
+  "verify TIMED OUT … (continuing; terms stay unverified)" line and the sweep continues.
+- `gen_loop.sh`: the ACQUIRE `timeout` (line 64) was already guarded with `|| echo …`, so
+  it was never the trigger — kept the existing wording and added a one-line cross-reference
+  comment so the next reader does not "fix" the asymmetry by removing the ACQUIRE guard.
+
 - `export_subtitles`: the public repository publishes `Show - SxxExx - Episode Title`, not
   the media filename. The encode's provenance (`[WEBDL-1080p][8bit][AAC 2.0][x264]-VARYG`,
   and the unbracketed `1080p 6ch x265` shape) is meaningful in a library and is noise on a

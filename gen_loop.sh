@@ -77,9 +77,13 @@ while :; do
 			# for One Pace and hit the wall at exactly 300s. `timeout` returns 124; anything
 			# else is a real failure, and collapsing the two into one "skipped" line is how a
 			# stage that never once completed still looked like a normal sweep.
-			timeout "${VERIFY_TIMEOUT:-1200}" python3 /app/glossary_verify.py "$GLOSS" </dev/null 2>&1
-			rc=$?
-			[ $rc -eq 0 ] || { [ $rc -eq 124 ] &&
+			# `&& rc=0 || rc=$?` (the generate.py pattern on line 96) so a `timeout`-killed
+			# verify -- exit 124 -- does not trip `set -e` and exit the container before the
+			# rc-classified message below ever runs. Verified on vm102 2026-09-05: every restart
+			# over the prior 14h exited with code 124, journal-confirmed, with VERIFY_TIMEOUT
+			# (1200s) firing on One Pace within ~2s of the restart in every measured instance.
+			timeout "${VERIFY_TIMEOUT:-1200}" python3 /app/glossary_verify.py "$GLOSS" </dev/null 2>&1 && rc=0 || rc=$?
+			[ "$rc" -eq 0 ] || { [ "$rc" -eq 124 ] &&
 				echo "  verify TIMED OUT after ${VERIFY_TIMEOUT:-1200}s (continuing; terms stay unverified)" ||
 				echo "  verify failed rc=$rc (continuing)"; }
 		fi
