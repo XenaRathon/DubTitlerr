@@ -289,6 +289,45 @@ def test_resolution_no_mismatch_no_warning(tmp_path, monkeypatch, capsys):
     assert "resolution mismatch" not in capsys.readouterr().out
 
 
+def test_output_declares_a_coordinate_space_when_the_source_omits_one(tmp_path, monkeypatch):
+    """A signs track with no PlayRes used to yield a script with none, leaving renderers on
+    their 384x288 fallback while the dialogue had been sized for an invented 720 -- a 3.75x
+    blow-up on 1080p. Measured on I Parry Everything S01E01, where a two-line card filled a
+    third of the frame; One Pace, whose signs track declares 1440x1080, was fine throughout."""
+    track0, track1 = _sign_track(text="first"), _sign_track(text="second")
+    assert "PlayResY" not in track0.info, "fixture must reproduce the undeclared-canvas case"
+
+    status, _signs, _dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+
+    assert status == "ok"
+    result = pysubs2.load(out_ass)
+    assert result.info.get("PlayResY"), "the merged script must declare its own coordinate space"
+    assert result.info.get("PlayResX"), "PlayResX too -- libass derives neither from the other"
+
+
+def test_dubtitle_renders_the_same_size_whatever_canvas_is_declared(tmp_path, monkeypatch):
+    """Sizes in an ass script are PlayRes units, so one fontsize is a DIFFERENT on-screen size
+    per canvas. Pin the height the viewer actually sees, not the number in the file.
+
+    This is what a floor in PlayRes units breaks: max(32, ...) forced fontsize 32 into a 288
+    canvas, 120px on a 1080p screen against the 63px a declared 720 produces."""
+
+    def rendered_px(playres_y):
+        t0, t1 = _sign_track(text="first"), _sign_track(text="second")
+        if playres_y is not None:
+            for t in (t0, t1):
+                t.info["PlayResX"] = str(round(playres_y * 16 / 9))
+                t.info["PlayResY"] = str(playres_y)
+        _status, _s, _d, out = _two_track_build(tmp_path, monkeypatch, t0, t1)
+        r = pysubs2.load(out)
+        return r.styles["Dubtitles"].fontsize * 1080 / int(r.info["PlayResY"])
+
+    undeclared, at720, at1080 = rendered_px(None), rendered_px(720), rendered_px(1080)
+
+    assert abs(undeclared - at720) <= 2, f"undeclared {undeclared:.0f}px vs declared-720 {at720:.0f}px"
+    assert abs(undeclared - at1080) <= 2, f"undeclared {undeclared:.0f}px vs declared-1080 {at1080:.0f}px"
+
+
 # --- context isolation: the signs/songs source is never our own old dubtitle ---
 #
 # dub_signs_merge imports common.signs_sub_streams directly, so it inherits the TRACK_NAME
