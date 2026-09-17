@@ -15,6 +15,7 @@
 5. [Architecture: Two-Backend Repair](#5-architecture-two-backend-repair)
 6. [Recommended Action Plan](#6-recommended-action-plan)
 7. [Bake-off Procedure](#7-bake-off-procedure)
+8. [Tier-C Adjudicator: Jev as a Decision-Model Candidate](#8-tier-c-adjudicator-jev-as-a-decision-model-candidate)
 
 ---
 
@@ -369,3 +370,37 @@ python3 tools/bakeoff.py \
 | `REPAIR_MODEL_SECONDARY`   | (same as primary)                   | `qwen3.6:35b-a3b`  | CPU second opinion    |
 | `REPAIR_BACKEND_SECONDARY` | —                                   | `llamacpp`         | **Needs code change** |
 | `REPAIR_LLAMACPP_URL`      | `http://<llm-host>:8080/completion` | —                  | Points at Xeon server |
+
+---
+
+## 8. Tier-C Adjudicator: Jev as a Decision-Model Candidate
+
+**Not the repair pass above — a different subsystem.** `glossary_acquire.py`'s tier-C
+adjudicator (`escalate()` / `adjudicate_merge()`, ~L347-415) re-decides `share-too-close`
+proposals by asking a local LLM for a typed verdict: `{"same_entity": bool, "confidence":
+"high"|"low"|"none"}`. It calls `llm_chat()` (`common.py:601`) with
+`glossary_verify.VERIFY_BACKEND` / `VERIFY_MODEL`, then regex-extracts and JSON-parses the
+model's free-text reply. This is exactly the shape TypeSafe's **Jev-1.13** targets: a typed,
+calibrated decision instead of generated prose — worth a bake-off against whatever's on
+`VERIFY_MODEL` today.
+
+**Try it via OpenRouter, currently free (`openrouter/typesafe/jev-1.13` or similar — confirm
+exact slug).** Before assuming this is an env-var swap, two real gaps in the current code:
+
+- `llm_chat()` only has two backends, `ollama` and `llamacpp` (`common.py:615-625`) — no
+  cloud/HTTPS API backend exists yet. Jev would need a third branch, not a config flag.
+- `_post_json()` (`common.py:577`) sends no `Authorization` header at all — OpenRouter needs
+  a bearer key, so auth support has to be added, not just a new URL.
+
+**One design mismatch to resolve, not skip past:** `escalate()`'s own docstring
+(`glossary_acquire.py:392-394`) says `unseen-needs-evidence` has no `canonical` side to
+compare against — `canonical_count` is 0 by definition, so there's nothing for a
+merge-adjudication prompt to weigh. Jev (or any model) dropped into the _existing_
+`adjudicate_merge` prompt only helps `share-too-close`. Extending coverage to
+`unseen-needs-evidence` / `no-match` (the tier-C extension floated earlier, blocked before on
+LLM-call volume — ~2,000 calls/show) needs a genuinely different prompt shape: "is this
+plausibly a real name given context" rather than "which of these two spellings is it" — that's
+a separate task, not part of trying Jev on the merge call.
+
+**Caveat:** OpenRouter's $0 pricing on Jev looks like an early-access promo, not a permanent
+rate — don't make it load-bearing without keeping `VERIFY_MODEL`'s local fallback wired.
