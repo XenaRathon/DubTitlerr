@@ -32,3 +32,10 @@ skills-lock.json
 # ASR bakeoff: raw harness output carries full transcripts of commercial dubs.
 # Only the stripped, metrics-only reports belong in the tree (docs/asr-bakeoff/README.md).
 docs/asr-bakeoff/*-report.json
+
+# procoder maintainer complexity-baseline snapshot: regenerated per run, host-local,
+# never a project artifact.
+.craftsman-baseline.json
+
+# lychee (markdown link checker) cache -- regenerated per run, host-local.
+.lycheecache
