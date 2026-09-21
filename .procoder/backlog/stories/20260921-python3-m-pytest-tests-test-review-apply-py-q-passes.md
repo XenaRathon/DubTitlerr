@@ -1,6 +1,6 @@
 # `python3 -m pytest tests/test_review_apply.py -q` passes, including `test_a_rejection_reopens_because_it_reverts_a_repair_that_already_shipped`.
 
-Status: open
+Status: done 2026-09-21
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: 010-ground-truth-ci-green-compose-committed-with-a-safe-auth
@@ -16,9 +16,13 @@ Delivered by Task 1 of `.procoder/plans/v0-2-0-hardening.md` (sprint 010); the t
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `python3 -m pytest tests/test_review_apply.py -q` passes, including `test_a_rejection_reopens_because_it_reverts_a_repair_that_already_shipped`.
+- [x] `python3 -m pytest tests/test_review_apply.py -q` passes, including `test_a_rejection_reopens_because_it_reverts_a_repair_that_already_shipped`.
 
 ## Evidence
 
 <!-- Filled at close time: the commands run and what their output proved,
      one line per criterion. Empty evidence keeps the story open. -->
+
+- `python3 -m pytest tests/test_review_apply.py -q` ran clean (18 test functions per
+  `grep -c "^def test_" tests/test_review_apply.py`), no failures; review_apply.py and
+  card_split.py were not modified.
