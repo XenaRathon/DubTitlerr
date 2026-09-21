@@ -6,6 +6,74 @@ tagged yet — this file starts at the public beta. `TRANSCRIBE_VERSION`/`TEXT_V
 and only a stamp bump puts the fix into already-processed files); the entries below summarize
 that history alongside everything else that shipped since.
 
+## 0.2.0 - Unreleased
+
+Scope boundary for the v0.2.0 hardening pass, set 2026-09-21. The scope ids S-1 through
+S-22 are defined in `.procoder/specs/v0-2-0-hardening.md`; the tasks that deliver them are
+in `.procoder/plans/v0-2-0-hardening.md` (sprints 010-015).
+
+### Included
+
+- S-1 through S-5 (sprint 010, Ground truth): get main's CI green again (ruff check . was
+  failing on tests/test_gen_loop_set_e.py since 2026-09-05); commit compose.yaml and
+  .env.example for the first time and fix the review server's auth default so an empty
+  REVIEW_TOKEN no longer silently disables auth; clear the untracked/modified hygiene
+  ledger; take a read-only production snapshot; this scope declaration.
+- S-6 through S-9 (sprint 011, Fail closed): a durable per-episode stage-status artifact
+  with typed outcomes so a failed repair/signs/mux stage can never produce a
+  current-looking .done stamp; merge_pass.sh captures and classifies exit codes; a
+  transient signs-extraction failure is distinguished from a genuinely signs-free episode;
+  the MP4-to-MKV conversion's stamp-before-remove ordering gets crash/failure tests and a
+  documented recovery policy.
+- S-10 through S-13 (sprint 012, Provenance and policy): words.json schema v2 persists
+  compute_type and beam_size and read_words() compares model/initial_prompt/compute_type/
+  beam_size against the current config, counting mismatches instead of only checking
+  transcribe_version (S-10); the unanchored-repair rollout is reconciled against the
+  3-episode human review that justified it, including the 4 outstanding S31 verdicts
+  recorded through the actual decision store (S-11); the phonetic-name-guard issue is
+  closed as resolved by a different design (S-12); the REPAIR_BACKEND_SECONDARY
+  recommendation is retired from IMPROVEMENTS.md and REVIEW.md (S-13).
+- S-14 through S-16 (sprint 013, Posture and liveness): every data surface of the review
+  server — the /api/ routes and the rendered pages — is gated behind the same token as
+  writes, and REQUIRE_TOKEN=1 hard-fails startup if auth ends up disabled anyway (S-14);
+  a real-socket HTTP integration test covers auth, slow reads and the concurrency bound
+  (S-15); a heartbeat file, a GET /healthz route and a Docker HEALTHCHECK let liveness be
+  checked without inferring it from an idle-looking container (S-16).
+- S-17 through S-20 (sprint 014, Measurement): tools/timing_compare.py's real-media
+  validation (T12) runs on 3 representative shows with a written go/no-go report, and
+  specs/timing-compare/tasks.md's stale checklist is reconciled with what already shipped
+  on main (S-17); the queue/publish operational checklist (timers, order-file drift,
+  manifest policy) is verified live (S-18); the storage/host checklist is closed and
+  FFMPEG_TIMEOUT's default is raised from 600 s to 1800 s, measured too short against a
+  556 MB episode on the production NFS mount (S-19); the signs/songs-extraction prototype
+  (tools/sns_extract.py) is built read-only with a false-positive inventory (S-20).
+- S-21 and S-22 (sprint 015, Release): the osv-scanner/pyproject extractor gap is
+  tracked and the uv.lock scanning decision recorded (S-21); the 0.2.0 release itself
+  (S-22).
+
+### Deferred
+
+Carried forward from the 2026-09-21 weekly plan's "Beyond v0.2.0 / visible backlog" — not
+silently promoted into this release:
+
+- Web UI dashboard expansion, glossary editor, community glossary auto-fetch/push.
+- Full decoder/config fingerprint migration if not taken as S-10 through S-13 this release.
+- Full cross-host locking/claim mechanism beyond the current "never run two workers"
+  operational rule.
+- Full ASS coordinate transformation for mismatched PlayResX/PlayResY; the current
+  timing/signs work only warns.
+- Card splitting as a broader automatic feature; card_split.py stays deliberately limited
+  to human corrections.
+- Automatic subtitle-repository reopen sweep; the beta design explicitly chose manual
+  reopen.
+- Full CI/workflow consolidation if the current GitHub beta workflows are green; do not
+  relitigate launch mechanics unless a concrete failure is found.
+- V1/V2 polish backlog items: style-collision logs, WrapStyle audit, font MIME warnings,
+  mux.partners() optimization, extra data-file extraction, and broad observability
+  polish, unless promoted by evidence from post-beta checks.
+- Phase-1 timing gating (using the timing-compare signal to drop/flag/snap cards): a
+  separate spec, written only if S-17's go/no-go says GO.
+
 ## [Unreleased]
 
 ### Fixed

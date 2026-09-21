@@ -19,7 +19,10 @@ the same trust boundary as the Plex/Jellyfin server it sits next to.
   Recover it later with `docker exec dubtitle-builder cat /config/review_token`. This is
   the default and requires no action.
 - **`REVIEW_TOKEN=<value>`** — use your own token instead of the generated one.
-- **`REVIEW_TOKEN=` (empty)** — disables auth entirely. This is a deliberate operator
+- **`REVIEW_TOKEN=` (empty)** — treated exactly the same as unset: a token is still
+  generated. Too many operators left this blank by accident and got an unauthenticated
+  root-owned endpoint without meaning to; an empty value can no longer opt out of auth.
+- **`REVIEW_AUTH=off`** — the only way to disable auth. This is a deliberate operator
   opt-out for a network you already trust completely, **not** something to set if you plan
   to expose the port beyond your LAN (a reverse proxy, a port-forward, a VPN with other
   members). If you do that, put your own auth in front of it instead.

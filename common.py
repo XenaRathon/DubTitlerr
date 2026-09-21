@@ -164,11 +164,29 @@ TRACK_NAME = "Dubtitles"
 # lyrics at all -- the signs-track song-span drop cannot help those, having nothing to
 # derive a span from. Text tier only: re-derives from words.json, no GPU.
 #
-# Adoption is 4/9, NOT 9/9. The 576 stamps live at v4 were produced by the current
+# v10 (2026-09-06): unanchored repair enabled library-wide (REPAIR_UNANCHORED=1 in this
+# host's compose), so repair now rewrites cards carrying no fansub anchor -- every one of
+# which was previously refused and shipped as raw ASR. The gate is CONFIGURATION, not code,
+# and nothing downstream detects a configuration change, so this bump is the only thing that
+# makes the 860 already-stamped episodes re-derive against it. NOT text-tier-only in
+# practice, unlike v8 and v9: only 366 of those stamps carry a words.json to replay from, so
+# the other 494 fall through generate.py's tier split to the transcribe queue and cost GPU
+# (~4 nightly windows). That cost was measured and stated before the bump, and accepted.
+#
+# v11 (2026-09-06): the merged .ass now DECLARES its coordinate space. A signs track with no
+# PlayRes produced a script with none, so renderers fell back to 384x288 while the dialogue
+# style had been sized for an invented 720 -- a PlayResY/288 = 3.75x blow-up. Measured on
+# I Parry Everything S01E01 (two-line card over a third of the frame, fontsize 42 rendering
+# at ~157px); One Pace was never affected because its signs track declares 1440x1080, which
+# is why this survived to here. Shows that already declare a canvas render byte-identically
+# (pinned by test_dubtitle_renders_the_same_size_whatever_canvas_is_declared). Text tier
+# only: re-derives from words.json where one exists, no GPU.
+#
+# Adoption is 4/11, NOT 11/11. The 576 stamps live at v4 were produced by the current
 # decoder, so they are transcribe-fresh and only text-stale: they migrate at
 # watch-gated pace instead of burning ~2 GPU-days to record a bookkeeping change.
 TRANSCRIBE_VERSION = 4
-TEXT_VERSION = 9
+TEXT_VERSION = 11
 # GRANDFATHER_VERSION: fixed constant, never changes. The version assumed for a stamp
 # written before versioning existed (no "version" key). At introduction it equalled
 # the pipeline version, so that rollout regenerated nothing.

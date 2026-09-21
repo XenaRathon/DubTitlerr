@@ -1,0 +1,83 @@
+# Example Docker Compose file for DubTitlerr.
+#
+# This is the Compose equivalent of the README's `docker pull` + `docker run`
+# Quick start, and mirrors the tested example in the wiki's "Your first show"
+# tutorial (docs/wiki/Your-First-Show.md — read that for the full walkthrough,
+# including serving the repair model). Every environment variable is listed
+# in docs/wiki/Reference.md.
+#
+#   docker compose pull && docker compose up -d   # use the published image
+#   docker compose up -d --build                  # or build from source instead
+#   docker compose logs -f
+#
+# Copy .env.example to .env and edit it before starting.
+#
+# The repair stage calls an OpenAI-compatible chat-completions endpoint (e.g.
+# llama.cpp serving a GGUF) that you run yourself — it is not part of this
+# container. `host.docker.internal` below reaches a server on the Docker host.
+#
+# GPU access uses the nvidia device spec (the Compose equivalent of
+# `docker run --gpus all`). Install nvidia-container-toolkit on the host first;
+# without it the Whisper transcribe step falls back to CPU and runs far slower.
+
+services:
+  dubtitlerr:
+    # Beta status: pin a release tag (e.g. DUBTITLERR_TAG=v0.1.0-beta in .env)
+    # instead of :latest if you want reproducible version stamps.
+    image: ghcr.io/xenarathon/dubtitlerr:${DUBTITLERR_TAG:-latest}
+    # Only used by `docker compose up --build` / `docker compose build`;
+    # ignored when you pull the published image above.
+    build:
+      context: .
+      dockerfile: Dockerfile.builder
+    restart: unless-stopped
+    ports:
+      - "8842:8842"   # repair-review web UI
+    environment:
+      # --- where things are ---
+      # ANIME_ROOT and MERGE_ROOTS have different built-in defaults; set all
+      # three explicitly rather than relying on them lining up.
+      ANIME_ROOT: ${ANIME_ROOT:-/media/Anime Library}
+      MERGE_ROOTS: ${ANIME_ROOT:-/media/Anime Library}
+      MUX_ROOTS: ${ANIME_ROOT:-/media/Anime Library}
+      ANIME_ORDER: /config/anime_order.txt
+      GLOSSARY_DIR: /config/glossaries
+      DECISIONS_DIR: /config/decisions
+      WIKI_CACHE_DIR: /config/wiki_cache
+
+      # --- transcription ---
+      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3-turbo}
+      COMPUTE_TYPE: int8
+      REQUIRE_ENG: "1"
+
+      # --- repair model — point this at a server you run yourself (see the
+      # wiki's "Your first show", Step 1, for a llama.cpp example) ---
+      REPAIR_BACKEND: llamacpp
+      REPAIR_MODEL: qwen3-4b-instruct
+      REPAIR_LLAMACPP_URL: http://host.docker.internal:8090/v1/chat/completions
+
+      # --- Plex refresh (optional — blank skips it) ---
+      PLEX_URL: ${PLEX_URL:-}
+      PLEX_TOKEN: ${PLEX_TOKEN:-}
+      PLEX_SECTION: ${PLEX_SECTION:-}
+
+      # --- repair-review web UI auth — leave unset to auto-generate a token
+      # at startup (printed to the log, also readable at /config/review_token) ---
+      REVIEW_TOKEN: ${REVIEW_TOKEN:-}
+      REVIEW_AUTH: ${REVIEW_AUTH:-}
+
+      # --- ownership of what it writes ---
+      MEDIA_UID: ${MEDIA_UID:-1000}
+      MEDIA_GID: ${MEDIA_GID:-100}
+    volumes:
+      - ${MEDIA_ROOT:-/path/to/your/media}:/media
+      - ${CONFIG_ROOT:-./dubtitlerr-config}:/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
