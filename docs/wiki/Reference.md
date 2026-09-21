@@ -162,6 +162,7 @@ Per **show** rather than per episode: `.lastrun.json` and the glossary's
 | `REVIEW_PORT`           | `8842`                           | Listen port                                        |
 | `REVIEW_BIND`           | `0.0.0.0`                        | Listen address                                     |
 | `REVIEW_TOKEN`          | _(unset — a token is generated)_ | See **Authentication** below                       |
+| `REVIEW_AUTH`           | _(unset)_                        | Set to `off` to disable auth entirely — see Auth   |
 | `REVIEW_MAX_CONCURRENT` | `16`                             | Concurrent request cap                             |
 | `REVIEW_STEMS_TTL`      | `30`                             | Seconds an episode listing is cached               |
 | `REVIEW_RESTART`        | `15`                             | Seconds before restarting the server after an exit |
@@ -277,11 +278,12 @@ Started by `container_run.sh`; takes no command-line arguments. Port comes from
 
 The token is presented in an `X-Review-Token` header.
 
-| `REVIEW_TOKEN`          | Behaviour                                                               |
-| ----------------------- | ----------------------------------------------------------------------- |
-| Unset                   | A token is **generated**, persisted `0600`, and printed to the log once |
-| Set to a value          | That value is the token                                                 |
-| Set to the empty string | **Auth disabled.** Only an explicit empty value does this               |
+| `REVIEW_TOKEN` / `REVIEW_AUTH` | Behaviour                                                                     |
+| ------------------------------ | ----------------------------------------------------------------------------- |
+| `REVIEW_TOKEN` unset           | A token is **generated**, persisted `0600`, and printed once                  |
+| `REVIEW_TOKEN` set to a value  | That value is the token                                                       |
+| `REVIEW_TOKEN` set to empty    | Treated exactly like unset — a token is still generated                       |
+| `REVIEW_AUTH=off`              | **Auth disabled.** The only way to disable auth, regardless of `REVIEW_TOKEN` |
 
 **Write routes require the token. Read routes never do.** The server runs in a root-owned
 process tree and its write routes rewrite subtitles and force re-muxes, so do not expose it

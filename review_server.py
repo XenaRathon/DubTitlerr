@@ -16,12 +16,14 @@ force re-muxes. A downstream user on host networking would therefore be exposing
 unauthenticated root-owned endpoint, so:
 
   REVIEW_TOKEN unset       -> a token is GENERATED, persisted 0600, and printed once.
-  REVIEW_TOKEN= (empty)    -> auth disabled. Only an explicit empty value does this, and it
-                              is the operator's decision about their own network.
+  REVIEW_TOKEN= (empty)    -> treated exactly like unset: a token is still generated.
   REVIEW_TOKEN=<value>     -> that token, and it wins over any persisted one.
+  REVIEW_AUTH=off          -> the ONLY way to disable auth. It is the operator's decision
+                              about their own network, independent of REVIEW_TOKEN.
 
-"Unset" and "set to empty" are distinguished by MEMBERSHIP in os.environ, never by
-falsiness: the entire posture rests on telling those two apart. Read routes are never gated
+Auth is gated on REVIEW_AUTH, never on REVIEW_TOKEN's value: a blank token left by
+accident (a stray REVIEW_TOKEN= line, or an unset Compose variable rendered empty) must
+not silently open a root-owned write endpoint. Read routes are never gated
 -- they expose only what is already on the operator's disk -- and every write route is.
 
 Episode identity NEVER comes from the client. A stem is accepted only if it appears in the
@@ -136,8 +138,8 @@ DEFAULT_OFFERED = ("reject", "correct")
 
 
 def auth_required(token_dir: str = "") -> bool:
-    """False ONLY when REVIEW_TOKEN is present in the environment and empty."""
-    return not ("REVIEW_TOKEN" in os.environ and os.environ["REVIEW_TOKEN"] == "")
+    """False ONLY when REVIEW_AUTH=off. An empty REVIEW_TOKEN is treated as unset."""
+    return os.environ.get("REVIEW_AUTH", "") != "off"
 
 
 def resolve_token(token_dir: str = "") -> str:
@@ -188,18 +190,18 @@ def announce_token(token_dir: str = "", bind: str = "") -> None:
     knowing the docker exec incantation. A path and a command are not a credential.
 
     Also warns, loudly, on the one combination the module docstring calls "the operator's
-    decision about their own network" but the README never mentions: an explicitly empty
-    REVIEW_TOKEN (auth off) on the default 0.0.0.0 bind. The empty-token opt-out is one
-    character away from the safe default, and an operator who finds it in a forum thread
-    (the natural answer to "my token never arrived, I restarted before I saw it") should
-    see the risk in their own logs, not only in source they may never read."""
+    decision about their own network" but the README never mentions: REVIEW_AUTH=off on
+    the default 0.0.0.0 bind. An empty REVIEW_TOKEN is no longer enough to trigger this --
+    only REVIEW_AUTH=off does -- so an operator who finds it in a forum thread (the natural
+    answer to "my token never arrived, I restarted before I saw it") should still see the
+    risk in their own logs, not only in source they may never read."""
     d = token_dir or TOKEN_DIR
     if not auth_required(d) and (bind or REVIEW_BIND) == "0.0.0.0":
         log(
-            "review server: WARNING — REVIEW_TOKEN is explicitly empty (auth disabled) and "
-            "REVIEW_BIND is 0.0.0.0: every write route is open to anything that can reach "
-            "this port. Set REVIEW_TOKEN to a real value, or REVIEW_BIND to a host-only "
-            "address, unless this network is one you fully trust."
+            "review server: WARNING — REVIEW_AUTH=off (auth disabled) and REVIEW_BIND is "
+            "0.0.0.0: every write route is open to anything that can reach this port. "
+            "Unset REVIEW_AUTH, or set REVIEW_BIND to a host-only address, unless this "
+            "network is one you fully trust."
         )
     if "REVIEW_TOKEN" in os.environ:
         log("review server: using REVIEW_TOKEN from the environment")

@@ -64,6 +64,7 @@ services:
       # --- repair-review web UI auth — leave unset to auto-generate a token
       # at startup (printed to the log, also readable at /config/review_token) ---
       REVIEW_TOKEN: ${REVIEW_TOKEN:-}
+      REVIEW_AUTH: ${REVIEW_AUTH:-}
 
       # --- ownership of what it writes ---
       MEDIA_UID: ${MEDIA_UID:-1000}
