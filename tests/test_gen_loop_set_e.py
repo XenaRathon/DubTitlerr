@@ -21,7 +21,6 @@ catch a future reader "tidying up" the asymmetry between the ACQUIRE call
 import re
 from pathlib import Path
 
-
 GEN_LOOP = Path(__file__).resolve().parent.parent / "gen_loop.sh"
 
 
