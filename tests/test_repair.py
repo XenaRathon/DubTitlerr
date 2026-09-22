@@ -2733,3 +2733,28 @@ def test_a_dead_backend_refuses_the_episode_instead_of_rebuilding_raw_asr(tmp_pa
     assert repair.process(conf_path) == "refused"
     assert open(srt_path, encoding="utf-8").read() == shipped, "the shipped srt must not be rewritten"
     assert not os.path.exists(stem + ".dubtitles.unresolved.jsonl"), "a dead endpoint is not a review item"
+    assert common.read_stages(stem)["repair"]["outcome"] == "backend-unreachable"
+
+
+def test_backend_unreachable_and_llm_empty_are_never_the_same_stage_outcome(tmp_path, monkeypatch):
+    """[S-6] A forced LLM_UNREACHABLE path (repair.py's all-unreachable-episode refusal)
+    must write_stage(stem, "repair", "backend-unreachable") -- never "llm-empty" -- so a
+    future outage is visible as "backend down" in the durable stage artifact, distinct
+    from a real empty LLM reply. The two outcomes must never be produced by the same
+    code path for the same run."""
+    stem = str(tmp_path / "ep_unreachable_stage")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path, srt_path, [{"start": 0.0, "end": 2.0, "text": "garbled line", "avg_logprob": -0.9, "no_speech_prob": 0.1}]
+    )
+    g = gl()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_unreachable_stage.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: g)
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 2.0, "a reference line")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: repair.LLM_UNREACHABLE)
+
+    assert repair.process(conf_path) == "refused"
+    outcome = common.read_stages(stem)["repair"]["outcome"]
+    assert outcome == "backend-unreachable"
+    assert outcome != "llm-empty"

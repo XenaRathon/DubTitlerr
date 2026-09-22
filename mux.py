@@ -58,6 +58,7 @@ from common import (
     read_stages,
     read_stamp,
     stamp_valid,
+    write_stage,
     write_stamp,
 )
 
@@ -452,7 +453,13 @@ def process(orig, apply):
         # stamped as done, or a transient signs regression looks identical to
         # a genuinely signs-free episode forever after.
         signs_outcome = read_stages(stem).get("signs", {}).get("outcome")
-        if signs_outcome not in (None, "ok", "no-reference", "no-video"):
+        # "no-video"/"no-reference" are pass-like for merge_pass.sh's global
+        # failed_stage() (repair legitimately has nothing to do yet), but the
+        # signs stage only ever returns "no-video" when find_video() failed
+        # DURING an attempted signs build -- that IS the regression S-8 guards
+        # against, so only a bare "ok" (or no record at all, meaning signs
+        # never ran) counts as safe to fall back to the dialogue-only .srt.
+        if signs_outcome not in (None, "ok"):
             return "signs-regression-refused"
     if stamp_valid(read_stamp(stamp), orig):
         return "already-muxed"  # stat-only, version-aware stamp is the ONLY guard
@@ -499,6 +506,7 @@ def process(orig, apply):
                 f"  ERROR: muxed OK but stamp write FAILED ({e}) — {os.path.basename(final)} "
                 f"will be re-muxed every sweep until the stamp can be written"
             )
+            write_stage(stem, "mux", "unwritable", str(e))
             return "stamp-write-failed"
         if os.path.abspath(orig) != os.path.abspath(final) and os.path.exists(orig):
             os.remove(orig)  # mp4->mkv: drop the OLD library link (partner survives)
@@ -511,6 +519,7 @@ def process(orig, apply):
             f.write(f"muxed {os.path.basename(orig)} -> mkv; eng audio + Dubtitles default\n")
             f.write("dropped non-keep tracks: " + ", ".join(dropped) + "\n")
         log(f"  muxed ({ext}->mkv); dropped {len(dropped)} foreign track(s)")
+        write_stage(stem, "mux", "ok")
         return "muxed"
     except Exception as e:
         if os.path.exists(out):

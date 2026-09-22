@@ -327,6 +327,118 @@ def test_process_reports_a_failed_stamp_write_and_keeps_the_sidecar(tmp_path, mo
     assert "stamp" in capsys.readouterr().out.lower()
 
 
+def test_mp4_stamp_write_failure_rolls_back_final_and_keeps_orig(tmp_path, monkeypatch):
+    """[S-9] MP4/M4V source, orig != final: reordering write_stamp BEFORE os.remove(orig)
+    means a failed stamp write must roll back `final` (the half-done mkv) rather than
+    leave both `final` (stamped or not) and a gone `orig` -- the ONLY retryable state is
+    orig intact, so the next sweep re-muxes cleanly instead of finding neither file whole."""
+    v = tmp_path / "ep.mp4"
+    v.write_bytes(b"x" * 100)
+    sidecar = tmp_path / ("ep" + mux.SRT_SUFFIX)
+    sidecar.write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+    final = tmp_path / "ep.mkv"
+    monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
+    monkeypatch.setattr(mux, "verify", lambda orig, out: "ok")
+
+    def fake_run(cmd, **kw):
+        out = cmd[cmd.index("-o") + 1]
+        open(out, "wb").write(b"muxed")
+
+    monkeypatch.setattr(mux.subprocess, "run", fake_run)
+
+    def boom(path, video, **_kw):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(mux, "write_stamp", boom)
+
+    assert mux.process(str(v), apply=True) == "stamp-write-failed"
+    assert v.exists()  # orig survives untouched -- the retry target
+    assert not final.exists()  # the half-done mkv is rolled back, not left dangling
+
+
+def test_mkv_source_never_removes_orig(tmp_path, monkeypatch):
+    """[S-9] An MKV source has orig == final: process() must never call os.remove on the
+    original, since removing it would remove the very file it just finished muxing into."""
+    v = _muxable(tmp_path, monkeypatch, [aud(0, "eng"), subt(1, "eng", mux.TRACK_NAME)])
+    monkeypatch.setattr(mux, "verify", lambda orig, out: "ok")
+
+    def fake_run(cmd, **kw):
+        out = cmd[cmd.index("-o") + 1]
+        open(out, "wb").write(b"muxed")
+
+    monkeypatch.setattr(mux.subprocess, "run", fake_run)
+    removed = []
+    real_remove = os.remove
+
+    def guarded_remove(p):
+        assert p != v, "orig must never be removed for an MKV source"
+        removed.append(p)
+        real_remove(p)
+
+    monkeypatch.setattr(mux.os, "remove", guarded_remove)
+
+    assert mux.process(v, apply=True) == "muxed"
+    assert v not in removed
+    assert os.path.exists(v)
+
+
+def test_signs_regression_refused_when_signs_stage_failed_and_only_srt_remains(tmp_path, monkeypatch):
+    """[S-8] A forced dub_signs_merge.py failure ("build-error" or "no-video") recorded in
+    the stage sidecar must not let mux silently fall back from .ass to the dialogue-only
+    .srt and stamp the demoted output as done -- it must refuse instead."""
+    import common
+
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 100)
+    stem = str(tmp_path / "ep")
+    (tmp_path / ("ep" + mux.SRT_SUFFIX)).write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+    common.write_stage(stem, "signs", "build-error", "forced")
+    monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
+
+    assert mux.process(str(v), apply=True) == "signs-regression-refused"
+
+
+def test_signs_regression_refused_for_no_video_outcome_too(tmp_path, monkeypatch):
+    """[S-8] The same refusal applies to a forced "no-video" signs outcome, not only
+    "build-error"."""
+    import common
+
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 100)
+    stem = str(tmp_path / "ep")
+    (tmp_path / ("ep" + mux.SRT_SUFFIX)).write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+    common.write_stage(stem, "signs", "no-video")
+    monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
+
+    assert mux.process(str(v), apply=True) == "signs-regression-refused"
+
+
+def test_genuinely_signs_free_episode_muxes_normally(tmp_path, monkeypatch):
+    """[S-8] A genuinely signs-free episode (dub_signs_merge.py returned "no-signs",
+    recorded as signs stage outcome "ok") mux proceeds normally on the .srt under the
+    identical harness -- the two fixtures must produce different mux outcomes."""
+    import common
+
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 100)
+    stem = str(tmp_path / "ep")
+    (tmp_path / ("ep" + mux.SRT_SUFFIX)).write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+    common.write_stage(stem, "signs", "ok", "no-signs")
+    monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
+    monkeypatch.setattr(mux, "verify", lambda orig, out: "ok")
+
+    def fake_run(cmd, **kw):
+        out = cmd[cmd.index("-o") + 1]
+        open(out, "wb").write(b"muxed")
+
+    monkeypatch.setattr(mux.subprocess, "run", fake_run)
+
+    assert mux.process(str(v), apply=True) == "muxed"
+
+
 # --- verify(): compare the VIDEO track, not the container ---------------------
 #
 # Matroska's container duration is the LONGEST track. Releases routinely ship a foreign

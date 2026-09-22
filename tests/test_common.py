@@ -24,6 +24,37 @@ def ev(text="hello", style="Default", start=0, end=1000, comment=False):
     return pysubs2.SSAEvent(text=text, style=style, start=start, end=end, type="Comment" if comment else "Dialogue")
 
 
+def test_write_stage_merges_and_stamps_at(tmp_path, monkeypatch):
+    """[S-6] write_stage(stem, "repair", "ok") then read_stages(stem) returns
+    {"repair": {"outcome": "ok", "detail": "", "at": <float>}}; a second call for a
+    different stage merges rather than overwrites the first."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep01")
+    common.write_stage(stem, "repair", "ok")
+    rec = common.read_stages(stem)
+    assert rec["repair"]["outcome"] == "ok"
+    assert rec["repair"].get("detail", "") == ""
+    assert isinstance(rec["repair"]["at"], float)
+    common.write_stage(stem, "signs", "ok", "no-signs")
+    merged = common.read_stages(stem)
+    assert merged["repair"]["outcome"] == "ok"
+    assert merged["signs"]["outcome"] == "ok" and merged["signs"]["detail"] == "no-signs"
+
+
+def test_failed_stage_none_when_all_pass_else_first_offender(tmp_path, monkeypatch):
+    """[S-6] common.failed_stage(stem) returns None when every recorded outcome is in
+    {"ok", "no-reference", "no-video"}, and returns the first offending stage name
+    otherwise."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep01")
+    common.write_stage(stem, "repair", "ok")
+    common.write_stage(stem, "signs", "no-reference")
+    common.write_stage(stem, "mux", "no-video")
+    assert common.failed_stage(stem) is None
+    common.write_stage(stem, "signs", "build-error")
+    assert common.failed_stage(stem) == "signs"
+
+
 # --- is_dialogue_event() matrix ----------------------------------------------
 
 
