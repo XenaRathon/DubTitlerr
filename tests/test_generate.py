@@ -1867,3 +1867,38 @@ def test_a_negative_audio_start_is_reported_and_never_applied(capsys):
     printed = capsys.readouterr().out
     assert "branch=refused-negative" in printed
     assert "branch=corrected" not in printed
+
+
+def test_decoder_identity_reports_the_active_decoder_settings(monkeypatch):
+    monkeypatch.setenv("WHISPER_BEAM_SIZE", "5")
+    identity = generate.decoder_identity()
+    assert identity == {
+        "model": generate.MODEL,
+        "initial_prompt": generate.INITIAL_PROMPT,
+        "compute_type": generate.COMPUTE,
+        "beam_size": 5,
+    }
+
+def test_write_words_persists_compute_type_and_beam_size(tmp_path, monkeypatch):
+    monkeypatch.setenv("WHISPER_BEAM_SIZE", "7")
+    words, segments = _clamped_fixture()
+    stem = str(tmp_path / "ep")
+    generate.write_words(stem, words, segments, 7.0, initial_prompt="x")
+    doc = json.load(open(stem + generate.WORDS_SUFFIX))
+    assert doc["schema_version"] == 2
+    assert doc["model"] == generate.MODEL
+    assert doc["compute_type"] == generate.COMPUTE
+    assert doc["beam_size"] == 7
+
+def test_a_schema_1_sidecar_with_no_compute_fields_still_reads(tmp_path):
+    words, segments = _clamped_fixture()
+    stem = str(tmp_path / "ep")
+    generate.write_words(stem, words, segments, 7.0, initial_prompt="x")
+    path = stem + generate.WORDS_SUFFIX
+    doc = json.load(open(path))
+    doc["schema_version"] = 1
+    del doc["compute_type"]
+    del doc["beam_size"]
+    with open(path, "w") as f:
+        json.dump(doc, f)
+    assert common.read_words(stem) is not None

@@ -218,7 +218,7 @@ def ts_srt(t):
 
 
 WORDS_SUFFIX = ".dubtitles.words.json"
-WORDS_SCHEMA_VERSION = 1
+WORDS_SCHEMA_VERSION = 2  # schema 2: add decoder identity (model, initial_prompt, compute_type, beam_size)
 
 
 def read_words(stem, rec=None):

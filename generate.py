@@ -145,6 +145,15 @@ def load_glossary():
         f"prompt={'custom' if GLOSS['initial_prompt'] else 'neutral'}",
         flush=True,
     )
+def decoder_identity() -> dict:
+    """What today's process would use to transcribe."""
+    return {
+        "model": MODEL,
+        "initial_prompt": INITIAL_PROMPT,
+        "compute_type": COMPUTE,
+        "beam_size": int(os.environ.get("WHISPER_BEAM_SIZE", "7")),
+    }
+
 
 
 # Plex "local extras" subfolders + creditless/scene clips — never real episodes, often
@@ -400,8 +409,10 @@ def write_words(stem, words, segments, audio_duration, initial_prompt=""):
     doc = {
         "schema_version": WORDS_SCHEMA_VERSION,
         "transcribe_version": TRANSCRIBE_VERSION,
-        "model": os.environ.get("WHISPER_MODEL", ""),
+        "model": MODEL,
         "initial_prompt": initial_prompt,
+        "compute_type": COMPUTE,
+        "beam_size": int(os.environ.get("WHISPER_BEAM_SIZE", "7")),
         "audio_duration": audio_duration,
         "segments": segments,
         "words": words,
