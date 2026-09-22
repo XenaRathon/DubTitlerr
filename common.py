@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 import urllib.parse
 
 import pysubs2
@@ -355,6 +356,86 @@ def stamp_valid(stamp: dict | None, video: str) -> bool:
     tiers — i.e. still muxed, not replaced, and not stale output. Unchanged in meaning
     and signature, so no caller had to move when the single version became two."""
     return not stale_tiers(stamp, video)
+# Stage-status sidecar protocol --------------------------------------------------
+#
+# Every pipeline stage writes its outcome to a single JSON sidecar per episode:
+#   <stem>.dubtitles.stages.json
+#   {"repair": {"outcome": "ok", "detail": "..."}, "signs": {...}, "mux": {...}}
+# Outcomes are restricted to STAGE_OUTCOMES so downstream consumers can branch
+# deterministically. A stage writes its record immediately on return (success or
+# failure) — no batching, no end-of-run flush. A run that dies mid-stage leaves a
+# "crashed" record via merge_pass.sh, so the next sweep sees exactly where it stopped.
+#
+# The "passed" set for failed_stage() is intentionally narrow: only "ok" and the two
+# skip codes ("no-reference" — repair had no fansub anchor; "no-video" — no media file)
+# are non-failures. Everything else (llm-empty, backend-unreachable, extract-error,
+# build-error, timeout, crashed, unwritable) is a genuine failure that blocks mux.
+STAGES_SUFFIX = ".dubtitles.stages.json"
+
+STAGE_OUTCOMES = (
+    "ok",
+    "no-reference",
+    "llm-empty",
+    "backend-unreachable",
+    "extract-error",
+    "build-error",
+    "no-video",
+    "timeout",
+    "crashed",
+    "unwritable",
+)
+
+_PASSED_OUTCOMES = {"ok", "no-reference", "no-video"}
+
+
+def _stages_path(stem: str) -> str:
+    """Path to the stage-status sidecar for a given stem."""
+    return out_for(stem + STAGES_SUFFIX)
+
+
+def write_stage(stem: str, stage: str, outcome: str, detail: str = "") -> None:
+    """Write/replace one stage's record in the sidecar.
+
+    Uses atomic write (temp + os.replace) so a reader never sees a partial file.
+    The sidecar is created if it doesn't exist; existing stages are preserved so
+    the full history of the episode is always available."""
+    if outcome not in STAGE_OUTCOMES:
+        raise ValueError(f"unknown outcome {outcome!r} for stage {stage!r}")
+    path = _stages_path(stem)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    data[stage] = {"outcome": outcome, "at": time.time()}
+    if detail:
+        data[stage]["detail"] = detail
+    # atomic write
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
+def read_stages(stem: str) -> dict:
+    """Read the stage-status sidecar, returning {} if missing or unreadable."""
+    try:
+        with open(_stages_path(stem)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def failed_stage(stem: str) -> str | None:
+    """First stage whose outcome is not in _PASSED_OUTCOMES, or None if all pass.
+
+    Called by merge_pass.sh after all three stages to decide whether to mux or
+    hold. The stage order is fixed (repair -> signs -> mux) so the first failure
+    wins deterministically."""
+    for stage, rec in read_stages(stem).items():
+        if rec.get("outcome") not in _PASSED_OUTCOMES:
+            return stage
+    return None
 
 
 def stale_version_stamp(stamp: dict | None, video: str) -> bool:

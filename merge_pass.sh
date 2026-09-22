@@ -50,11 +50,23 @@ find . -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) 
 	if [ ! -f "$stem.eng.dubtitles.ass" ] && [ -f "$stem.eng.dubtitles.srt" ]; then
 		echo "### assemble $stem"
 		python3 "$APP/repair.py" "$stem.dubtitles.conf.json" </dev/null
+		rc=$?
+		if [ $rc -ne 0 ]; then
+			python3 -c "import common,sys; s='$stem'; sys.exit(0 if 'repair' in common.read_stages(s) else common.write_stage(s, 'repair', 'crashed', 'rc=$rc') or 1)" </dev/null >/dev/null 2>&1 || true
+		fi
 		python3 "$APP/dub_signs_merge.py" "$stem.eng.dubtitles.srt" </dev/null
+		rc=$?
+		if [ $rc -ne 0 ]; then
+			python3 -c "import common,sys; s='$stem'; sys.exit(0 if 'signs' in common.read_stages(s) else common.write_stage(s, 'signs', 'crashed', 'rc=$rc') or 1)" </dev/null >/dev/null 2>&1 || true
+		fi
 	fi
 	for ext in mkv mp4 m4v; do # mux the video (root); embeds + stamps
 		[ -f "$stem.$ext" ] && {
 			python3 "$APP/mux.py" --apply "$stem.$ext" </dev/null
+			rc=$?
+			if [ $rc -ne 0 ]; then
+				python3 -c "import common,sys; s='$stem'; sys.exit(0 if 'mux' in common.read_stages(s) else common.write_stage(s, 'mux', 'crashed', 'rc=$rc') or 1)" </dev/null >/dev/null 2>&1 || true
+			fi
 			break
 		}
 	done
@@ -64,5 +76,25 @@ after=$(find . -type f -name "*.dubtitles.done" | wc -l)
 if [ "$after" -gt "$before" ] && [ -n "${PLEX_TOKEN:-}" ]; then
 	echo "muxed $((after - before)) new episode(s) -> refreshing Plex"
 	python3 "$APP/plex_refresh.py" "watch" </dev/null
+fi
+
+# The per-stem loop above runs in a subshell (piped into `while`), so no
+# counter incremented inside it survives past `done` -- the COMPLETE/
+# INCOMPLETE decision is computed here, after the loop exits, by a fresh scan
+# of every stage sidecar under ROOT rather than from any loop-local state.
+failed_count=$(find . -type f -name "*.dubtitles.stages.json" -print0 |
+	xargs -0 -r python3 -c "
+import common, sys
+n = 0
+for p in sys.argv[1:]:
+    stem = p[: -len(common.STAGES_SUFFIX)]
+    if common.failed_stage(stem) is not None:
+        n += 1
+print(n)
+" 2>/dev/null || echo 0)
+if [ "${failed_count:-0}" -eq 0 ]; then
+	echo "MERGE PASS COMPLETE"
+else
+	echo "MERGE PASS INCOMPLETE: $failed_count episodes with a failed stage"
 fi
 echo "MERGE_PASS_DONE new=$((after - before)) total_done=$after $(date)"

@@ -39,7 +39,7 @@ import tempfile
 
 import pysubs2
 
-from common import MEDIA_GID, MEDIA_UID, find_video, log, out_for, signs_sub_streams
+from common import MEDIA_GID, MEDIA_UID, find_video, log, out_for, signs_sub_streams, write_stage
 from common import extract_sub as extract
 
 ROOTS = os.environ.get("MERGE_ROOTS", "/data/Media/Anime Library").split(":")
@@ -289,13 +289,25 @@ def process_one(srt):
     out_ass = out_for(stem + ".eng.dubtitles.ass")
     video = find_video(stem)
     if not video:
+        write_stage(stem, "signs", "no-video")
         return "no-video"
     try:
         res, signs, dub = build(video, srt, out_ass)
     except Exception as e:
         log("build error:", srt, e)
+        write_stage(stem, "signs", "build-error", str(e))
         return "build-error"
+    if res == "no-signs":
+        # genuinely signs-free episode -- not a failure, mux proceeds on the
+        # dialogue-only .srt normally
+        write_stage(stem, "signs", "ok", "no-signs")
+        return "no-signs"
     if res != "ok" or dub == 0:
+        # build() reported a non-"ok"/non-"no-signs" result, or landed zero dub
+        # lines -- both are suspicious enough to fail closed rather than silently
+        # promote a demoted/empty output to "this episode is done"
+        detail = res if res != "ok" else "empty-dub-track"
+        write_stage(stem, "signs", "build-error", detail)
         return res if res != "ok" else "empty"
     try:
         os.chown(out_ass, MEDIA_UID, MEDIA_GID)
@@ -306,6 +318,7 @@ def process_one(srt):
     except OSError:
         pass
     log(f"  signs/songs/credits kept={signs}  dub lines={dub}")
+    write_stage(stem, "signs", "ok")
     return "merged"
 
 

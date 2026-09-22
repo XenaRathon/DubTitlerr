@@ -48,7 +48,18 @@ import subprocess
 import time
 
 import unresolved
-from common import MEDIA_GID, MEDIA_UID, STAMP_SUFFIX, TRACK_NAME, is_our_track, log, read_stamp, stamp_valid, write_stamp
+from common import (
+    MEDIA_GID,
+    MEDIA_UID,
+    STAMP_SUFFIX,
+    TRACK_NAME,
+    is_our_track,
+    log,
+    read_stages,
+    read_stamp,
+    stamp_valid,
+    write_stamp,
+)
 
 # Imported as a NAME so "which show is this path in" has exactly one definition, shared
 # with the decision store. A second answer here would gate one show while storing verdicts
@@ -434,6 +445,15 @@ def process(orig, apply):
     src = sub_source(stem)
     if src is None:
         return "no-sub"
+    if src.endswith(SRT_SUFFIX):
+        # sub_source() falls back from .ass to .srt with no way to tell "no
+        # signs ever existed" from "the signs build just failed" -- a failed
+        # signs stage must never let the demoted dialogue-only .srt get
+        # stamped as done, or a transient signs regression looks identical to
+        # a genuinely signs-free episode forever after.
+        signs_outcome = read_stages(stem).get("signs", {}).get("outcome")
+        if signs_outcome not in (None, "ok", "no-reference", "no-video"):
+            return "signs-regression-refused"
     if stamp_valid(read_stamp(stamp), orig):
         return "already-muxed"  # stat-only, version-aware stamp is the ONLY guard
     # AFTER the stamp check, not before it (the plan sketched the reverse). An episode that
@@ -461,22 +481,27 @@ def process(orig, apply):
             return "verify-" + res
         os.chown(out, st.st_uid or MEDIA_UID, st.st_gid or MEDIA_GID)
         _finalize(out, final)  # write the muxed mkv
-        if os.path.abspath(orig) != os.path.abspath(final) and os.path.exists(orig):
-            os.remove(orig)  # mp4->mkv: drop the OLD library link (partner survives)
         try:
             write_stamp(stamp, final, stages=_stages_ran(stem, src))
-            # stamp BEFORE removing sidecars (crash-safe skip)
+            # stamp BEFORE removing the original source (crash-safe: a crash here
+            # leaves both orig and final on disk, re-verified next sweep instead
+            # of silently losing the only record that this file is done)
         except OSError as e:
             # The remux already landed, but the stamp is now the ONLY record that this
             # file is done (the ffprobe backstop is gone). Without a stamp the next sweep
-            # redoes the whole multi-GB mkvmerge — every sweep, forever. Keep the sidecars
-            # so a retry can still succeed, and surface it as its own status rather than
-            # letting it read as a normal "muxed" line.
+            # redoes the whole multi-GB mkvmerge — every sweep, forever. Roll back `final`
+            # so the original survives untouched and the next sweep retries cleanly.
+            try:
+                os.remove(final)
+            except OSError:
+                pass
             log(
                 f"  ERROR: muxed OK but stamp write FAILED ({e}) — {os.path.basename(final)} "
                 f"will be re-muxed every sweep until the stamp can be written"
             )
             return "stamp-write-failed"
+        if os.path.abspath(orig) != os.path.abspath(final) and os.path.exists(orig):
+            os.remove(orig)  # mp4->mkv: drop the OLD library link (partner survives)
         for suff in (ASS_SUFFIX, SRT_SUFFIX):
             try:
                 os.remove(stem + suff)
