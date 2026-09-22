@@ -57,3 +57,13 @@ def test_no_shipped_source_file_defaults_to_an_mdns_hostname():
                 if MDNS.search(line):
                     offenders.setdefault(path, []).append(n)
     assert not offenders, f"mDNS hostnames in shipped source: {offenders}"
+def test_the_wiki_discloses_when_repair_unanchored_was_deployed():
+    """The wiki used to say 'do not use REPAIR_UNANCHORED' / 'unset -- closed' while the
+    reference install had quietly turned it on months earlier (common.py's v10 note,
+    2026-09-06) -- exactly the silent-drift failure this suite exists to catch, just in
+    prose instead of code."""
+    for path in _tracked("docs/wiki/How-To-Guides.md", "docs/wiki/Reference.md"):
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        assert "2026-09-06" in text, f"{path} does not disclose the REPAIR_UNANCHORED deploy date"
+
