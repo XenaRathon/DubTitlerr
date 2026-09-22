@@ -12,6 +12,7 @@
 #      MIN_FREE_GB, KEEP_LANGS.
 ROOT="${MERGE_ROOTS:-/media/Anime Library}"
 APP="${APP_DIR:-/scripts}"
+export PYTHONPATH="$APP${PYTHONPATH:+:$PYTHONPATH}"  # so inline `python3 -c "import common"` snippets resolve
 command -v ffmpeg >/dev/null 2>&1 || {
 	echo "FATAL: ffmpeg not found — image is misbuilt"
 	exit 1
