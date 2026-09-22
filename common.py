@@ -221,14 +221,22 @@ WORDS_SUFFIX = ".dubtitles.words.json"
 WORDS_SCHEMA_VERSION = 2  # schema 2: add decoder identity (model, initial_prompt, compute_type, beam_size)
 
 
-def read_words(stem, rec=None):
+def read_words(stem, rec=None, expect: dict | None = None):
     """The persisted word list, or None when it cannot be used -- never an exception.
 
     Every unusable state is COUNTED rather than swallowed, because the failure mode this
     guards is silent: a sidecar that is never found looks exactly like an episode that
     simply needs transcribing, and would re-transcribe forever while reporting healthy.
     Read through out_for() to match write_words -- following one convention on write and
-    the other on read is precisely that silent miss."""
+    the other on read is precisely that silent miss.
+
+    "expect"", when given, is generate.decoder_identity() -- what today's process would
+    use to transcribe. A stored field that IS RECORDED and DIFFERS invalidates the whole
+    doc (words_config_mismatch): replaying it would serve a transcript decoded under
+    different settings. A field the sidecar does not carry at all -- every schema-1
+    file, or "model" written from an unset WHISPER_MODEL env as "" -- is UNKNOWN, not a
+    mismatch (words_config_unknown), and the doc is still returned: the 366 live
+    sidecars predate this check and must keep being served."""
     path = out_for(stem + WORDS_SUFFIX)
     try:
         with open(path) as f:
@@ -251,6 +259,21 @@ def read_words(stem, rec=None):
         if rec:
             rec.count("words_missing")
         return None
+    if expect:
+        mismatched = False
+        unknown = False
+        for field, want in expect.items():
+            got = doc.get(field)
+            if got is None or got == "":
+                unknown = True
+            elif got != want:
+                mismatched = True
+        if unknown and rec:
+            rec.count("words_config_unknown")
+        if mismatched:
+            if rec:
+                rec.count("words_config_mismatch")
+            return None
     if rec:
         rec.count("words_reused")
     return doc
@@ -299,17 +322,6 @@ def read_stamp(path: str) -> dict | None:
         return None
 
 
-def stamp_version(stamp: dict) -> int | None:
-    """The stamp's pipeline version. A missing key predates versioning -> GRANDFATHER_VERSION.
-    ``None`` for a value that can't be read as an integer (hand-edited/corrupt stamp) —
-    callers treat that as "not valid", never as an exception: this runs outside mux's
-    try/except, so a single bad sidecar must not abort a whole sweep."""
-    try:
-        return int(stamp.get("version", GRANDFATHER_VERSION))
-    except (TypeError, ValueError):
-        return None
-
-
 def _tier_version(stamp: dict, key: str) -> int | None:
     """One tier's version out of a stamp, falling back to the legacy single "version"
     key for the 813 stamps written before tiers existed. ``None`` for a value that
@@ -328,7 +340,12 @@ def stale_tiers(stamp: dict | None, video: str) -> set[str]:
 
     A missing stamp, an unmuxed one, or one describing a DIFFERENT file (size+mtime)
     is stale in both tiers: there is nothing to reuse. Otherwise each tier is compared
-    independently, so a TEXT_VERSION bump costs CPU minutes instead of GPU hours."""
+    independently, so a TEXT_VERSION bump costs CPU minutes instead of GPU hours.
+
+    Assumes size+mtime is a reliable proxy for content: a same-size, same-mtime
+    replacement of the source video is treated as the unchanged file it appears to be.
+    This is an accepted default, not upgraded to a content hash (owner decision,
+    confirmed at sprint 010 open)."""
     if not stamp or not stamp.get("muxed") or not _stamp_matches_file(stamp, video):
         return {"transcribe", "text"}
     stale = set()
@@ -356,6 +373,8 @@ def stamp_valid(stamp: dict | None, video: str) -> bool:
     tiers — i.e. still muxed, not replaced, and not stale output. Unchanged in meaning
     and signature, so no caller had to move when the single version became two."""
     return not stale_tiers(stamp, video)
+
+
 # Stage-status sidecar protocol --------------------------------------------------
 #
 # Every pipeline stage writes its outcome to a single JSON sidecar per episode:

@@ -1,3 +1,7 @@
+**Status: resolved differently (2026-09-22).** The guard shipped, but not as the edit-distance check this issue proposes. `repair.invents_name(orig, new, gloss)` (repair.py:418) refuses a repair that introduces a capitalised, glossary-shaped token found in neither the glossary nor the original -- membership only, no edit distance, by deliberate design (repair.py:437-438). `repair.substitutes_a_vouched_name(orig, new, gloss)` (repair.py:474) covers the phonetic half this issue asked for: it refuses an UNKNOWN -> KNOWN substitution unless `jellyfish.jaro_winkler_similarity` clears `PHONETIC_MIN` (repair.py:401, `REPAIR_PHONETIC_MIN` env, default `0.75`). Both are live and tested; no further work is planned against this issue.
+
+---
+
 ## Problem
 
 After the prompt restructure (`a4f7dd2`), `qwen3.5:9b` no longer pastes glossary names over correct text — but it still **invents phonetic names**, which prompt tuning has not fixed.
