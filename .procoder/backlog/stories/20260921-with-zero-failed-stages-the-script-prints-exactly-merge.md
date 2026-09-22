@@ -3,7 +3,7 @@
 Status: open
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture
 
 ## Description
 
@@ -16,9 +16,8 @@ Delivered by Task 7 of `.procoder/plans/v0-2-0-hardening.md` (sprint 011); the t
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] With zero failed stages, the script prints exactly `MERGE PASS COMPLETE`.
+- [x] With zero failed stages, the script prints exactly `MERGE PASS COMPLETE`.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+`python3 -m pytest tests/test_merge_pass.py::test_zero_failed_stages_prints_exactly_merge_pass_complete -v` -- PASSED. merge_pass.sh run end-to-end over one fully-passing stage fixture prints "MERGE PASS COMPLETE" and never "MERGE PASS INCOMPLETE".

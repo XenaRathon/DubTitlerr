@@ -3,7 +3,7 @@
 Status: open
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture
 
 ## Description
 
@@ -16,9 +16,8 @@ Delivered by Task 8 of `.procoder/plans/v0-2-0-hardening.md` (sprint 011); the t
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] Given a prior `.ass` sidecar containing at least one non-dialogue (signs) event, a forced `dub_signs_merge.py` failure (`"build-error"` or `"no-video"`) makes `mux.process()` refuse to mux the dialogue-only `.srt` and return a distinct non-muxing status instead of stamping the demoted output as done.
+- [x] Given a prior `.ass` sidecar containing at least one non-dialogue (signs) event, a forced `dub_signs_merge.py` failure (`"build-error"` or `"no-video"`) makes `mux.process()` refuse to mux the dialogue-only `.srt` and return a distinct non-muxing status instead of stamping the demoted output as done.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+`python3 -m pytest tests/test_mux.py::test_signs_regression_refused_when_signs_stage_failed_and_only_srt_remains tests/test_mux.py::test_signs_regression_refused_for_no_video_outcome_too -v` -- both PASSED. With only a dialogue-only .srt present and a recorded signs stage outcome of "build-error" or "no-video", mux.process() returns "signs-regression-refused" and never stamps the file as done.

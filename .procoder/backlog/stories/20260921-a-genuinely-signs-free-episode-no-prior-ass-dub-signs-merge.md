@@ -3,7 +3,7 @@
 Status: open
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture
 
 ## Description
 
@@ -16,9 +16,8 @@ Delivered by Task 8 of `.procoder/plans/v0-2-0-hardening.md` (sprint 011); the t
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] A genuinely signs-free episode (no prior `.ass`, `dub_signs_merge.py` returns `"no-signs"`) mux proceeds normally under the identical forced-failure test harness — the two fixtures produce different mux outcomes.
+- [x] A genuinely signs-free episode (no prior `.ass`, `dub_signs_merge.py` returns `"no-signs"`) mux proceeds normally under the identical forced-failure test harness — the two fixtures produce different mux outcomes.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+`python3 -m pytest tests/test_mux.py::test_genuinely_signs_free_episode_muxes_normally -v` -- PASSED. Under the identical harness, a signs stage outcome of "ok" (detail "no-signs", i.e. dub_signs_merge.py returned "no-signs") lets mux.process() proceed and return "muxed" -- a different outcome from the forced-failure fixtures above, proving the guard distinguishes the two.

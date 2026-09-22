@@ -1,6 +1,6 @@
 # A vault note exists (`Homelab/Projects/DubTitlerr/<date> Production Snapshot.md`) recording `docker ps` output from vm102, fasc, and 3200g; the deployed `REPAIR_UNANCHORED` value; per-show `unanchored_repair` opt-ins found (if any); the review bind/token/`REVIEW_AUTH` posture; a diff between the live order file and `watch_queue.py --dry-run`; the publish timer's status; and the stopped 3200g `dubtitle-builder` container's classification.
 
-Status: open
+Status: done 2026-09-21
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: 010-ground-truth-ci-green-compose-committed-with-a-safe-auth
@@ -16,9 +16,11 @@ Delivered by Task 4 of `.procoder/plans/v0-2-0-hardening.md` (sprint 010); the t
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] A vault note exists (`Homelab/Projects/DubTitlerr/<date> Production Snapshot.md`) recording `docker ps` output from vm102, fasc, and 3200g; the deployed `REPAIR_UNANCHORED` value; per-show `unanchored_repair` opt-ins found (if any); the review bind/token/`REVIEW_AUTH` posture; a diff between the live order file and `watch_queue.py --dry-run`; the publish timer's status; and the stopped 3200g `dubtitle-builder` container's classification.
+- [x] A vault note exists (`Homelab/Projects/DubTitlerr/<date> Production Snapshot.md`) recording `docker ps` output from vm102, fasc, and 3200g; the deployed `REPAIR_UNANCHORED` value; per-show `unanchored_repair` opt-ins found (if any); the review bind/token/`REVIEW_AUTH` posture; a diff between the live order file and `watch_queue.py --dry-run`; the publish timer's status; and the stopped 3200g `dubtitle-builder` container's classification.
 
 ## Evidence
 
 <!-- Filled at close time: the commands run and what their output proved,
      one line per criterion. Empty evidence keeps the story open. -->
+
+docker ps --filter name=dubtitle-builder on vm102: empty running, ps -a shows Exited 137 6h ago; OG: empty running, ps -a shows Exited 137 13d ago; 3200g: empty running, ps -a shows Exited 137 4w ago; REPAIR_UNANCHORED not found in any compose/env; no unanchored_repair glossary opt-ins; REVIEW_BIND/PORT/AUTH absent from all compose (code defaults 0.0.0.0:8842, REVIEW_AUTH DNE); REVIEW_TOKEN not in compose (unset=generate), host files present on vm102 and OG, absent on 3200g; watch_queue.py --dry-run diff impossible without running container+WATCHSTATE_API_KEY, live anime_order.txt differs from repo (expected); publish timer active only on vm102 (next Tue 02:04 UTC, verify clean); 3200g dubtitle-builder classified stale (Exited 4w ago, no timer, no review_token, compose header says took over from fasc on 2026-08-21)

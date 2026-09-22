@@ -3,7 +3,7 @@
 Status: open
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture
 
 ## Description
 
@@ -16,9 +16,8 @@ Delivered by Task 7 of `.procoder/plans/v0-2-0-hardening.md` (sprint 011); the t
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] With two fixture episodes, one forced to a failed stage, the script prints `MERGE PASS INCOMPLETE: 1 episodes with a failed stage`; the incomplete count is computed by scanning `.dubtitles.stages.json` files after the loop exits, not from a variable set inside the pipe-subshell loop (`merge_pass.sh:48-60`).
+- [x] With two fixture episodes, one forced to a failed stage, the script prints `MERGE PASS INCOMPLETE: 1 episodes with a failed stage`; the incomplete count is computed by scanning `.dubtitles.stages.json` files after the loop exits, not from a variable set inside the pipe-subshell loop (`merge_pass.sh:48-60`).
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+`python3 -m pytest tests/test_merge_pass.py::test_one_failed_stage_of_two_episodes_prints_incomplete_with_count -v` -- PASSED. merge_pass.sh run end-to-end (real script, stubbed mkvmerge) over two pre-seeded .dubtitles.stages.json fixtures (one all-ok, one repair=backend-unreachable) prints exactly "MERGE PASS INCOMPLETE: 1 episodes with a failed stage", computed by the post-loop find|xargs scan, not a subshell-local counter.

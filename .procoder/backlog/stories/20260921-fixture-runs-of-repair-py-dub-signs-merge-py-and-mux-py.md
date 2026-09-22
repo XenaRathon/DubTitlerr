@@ -3,7 +3,7 @@
 Status: open
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture
 
 ## Description
 
@@ -16,9 +16,8 @@ Delivered by Task 6 of `.procoder/plans/v0-2-0-hardening.md` (sprint 011); the t
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] Fixture runs of `repair.py`, `dub_signs_merge.py`, and `mux.py` that force `extract-error`/`build-error`/`crashed`/`timeout`/ `unwritable` each leave a matching entry in `<stem>.dubtitles.stages.json` — checked by reading the sidecar, not just the function's return string.
+- [x] Fixture runs of `repair.py`, `dub_signs_merge.py`, and `mux.py` that force `extract-error`/`build-error`/`crashed`/`timeout`/ `unwritable` each leave a matching entry in `<stem>.dubtitles.stages.json` — checked by reading the sidecar, not just the function's return string.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+`python3 -m pytest tests/test_repair.py::test_a_dead_backend_refuses_the_episode_instead_of_rebuilding_raw_asr tests/test_dub_signs_merge.py::test_process_one_no_video_writes_matching_stage_record tests/test_dub_signs_merge.py::test_process_one_build_error_writes_matching_stage_record tests/test_mux.py::test_process_reports_a_failed_stamp_write_and_keeps_the_sidecar -v` -- all PASSED. repair.py writes backend-unreachable/no-reference/no-video/ok; dub_signs_merge.py writes no-video/build-error/ok (detail=no-signs); mux.py writes unwritable on a failed stamp write -- each read back from <stem>.dubtitles.stages.json via common.read_stages(), not the function's return string.
