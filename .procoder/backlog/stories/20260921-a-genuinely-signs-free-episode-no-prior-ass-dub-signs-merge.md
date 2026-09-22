@@ -1,6 +1,6 @@
 # A genuinely signs-free episode (no prior `.ass`, `dub_signs_merge.py` returns `"no-signs"`) mux proceeds normally under the identical forced-failure test harness — the two fixtures produce different mux outcomes.
 
-Status: open
+Status: done 2026-09-22
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture

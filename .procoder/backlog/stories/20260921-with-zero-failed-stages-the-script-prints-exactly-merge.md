@@ -1,6 +1,6 @@
 # With zero failed stages, the script prints exactly `MERGE PASS COMPLETE`.
 
-Status: open
+Status: done 2026-09-22
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture

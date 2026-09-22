@@ -1,6 +1,6 @@
 # Given a prior `.ass` sidecar containing at least one non-dialogue (signs) event, a forced `dub_signs_merge.py` failure (`"build-error"` or `"no-video"`) makes `mux.process()` refuse to mux the dialogue-only `.srt` and return a distinct non-muxing status instead of stamping the demoted output as done.
 
-Status: open
+Status: done 2026-09-22
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture

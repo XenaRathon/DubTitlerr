@@ -1,6 +1,6 @@
 # With two fixture episodes, one forced to a failed stage, the script prints `MERGE PASS INCOMPLETE: 1 episodes with a failed stage`; the incomplete count is computed by scanning `.dubtitles.stages.json` files after the loop exits, not from a variable set inside the pipe-subshell loop (`merge_pass.sh:48-60`).
 
-Status: open
+Status: done 2026-09-22
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture

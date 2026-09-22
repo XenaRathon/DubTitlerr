@@ -3,7 +3,7 @@
 Status: open
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 012-provenance-and-policy-decoder-identity-in-words-json
 
 ## Description
 

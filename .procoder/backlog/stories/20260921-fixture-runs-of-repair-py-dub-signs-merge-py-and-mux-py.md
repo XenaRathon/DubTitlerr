@@ -1,6 +1,6 @@
 # Fixture runs of `repair.py`, `dub_signs_merge.py`, and `mux.py` that force `extract-error`/`build-error`/`crashed`/`timeout`/ `unwritable` each leave a matching entry in `<stem>.dubtitles.stages.json` — checked by reading the sidecar, not just the function's return string.
 
-Status: open
+Status: done 2026-09-22
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture

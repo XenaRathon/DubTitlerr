@@ -1,6 +1,6 @@
 # A forced `LLM_UNREACHABLE` path in `repair.py` (`repair.py:853`) results in `write_stage(stem, "repair", "backend-unreachable")`, never `"llm-empty"` — a test asserts the two outcomes are never produced by the same code path.
 
-Status: open
+Status: done 2026-09-22
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture

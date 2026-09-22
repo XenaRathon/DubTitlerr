@@ -1,6 +1,6 @@
 # `common.failed_stage(stem)` returns `None` when every recorded outcome is in `{"ok", "no-reference", "no-video"}`, and returns the first offending stage name otherwise.
 
-Status: open
+Status: done 2026-09-22
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture

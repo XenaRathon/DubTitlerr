@@ -1,6 +1,6 @@
 # An MKV source (`orig == final`) never calls `os.remove` on the original, asserted by a fixture where `orig` and `final` are the same path.
 
-Status: open
+Status: done 2026-09-22
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture

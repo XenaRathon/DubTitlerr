@@ -1,6 +1,6 @@
 # `README.md` states the original MP4/M4V container is deleted only after a verified, stamped remux.
 
-Status: open
+Status: done 2026-09-22
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture

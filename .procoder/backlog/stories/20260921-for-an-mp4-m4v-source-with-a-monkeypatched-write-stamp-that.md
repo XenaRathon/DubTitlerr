@@ -1,6 +1,6 @@
 # For an MP4/M4V source with a monkeypatched `write_stamp` that raises `OSError`, `final` (the new mkv) is removed and `orig` still exists on disk afterward; the return value signals a retryable state distinct from today's `"stamp-write-failed"`-with-`orig`-already-gone.
 
-Status: open
+Status: done 2026-09-22
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture

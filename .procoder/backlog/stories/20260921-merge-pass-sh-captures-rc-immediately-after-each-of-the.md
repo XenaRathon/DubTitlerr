@@ -1,6 +1,6 @@
 # `merge_pass.sh` captures `rc=$?` immediately after each of the three `python3` invocations (repair.py, dub_signs_merge.py, mux.py) and writes a `"crashed"` stage record via `python3 -c` when `rc != 0` and no stage record exists for that stem.
 
-Status: open
+Status: done 2026-09-22
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture
