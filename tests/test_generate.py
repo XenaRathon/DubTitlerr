@@ -1730,9 +1730,10 @@ def test_media_duration_timeout_comes_from_ffprobe_timeout(monkeypatch):
 
 
 def test_ffmpeg_timeout_defaults_match_the_pre_override_literals():
-    """Breaks if adding the override silently changed production behaviour. An unset
-    env must reproduce exactly the timeouts that were compiled in before."""
-    assert generate.FFMPEG_TIMEOUT == 600
+    """Breaks if the shipped default silently changes again. Raised 600 -> 1800
+    (v0.2.0, storage/host checklist item 14): a 556 MB episode measured on the NAS
+    failed at 600s. FFPROBE_TIMEOUT (a much smaller read) is untouched."""
+    assert generate.FFMPEG_TIMEOUT == 1800
     assert generate.FFPROBE_TIMEOUT == 60
 
 

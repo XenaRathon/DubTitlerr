@@ -29,8 +29,10 @@ Env:
   MODEL_DIR       default /subgen/models  (reuse subgen's downloaded model)
   WHISPER_AUDIO_FILTER  default highpass=f=80,compand=... (V2 A8; "" disables it, the
                   pre-A8 ffmpeg command)
-  FFMPEG_TIMEOUT  default 600  (seconds; the wav decode in extract_wav. Raise it on a
-                  slow NFS mount -- a timeout here fails the episode)
+  FFMPEG_TIMEOUT  default 1800  (seconds; the wav decode in extract_wav. Raised from
+                  600 -- a 556 MB episode failed at 600s on the measured NAS read
+                  rate. Raise it further on a slower mount; a timeout here fails
+                  the episode)
   FFPROBE_TIMEOUT default 60   (seconds; both ffprobe calls -- audio-stream pick and
                   duration. The stream pick reads the same remote file as the decode)
   MEDIA_UID/GID   default 1000/100
@@ -114,7 +116,7 @@ AUDIO_FILTER = os.environ.get(
 # on a slow NFS mount with no way to raise the ceiling short of editing this file. The
 # probe budget is the tighter of the two and reads the SAME remote file the decode does,
 # so it is overridable for the same reason.
-FFMPEG_TIMEOUT = int(os.environ.get("FFMPEG_TIMEOUT", "600"))
+FFMPEG_TIMEOUT = int(os.environ.get("FFMPEG_TIMEOUT", "1800"))
 FFPROBE_TIMEOUT = int(os.environ.get("FFPROBE_TIMEOUT", "60"))
 AUDIO_START_THRESHOLD = 0.05  # ignore codec pre-skip and sub-frame timestamp noise
 UID = int(os.environ.get("MEDIA_UID", "1000"))

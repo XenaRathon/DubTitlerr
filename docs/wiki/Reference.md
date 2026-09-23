@@ -92,7 +92,7 @@ Per **show** rather than per episode: `.lastrun.json` and the glossary's
 | `SKIP_IF_SRT`                        | `1`              | Skip an episode that already has a dubtitle sidecar                                            |
 | `SHOW_NAME`                          | _(empty)_        | Override the show name derived from the path                                                   |
 | `GLOSSARY_FILE`                      | _(empty)_        | Override the glossary resolved from the show                                                   |
-| `FFMPEG_TIMEOUT` / `FFPROBE_TIMEOUT` | `600` / `60`     | Seconds                                                                                        |
+| `FFMPEG_TIMEOUT` / `FFPROBE_TIMEOUT` | `1800` / `60`    | Seconds                                                                                        |
 
 ### Repair
 
