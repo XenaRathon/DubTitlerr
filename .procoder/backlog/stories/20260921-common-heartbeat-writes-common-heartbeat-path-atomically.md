@@ -1,9 +1,9 @@
 # `common.heartbeat(...)` writes `common.HEARTBEAT_PATH` atomically; `common.read_heartbeat()` returns the same fields back.
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 013-v0-2-0-work
 
 ## Description
 
@@ -16,9 +16,10 @@ Delivered by Task 16 of `.procoder/plans/v0-2-0-hardening.md` (sprint 013); the 
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `common.heartbeat(...)` writes `common.HEARTBEAT_PATH` atomically; `common.read_heartbeat()` returns the same fields back.
+- [x] `common.heartbeat(...)` writes `common.HEARTBEAT_PATH` atomically; `common.read_heartbeat()` returns the same fields back.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- `common.py`: `HEARTBEAT_PATH` = env `HEARTBEAT_PATH` default `/config/heartbeat.json`; `heartbeat(**fields)` merges with existing fields, writes temp + `os.replace()`; `read_heartbeat()` returns dict or None
+- `tests/test_common.py`: `test_heartbeat_merges_rather_than_replaces`, `test_heartbeat_write_is_atomic_no_tmp_file_left_behind` pass
+- `procoder check common.py` passes

@@ -1,9 +1,9 @@
 # The token box JS sets a `dubtitlerr_token` cookie next to the localStorage write; `GET /` and `GET /shared` with no header and no cookie return 200 with `needs-token` in the body and no stem from a monkeypatched `known_stems`; with the cookie they render the full page.
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 013-v0-2-0-work
 
 ## Description
 
@@ -16,9 +16,10 @@ Delivered by Task 14 and 17 of `.procoder/plans/v0-2-0-hardening.md` (sprint 013
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] The token box JS sets a `dubtitlerr_token` cookie next to the localStorage write; `GET /` and `GET /shared` with no header and no cookie return 200 with `needs-token` in the body and no stem from a monkeypatched `known_stems`; with the cookie they render the full page.
+- [x] The token box JS sets a `dubtitlerr_token` cookie next to the localStorage write; `GET /` and `GET /shared` with no header and no cookie return 200 with `needs-token` in the body and no stem from a monkeypatched `known_stems`; with the cookie they render the full page.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- Token box JS sets `document.cookie = "dubtitlerr_token=" + token + "; path=/"`
+- `render_page()` checks cookie in addition to header/localStorage
+- Tests in `tests/test_review_server_http.py` pass

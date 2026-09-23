@@ -1,9 +1,9 @@
 # `GET /healthz` returns 503 independently for each of: a stale `last_sweep_end` (> `3 * RESCAN_INTERVAL`), `roots_readable=False`, and `order_file_present=False`; returns 200 otherwise; the response body never contains a filesystem path.
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 013-v0-2-0-work
 
 ## Description
 
@@ -16,9 +16,10 @@ Delivered by Task 16 of `.procoder/plans/v0-2-0-hardening.md` (sprint 013); the 
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `GET /healthz` returns 503 independently for each of: a stale `last_sweep_end` (> `3 * RESCAN_INTERVAL`), `roots_readable=False`, and `order_file_present=False`; returns 200 otherwise; the response body never contains a filesystem path.
+- [x] `GET /healthz` returns 503 independently for each of: a stale `last_sweep_end` (> `3 * RESCAN_INTERVAL`), `roots_readable=False`, and `order_file_present=False`; returns 200 otherwise; the response body never contains a filesystem path.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- `review_server.py:route()` added `/healthz` handler checking staleness, roots_readable, order_file_present
+- Returns 503 `{"error": "service unavailable"}` or 200 `{"status": "ok"}`
+- Tests in `tests/test_review_server_http.py` pass

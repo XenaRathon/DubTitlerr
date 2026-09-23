@@ -1,9 +1,9 @@
 # Opening `MAX_CONCURRENT + 1` simultaneous connections results in the extra connection being closed by the server rather than queued indefinitely.
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 013-v0-2-0-work
 
 ## Description
 
@@ -16,9 +16,8 @@ Delivered by Task 15 of `.procoder/plans/v0-2-0-hardening.md` (sprint 013); the 
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] Opening `MAX_CONCURRENT + 1` simultaneous connections results in the extra connection being closed by the server rather than queued indefinitely.
+- [x] Opening `MAX_CONCURRENT + 1` simultaneous connections results in the extra connection being closed by the server rather than queued indefinitely.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- `tests/test_review_server_http.py::test_opening_max_concurrent_plus_one_connections_results_in_extra_being_closed` — opens MAX_CONCURRENT+1 connections, verifies extra one is closed. Tests pass.

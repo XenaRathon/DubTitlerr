@@ -38,6 +38,41 @@ MEDIA_GID = int(os.environ.get("MEDIA_GID", "100"))
 SIDECAR_MODE = 0o664
 os.umask(0o002)
 
+HEARTBEAT_PATH = os.environ.get("HEARTBEAT_PATH", "/config/heartbeat.json")
+
+
+def heartbeat(**fields):
+    """Write a heartbeat JSON document atomically to HEARTBEAT_PATH, merging with existing fields."""
+    dir_name = os.path.dirname(HEARTBEAT_PATH)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        dir=dir_name,
+        prefix="heartbeat.",
+        suffix=".tmp",
+        delete=False,
+    ) as f:
+        # Read existing content to merge
+        try:
+            with open(HEARTBEAT_PATH) as existing:
+                existing_data = json.load(existing)
+        except (OSError, ValueError):
+            existing_data = {}
+        # Merge existing with new fields
+        existing_data.update(fields)
+        json.dump(existing_data, f)
+        temp_path = f.name
+    os.replace(temp_path, HEARTBEAT_PATH)
+
+
+def read_heartbeat():
+    """Read the heartbeat JSON document, returning a dict or None if missing/invalid."""
+    try:
+        with open(HEARTBEAT_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
 # OUTPUT_ROOT: write sidecars/output files to this branch path instead of next to the
 # source media, so writes land on a disk with space (mergerfs unifies branches, so the
 # file still shows next to the source in the pool view). READS still use MEDIA_ROOT.

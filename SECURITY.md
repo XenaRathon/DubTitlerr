@@ -27,10 +27,17 @@ the same trust boundary as the Plex/Jellyfin server it sits next to.
   to expose the port beyond your LAN (a reverse proxy, a port-forward, a VPN with other
   members). If you do that, put your own auth in front of it instead.
 
-GET routes (the episode/queue listing) are unauthenticated by design — they disclose show
-names and episode counts, the same information any DLNA browse or Plex share on the same
-network already exposes. Only the write routes (recording a verdict, applying decisions)
-require the token.
+GET routes on `/api/` paths (e.g. `/api/episodes`, `/api/episode`, `/api/shared`) require the
+token and return 401 without it. Rendered pages (`/`, `/index.html`, `/shared`) are gated the
+same way through a `dubtitlerr_token` cookie the token box sets alongside its localStorage
+write — without a valid header or cookie they render only the token box, never a stem or
+repair text. `/healthz` stays open and unauthenticated for liveness checks; its response body
+never contains a filesystem path. Write routes (recording a verdict, applying decisions)
+require the token as before.
+
+The `0.0.0.0` bind above is a **deliberate choice**, not an oversight: it was confirmed as the
+correct default at sprint 010's opening (v0.2.0 hardening) alongside the auth-hardening work
+in this section, on the same trusted-LAN assumption stated at the top of this section.
 
 ## Scope
 

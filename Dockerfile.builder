@@ -58,6 +58,7 @@ RUN python3 -c "import os; from faster_whisper import WhisperModel; WhisperModel
 # [S-7] the review page. EXPOSE documents it; publishing still needs -p on docker run,
 # which the README's example now carries.
 EXPOSE 8842
+HEALTHCHECK --interval=5m --timeout=10s --start-period=10m --retries=3 CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8842/healthz', timeout=5).status==200 else 1)"
 
 WORKDIR /app
 # NOTE (V2-U3 B7/B9): common.py was missing from this COPY list since V1 introduced it --

@@ -1,9 +1,9 @@
 # A test starts `review_server` on port 0 in a background thread (real socket): `GET /api/episodes` with no token → 401; with the correct token → 200.
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 013-v0-2-0-work
 
 ## Description
 
@@ -16,9 +16,8 @@ Delivered by Task 15 of `.procoder/plans/v0-2-0-hardening.md` (sprint 013); the 
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] A test starts `review_server` on port 0 in a background thread (real socket): `GET /api/episodes` with no token → 401; with the correct token → 200.
+- [x] A test starts `review_server` on port 0 in a background thread (real socket): `GET /api/episodes` with no token → 401; with the correct token → 200.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- `tests/test_review_server_http.py::test_a_real_socket_get_api_episodes_gated_by_token` — starts server on port 0, monkeypatches `REVIEW_TOKEN`, sends GET `/api/episodes` with no token → 401, with token → 200. `python3 -m pytest tests/test_review_server_http.py -v` passes.

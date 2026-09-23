@@ -1,9 +1,9 @@
 # `review_server.authorised("GET", None)` returns `False` for a path starting with `/api/` and `True` for `/`, `/index.html`, `/shared`, `/healthz`.
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 013-v0-2-0-work
 
 ## Description
 
@@ -16,9 +16,10 @@ Delivered by Task 14 and 17 of `.procoder/plans/v0-2-0-hardening.md` (sprint 013
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `review_server.authorised("GET", None)` returns `False` for a path starting with `/api/` and `True` for `/`, `/index.html`, `/shared`, `/healthz`.
+- [x] `review_server.authorised("GET", None)` returns `False` for a path starting with `/api/` and `True` for `/`, `/index.html`, `/shared`, `/healthz`.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- `review_server.py:authorised()` rewritten to accept `path` parameter (default `""`); returns `False` for GET/HEAD on paths starting with `/api/` when no token presented; `True` otherwise (rendered pages, `/healthz` stay open).
+- `review_server.py:route()` updated to pass `path` into `authorised()`.
+- `tests/test_review_server.py` updated: `authorised("GET", None, "")` → `True`, `authorised("GET", None, "/api/episodes")` → `False`; `route("GET", "/api/episodes", {}, None)` → `401`; `route("GET", "/", {}, None)` → `200`; `route("GET", "/api/shared", {}, tok)` → `200`.

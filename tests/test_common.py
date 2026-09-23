@@ -732,3 +732,24 @@ def test_write_stamp_still_records_a_legacy_version_key(tmp_path):
     assert doc["transcribe_version"] == common.TRANSCRIBE_VERSION
     assert doc["text_version"] == common.TEXT_VERSION
     assert doc["version"] == common.TEXT_VERSION
+
+
+def test_heartbeat_merges_rather_than_replaces(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "HEARTBEAT_PATH", str(tmp_path / "heartbeat.json"))
+    common.heartbeat(last_sweep_start=1.0, considered=5)
+    common.heartbeat(last_sweep_end=2.0)  # a second writer, later, different fields
+
+    hb = common.read_heartbeat()
+
+    assert hb["last_sweep_start"] == 1.0, "the first writer's field must survive the second write"
+    assert hb["considered"] == 5
+    assert hb["last_sweep_end"] == 2.0
+
+
+def test_heartbeat_write_is_atomic_no_tmp_file_left_behind(tmp_path, monkeypatch):
+    path = tmp_path / "heartbeat.json"
+    monkeypatch.setattr(common, "HEARTBEAT_PATH", str(path))
+    common.heartbeat(last_sweep_start=1.0)
+
+    assert path.exists()
+    assert list(tmp_path.glob("*.tmp")) == [], "the mkstemp temp file must be replaced, not left behind"

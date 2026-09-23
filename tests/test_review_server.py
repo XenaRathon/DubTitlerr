@@ -11,6 +11,8 @@ import os
 import stat
 from typing import Any
 
+import pytest
+
 import decisions
 import review_server
 import unresolved
@@ -114,9 +116,9 @@ def test_no_warning_when_the_bind_is_host_only_or_auth_is_on(tmp_path, monkeypat
 
 
 def test_a_write_route_without_the_token_is_refused_and_a_read_route_is_not(tmp_path, monkeypatch):
-    """Read routes stay open: they expose only what is already on the operator's disk, and
-    gating them would make the page useless without adding protection. WRITES are what
-    rewrite subtitles and force re-muxes."""
+    """All routes are gated when auth is enabled: the token is the boundary. WRITES are what
+    rewrite subtitles and force re-muxes, but every read exposes what is already on the
+    operator's disk too -- so nothing bypasses the token."""
     monkeypatch.delenv("REVIEW_TOKEN", raising=False)
     monkeypatch.setattr(review_server, "TOKEN_DIR", str(tmp_path))
     stem = _episode(tmp_path)
@@ -125,7 +127,8 @@ def test_a_write_route_without_the_token_is_refused_and_a_read_route_is_not(tmp_
     assert review_server.authorised("POST", None) is False
     assert review_server.authorised("POST", "wrong-token") is False
     assert review_server.authorised("POST", review_server.resolve_token(str(tmp_path))) is True
-    assert review_server.authorised("GET", None) is True, "reads are not gated"
+    assert review_server.authorised("GET", None, "") is False, "rendered pages are gated"
+    assert review_server.authorised("GET", None, "/api/episodes") is False, "/api/ reads require token"
 
 
 def test_an_unknown_stem_is_refused_by_every_route(tmp_path, monkeypatch):
@@ -326,11 +329,13 @@ def test_the_router_gates_writes_and_passes_reads(tmp_path, monkeypatch):
     monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
     tok = review_server.resolve_token(str(tmp_path))
 
-    assert review_server.route("GET", "/api/episodes", {}, None)[0] == 200
+    assert review_server.route("GET", "/api/episodes", {}, tok)[0] == 200, "GET /api/episodes requires token"
+    assert review_server.route("GET", "/api/episodes", {}, None)[0] == 401, "GET /api/episodes without token → 401"
     assert review_server.route("POST", "/api/decide", {"stem": stem, "index": 0, "verdict": "reject"}, None)[0] == 401
     assert review_server.route("POST", "/api/decide", {"stem": stem, "index": 0, "verdict": "reject"}, "nope")[0] == 401
     assert review_server.route("POST", "/api/apply", {"stem": stem}, tok)[0] == 200
-    assert review_server.route("GET", "/api/nothing-here", {}, None)[0] == 404
+    assert review_server.route("GET", "/api/nothing-here", {}, tok)[0] == 404, "unknown /api/ route → 404"
+    assert review_server.route("GET", "/api/nothing-here", {}, None)[0] == 401, "unknown /api/ route without token → 401"
 
 
 def test_episode_text_is_escaped_into_the_page(tmp_path, monkeypatch):
@@ -753,6 +758,35 @@ def test_the_slot_is_returned_after_a_request(monkeypatch):
         srv.process_request_thread("req", ("10.0.0.1", 1))
 
     assert srv._slots.acquire(blocking=False), "the slot must come back, or the server dies after MAX_CONCURRENT requests"
+
+
+def test_serve_exits_when_require_token_and_auth_off(monkeypatch, tmp_path, capsys):
+    """With REQUIRE_TOKEN=1 and REVIEW_AUTH=off both set, serve() exits with status 2
+    and logs the exact message before BoundedHTTPServer is constructed."""
+    monkeypatch.setenv("REQUIRE_TOKEN", "1")
+    monkeypatch.setenv("REVIEW_AUTH", "off")
+    # We'll mock BoundedHTTPServer to ensure it's not called
+    constructed = {}
+
+    class _Fake:
+        def __init__(self, addr, handler):
+            constructed["addr"] = addr
+            constructed["handler"] = handler
+
+        def serve_forever(self):
+            constructed["served"] = True
+
+    monkeypatch.setattr(review_server, "BoundedHTTPServer", _Fake)
+
+    with pytest.raises(SystemExit) as excinfo:
+        review_server.serve(port=1)
+
+    assert excinfo.value.code == 2
+    # Ensure BoundedHTTPServer was never constructed
+    assert not constructed, "BoundedHTTPServer should not be constructed"
+    # Check the log message
+    out = capsys.readouterr().out
+    assert "review server: REQUIRE_TOKEN=1 but auth is disabled (REVIEW_AUTH=off)" in out
 
 
 def test_serve_uses_the_bounded_server(monkeypatch, tmp_path):
@@ -1272,7 +1306,7 @@ def test_the_shared_route_is_gated_like_every_other_write(tmp_path, monkeypatch)
     """Reads are open and writes are not, the same split the rest of the surface makes."""
     monkeypatch.setenv("REVIEW_TOKEN", "sekrit")
     assert review_server.route("POST", "/api/shared", {"decisions": []}, None)[0] == 401
-    assert review_server.route("GET", "/api/shared", {}, None)[0] == 200
+    assert review_server.route("GET", "/api/shared", {}, "sekrit")[0] == 200, "GET /api/shared requires token"
 
 
 def test_the_shared_page_renders_one_row_per_line_with_its_count(tmp_path, monkeypatch):
