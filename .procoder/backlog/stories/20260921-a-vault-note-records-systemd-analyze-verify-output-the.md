@@ -4,6 +4,7 @@ Status: open
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: -
+Carried: 014-measurement-timing-compare-t12-on-three-shows-queue-publish — Vault deliverable absent: no '<date> Queue and Publish Verification.md' in the DubTitlerr folder under Xena's Scratchpad. Needs live systemd-analyze verify output, publish-timer status, the deployed-order-file vs watch_queue.py --dry-run diff, and real published filenames/manifest titles — host access required.
 
 ## Description
 

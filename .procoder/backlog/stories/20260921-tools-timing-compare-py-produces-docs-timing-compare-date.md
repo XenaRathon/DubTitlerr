@@ -4,6 +4,7 @@ Status: open
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: -
+Carried: 014-measurement-timing-compare-t12-on-three-shows-queue-publish — Real-media T12 run not performed: docs/timing-compare/ does not exist and specs/timing-compare/tasks.md:87 (T12) is still [ ]. Needs ffprobe discovery plus tools/timing_compare.py run inside the builder image on the worker host, the three selected shows, and the owner's go/no-go note — no SSH/docker access this pass.
 
 ## Description
 

@@ -1,9 +1,9 @@
 # A false-positive inventory file exists under `docs/beta-feedback/`; `grep -rn sns_extract merge_pass.sh mux.py dub_signs_merge.py` returns no matches (not wired into the merge path).
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 014-measurement-timing-compare-t12-on-three-shows-queue-publish
 
 ## Description
 
@@ -16,9 +16,11 @@ Delivered by Task 22 of `.procoder/plans/v0-2-0-hardening.md` (sprint 014); the 
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] A false-positive inventory file exists under `docs/beta-feedback/`; `grep -rn sns_extract merge_pass.sh mux.py dub_signs_merge.py` returns no matches (not wired into the merge path).
+- [x] A false-positive inventory file exists under `docs/beta-feedback/`; `grep -rn sns_extract merge_pass.sh mux.py dub_signs_merge.py` returns no matches (not wired into the merge path).
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- The inventory file exists: `docs/beta-feedback/2026-09-23-sns-extract-fp-inventory.md` (1662 bytes, added by `6159227`).
+- `grep -rn "sns_extract" merge_pass.sh mux.py dub_signs_merge.py` → no matches, exit 1. The prototype is not referenced from the merge path.
+- Shipped in `6159227`.
+- Honest scope note: the criterion is existence-only, and the file is still the template it was committed as — its body carries the instructions for the run (what to count and 2-3 example lines) and its `## Decision` section is still the `<standalone script vs. future pipeline stage -- …>` placeholder. Existence and non-wiring are both verifiably true; no false-positive run has actually been recorded in it yet.

@@ -4,6 +4,7 @@ Status: open
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: -
+Carried: 014-measurement-timing-compare-t12-on-three-shows-queue-publish — Vault deliverable absent: no storage/host checklist note in the DubTitlerr folder under Xena's Scratchpad. Needs docker ps and nvidia-smi on the live worker host to confirm the single active worker, mergerfs pfrd persistence through the OMV-managed config, the continuous sdc1 writer, and llama-embed back on the 1050 Ti — host access required. (Task 21's code half did ship in 81f8f32 and closed separately as the FFMPEG_TIMEOUT story.)
 
 ## Description
 
