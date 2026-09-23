@@ -21,11 +21,11 @@ carried: 0
 
 ## Retro
 
-<!-- What slowed us down this sprint. -->
+What slowed us down this sprint: Coordinating decoder identity persistence with schema version 2 updates required careful backward compatibility considerations and testing across multiple shows.
 
-<!-- What we change next sprint because of it. -->
+What we change next sprint because of it: Implement schema migration tests earlier in the process and create a compatibility checklist for words.json changes.
 
-<!-- One adaptation from this sprint worth keeping. -->
+One adaptation from this sprint worth keeping: Persisting full decoder identity (model, initial_prompt, compute_type, beam_size) in words.json enables reliable config change detection without relying solely on version bumps.
 
 ## Result
 
