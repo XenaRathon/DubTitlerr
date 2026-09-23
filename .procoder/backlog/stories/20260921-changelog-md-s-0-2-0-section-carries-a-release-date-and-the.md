@@ -1,9 +1,9 @@
 # `CHANGELOG.md`'s `0.2.0` section carries a release date and the full included-item list.
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 015-release-osv-scanner-gap-ledger-and-the-0-2-0-release
 
 ## Description
 
@@ -16,9 +16,16 @@ Delivered by Task 24 of `.procoder/plans/v0-2-0-hardening.md` (sprint 015); the 
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `CHANGELOG.md`'s `0.2.0` section carries a release date and the full included-item list.
+- [x] `CHANGELOG.md`'s `0.2.0` section carries a release date and the full included-item list.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- `grep -n '^## ' CHANGELOG.md` -> `9:## [Unreleased]`, `11:## 0.2.0 - 2026-09-23` (empty
+  unreleased section above a dated release section). The heading is deliberately bracket-free:
+  `internal/release`'s `changelogHasVersion()` compares `strings.Fields(line[3:])[0]` to the
+  version, so `## [0.2.0] - ...` would not match. It matches `## 0.1.0 - 2026-09-04`'s shape.
+- The section's `### Included` (line 17) carries the full per-scope list S-1 through S-22, closing with
+  "S-21 and S-22 (sprint 015, Release): the osv-scanner/pyproject extractor gap is tracked and
+  the uv.lock scanning decision recorded (S-21); the 0.2.0 release itself (S-22)." — plus the
+  `### Deferred` and `### Fixed` sections the release note needs.
+- Shipped in `8acc889` (`release: prepare 0.2.0 -- version bump and changelog finalize`).
