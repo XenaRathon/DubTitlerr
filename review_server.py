@@ -39,6 +39,7 @@ Env:
 """
 
 import html
+import http.cookies
 import http.server
 import json
 import os
@@ -106,6 +107,28 @@ CONF_SUFFIX = ".dubtitles.conf.json"
 # A HEADER, never a query parameter: a token in a URL lands in proxy logs, browser history
 # and any Referer the page emits.
 TOKEN_HEADER = "X-Review-Token"
+
+
+def _cookie_token(headers):
+    """The token from the Cookie header's dubtitlerr_token entry, or None.
+
+    A fallback for the PAGE routes only (/, /index.html, /shared): a plain page
+    navigation cannot attach a custom X-Review-Token header, so the token the page's
+    own JS already stores has nowhere to travel except a cookie. /api/* callers
+    (curl, the page's own fetch() calls) keep sending the header; this fallback
+    widens what authorised() will accept, it narrows nothing."""
+    raw = headers.get("Cookie") if hasattr(headers, "get") else None
+    if not raw:
+        return None
+    jar = http.cookies.SimpleCookie()
+    try:
+        jar.load(raw)
+    except http.cookies.CookieError:
+        return None
+    morsel = jar.get("dubtitlerr_token")
+    return morsel.value if morsel else None
+
+
 # 0.0.0.0 because the container is the point -- the operator reaches this from their LAN.
 # That is exactly why an unset REVIEW_TOKEN generates one instead of meaning "open".
 REVIEW_BIND = os.environ.get("REVIEW_BIND", "0.0.0.0")
@@ -829,10 +852,11 @@ def render_shared() -> str:
         "sortShared(SS.value);SS.addEventListener('change',()=>{sortShared(SS.value);"
         "try{localStorage.setItem(SHARED_SORT_KEY,SS.value)}catch(e){}});"
         "const TOK=document.getElementById('tok');"
+        "function syncTokenCookie(){if(TOK.value){document.cookie="
+        "'dubtitlerr_token='+encodeURIComponent(TOK.value)+'; Path=/; SameSite=Strict'}"
+        "else{document.cookie='dubtitlerr_token=; Path=/; SameSite=Strict; Max-Age=0'}}"
         "try{TOK.value=localStorage.getItem('dubtitlerr_token')||''}catch(e){}"
-        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value);"
-        "document.cookie='dubtitlerr_token='+encodeURIComponent(TOK.value)+'; path=/'"
-        "}catch(e){}});"
+        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}syncTokenCookie()});"
         "async function post(p,b){return (await fetch(p,{method:'POST',headers:{'Content-Type':'application/json',"
         f"'{TOKEN_HEADER}':TOK.value}},"
         "body:JSON.stringify(b)})).json()}"
@@ -1042,10 +1066,11 @@ def render_page(stem: str = "") -> str:
         # A cookie is set alongside localStorage, so the value survives a page navigation
         # to /shared and the shared page's own token box reads the same source.
         "const TOK=document.getElementById('tok');"
+        "function syncTokenCookie(){if(TOK.value){document.cookie="
+        "'dubtitlerr_token='+encodeURIComponent(TOK.value)+'; Path=/; SameSite=Strict'}"
+        "else{document.cookie='dubtitlerr_token=; Path=/; SameSite=Strict; Max-Age=0'}}"
         "try{TOK.value=localStorage.getItem('dubtitlerr_token')||''}catch(e){}"
-        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value);"
-        "document.cookie='dubtitlerr_token='+encodeURIComponent(TOK.value)+'; path=/'"
-        "}catch(e){}});"
+        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}syncTokenCookie()});"
         "async function post(p,b){return (await fetch(p,{method:'POST',headers:{'Content-Type':'application/json',"
         f"'{TOKEN_HEADER}':TOK.value}},"
         "body:JSON.stringify(b)})).json()}"
@@ -1101,6 +1126,38 @@ def render_page(stem: str = "") -> str:
         "const vis=[...d.querySelectorAll('li.ep')].some(li=>li.style.display!=='none');"
         "d.style.display=vis?'':'none';if(q&&vis)d.open=true});}"
         "if(F){F.addEventListener('input',apply);SA.addEventListener('change',apply);apply()}"
+        "</script>"
+    )
+
+
+def render_locked(page_kind: str) -> str:
+    """The shell shown instead of render_page()/render_shared() when authorised()
+    refuses the GET -- same chrome (title, CSS, the token box and its JS) as the real
+    page, but the episode/shared list is never built: handle_index()/handle_episode()/
+    handle_shared() walk MERGE_ROOTS and the decision stores and return every stem and
+    every card's original/proposed text, so the one thing this shell must not do is
+    call any of them. NO fetch() call either -- there is nothing to save from a page
+    that was never shown data. page_kind ("page" or "shared") picks only the <h1>; the
+    token box and its JS are identical between the two, so there is exactly one place
+    a cookie gets synced from this shell."""
+    h1 = "Shared lines" if page_kind == "shared" else "Review"
+    back = '<p><a href="/">← all episodes</a></p>' if page_kind == "shared" else ""
+    return (
+        "<!doctype html><meta charset=utf-8><title>DubTitlerr review</title>"
+        f"<style>{_CSS}</style>"
+        f"<h1>{h1}</h1>"
+        "<p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
+        f"{back}"
+        '<p id="needs-token">Paste the review token to load the queue.</p>'
+        "<script>"
+        "const TOK=document.getElementById('tok');"
+        "function syncTokenCookie(){if(TOK.value){document.cookie="
+        "'dubtitlerr_token='+encodeURIComponent(TOK.value)+'; Path=/; SameSite=Strict'}"
+        "else{document.cookie='dubtitlerr_token=; Path=/; SameSite=Strict; Max-Age=0'}}"
+        "try{TOK.value=localStorage.getItem('dubtitlerr_token')||''}catch(e){}"
+        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}"
+        "syncTokenCookie();clearTimeout(window.__tokReload);"
+        "window.__tokReload=setTimeout(()=>location.reload(),300)});"
         "</script>"
     )
 
@@ -1161,31 +1218,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         from urllib.parse import parse_qs, urlparse
 
         u = urlparse(self.path)
-        # Check for token in header or cookie for / and /shared endpoints
-        token = self.headers.get(TOKEN_HEADER)
-        if not token and u.path in ("/", "/index.html", "/shared"):
-            # Look for token in Cookie header
-            cookie_header = self.headers.get("Cookie")
-            if cookie_header:
-                # Simple cookie parsing - look for dubtitlerr_token=
-                for cookie in cookie_header.split(";"):
-                    cookie = cookie.strip()
-                    if cookie.startswith("dubtitlerr_token="):
-                        token = cookie[len("dubtitlerr_token=") :]
-                        break
-
-        # If no token found for / or /shared, return needs-token response
-        if not token and u.path in ("/", "/index.html", "/shared"):
-            needs_token_response = {"needs-token": True}
-            return self._send(200, json.dumps(needs_token_response).encode(), "application/json")
-
+        # A plain page load cannot carry a custom header, so the cookie the token box's own
+        # JS sets is the fallback here -- /api/* callers (curl, the page's own fetch()
+        # calls) keep sending the header, which still wins when present.
+        presented = self.headers.get(TOKEN_HEADER) or _cookie_token(self.headers)
         if u.path == "/shared":
+            if not authorised("GET", presented):
+                return self._send(200, render_locked("shared").encode(), "text/html; charset=utf-8")
             return self._send(200, render_shared().encode(), "text/html; charset=utf-8")
         if u.path in ("/", "/index.html"):
+            if not authorised("GET", presented):
+                return self._send(200, render_locked("page").encode(), "text/html; charset=utf-8")
             stem = (parse_qs(u.query).get("stem") or [""])[0]
             return self._send(200, render_page(stem).encode(), "text/html; charset=utf-8")
+        if u.path == "/healthz":
+            status, payload = handle_healthz()
+            return self._send(status, payload)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
-        status, payload = route("GET", u.path, q, token)
+        status, payload = route("GET", u.path, q, presented)
         self._send(status, payload)
 
     def do_POST(self):
@@ -1209,7 +1259,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = {}
         if not isinstance(body, dict):
             body = {}
-        status, payload = route("POST", self.path, body, self.headers.get(TOKEN_HEADER))
+        status, payload = route("POST", self.path, body, self.headers.get(TOKEN_HEADER) or _cookie_token(self.headers))
         self._send(status, payload)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 - the base class names it this

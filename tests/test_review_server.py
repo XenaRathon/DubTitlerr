@@ -9,10 +9,12 @@ REVIEW_TOKEN generates one; only an explicitly empty REVIEW_TOKEN disables auth.
 import json
 import os
 import stat
+import time
 from typing import Any
 
 import pytest
 
+import common
 import decisions
 import review_server
 import unresolved
@@ -1696,3 +1698,343 @@ def test_every_queued_row_offers_a_way_to_clear_its_verdict(tmp_path, monkeypatc
     assert page.count('class="clear"') == len(entries), "one clear control per queued row"
     for e in entries:
         assert f'data-clear="v{e["index"]}"' in page, f"row {e['index']} has no clear control"
+
+
+def test_healthz_ok_on_a_fresh_heartbeat(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "HEARTBEAT_PATH", str(tmp_path / "heartbeat.json"))
+    common.heartbeat(
+        last_sweep_start=time.time() - 100,
+        last_sweep_end=time.time() - 10,
+        roots_readable=True,
+        order_file_present=True,
+    )
+
+    status, payload = review_server.handle_healthz()
+
+    assert (status, payload) == (200, {"ok": True})
+
+
+def test_healthz_stale_after_3x_rescan_interval(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "HEARTBEAT_PATH", str(tmp_path / "heartbeat.json"))
+    monkeypatch.setenv("RESCAN_INTERVAL", "100")
+    common.heartbeat(
+        last_sweep_start=time.time() - 1000,
+        last_sweep_end=time.time() - 301,
+        roots_readable=True,
+        order_file_present=True,
+    )
+
+    status, payload = review_server.handle_healthz()
+
+    assert status == 503
+    assert payload["ok"] is False
+    assert any(r.startswith("stale: last sweep ended") for r in payload["reasons"])
+    assert "/" not in __import__("json").dumps(payload), "no filesystem path may leak through /healthz"
+
+
+def test_healthz_recent_sweep_start_does_not_rescue_a_stale_sweep_end(tmp_path, monkeypatch):
+    """Staleness is judged from last_sweep_end alone, by design: an in-progress
+    sweep (recent last_sweep_start) cannot be told apart, at this granularity, from
+    one wedged mid-episode with no crash -- exactly the failure this probe exists to
+    catch. See this task's design-decision note."""
+    monkeypatch.setattr(common, "HEARTBEAT_PATH", str(tmp_path / "heartbeat.json"))
+    monkeypatch.setenv("RESCAN_INTERVAL", "100")
+    common.heartbeat(
+        last_sweep_start=time.time() - 5,
+        last_sweep_end=time.time() - 301,
+        roots_readable=True,
+        order_file_present=True,
+    )
+
+    status, _ = review_server.handle_healthz()
+
+    assert status == 503
+
+
+def test_healthz_roots_unreadable(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "HEARTBEAT_PATH", str(tmp_path / "heartbeat.json"))
+    common.heartbeat(
+        last_sweep_start=time.time(),
+        last_sweep_end=time.time(),
+        roots_readable=False,
+        order_file_present=True,
+    )
+
+    status, payload = review_server.handle_healthz()
+
+    assert status == 503
+    assert "roots_readable is false" in payload["reasons"]
+
+
+def test_healthz_order_file_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "HEARTBEAT_PATH", str(tmp_path / "heartbeat.json"))
+    common.heartbeat(
+        last_sweep_start=time.time(),
+        last_sweep_end=time.time(),
+        roots_readable=True,
+        order_file_present=False,
+    )
+
+    status, payload = review_server.handle_healthz()
+
+    assert status == 503
+    assert "order_file_present is false" in payload["reasons"]
+
+
+def test_healthz_missing_heartbeat_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "HEARTBEAT_PATH", str(tmp_path / "does-not-exist.json"))
+
+    status, payload = review_server.handle_healthz()
+
+    assert (status, payload) == (503, {"ok": False, "reasons": ["no heartbeat yet"]})
+
+
+def test_healthz_never_shipped_no_sweep_completed_yet(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "HEARTBEAT_PATH", str(tmp_path / "heartbeat.json"))
+    common.heartbeat(last_sweep_start=time.time())  # no last_sweep_end at all
+
+    status, payload = review_server.handle_healthz()
+
+    assert status == 503
+    assert "stale: no sweep has completed yet" in payload["reasons"]
+
+
+def test_get_healthz_is_open_without_a_token(tmp_path, monkeypatch):
+    monkeypatch.delenv("REVIEW_TOKEN", raising=False)
+    monkeypatch.setattr(review_server, "TOKEN_DIR", str(tmp_path))
+    monkeypatch.setattr(common, "HEARTBEAT_PATH", str(tmp_path / "heartbeat.json"))
+    common.heartbeat(
+        last_sweep_start=time.time(),
+        last_sweep_end=time.time(),
+        roots_readable=True,
+        order_file_present=True,
+    )
+
+    wire = _Wire()
+    h = wire.as_handler("/healthz")
+    h.do_GET()
+
+    assert wire.status == 200
+
+
+def test_cookie_token_parses_the_dubtitlerr_token_cookie_among_others():
+    headers = {"Cookie": "foo=bar; dubtitlerr_token=abc123; baz=qux"}
+    assert review_server._cookie_token(headers) == "abc123"
+
+
+def test_cookie_token_missing_cookie_header_returns_none():
+    assert review_server._cookie_token({}) is None
+
+
+def test_cookie_token_malformed_cookie_header_returns_none():
+    assert review_server._cookie_token({"Cookie": ";;;=== not a cookie"}) is None
+
+
+def test_render_locked_page_has_no_episode_data_and_no_fetch_call():
+    out = review_server.render_locked("page")
+    assert "needs-token" in out
+    assert "fetch(" not in out, "the locked shell must not call any write route either"
+    assert "id=tok" in out
+
+
+def test_render_locked_shared_uses_the_shared_title():
+    out = review_server.render_locked("shared")
+    assert "Shared lines" in out
+    assert "needs-token" in out
+
+
+def test_the_token_box_js_syncs_a_cookie_next_to_localstorage(monkeypatch):
+    """The existing TOK 'input' listener (review_server.py:829-831 in render_shared,
+    byte-for-byte the same at :1038-1040 in render_page) already writes to
+    localStorage; it must ALSO write the cookie authorised() now reads, in the SAME
+    handler, so the two never drift out of sync."""
+    monkeypatch.setattr(review_server, "known_stems", lambda: [])
+
+    for out in (review_server.render_page(), review_server.render_shared()):
+        start = out.index("TOK.addEventListener('input'")
+        handler = out[start : start + 400]
+        assert "localStorage.setItem('dubtitlerr_token'" in handler
+        assert "syncTokenCookie()" in handler
+        assert "document.cookie=" in out
+
+
+def test_get_index_without_a_token_shows_the_locked_shell_not_the_queue(tmp_path, monkeypatch):
+    """Verified: handle_index() appends `{"stem": stem, "name": os.path.basename(stem),
+    ...}` per episode with anything pending, and render_page renders that name into
+    an <a href> -- so an unauthenticated GET / must never reach render_page() at all."""
+    monkeypatch.delenv("REVIEW_TOKEN", raising=False)
+    monkeypatch.setattr(review_server, "TOKEN_DIR", str(tmp_path))
+    stem = _episode(tmp_path, name="S01E01")
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    wire = _Wire()
+    h = wire.as_handler("/")
+    h.do_GET()
+    body = wire.wfile.getvalue().decode()
+
+    assert wire.status == 200
+    assert "needs-token" in body
+    assert "S01E01" not in body
+
+
+def test_get_index_with_the_cookie_shows_the_real_queue(tmp_path, monkeypatch):
+    monkeypatch.delenv("REVIEW_TOKEN", raising=False)
+    monkeypatch.setattr(review_server, "TOKEN_DIR", str(tmp_path))
+    stem = _episode(tmp_path, name="S01E01")
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+    tok = review_server.resolve_token(str(tmp_path))
+
+    wire = _Wire()
+    wire.headers["Cookie"] = f"dubtitlerr_token={tok}"
+    h = wire.as_handler("/")
+    h.do_GET()
+    body = wire.wfile.getvalue().decode()
+
+    assert wire.status == 200
+    assert "needs-token" not in body
+    assert "S01E01" in body
+
+
+def test_get_index_with_the_header_also_shows_the_real_queue(tmp_path, monkeypatch):
+    monkeypatch.delenv("REVIEW_TOKEN", raising=False)
+    monkeypatch.setattr(review_server, "TOKEN_DIR", str(tmp_path))
+    stem = _episode(tmp_path, name="S01E01")
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+    tok = review_server.resolve_token(str(tmp_path))
+
+    wire = _Wire()
+    wire.headers[review_server.TOKEN_HEADER] = tok
+    h = wire.as_handler("/")
+    h.do_GET()
+    body = wire.wfile.getvalue().decode()
+
+    assert wire.status == 200
+    assert "S01E01" in body
+
+
+def test_get_shared_without_a_token_shows_the_locked_shell(tmp_path, monkeypatch):
+    monkeypatch.delenv("REVIEW_TOKEN", raising=False)
+    monkeypatch.setattr(review_server, "TOKEN_DIR", str(tmp_path))
+    stem = _episode(tmp_path)
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    wire = _Wire()
+    h = wire.as_handler("/shared")
+    h.do_GET()
+    body = wire.wfile.getvalue().decode()
+
+    assert wire.status == 200
+    assert "needs-token" in body
+    assert 'id="shared-sort"' not in body, "the real shared page's sort control must not render"
+
+
+def test_get_shared_with_the_cookie_shows_the_real_page(tmp_path, monkeypatch):
+    monkeypatch.delenv("REVIEW_TOKEN", raising=False)
+    monkeypatch.setattr(review_server, "TOKEN_DIR", str(tmp_path))
+    stem = _episode(tmp_path)
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+    tok = review_server.resolve_token(str(tmp_path))
+
+    wire = _Wire()
+    wire.headers["Cookie"] = f"dubtitlerr_token={tok}"
+    h = wire.as_handler("/shared")
+    h.do_GET()
+    body = wire.wfile.getvalue().decode()
+
+    assert wire.status == 200
+    assert "needs-token" not in body
+    assert 'id="shared-sort"' in body
+
+
+def test_get_healthz_is_never_gated_by_the_token(tmp_path, monkeypatch):
+    monkeypatch.delenv("REVIEW_TOKEN", raising=False)
+    monkeypatch.setattr(review_server, "TOKEN_DIR", str(tmp_path))
+    monkeypatch.setattr(common, "HEARTBEAT_PATH", str(tmp_path / "does-not-exist.json"))
+
+    wire = _Wire()
+    h = wire.as_handler("/healthz")
+    h.do_GET()
+
+    assert wire.status != 401
+
+
+def test_review_auth_off_keeps_every_page_open_with_no_token(tmp_path, monkeypatch):
+    """REVIEW_AUTH=off is sprint 010's contract for disabling auth entirely; this task
+    must not add a second, cookie-shaped way to accidentally require one."""
+    monkeypatch.setenv("REVIEW_AUTH", "off")
+    monkeypatch.setattr(review_server, "TOKEN_DIR", str(tmp_path))
+    stem = _episode(tmp_path, name="S01E01")
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    wire = _Wire()
+    h = wire.as_handler("/")
+    h.do_GET()
+    body = wire.wfile.getvalue().decode()
+
+    assert wire.status == 200
+    assert "needs-token" not in body
+    assert "S01E01" in body
+
+
+def test_every_fetch_call_on_the_index_page_still_carries_the_token_header(monkeypatch):
+    monkeypatch.setattr(review_server, "known_stems", lambda: [])
+    page = review_server.render_page()
+    assert page.count("fetch(") == 1, "expected exactly one fetch() call on the index page"
+    assert f"'{review_server.TOKEN_HEADER}':TOK.value" in page
+
+
+def test_every_fetch_call_on_the_shared_page_still_carries_the_token_header(monkeypatch):
+    monkeypatch.setattr(review_server, "known_stems", lambda: [])
+    page = review_server.render_shared()
+    assert page.count("fetch(") == 1, "expected exactly one fetch() call on the shared page"
+    assert f"'{review_server.TOKEN_HEADER}':TOK.value" in page
+
+
+def test_a_401_is_still_surfaced_by_alert_and_the_token_box_stays_visible(monkeypatch):
+    monkeypatch.setattr(review_server, "known_stems", lambda: [])
+    page = review_server.render_page()
+    shared = review_server.render_shared()
+    assert "id=tok" in page and "if(r.error){alert(r.error)" in page
+    assert "id=tok" in shared and "if(r.error){alert(r.error)" in shared
+
+
+def test_get_api_episodes_without_token_is_401_with_the_literal_body(tmp_path, monkeypatch):
+    """authorised() now gates GET the same as POST for every /api/* route -- route()
+    is reached only from api paths (verified: do_GET serves /, /index.html and
+    /shared directly, before route() is ever called), so this cannot affect those
+    three paths or /healthz (Task 16)."""
+    monkeypatch.delenv("REVIEW_TOKEN", raising=False)
+    monkeypatch.setattr(review_server, "TOKEN_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "known_stems", lambda: [])
+    tok = review_server.resolve_token(str(tmp_path))
+
+    wire = _Wire()
+    h = wire.as_handler("/api/episodes")
+    h.do_GET()
+    assert wire.status == 401
+    assert json.loads(wire.wfile.getvalue()) == {"error": "a token is required"}
+
+    wire2 = _Wire()
+    wire2.headers[review_server.TOKEN_HEADER] = tok
+    h2 = wire2.as_handler("/api/episodes")
+    h2.do_GET()
+    assert wire2.status == 200
+
+
+def test_head_on_api_paths_is_gated_the_same_as_get():
+    """No do_HEAD is defined (verified: Handler defines only do_GET and do_POST), so
+    HEAD is exercised against authorised() directly -- the one function route()
+    consults for every method. A future do_HEAD inherits the same gate for free."""
+    assert review_server.authorised("HEAD", None) is False
+    assert review_server.authorised("HEAD", "wrong") is False
+
+
+def test_get_index_page_stays_open_without_a_token(tmp_path, monkeypatch):
+    monkeypatch.delenv("REVIEW_TOKEN", raising=False)
+    monkeypatch.setattr(review_server, "TOKEN_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "known_stems", lambda: [])
+
+    wire = _Wire()
+    h = wire.as_handler("/")
+    h.do_GET()
+    assert wire.status == 200
