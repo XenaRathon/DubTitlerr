@@ -1,6 +1,6 @@
 # `IMPROVEMENTS.md` §5 ("Architecture: Two-Backend Repair") is absent from the file; `REVIEW.md:1025-1029` and `:1099` state `REPAIR_BACKEND_SECONDARY` is retired, not "not yet implemented" (owner decision — recommended default: retire; confirm at sprint 010 open).
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: 012-provenance-and-policy-decoder-identity-in-words-json
@@ -16,9 +16,8 @@ Delivered by Task 13 of `.procoder/plans/v0-2-0-hardening.md` (sprint 012); the 
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `IMPROVEMENTS.md` §5 ("Architecture: Two-Backend Repair") is absent from the file; `REVIEW.md:1025-1029` and `:1099` state `REPAIR_BACKEND_SECONDARY` is retired, not "not yet implemented" (owner decision — recommended default: retire; confirm at sprint 010 open).
+- [x] `IMPROVEMENTS.md` §5 ("Architecture: Two-Backend Repair") is absent from the file; `REVIEW.md:1025-1029` and `:1099` state `REPAIR_BACKEND_SECONDARY` is retired, not "not yet implemented" (owner decision — recommended default: retire; confirm at sprint 010 open). `IMPROVEMENTS.md` §5 ("Architecture: Two-Backend Repair") is absent from the file; `REVIEW.md:1025-1029` and `:1099` state `REPAIR_BACKEND_SECONDARY` is retired, not "not yet implemented" (owner decision — recommended default: retire; confirm at sprint 010 open).
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+`python3 -m pytest tests/test_public_repo_hygiene.py -k test_repair_backend_secondary_is_retired_not_referenced_outside_history -q` -> 1 passed in commit 21e2656.
