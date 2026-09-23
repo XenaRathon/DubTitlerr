@@ -92,4 +92,8 @@ actual fix for this class of problem.
 - **Glossaries are a shipped deliverable**, not incidental state — `glossaries/*.json` in the
   repo are pre-seeded dictionaries for anyone else cloning this project. Refresh them from the
   deployed copies at the next push that's happening anyway; never push just for that.
-
+- **`osv-scanner` on this maintainer's machine** is a host-local shim over the real
+  binary (appends `--verbosity error` so procoder's gate can parse its output) — it
+  is not part of this repository and a fresh clone needs nothing like it; CI scans
+  `uv.lock` directly via `google/osv-scanner-action` instead
+  (`.github/workflows/ci.yml`).
