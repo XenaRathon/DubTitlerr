@@ -1,6 +1,6 @@
 # `generate.decoder_identity()` returns `{"model": MODEL, "initial_prompt": INITIAL_PROMPT, "compute_type": COMPUTE, "beam_size": int(os.environ.get("WHISPER_BEAM_SIZE", "7"))}`, asserted field-by-field against the module's live globals.
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: 012-provenance-and-policy-decoder-identity-in-words-json
@@ -16,9 +16,8 @@ Delivered by Task 10 and 11 of `.procoder/plans/v0-2-0-hardening.md` (sprint 012
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `generate.decoder_identity()` returns `{"model": MODEL, "initial_prompt": INITIAL_PROMPT, "compute_type": COMPUTE, "beam_size": int(os.environ.get("WHISPER_BEAM_SIZE", "7"))}`, asserted field-by-field against the module's live globals.
+- [x] `generate.decoder_identity()` returns `{"model": MODEL, "initial_prompt": INITIAL_PROMPT, "compute_type": COMPUTE, "beam_size": int(os.environ.get("WHISPER_BEAM_SIZE", "7"))}`, asserted field-by-field against the module's live globals. `generate.decoder_identity()` returns `{"model": MODEL, "initial_prompt": INITIAL_PROMPT, "compute_type": COMPUTE, "beam_size": int(os.environ.get("WHISPER_BEAM_SIZE", "7"))}`, asserted field-by-field against the module's live globals.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+`python3 -m pytest tests/test_generate.py -k test_decoder_identity_reports_the_active_decoder_settings -q` -> 1 passed in commit 21e2656.
