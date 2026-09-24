@@ -29,9 +29,12 @@ def _fake_bin(tmp_path, name):
 
 
 def _run(tmp_path, root):
-    fakebin = _fake_bin(tmp_path, "mkvmerge")
+    # merge_pass.sh guards check ffmpeg (line 16), mkvmerge (line 20), and pysubs2 import (line 24).
+    # We stub the binaries; pysubs2 resolves via the real sys.path in CI.
+    fakebin_mkvmerge = _fake_bin(tmp_path, "mkvmerge")
+    fakebin_ffmpeg = _fake_bin(tmp_path, "ffmpeg")
     env = dict(os.environ)
-    env["PATH"] = fakebin + os.pathsep + env["PATH"]
+    env["PATH"] = fakebin_mkvmerge + os.pathsep + fakebin_ffmpeg + os.pathsep + env["PATH"]
     env["MERGE_ROOTS"] = str(root)
     env["APP_DIR"] = os.path.dirname(MERGE_PASS)
     return subprocess.run(
