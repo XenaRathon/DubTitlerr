@@ -1,9 +1,9 @@
 # `common.read_words(stem, expect=generate.decoder_identity())` returns `None` and increments `words_config_mismatch` when a recorded field differs; returns the doc and increments `words_config_unknown` when a field is absent or `""` (including the `model=""` schema-1 case); neither path raises.
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 012-provenance-and-policy-decoder-identity-in-words-json
 
 ## Description
 
@@ -16,9 +16,8 @@ Delivered by Task 10 and 11 of `.procoder/plans/v0-2-0-hardening.md` (sprint 012
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `common.read_words(stem, expect=generate.decoder_identity())` returns `None` and increments `words_config_mismatch` when a recorded field differs; returns the doc and increments `words_config_unknown` when a field is absent or `""` (including the `model=""` schema-1 case); neither path raises.
+- [x] `common.read_words(stem, expect=generate.decoder_identity())` returns `None` and increments `words_config_mismatch` when a recorded field differs; returns the doc and increments `words_config_unknown` when a field is absent or `` (including the `model=` schema-1 case); neither path raises. `common.read_words(stem, expect=generate.decoder_identity())` returns `None` and increments `words_config_mismatch` when a recorded field differs; returns the doc and increments `words_config_unknown` when a field is absent or `""` (including the `model=""` schema-1 case); neither path raises.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+`python3 -m pytest tests/test_generate.py -k 'test_read_words_rejects or test_read_words_treats_a_missing_field_as_unknown_not_a_mismatch' -q` -> 5 passed in commit 21e2656.

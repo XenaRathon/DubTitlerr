@@ -1,9 +1,9 @@
 # With `REQUIRE_TOKEN=1` and `REVIEW_AUTH=off` both set, `review_server.serve()` exits with status 2 and logs the exact message before `BoundedHTTPServer(...)` is ever constructed (asserted by mocking the constructor and confirming it is never called).
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 013-v0-2-0-work
 
 ## Description
 
@@ -16,9 +16,11 @@ Delivered by Task 14 and 17 of `.procoder/plans/v0-2-0-hardening.md` (sprint 013
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] With `REQUIRE_TOKEN=1` and `REVIEW_AUTH=off` both set, `review_server.serve()` exits with status 2 and logs the exact message before `BoundedHTTPServer(...)` is ever constructed (asserted by mocking the constructor and confirming it is never called).
+- [x] With `REQUIRE_TOKEN=1` and `REVIEW_AUTH=off` both set, `review_server.serve()` exits with status 2 and logs the exact message before `BoundedHTTPServer(...)` is ever constructed (asserted by mocking the constructor and confirming it is never called).
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- `review_server.py:serve()`: checks `REQUIRE_TOKEN == "1" and not auth_required()` before any operations, logs message, raises `SystemExit(2)`
+- `tests/test_review_server.py`: `test_serve_exits_when_require_token_and_auth_off` — `SystemExit.code == 2`, `BoundedHTTPServer` never constructed, exact error message in stdout
+- `python3 -m pytest tests/test_review_server.py -q` → 69 passed
+- `procoder check` passes

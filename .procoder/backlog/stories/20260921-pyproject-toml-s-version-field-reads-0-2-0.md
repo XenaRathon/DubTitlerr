@@ -1,9 +1,9 @@
 # `pyproject.toml`'s `version` field reads `"0.2.0"`.
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 015-release-osv-scanner-gap-ledger-and-the-0-2-0-release
 
 ## Description
 
@@ -16,9 +16,11 @@ Delivered by Task 24 of `.procoder/plans/v0-2-0-hardening.md` (sprint 015); the 
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `pyproject.toml`'s `version` field reads `"0.2.0"`.
+- [x] `pyproject.toml`'s `version` field reads `"0.2.0"`.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- `grep -n '^version' pyproject.toml` -> `3:version = "0.2.0"`. The field is the first
+  top-level key under `[project]`, which is what `procoder release` reads via
+  `.procoder/config.toml`'s `[release] files = ["pyproject.toml"]`.
+- Shipped in `8acc889` (`release: prepare 0.2.0 -- version bump and changelog finalize`).

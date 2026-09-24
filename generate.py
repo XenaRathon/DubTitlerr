@@ -29,8 +29,10 @@ Env:
   MODEL_DIR       default /subgen/models  (reuse subgen's downloaded model)
   WHISPER_AUDIO_FILTER  default highpass=f=80,compand=... (V2 A8; "" disables it, the
                   pre-A8 ffmpeg command)
-  FFMPEG_TIMEOUT  default 600  (seconds; the wav decode in extract_wav. Raise it on a
-                  slow NFS mount -- a timeout here fails the episode)
+  FFMPEG_TIMEOUT  default 1800  (seconds; the wav decode in extract_wav. Raised from
+                  600 -- a 556 MB episode failed at 600s on the measured NAS read
+                  rate. Raise it further on a slower mount; a timeout here fails
+                  the episode)
   FFPROBE_TIMEOUT default 60   (seconds; both ffprobe calls -- audio-stream pick and
                   duration. The stream pick reads the same remote file as the decode)
   MEDIA_UID/GID   default 1000/100
@@ -114,7 +116,7 @@ AUDIO_FILTER = os.environ.get(
 # on a slow NFS mount with no way to raise the ceiling short of editing this file. The
 # probe budget is the tighter of the two and reads the SAME remote file the decode does,
 # so it is overridable for the same reason.
-FFMPEG_TIMEOUT = int(os.environ.get("FFMPEG_TIMEOUT", "600"))
+FFMPEG_TIMEOUT = int(os.environ.get("FFMPEG_TIMEOUT", "1800"))
 FFPROBE_TIMEOUT = int(os.environ.get("FFPROBE_TIMEOUT", "60"))
 AUDIO_START_THRESHOLD = 0.05  # ignore codec pre-skip and sub-frame timestamp noise
 UID = int(os.environ.get("MEDIA_UID", "1000"))
@@ -147,6 +149,16 @@ def load_glossary():
     )
 
 
+def decoder_identity() -> dict:
+    """What today's process would use to transcribe."""
+    return {
+        "model": MODEL,
+        "initial_prompt": INITIAL_PROMPT,
+        "compute_type": COMPUTE,
+        "beam_size": int(os.environ.get("WHISPER_BEAM_SIZE", "7")),
+    }
+
+
 # Plex "local extras" subfolders + creditless/scene clips — never real episodes, often
 # mismatched junk from the scraper, and a frequent source of malformed-clip crashes. The
 # --root walk prunes these so a library run only ever transcribes actual episodes.
@@ -163,6 +175,19 @@ def log(*a):
 # process()'s return type) keeps every existing "process() returns a status string"
 # call site/test unchanged -- see WMODEL above for the same lazy-module-global pattern.
 _LAST_STATS: dict = {}
+# Sibling accumulator for the three words_* qc.Recorder counters (words_missing,
+# words_version_mismatch, words_reused). Populated on EVERY episode process()/
+# process_text() touches, not only the "ok" ones _LAST_STATS covers, because a
+# words.json write failure or a config mismatch matters to the operator even when
+# the episode itself completes.
+_LAST_WORDS_STATS: dict = {}
+
+
+def _note_words_stats(rec):
+    """Snapshot this episode's words_* counters so main() can add them into
+    lastrun.json regardless of the episode's overall status."""
+    _LAST_WORDS_STATS.clear()
+    _LAST_WORDS_STATS.update({k: rec.counters.get(k, 0) for k in ("words_missing", "words_version_mismatch", "words_reused")})
 
 
 def _model_version() -> str:
@@ -400,8 +425,10 @@ def write_words(stem, words, segments, audio_duration, initial_prompt=""):
     doc = {
         "schema_version": WORDS_SCHEMA_VERSION,
         "transcribe_version": TRANSCRIBE_VERSION,
-        "model": os.environ.get("WHISPER_MODEL", ""),
+        "model": MODEL,
         "initial_prompt": initial_prompt,
+        "compute_type": COMPUTE,
+        "beam_size": int(os.environ.get("WHISPER_BEAM_SIZE", "7")),
         "audio_duration": audio_duration,
         "segments": segments,
         "words": words,
@@ -902,7 +929,7 @@ def partition_todo(files):
             continue
         if "transcribe" in stale:
             transcribe_todo.append(v)
-        elif read_words(stem) is not None:
+        elif read_words(stem, expect=decoder_identity()) is not None:
             text_todo.append(v)
         else:
             transcribe_todo.append(v)
@@ -917,9 +944,11 @@ def process_text(video):
     merge_pass then re-muxes the episode, because its stamp is text-stale."""
     stem = os.path.splitext(video)[0]
     rec = qc.Recorder()
-    doc = read_words(stem, rec=rec)
+    doc = read_words(stem, rec=rec, expect=decoder_identity())
     if doc is None:
+        _note_words_stats(rec)
         return "no-words"
+    _note_words_stats(rec)
     return text_stages(
         stem,
         doc["words"],
@@ -1041,13 +1070,14 @@ def process(video):
     return text_stages(stem, words, segments, audio_duration, rec, fail)
 
 
-def build_lastrun(show, elapsed_s, episodes_total, transcribed, totals, census):
+def build_lastrun(show, elapsed_s, episodes_total, transcribed, totals, census, words_totals=None):
     """The per-show run summary written to glossaries/<show>.lastrun.json.
 
     One builder rather than a dict literal plus a parallel list of field names: the
     per-tier staleness counts only earn their keep if something actually reports them,
     and two declarations of "what lastrun contains" would drift until one of them lied.
     Tests assert against this function, so the file and the assertion cannot disagree."""
+    words_totals = words_totals or {}
     return {
         "show": show,
         "elapsed_s": elapsed_s,
@@ -1060,6 +1090,9 @@ def build_lastrun(show, elapsed_s, episodes_total, transcribed, totals, census):
         # GPU-hours vs CPU-minutes: reported separately or the split means nothing.
         "transcribe_stale": census["transcribe_stale"],
         "text_stale": census["text_stale"],
+        "words_missing": words_totals.get("words_missing", 0),
+        "words_version_mismatch": words_totals.get("words_version_mismatch", 0),
+        "words_reused": words_totals.get("words_reused", 0),
         "model": MODEL,
         "model_version": _model_version(),
         "glossary_version": _glossary_version(),

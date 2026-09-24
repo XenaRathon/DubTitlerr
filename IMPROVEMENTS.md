@@ -172,84 +172,7 @@ The two-pass flow would be:
 
 ---
 
-## 5. Architecture: Two-Backend Repair
-
-### The gap: current code routes both passes through one backend
-
-Looking at `repair.py`, the `llm()` dispatch function checks a single `REPAIR_BACKEND`
-env var:
-
-```python
-def llm(prompt, model=None):
-    if REPAIR_BACKEND == "llamacpp":
-        return llm_llamacpp(prompt, model or MODEL)
-    return llm_ollama(prompt, model)
-```
-
-And both passes go through it:
-
-```python
-# Primary pass (line 261):
-new = llm(prompt)
-
-# Secondary pass (line 280):
-if MODEL_SECONDARY != MODEL and _needs_secondary_check(c["text"], new, gloss):
-    new2 = llm(prompt, model=MODEL_SECONDARY)
-```
-
-This means **primary and secondary must use the same backend**. You can't have
-primary on Ollama (GPU) and secondary on llama.cpp (CPU) without a code change.
-
-### Required code change: `REPAIR_BACKEND_SECONDARY` env var
-
-A ~10-line addition to `repair.py` to support a separate backend for the secondary
-pass:
-
-```python
-# New env var (defaults to REPAIR_BACKEND — preserves current behavior):
-REPAIR_BACKEND_SECONDARY = os.environ.get("REPAIR_BACKEND_SECONDARY", REPAIR_BACKEND)
-
-# Modified secondary call:
-if MODEL_SECONDARY != MODEL and _needs_secondary_check(c["text"], new, gloss):
-    new2 = llm(prompt, model=MODEL_SECONDARY, backend=REPAIR_BACKEND_SECONDARY)
-```
-
-And update `llm()` to accept an optional backend override:
-
-```python
-def llm(prompt, model=None, backend=None):
-    backend = backend or REPAIR_BACKEND
-    if backend == "llamacpp":
-        return llm_llamacpp(prompt, model or MODEL)
-    return llm_ollama(prompt, model)
-```
-
-**Note:** `llm_llamacpp()` ignores the `model` parameter (llama.cpp serves one
-loaded model at a time — there's no model selector in the request body). So
-`REPAIR_MODEL_SECONDARY` is documented in the audit trail but isn't sent to the
-server; just make sure the right GGUF is loaded when `llama-server` starts.
-
-### The config for a two-backend setup
-
-```bash
-# .env or docker-compose vars:
-
-# Primary (fast, GPU via Ollama):
-REPAIR_MODEL=qwen3:8b
-REPAIR_BACKEND=ollama
-OLLAMA_URL=http://ollama.local:11434/api/generate
-
-# Secondary (slow, CPU via llama.cpp on Xeon server):
-REPAIR_MODEL_SECONDARY=qwen3.6:35b-a3b
-REPAIR_BACKEND_SECONDARY=llamacpp
-REPAIR_LLAMACPP_URL=http://<llm-host>:8080/completion
-```
-
-This way:
-
-- ~90% of repairs complete in ~1 s each on GPU
-- Only name-changing/ambiguous repairs hit the slow CPU model (~15–30 s each)
-- Typical episode with 2–5 targets: ~3–5 s if no re-verify needed, ~20–60 s if it is
+_Retired: `REPAIR_MODEL_SECONDARY` covers the two-pass check; a second backend was never built._
 
 ---
 
@@ -271,7 +194,6 @@ Use `tools/bakeoff.py` for all bake-offs (see §7 below).
 
 | #   | Change                                         | What's needed                           |
 | :-- | :--------------------------------------------- | :-------------------------------------- |
-| 4   | Add `REPAIR_BACKEND_SECONDARY` env var         | ~10 line code change in `repair.py`     |
 | 5   | If Phi-4 wins bake-off: switch default         | `REPAIR_MODEL=phi-4:14b-q3_K_M`         |
 | 6   | If MoE wins bake-off: `REPAIR_MODEL_SECONDARY` | Two-backend config (Ollama + llama.cpp) |
 | 7   | Bump `WHISPER_BEAM_SIZE` incrementally         | If turbo fits, test beam 10, 12, 15     |
@@ -363,13 +285,11 @@ python3 tools/bakeoff.py \
 
 ### Repair (`repair.py`)
 
-| Env var                    | Current default                     | Candidate value    | Why                   |
-| :------------------------- | :---------------------------------- | :----------------- | :-------------------- |
-| `REPAIR_MODEL`             | `qwen3:8b`                          | `phi-4:14b-q3_K_M` | Best GPU upgrade      |
-| `REPAIR_BACKEND`           | `ollama`                            | `ollama`           | GPU primary           |
-| `REPAIR_MODEL_SECONDARY`   | (same as primary)                   | `qwen3.6:35b-a3b`  | CPU second opinion    |
-| `REPAIR_BACKEND_SECONDARY` | —                                   | `llamacpp`         | **Needs code change** |
-| `REPAIR_LLAMACPP_URL`      | `http://<llm-host>:8080/completion` | —                  | Points at Xeon server |
+| Env var                  | Current default                     | Candidate value              | Why                        |
+| :----------------------- | :---------------------------------- | :--------------------------- | :------------------------- |
+| `REPAIR_MODEL`           | `qwen3:8b`                          | `phi-4:14b-q3_K_M`          | Best GPU upgrade           |
+| `REPAIR_BACKEND`         | `ollama`                            | `ollama`                    | GPU primary                |
+| `REPAIR_LLAMACPP_URL`    | `http://192.168.1.209:8090/completion` | —                     | Points at Nanbeige on fasc |
 
 ---
 
@@ -404,3 +324,11 @@ a separate task, not part of trying Jev on the merge call.
 
 **Caveat:** OpenRouter's $0 pricing on Jev looks like an early-access promo, not a permanent
 rate — don't make it load-bearing without keeping `VERIFY_MODEL`'s local fallback wired.
+=======
+| Env var                  | Current default                     | Candidate value    | Why                   |
+| :----------------------- | :---------------------------------- | :----------------- | :-------------------- |
+| `REPAIR_MODEL`           | `qwen3:8b`                          | `phi-4:14b-q3_K_M` | Best GPU upgrade      |
+| `REPAIR_BACKEND`         | `ollama`                            | `ollama`           | GPU primary           |
+| `REPAIR_MODEL_SECONDARY` | (same as primary)                   | `qwen3.6:35b-a3b`  | CPU second opinion    |
+| `REPAIR_LLAMACPP_URL`    | `http://<llm-host>:8080/completion` | —                  | Points at Xeon server |
+>>>>>>> origin/fix/published-episode-titles

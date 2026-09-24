@@ -1,9 +1,9 @@
 # `common.WORDS_SCHEMA_VERSION == 2`; a freshly written `words.json` contains `compute_type` and `beam_size` alongside the existing schema-1 fields.
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 012-provenance-and-policy-decoder-identity-in-words-json
 
 ## Description
 
@@ -16,9 +16,8 @@ Delivered by Task 10 and 11 of `.procoder/plans/v0-2-0-hardening.md` (sprint 012
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `common.WORDS_SCHEMA_VERSION == 2`; a freshly written `words.json` contains `compute_type` and `beam_size` alongside the existing schema-1 fields.
+- [x] `common.WORDS_SCHEMA_VERSION == 2`; a freshly written `words.json` contains `compute_type` and `beam_size` alongside the existing schema-1 fields. `common.WORDS_SCHEMA_VERSION == 2`; a freshly written `words.json` contains `compute_type` and `beam_size` alongside the existing schema-1 fields.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+`python3 -m pytest tests/test_generate.py -k 'test_write_words_persists_compute_type_and_beam_size or test_a_schema_1_sidecar_with_no_compute_fields_still_reads' -q` -> 2 passed in commit 21e2656.

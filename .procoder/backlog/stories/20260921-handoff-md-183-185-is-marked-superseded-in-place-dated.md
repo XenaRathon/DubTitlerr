@@ -1,9 +1,9 @@
 # `handoff.md:183-185` is marked superseded in place, dated.
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 012-provenance-and-policy-decoder-identity-in-words-json
 
 ## Description
 
@@ -16,9 +16,8 @@ Delivered by Task 12 of `.procoder/plans/v0-2-0-hardening.md` (sprint 012); the 
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `handoff.md:183-185` is marked superseded in place, dated.
+- [x] `handoff.md:183-185` is marked superseded in place, dated. `handoff.md:183-185` is marked superseded in place, dated.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+`git grep -n 'SUPERSEDED 2026-09-06' .procoder/state/handoff.md` -> line 182 verified in commit 9a22eaa.

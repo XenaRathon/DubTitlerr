@@ -1022,11 +1022,7 @@ prerequisite to almost any other change.
    nor within a small edit distance of the original. `repair.py` still accepts raw
    LLM output after only a length-ratio check and a pass through `glossary.correct()`.
 
-2. **`REPAIR_BACKEND_SECONDARY` is not implemented.**
-   `IMPROVEMENTS.md` recommends a separate backend for the secondary verification pass
-   (e.g., GPU primary / CPU secondary). `repair.py` dispatches both primary and
-   secondary through the same `REPAIR_BACKEND`, so a true two-backend setup is
-   impossible without code changes.
+2. **A second backend for the repair secondary pass was proposed and retired (2026-09-22).** `IMPROVEMENTS.md` §5 described adding a separate backend so the primary and secondary repair passes could run on different backends (GPU vs CPU); it was never built, and `REPAIR_MODEL_SECONDARY` already covers the second-opinion need with a second MODEL on the SAME backend. See `IMPROVEMENTS.md`'s one-line pointer where §5 used to be.
 
 3. **`generate.py` still imports `mux` just for stamp helpers.**
    The stamp helpers now live in `common.py`, but `generate.py` still does `import mux`,
@@ -1071,8 +1067,10 @@ prerequisite to almost any other change.
 ### Bottom line from this pass
 
 The codebase is in good shape after the `common.py` consolidation, but it currently
-ships two documented features (phonetic-name guard and `REPAIR_BACKEND_SECONDARY`)
-that are not actually implemented. Combined with the broken local test environment,
+shipped two documented gaps that are now resolved rather than implemented: the
+phonetic-name guard (`ISSUE-phonetic-name-guard.md`'s status header) and the
+separate secondary-pass backend proposal (retired, see the outstanding-issues list
+above). Combined with the broken local test environment,
 that is the highest-value place to invest effort: install the dev dependencies, make
 `pytest` green, then land the missing guards and their tests before adding new
 features.
@@ -1087,17 +1085,17 @@ test suite could not run, so several "outstanding" items are stale.
 
 **Already done (verified in code, not assumed):**
 
-| Item                                 | State                                                                                                                                                       |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| #10 `is_target()` NSP fencepost      | already `> NSP_MAX` (repair.py:101)                                                                                                                         |
-| #3 `generate.py` imports `mux`       | gone — stamp helpers come from `common`                                                                                                                     |
-| #8 runtime artefacts in `.gitignore` | present, with a comment pointing at the spec                                                                                                                |
-| #35 CI                               | `.github/workflows/ci.yml` + `test.yml` exist                                                                                                               |
-| #36 `plex_refresh.py` env vars       | uses `os.environ.get` with explicit exits                                                                                                                   |
-| #7 legacy shell scripts              | `anime_library.sh`, `all_seasons.sh`, `merge_watcher.sh` all carry deprecation headers                                                                      |
-| #22 misleading `Dockerfile`          | README's quick start points at `Dockerfile.builder`                                                                                                         |
-| #2 `REPAIR_BACKEND_SECONDARY`        | the two-pass re-check exists as `REPAIR_MODEL_SECONDARY` (a second _model_, not a second backend — a separate GPU/CPU backend split is still unimplemented) |
-| #4 `keep_event()` untested           | `tests/test_dub_signs_merge.py` has the style x positioning matrix                                                                                          |
+| Item                                 | State                                                                                                                    |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| #10 `is_target()` NSP fencepost      | already `> NSP_MAX` (repair.py:101)                                                                                      |
+| #3 `generate.py` imports `mux`       | gone — stamp helpers come from `common`                                                                                  |
+| #8 runtime artefacts in `.gitignore` | present, with a comment pointing at the spec                                                                             |
+| #35 CI                               | `.github/workflows/ci.yml` + `test.yml` exist                                                                            |
+| #36 `plex_refresh.py` env vars       | uses `os.environ.get` with explicit exits                                                                                |
+| #7 legacy shell scripts              | `anime_library.sh`, `all_seasons.sh`, `merge_watcher.sh` all carry deprecation headers                                   |
+| #22 misleading `Dockerfile`          | README's quick start points at `Dockerfile.builder`                                                                      |
+| #2 (separate secondary-pass backend) | retired (2026-09-22) — `REPAIR_MODEL_SECONDARY` already covers the second-opinion need; a second backend was never built |
+| #4 `keep_event()` untested           | `tests/test_dub_signs_merge.py` has the style x positioning matrix                                                       |
 
 **Deliberate, not a defect:**
 

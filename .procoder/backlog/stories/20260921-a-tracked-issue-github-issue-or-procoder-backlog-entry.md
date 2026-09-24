@@ -4,6 +4,7 @@ Status: open
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: -
+Carried: 015-release-osv-scanner-gap-ledger-and-the-0-2-0-release — gh issue create --repo azrtydxb/procoder was never executed: #293 and #177 are the only lockfile-ish upstream hits and neither is the extractor gap, gh search issues --author @me --created >=2026-09-19 is empty, and XenaRathon/DubTitlerr has no issues at all (open_issues_count 0), yet .github/workflows/ci.yml cites an upstream issue that does not exist; the only backlog record is the 2026-08-27 story that mentions the gap in passing, predating S-21
 
 ## Description
 

@@ -4,6 +4,7 @@ Status: open
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: -
+Carried: 015-release-osv-scanner-gap-ledger-and-the-0-2-0-release — OWNER/LIVE — requires representative media on the deployed worker over SSH; no live run happened this sprint and docs/timing-compare/ does not exist, so there is nothing to record
 
 ## Description
 

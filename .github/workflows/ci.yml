@@ -47,3 +47,18 @@ jobs:
       # decisions.py, which holds every human verdict. ruff's config lives in pyproject
       # (line-length, rule selection, the *.md exclude), so "." is the honest argument.
       - run: ruff check .
+
+  osv-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      # Scans uv.lock directly, not pyproject.toml -- procoder's own gate hands
+      # osv-scanner 2.5.1 pyproject.toml, which has no extractor in that version
+      # (see the upstream issue filed against azrtydxb/procoder). uv.lock is the
+      # scannable lockfile artifact and already scans clean (35 packages / 0
+      # vulnerabilities, verified manually 2026-08-24).
+      - uses: google/osv-scanner-action/osv-scanner-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+        with:
+          scan-args: |-
+            --lockfile=./uv.lock

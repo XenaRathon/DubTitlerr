@@ -1,9 +1,9 @@
 # `specs/timing-compare/tasks.md` shows T1–T11 checked and no longer references the nonexistent `feat/timing-compare` branch.
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 014-measurement-timing-compare-t12-on-three-shows-queue-publish
 
 ## Description
 
@@ -16,9 +16,11 @@ Delivered by Task 18 and 19 of `.procoder/plans/v0-2-0-hardening.md` (sprint 014
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `specs/timing-compare/tasks.md` shows T1–T11 checked and no longer references the nonexistent `feat/timing-compare` branch.
+- [x] `specs/timing-compare/tasks.md` shows T1–T11 checked and no longer references the nonexistent `feat/timing-compare` branch.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- `grep -n '^\- \[' specs/timing-compare/tasks.md` → T1–T11 all `[x]` (lines 17, 25, 33, 37, 45, 51, 55, 63, 67, 75, 82); the only remaining `[ ]` boxes are T12 (line 87) and the CI/gates line (97), neither of which this criterion claims.
+- `grep -n "feat/timing-compare" specs/timing-compare/tasks.md` → three occurrences, all negations: line 8 "(no `feat/timing-compare` branch was ever created; `git branch -a` confirms this).", line 98 the struck-through push step marked N/A, line 99 the struck-through PR step. No live instruction to create or push that branch remains.
+- `git grep -c 'feat/timing-compare'` → remaining matches are only `.procoder/` plan/spec/story files, `specs/timing-compare/REVIEW.md`, `specs/timing-compare/plan.md` (historical planning prose) and `tasks.md` itself; no source, script, or task step depends on that branch.
+- Shipped in `f75bb55` (`specs/timing-compare/tasks.md | 51+/18-`).

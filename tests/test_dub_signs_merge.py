@@ -151,6 +151,53 @@ def test_process_one_logs_chown_failure_instead_of_swallowing(tmp_path, monkeypa
     assert "chown failed for" in capsys.readouterr().out
 
 
+# --- [S-6] process_one() writes a matching stage record on every return path --
+
+
+def test_process_one_no_video_writes_matching_stage_record(tmp_path, monkeypatch):
+    common.OUTPUT_ROOT = ""
+    srt = str(tmp_path / ("ep" + dsm.SUFFIX))
+    open(srt, "w").close()
+    stem = srt[: -len(dsm.SUFFIX)]
+    monkeypatch.setattr(dsm, "find_video", lambda s: None)
+
+    assert dsm.process_one(srt) == "no-video"
+    assert common.read_stages(stem)["signs"]["outcome"] == "no-video"
+
+
+def test_process_one_build_error_writes_matching_stage_record(tmp_path, monkeypatch):
+    common.OUTPUT_ROOT = ""
+    srt = str(tmp_path / ("ep" + dsm.SUFFIX))
+    open(srt, "w").close()
+    stem = srt[: -len(dsm.SUFFIX)]
+    monkeypatch.setattr(dsm, "find_video", lambda s: str(tmp_path / "ep.mkv"))
+
+    def boom(video, dub_srt, out_ass):
+        raise RuntimeError("forced build error")
+
+    monkeypatch.setattr(dsm, "build", boom)
+
+    assert dsm.process_one(srt) == "build-error"
+    assert common.read_stages(stem)["signs"]["outcome"] == "build-error"
+
+
+def test_process_one_no_signs_writes_ok_stage_record(tmp_path, monkeypatch):
+    """A genuinely signs-free episode is a PASS, not a failure -- recorded as "ok" with
+    detail "no-signs" so the mux signs-regression guard (S-8) never confuses it with a
+    real build failure."""
+    common.OUTPUT_ROOT = ""
+    srt = str(tmp_path / ("ep" + dsm.SUFFIX))
+    open(srt, "w").close()
+    stem = srt[: -len(dsm.SUFFIX)]
+    monkeypatch.setattr(dsm, "find_video", lambda s: str(tmp_path / "ep.mkv"))
+    monkeypatch.setattr(dsm, "build", lambda video, dub_srt, out_ass: ("no-signs", 0, 0))
+
+    assert dsm.process_one(srt) == "no-signs"
+    rec = common.read_stages(stem)["signs"]
+    assert rec["outcome"] == "ok"
+    assert rec["detail"] == "no-signs"
+
+
 # --- V2 Phase D: diagnostic logging (D1/D3/D4/D5) ----------------------------
 
 

@@ -1,6 +1,6 @@
 # What a human decided
 
-Written 2026-09-03 01:49 UTC. procoder reads this
+Written 2026-09-23 18:25 UTC. procoder reads this
 file to avoid asking a question twice; edit an answer here to change what
 it believes. Reword the question and it will be asked again.
 
@@ -9,6 +9,12 @@ it believes. Reword the question and it will be asked again.
 Key: 12e96403baaf
 Question: W292 [*] No newline at end of file (lint) — is this finding worth fixing here, or a false positive to be explained?
 Answer: Worth fixing. Real finding, fixed: added the trailing newline. (Owner decision 2026-09-02 -- the file is scratch tooling for an unrelated mergerfs pool-dedup task that happens to live in this repo root, and it was blocking every commit.)
+
+## (no longer asked)
+
+Key: 726a076193ef
+Question: F401 [*] `socket` imported but unused (lint) — is this finding worth fixing here, or a false positive to be explained?
+Answer: socket is imported for future use (real-socket tests may need it); removing now would require adding back when needed. False positive for now.
 
 ## (no longer asked)
 

@@ -642,9 +642,12 @@ COMPLETE`.
       absent from the file; `REVIEW.md:1025-1029` and `:1099` state
       `REPAIR_BACKEND_SECONDARY` is retired, not "not yet implemented" (owner
       decision — recommended default: retire; confirm at sprint 010 open).
-- [ ] [S-14] `review_server.authorised("GET", None)` returns `False` for a
-      path starting with `/api/` and `True` for `/`, `/index.html`,
-      `/shared`, `/healthz`.
+- [ ] [S-14] `review_server.authorised("GET", None)` returns `False`, so a
+      `/api/` route is 401 without the token; `Handler.do_GET` gates the pages
+      itself — `/`, `/index.html` and `/shared` return 200 rendering
+      `render_locked(page_kind)` (token box only, no stem) when neither the
+      `X-Review-Token` header nor the `dubtitlerr_token` cookie is presented.
+      `/healthz` is answered before `route()` is reached and is never gated.
 - [ ] [S-14] With `REQUIRE_TOKEN=1` and `REVIEW_AUTH=off` both set,
       `review_server.serve()` exits with status 2 and logs the exact message
       before `BoundedHTTPServer(...)` is ever constructed (asserted by

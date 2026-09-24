@@ -1,9 +1,9 @@
 # `AGENTS.md` documents the `~/.local/bin/osv-scanner` shim as host-local only.
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 015-release-osv-scanner-gap-ledger-and-the-0-2-0-release
 
 ## Description
 
@@ -16,9 +16,20 @@ Delivered by Task 23 of `.procoder/plans/v0-2-0-hardening.md` (sprint 015); the 
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `AGENTS.md` documents the `~/.local/bin/osv-scanner` shim as host-local only.
+- [x] `AGENTS.md` documents the `~/.local/bin/osv-scanner` shim as host-local only.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- `sed -n '91,95p' AGENTS.md` -> the sentence is present verbatim: "**`osv-scanner` on this
+  maintainer's machine** is a host-local shim over the real binary (appends `--verbosity error`
+  so procoder's gate can parse its output) — it is not part of this repository and a fresh clone
+  needs nothing like it; CI scans `uv.lock` directly via `google/osv-scanner-action` instead
+  (`.github/workflows/ci.yml`)."
+- `AGENTS.md` is intentionally not tracked in this checkout: `git check-ignore -v AGENTS.md`
+  -> `.git/info/exclude:11:AGENTS.md`. The same sentence _is_ tracked, propagated by
+  `33101c3` (`chore(agents): resync per-editor rule files with AGENTS.md`) into the 11
+  per-editor rule files: `.agents/rules/procoder.md`, `.clinerules/procoder.md`,
+  `.cursor/rules/procoder.mdc`, `.github/copilot-instructions.md`, `.kilo/rules/procoder.md`,
+  `.kilocode/rules/procoder.md`, `.kiro/steering/procoder.md`, `.qoder/rules/procoder.md`,
+  `.roo/rules/procoder.md`, `.windsurf/rules/procoder.md`, `skills/procoder/SKILL.md`.
+- Shipped in `33101c3` (the tracked per-editor-rule half) with the source file's own edit on top.

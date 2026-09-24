@@ -1,9 +1,9 @@
 # A forced `LLM_UNREACHABLE` path in `repair.py` (`repair.py:853`) results in `write_stage(stem, "repair", "backend-unreachable")`, never `"llm-empty"` — a test asserts the two outcomes are never produced by the same code path.
 
-Status: open
+Status: done 2026-09-22
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture
 
 ## Description
 
@@ -16,9 +16,8 @@ Delivered by Task 6 of `.procoder/plans/v0-2-0-hardening.md` (sprint 011); the t
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] A forced `LLM_UNREACHABLE` path in `repair.py` (`repair.py:853`) results in `write_stage(stem, "repair", "backend-unreachable")`, never `"llm-empty"` — a test asserts the two outcomes are never produced by the same code path.
+- [x] A forced `LLM_UNREACHABLE` path in `repair.py` (`repair.py:853`) results in `write_stage(stem, "repair", "backend-unreachable")`, never `"llm-empty"` — a test asserts the two outcomes are never produced by the same code path.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+`python3 -m pytest tests/test_repair.py::test_backend_unreachable_and_llm_empty_are_never_the_same_stage_outcome -v` -- PASSED. Forcing repair.llm to return LLM_UNREACHABLE for every card records write_stage(stem, "repair", "backend-unreachable"); asserted outcome == "backend-unreachable" and outcome != "llm-empty".

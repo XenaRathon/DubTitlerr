@@ -1,9 +1,9 @@
 # Two new tests pass: one with an unwritable stamp path, one simulating an interruption between `_finalize` and `write_stamp` — both assert either `orig` or a validly stamped `final` survives, never neither.
 
-Status: open
+Status: done 2026-09-22
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture
 
 ## Description
 
@@ -16,9 +16,8 @@ Delivered by Task 9 of `.procoder/plans/v0-2-0-hardening.md` (sprint 011); the t
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] Two new tests pass: one with an unwritable stamp path, one simulating an interruption between `_finalize` and `write_stamp` — both assert either `orig` or a validly stamped `final` survives, never neither.
+- [x] Two new tests pass: one with an unwritable stamp path, one simulating an interruption between `_finalize` and `write_stamp` — both assert either `orig` or a validly stamped `final` survives, never neither.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+`python3 -m pytest tests/test_mux.py::test_process_reports_a_failed_stamp_write_and_keeps_the_sidecar tests/test_mux.py::test_mp4_stamp_write_failure_rolls_back_final_and_keeps_orig -v` -- both PASSED. The first covers an unwritable stamp path (MKV, sidecar kept for retry); the second covers the MP4 _finalize-to-write_stamp window with write_stamp raising mid-way -- both assert the surviving state is either `orig` intact or a validly stamped `final`, never neither.

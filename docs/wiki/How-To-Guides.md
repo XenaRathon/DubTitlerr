@@ -41,9 +41,15 @@ them.
 `Zoro`. Review the results rather than turning this on and walking away. Reasoning:
 [Why it works this way](Why-It-Works-This-Way.md#anchored-and-unanchored-repair).
 
-There is also a global `REPAIR_UNANCHORED` variable. **Do not use it.** It is recorded in no
-committed file, which is precisely how a season's corrections were once silently reverted to
-raw speech recognition.
+There is also a global `REPAIR_UNANCHORED` variable. It has been deployed library-wide
+on the reference install since 2026-09-06 (see `common.py`'s v10 changelog note) --
+every show without an explicit `unanchored_repair` field in its glossary is repaired
+unanchored by default there. **Prefer the per-show glossary field for any new
+install**: it is committed to git and reviewable, where the global flag is host
+configuration that a `git pull` cannot show you. If an unanchored repair ships
+something wrong, the recovery is a `reject` verdict recorded with `decisions.record`
+followed by `review_apply.py`, not disabling the flag.
+
 
 ---
 

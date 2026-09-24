@@ -92,7 +92,7 @@ Per **show** rather than per episode: `.lastrun.json` and the glossary's
 | `SKIP_IF_SRT`                        | `1`              | Skip an episode that already has a dubtitle sidecar                                            |
 | `SHOW_NAME`                          | _(empty)_        | Override the show name derived from the path                                                   |
 | `GLOSSARY_FILE`                      | _(empty)_        | Override the glossary resolved from the show                                                   |
-| `FFMPEG_TIMEOUT` / `FFPROBE_TIMEOUT` | `600` / `60`     | Seconds                                                                                        |
+| `FFMPEG_TIMEOUT` / `FFPROBE_TIMEOUT` | `1800` / `60`    | Seconds                                                                                        |
 
 ### Repair
 
@@ -103,7 +103,7 @@ Per **show** rather than per episode: `.lastrun.json` and the glossary's
 | `REPAIR_LLAMACPP_URL`              | `http://127.0.0.1:8090/v1/chat/completions` | llama.cpp chat endpoint. The server behind it **must** be started with `--jinja`, or `chat_template_kwargs.enable_thinking=false` is silently ignored and a thinking-capable model burns its whole budget on reasoning and returns empty content |
 | `OLLAMA_URL`                       | `http://127.0.0.1:11434/api/generate`       | Ollama endpoint                                                                                                                                                                                                                                  |
 | `REPAIR_MODEL_SECONDARY`           | _(same as primary)_                         | Second-opinion model for name changes                                                                                                                                                                                                            |
-| `REPAIR_UNANCHORED`                | _(unset — closed)_                          | Global override; prefer the per-show glossary field                                                                                                                                                                                              |
+| `REPAIR_UNANCHORED`                | `1` (deployed 2026-09-06 on the reference install) | Global override; per-show glossary field preferred for new installs — see How-To-Guides.md |
 | `DECISIONS_APPLY`                  | `1`                                         | Apply stored human verdicts during repair                                                                                                                                                                                                        |
 | `LOGPROB_MIN`                      | `-0.4`                                      | Below this average logprob, a line is a repair target                                                                                                                                                                                            |
 | `NSP_MAX`                          | `0.5`                                       | Above this no-speech probability, a line is skipped                                                                                                                                                                                              |

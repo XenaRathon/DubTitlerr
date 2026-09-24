@@ -166,3 +166,13 @@ def test_container_run_is_valid_posix_shell():
     r = subprocess.run(["sh", "-n", os.path.join(ROOT, "container_run.sh")], capture_output=True, text=True)
 
     assert r.returncode == 0, r.stderr
+
+
+def test_healthcheck_targets_healthz():
+    """A HEALTHCHECK must exist and hit /healthz -- Task 16's own liveness endpoint,
+    not some other port or path that would silently stop meaning anything the moment
+    either side changed alone."""
+    with open(os.path.join(ROOT, "Dockerfile.builder")) as f:
+        body = f.read()
+    assert re.search(r"^HEALTHCHECK\b.*CMD\b", body, re.M), "no HEALTHCHECK instruction found"
+    assert "/healthz" in body, "the HEALTHCHECK must target /healthz"

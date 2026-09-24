@@ -6,7 +6,9 @@ tagged yet — this file starts at the public beta. `TRANSCRIBE_VERSION`/`TEXT_V
 and only a stamp bump puts the fix into already-processed files); the entries below summarize
 that history alongside everything else that shipped since.
 
-## 0.2.0 - Unreleased
+## [Unreleased]
+
+## 0.2.0 - 2026-09-23
 
 Scope boundary for the v0.2.0 hardening pass, set 2026-09-21. The scope ids S-1 through
 S-22 are defined in `.procoder/specs/v0-2-0-hardening.md`; the tasks that deliver them are
@@ -73,8 +75,6 @@ silently promoted into this release:
   polish, unless promoted by evidence from post-beta checks.
 - Phase-1 timing gating (using the timing-compare signal to drop/flag/snap cards): a
   separate spec, written only if S-17's go/no-go says GO.
-
-## [Unreleased]
 
 ### Fixed
 
@@ -228,4 +228,5 @@ episode already in your library is stale.
 - **v2** (2026-07-27) — fixed a signs-merge bug that rendered captions as solid black
   and duplicated signs across tracks.
 
-[Unreleased]: https://github.com/XenaRathon/DubTitlerr/compare/v0.1.0...HEAD
+[0.2.0]: https://github.com/XenaRathon/DubTitlerr/compare/v0.1.0...v0.2.0
+[Unreleased]: https://github.com/XenaRathon/DubTitlerr/compare/v0.2.0...HEAD

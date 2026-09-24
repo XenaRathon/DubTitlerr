@@ -1602,11 +1602,12 @@ def test_card_word_probs_is_unchanged_for_a_plausible_window():
 # --- tier partition and the cached replay (spec v5, S-2 replay / S-9) ----------
 
 
-def test_a_text_stale_episode_with_words_goes_to_the_text_queue(tmp_path):
+def test_a_text_stale_episode_with_words_goes_to_the_text_queue(tmp_path, monkeypatch):
     """The 576 v4 episodes after adoption. They must NOT reach the GPU: that is the
     entire saving, and without this split a sweep re-transcribes all of them."""
     words, segments = _clamped_fixture()
     v = _stamped(tmp_path, "ep.mkv", transcribe_version=common.TRANSCRIBE_VERSION, version=4)
+    monkeypatch.setattr(generate, "INITIAL_PROMPT", "p")
     generate.write_words(os.path.splitext(v)[0], words, segments, 7.0, initial_prompt="p")
 
     transcribe_todo, text_todo = generate.partition_todo([v])
@@ -1626,11 +1627,12 @@ def test_a_text_stale_episode_without_words_must_be_retranscribed(tmp_path):
     assert text_todo == []
 
 
-def test_a_transcribe_stale_episode_is_never_sent_to_the_text_queue(tmp_path):
+def test_a_transcribe_stale_episode_is_never_sent_to_the_text_queue(tmp_path, monkeypatch):
     """A v2 stamp was decoded by an older pipeline; replaying its words would replay that
     older decoder's output."""
     words, segments = _clamped_fixture()
     v = _stamped(tmp_path, "ep.mkv", version=2)
+    monkeypatch.setattr(generate, "INITIAL_PROMPT", "p")
     generate.write_words(os.path.splitext(v)[0], words, segments, 7.0, initial_prompt="p")
 
     transcribe_todo, text_todo = generate.partition_todo([v])
@@ -1662,6 +1664,7 @@ def test_the_replay_writes_output_without_touching_a_model(tmp_path, monkeypatch
     words, segments = _clamped_fixture()
     v = _stamped(tmp_path, "ep.mkv", transcribe_version=common.TRANSCRIBE_VERSION, version=4)
     stem = os.path.splitext(v)[0]
+    monkeypatch.setattr(generate, "INITIAL_PROMPT", "p")
     generate.write_words(stem, words, segments, 7.0, initial_prompt="p")
 
     def _boom(*a, **k):
@@ -1727,9 +1730,10 @@ def test_media_duration_timeout_comes_from_ffprobe_timeout(monkeypatch):
 
 
 def test_ffmpeg_timeout_defaults_match_the_pre_override_literals():
-    """Breaks if adding the override silently changed production behaviour. An unset
-    env must reproduce exactly the timeouts that were compiled in before."""
-    assert generate.FFMPEG_TIMEOUT == 600
+    """Breaks if the shipped default silently changes again. Raised 600 -> 1800
+    (v0.2.0, storage/host checklist item 14): a 556 MB episode measured on the NAS
+    failed at 600s. FFPROBE_TIMEOUT (a much smaller read) is untouched."""
+    assert generate.FFMPEG_TIMEOUT == 1800
     assert generate.FFPROBE_TIMEOUT == 60
 
 
@@ -1867,3 +1871,148 @@ def test_a_negative_audio_start_is_reported_and_never_applied(capsys):
     printed = capsys.readouterr().out
     assert "branch=refused-negative" in printed
     assert "branch=corrected" not in printed
+
+
+def _write_words_matching_identity(tmp_path, monkeypatch, initial_prompt="Custom prompt A", beam_size=7):
+    monkeypatch.setattr(generate, "INITIAL_PROMPT", initial_prompt)
+    monkeypatch.setenv("WHISPER_BEAM_SIZE", str(beam_size))
+    words, segments = _clamped_fixture()
+    stem = str(tmp_path / "ep")
+    generate.write_words(stem, words, segments, 7.0, initial_prompt=generate.INITIAL_PROMPT)
+    return stem, generate.decoder_identity()
+
+
+def test_read_words_rejects_a_model_mismatch(tmp_path, monkeypatch):
+    import qc
+
+    stem, expect = _write_words_matching_identity(tmp_path, monkeypatch)
+    expect = dict(expect, model="a-different-model")
+    rec = qc.Recorder()
+    assert common.read_words(stem, rec=rec, expect=expect) is None
+    assert rec.counters["words_config_mismatch"] == 1
+
+
+def test_read_words_rejects_an_initial_prompt_mismatch(tmp_path, monkeypatch):
+    import qc
+
+    stem, expect = _write_words_matching_identity(tmp_path, monkeypatch)
+    expect = dict(expect, initial_prompt="a different prompt")
+    rec = qc.Recorder()
+    assert common.read_words(stem, rec=rec, expect=expect) is None
+    assert rec.counters["words_config_mismatch"] == 1
+
+
+def test_read_words_rejects_a_compute_type_mismatch(tmp_path, monkeypatch):
+    import qc
+
+    stem, expect = _write_words_matching_identity(tmp_path, monkeypatch)
+    expect = dict(expect, compute_type="float16")
+    rec = qc.Recorder()
+    assert common.read_words(stem, rec=rec, expect=expect) is None
+    assert rec.counters["words_config_mismatch"] == 1
+
+
+def test_read_words_rejects_a_beam_size_mismatch(tmp_path, monkeypatch):
+    import qc
+
+    stem, expect = _write_words_matching_identity(tmp_path, monkeypatch)
+    expect = dict(expect, beam_size=expect["beam_size"] + 1)
+    rec = qc.Recorder()
+    assert common.read_words(stem, rec=rec, expect=expect) is None
+    assert rec.counters["words_config_mismatch"] == 1
+
+
+def test_read_words_treats_a_missing_field_as_unknown_not_a_mismatch(tmp_path, monkeypatch):
+    import qc
+
+    stem, expect = _write_words_matching_identity(tmp_path, monkeypatch)
+    path = stem + generate.WORDS_SUFFIX
+    doc = json.load(open(path))
+    del doc["compute_type"]
+    del doc["beam_size"]
+    doc["model"] = ""
+    with open(path, "w") as f:
+        json.dump(doc, f)
+    rec = qc.Recorder()
+    result = common.read_words(stem, rec=rec, expect=expect)
+    assert result is not None
+    assert rec.counters["words_config_unknown"] == 1
+    assert rec.counters.get("words_config_mismatch", 0) == 0
+
+
+def test_read_words_counts_a_transcribe_version_ahead_of_current_as_a_mismatch(tmp_path):
+    import qc
+
+    words, segments = _clamped_fixture()
+    stem = str(tmp_path / "ep")
+    generate.write_words(stem, words, segments, 7.0, initial_prompt="x")
+    path = stem + generate.WORDS_SUFFIX
+    doc = json.load(open(path))
+    doc["transcribe_version"] = common.TRANSCRIBE_VERSION + 1
+    with open(path, "w") as f:
+        json.dump(doc, f)
+    rec = qc.Recorder()
+    assert common.read_words(stem, rec=rec) is None
+    assert rec.counters["words_version_mismatch"] == 1
+
+
+def test_partition_todo_and_process_text_request_the_decoder_identity():
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "generate.py")).read()
+    assert "read_words(stem, expect=decoder_identity())" in src
+    assert "read_words(stem, rec=rec, expect=decoder_identity())" in src
+
+
+def test_build_lastrun_reports_the_words_counters():
+    totals = {"cards_written": 0, "dropped_hallucination": 0, "collapsed_runs": 0, "flagged": 0}
+    census = {"transcribe_stale": 0, "text_stale": 0}
+    words_totals = {"words_missing": 2, "words_version_mismatch": 1, "words_reused": 5}
+    doc = generate.build_lastrun("One Pace", 1.0, 8, 8, totals, census, words_totals)
+    assert doc["words_missing"] == 2
+    assert doc["words_version_mismatch"] == 1
+    assert doc["words_reused"] == 5
+
+
+def test_build_lastrun_defaults_the_words_counters_to_zero_for_the_old_call_shape():
+    totals = {"cards_written": 0, "dropped_hallucination": 0, "collapsed_runs": 0, "flagged": 0}
+    census = {"transcribe_stale": 0, "text_stale": 0}
+    doc = generate.build_lastrun("One Pace", 1.0, 8, 8, totals, census)
+    assert doc["words_missing"] == 0
+    assert doc["words_version_mismatch"] == 0
+    assert doc["words_reused"] == 0
+
+
+def test_decoder_identity_reports_the_active_decoder_settings(monkeypatch):
+    monkeypatch.setenv("WHISPER_BEAM_SIZE", "5")
+    identity = generate.decoder_identity()
+    assert identity == {
+        "model": generate.MODEL,
+        "initial_prompt": generate.INITIAL_PROMPT,
+        "compute_type": generate.COMPUTE,
+        "beam_size": 5,
+    }
+
+
+def test_write_words_persists_compute_type_and_beam_size(tmp_path, monkeypatch):
+    monkeypatch.setenv("WHISPER_BEAM_SIZE", "7")
+    words, segments = _clamped_fixture()
+    stem = str(tmp_path / "ep")
+    generate.write_words(stem, words, segments, 7.0, initial_prompt="x")
+    doc = json.load(open(stem + generate.WORDS_SUFFIX))
+    assert doc["schema_version"] == 2
+    assert doc["model"] == generate.MODEL
+    assert doc["compute_type"] == generate.COMPUTE
+    assert doc["beam_size"] == 7
+
+
+def test_a_schema_1_sidecar_with_no_compute_fields_still_reads(tmp_path):
+    words, segments = _clamped_fixture()
+    stem = str(tmp_path / "ep")
+    generate.write_words(stem, words, segments, 7.0, initial_prompt="x")
+    path = stem + generate.WORDS_SUFFIX
+    doc = json.load(open(path))
+    doc["schema_version"] = 1
+    del doc["compute_type"]
+    del doc["beam_size"]
+    with open(path, "w") as f:
+        json.dump(doc, f)
+    assert common.read_words(stem) is not None

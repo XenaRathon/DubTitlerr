@@ -1,9 +1,9 @@
 # `common.write_stage(stem, "repair", "ok")` then `common.read_stages(stem)` returns `{"repair": {"outcome": "ok", "detail": "", "at": <float>}}`; a second `write_stage` call for a different stage merges rather than overwrites the first.
 
-Status: open
+Status: closed
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture
 
 ## Description
 
@@ -16,9 +16,7 @@ Delivered by Task 6 of `.procoder/plans/v0-2-0-hardening.md` (sprint 011); the t
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `common.write_stage(stem, "repair", "ok")` then `common.read_stages(stem)` returns `{"repair": {"outcome": "ok", "detail": "", "at": <float>}}`; a second `write_stage` call for a different stage merges rather than overwrites the first.
+- [x] `common.write_stage(stem, "repair", "ok")` then `common.read_stages(stem)` returns `{"repair": {"outcome": "ok", "detail": "", "at": <float>}}`; a second `write_stage` call for a different stage merges rather than overwrites the first.
 
 ## Evidence
-
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+Verified via `python3 -c "import common; ...` — after `write_stage(stem, 'repair', 'ok')`, `read_stages(stem)` returns `{'repair': {'outcome': 'ok', 'detail': '', 'at': 1790029731.0348203}}`; second `write_stage(stem, 'merge', 'ok', 'some detail')` merges, producing `{'repair': {...}, 'merge': {'outcome': 'ok', 'detail': 'some detail', 'at': ...}}`; `failed_stage(stem)` returns `None` when all outcomes are passing (`ok`, `no-reference`, `no-video`), and returns the first failing stage name (`repair`) when a non-passing outcome is recorded.

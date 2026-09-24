@@ -1,9 +1,9 @@
 # `tools/sns_extract.py` exists, imports only `dub_signs_merge.keep_event` from the pipeline, and implements `off_default_position(ev, play_res_y)`.
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 014-measurement-timing-compare-t12-on-three-shows-queue-publish
 
 ## Description
 
@@ -16,9 +16,11 @@ Delivered by Task 22 of `.procoder/plans/v0-2-0-hardening.md` (sprint 014); the 
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `tools/sns_extract.py` exists, imports only `dub_signs_merge.keep_event` from the pipeline, and implements `off_default_position(ev, play_res_y)`.
+- [x] `tools/sns_extract.py` exists, imports only `dub_signs_merge.keep_event` from the pipeline, and implements `off_default_position(ev, play_res_y)`.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+- `tools/sns_extract.py` exists (117 lines, added by `d604337`). Its import block is `import argparse`, `import os`, `import sys`, `import pysubs2`, and one pipeline import: line 35 `import dub_signs_merge as dsm`.
+- `grep -n "dsm\." tools/sns_extract.py` → exactly one hit, line 66 `if dsm.keep_event(ev):`. `keep_event` is the only name reached through the pipeline module; the module alias itself is the whole import surface.
+- `grep -n "^def \|^class " tools/sns_extract.py` → line 45 `def off_default_position(ev: pysubs2.SSAEvent, play_res_y: int) -> bool:`; also `classify_event` (line 60) and `extract(path, out_dir)` (line 71). `off_default_position` is package-local and does not call back into `dub_signs_merge`.
+- Shipped in `d604337`.

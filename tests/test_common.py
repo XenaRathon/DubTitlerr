@@ -24,6 +24,37 @@ def ev(text="hello", style="Default", start=0, end=1000, comment=False):
     return pysubs2.SSAEvent(text=text, style=style, start=start, end=end, type="Comment" if comment else "Dialogue")
 
 
+def test_write_stage_merges_and_stamps_at(tmp_path, monkeypatch):
+    """[S-6] write_stage(stem, "repair", "ok") then read_stages(stem) returns
+    {"repair": {"outcome": "ok", "detail": "", "at": <float>}}; a second call for a
+    different stage merges rather than overwrites the first."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep01")
+    common.write_stage(stem, "repair", "ok")
+    rec = common.read_stages(stem)
+    assert rec["repair"]["outcome"] == "ok"
+    assert rec["repair"].get("detail", "") == ""
+    assert isinstance(rec["repair"]["at"], float)
+    common.write_stage(stem, "signs", "ok", "no-signs")
+    merged = common.read_stages(stem)
+    assert merged["repair"]["outcome"] == "ok"
+    assert merged["signs"]["outcome"] == "ok" and merged["signs"]["detail"] == "no-signs"
+
+
+def test_failed_stage_none_when_all_pass_else_first_offender(tmp_path, monkeypatch):
+    """[S-6] common.failed_stage(stem) returns None when every recorded outcome is in
+    {"ok", "no-reference", "no-video"}, and returns the first offending stage name
+    otherwise."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep01")
+    common.write_stage(stem, "repair", "ok")
+    common.write_stage(stem, "signs", "no-reference")
+    common.write_stage(stem, "mux", "no-video")
+    assert common.failed_stage(stem) is None
+    common.write_stage(stem, "signs", "build-error")
+    assert common.failed_stage(stem) == "signs"
+
+
 # --- is_dialogue_event() matrix ----------------------------------------------
 
 
@@ -701,3 +732,24 @@ def test_write_stamp_still_records_a_legacy_version_key(tmp_path):
     assert doc["transcribe_version"] == common.TRANSCRIBE_VERSION
     assert doc["text_version"] == common.TEXT_VERSION
     assert doc["version"] == common.TEXT_VERSION
+
+
+def test_heartbeat_merges_rather_than_replaces(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "HEARTBEAT_PATH", str(tmp_path / "heartbeat.json"))
+    common.heartbeat(last_sweep_start=1.0, considered=5)
+    common.heartbeat(last_sweep_end=2.0)  # a second writer, later, different fields
+
+    hb = common.read_heartbeat()
+
+    assert hb["last_sweep_start"] == 1.0, "the first writer's field must survive the second write"
+    assert hb["considered"] == 5
+    assert hb["last_sweep_end"] == 2.0
+
+
+def test_heartbeat_write_is_atomic_no_tmp_file_left_behind(tmp_path, monkeypatch):
+    path = tmp_path / "heartbeat.json"
+    monkeypatch.setattr(common, "HEARTBEAT_PATH", str(path))
+    common.heartbeat(last_sweep_start=1.0)
+
+    assert path.exists()
+    assert list(tmp_path.glob("*.tmp")) == [], "the mkstemp temp file must be replaced, not left behind"

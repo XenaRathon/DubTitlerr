@@ -177,6 +177,11 @@ Everything is an env var, so nothing host-specific is baked in:
   python3 scripts/migrate_write_v1_stamps.py --apply "/media/Anime Library"
   ```
   It only writes sidecar stamps — media is never touched — and it never overwrites an existing one.
+- **The original MP4/M4V container is deleted only after a verified, stamped remux**: mux writes
+  the muxed `.mkv`, verifies it, then writes the version stamp, and only THEN removes the
+  original MP4/M4V — never before. If the stamp write itself fails, the new `.mkv` is rolled
+  back and the original file is left untouched, so a failed run always leaves something
+  complete on disk to retry from, never a half-finished pair.
 - **Track order:** the new `Dubtitles` track is appended last, so if an old one sat mid-list the
   relative order of the _other_ subtitle tracks is unchanged but the dubtitle moves to the end.
   Players pick it up via the default-track flag; index-based scripts may see a different position.

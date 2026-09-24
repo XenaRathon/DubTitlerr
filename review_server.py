@@ -39,6 +39,7 @@ Env:
 """
 
 import html
+import http.cookies
 import http.server
 import json
 import os
@@ -49,6 +50,7 @@ import threading
 import time
 from urllib.parse import quote
 
+import common
 import decisions
 import review_apply
 import unresolved
@@ -105,6 +107,28 @@ CONF_SUFFIX = ".dubtitles.conf.json"
 # A HEADER, never a query parameter: a token in a URL lands in proxy logs, browser history
 # and any Referer the page emits.
 TOKEN_HEADER = "X-Review-Token"
+
+
+def _cookie_token(headers):
+    """The token from the Cookie header's dubtitlerr_token entry, or None.
+
+    A fallback for the PAGE routes only (/, /index.html, /shared): a plain page
+    navigation cannot attach a custom X-Review-Token header, so the token the page's
+    own JS already stores has nowhere to travel except a cookie. /api/* callers
+    (curl, the page's own fetch() calls) keep sending the header; this fallback
+    widens what authorised() will accept, it narrows nothing."""
+    raw = headers.get("Cookie") if hasattr(headers, "get") else None
+    if not raw:
+        return None
+    jar = http.cookies.SimpleCookie()
+    try:
+        jar.load(raw)
+    except http.cookies.CookieError:
+        return None
+    morsel = jar.get("dubtitlerr_token")
+    return morsel.value if morsel else None
+
+
 # 0.0.0.0 because the container is the point -- the operator reaches this from their LAN.
 # That is exactly why an unset REVIEW_TOKEN generates one instead of meaning "open".
 REVIEW_BIND = os.environ.get("REVIEW_BIND", "0.0.0.0")
@@ -211,14 +235,11 @@ def announce_token(token_dir: str = "", bind: str = "") -> None:
     log("review server:   docker exec <container> cat " + path)
 
 
-def authorised(method: str, presented) -> bool:
-    """Write routes require the token; read routes never do."""
-    if method.upper() in ("GET", "HEAD"):
-        return True
+def authorised(method: str, presented, path: str = "") -> bool:
+    """All routes require the token when auth is enabled."""
     if not auth_required():
         return True
-    # compare_digest, not ==: a plain comparison leaks the shared prefix through timing,
-    # and this token is the only thing between a LAN and a root-owned write endpoint.
+    # compare_digest, not ==: timing-safe -- the only guard between a LAN and a write.
     return bool(presented) and secrets.compare_digest(str(presented), resolve_token())
 
 
@@ -690,15 +711,17 @@ def handle_apply(stem: str) -> dict:
 
 def route(method: str, path: str, body: dict, token) -> tuple:
     """(status, payload) for one request."""
-    if not authorised(method, token):
-        return 401, {"error": "a token is required for writes"}
+    if method == "GET" and path == "/healthz":
+        return handle_healthz()
+    if not authorised(method, token, path):
+        return 401, {"error": "a token is required"}
     if method == "GET" and path == "/api/episodes":
         return 200, handle_index()
     if method == "GET" and path == "/api/episode":
         return 200, handle_episode(str(body.get("stem", "")), all_reasons=bool(body.get("all")))
     if method == "POST" and path == "/api/decide":
         # Two shapes on one route, so there is ONE authorised write path for a verdict
-        # rather than two that could drift apart. The page sends the batch; `index` is the
+        # rather than two that could drift apart. The page sends the batch; is the
         # single-verdict form the tests and any scripted caller still use.
         if isinstance(body.get("decisions"), list):
             return 200, handle_decide_batch(str(body.get("stem", "")), body["decisions"])
@@ -829,8 +852,11 @@ def render_shared() -> str:
         "sortShared(SS.value);SS.addEventListener('change',()=>{sortShared(SS.value);"
         "try{localStorage.setItem(SHARED_SORT_KEY,SS.value)}catch(e){}});"
         "const TOK=document.getElementById('tok');"
+        "function syncTokenCookie(){if(TOK.value){document.cookie="
+        "'dubtitlerr_token='+encodeURIComponent(TOK.value)+'; Path=/; SameSite=Strict'}"
+        "else{document.cookie='dubtitlerr_token=; Path=/; SameSite=Strict; Max-Age=0'}}"
         "try{TOK.value=localStorage.getItem('dubtitlerr_token')||''}catch(e){}"
-        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}});"
+        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}syncTokenCookie()});"
         "async function post(p,b){return (await fetch(p,{method:'POST',headers:{'Content-Type':'application/json',"
         f"'{TOKEN_HEADER}':TOK.value}},"
         "body:JSON.stringify(b)})).json()}"
@@ -1037,9 +1063,14 @@ def render_page(stem: str = "") -> str:
         f"{episode_sort_script}"
         # Restored on load and saved on every edit. The server never renders the value --
         # the browser holds it, which is where it already was the moment it was pasted.
+        # A cookie is set alongside localStorage, so the value survives a page navigation
+        # to /shared and the shared page's own token box reads the same source.
         "const TOK=document.getElementById('tok');"
+        "function syncTokenCookie(){if(TOK.value){document.cookie="
+        "'dubtitlerr_token='+encodeURIComponent(TOK.value)+'; Path=/; SameSite=Strict'}"
+        "else{document.cookie='dubtitlerr_token=; Path=/; SameSite=Strict; Max-Age=0'}}"
         "try{TOK.value=localStorage.getItem('dubtitlerr_token')||''}catch(e){}"
-        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}});"
+        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}syncTokenCookie()});"
         "async function post(p,b){return (await fetch(p,{method:'POST',headers:{'Content-Type':'application/json',"
         f"'{TOKEN_HEADER}':TOK.value}},"
         "body:JSON.stringify(b)})).json()}"
@@ -1099,6 +1130,68 @@ def render_page(stem: str = "") -> str:
     )
 
 
+def render_locked(page_kind: str) -> str:
+    """The shell shown instead of render_page()/render_shared() when authorised()
+    refuses the GET -- same chrome (title, CSS, the token box and its JS) as the real
+    page, but the episode/shared list is never built: handle_index()/handle_episode()/
+    handle_shared() walk MERGE_ROOTS and the decision stores and return every stem and
+    every card's original/proposed text, so the one thing this shell must not do is
+    call any of them. NO fetch() call either -- there is nothing to save from a page
+    that was never shown data. page_kind ("page" or "shared") picks only the <h1>; the
+    token box and its JS are identical between the two, so there is exactly one place
+    a cookie gets synced from this shell."""
+    h1 = "Shared lines" if page_kind == "shared" else "Review"
+    back = '<p><a href="/">← all episodes</a></p>' if page_kind == "shared" else ""
+    return (
+        "<!doctype html><meta charset=utf-8><title>DubTitlerr review</title>"
+        f"<style>{_CSS}</style>"
+        f"<h1>{h1}</h1>"
+        "<p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
+        f"{back}"
+        '<p id="needs-token">Paste the review token to load the queue.</p>'
+        "<script>"
+        "const TOK=document.getElementById('tok');"
+        "function syncTokenCookie(){if(TOK.value){document.cookie="
+        "'dubtitlerr_token='+encodeURIComponent(TOK.value)+'; Path=/; SameSite=Strict'}"
+        "else{document.cookie='dubtitlerr_token=; Path=/; SameSite=Strict; Max-Age=0'}}"
+        "try{TOK.value=localStorage.getItem('dubtitlerr_token')||''}catch(e){}"
+        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}"
+        "syncTokenCookie();clearTimeout(window.__tokReload);"
+        "window.__tokReload=setTimeout(()=>location.reload(),300)});"
+        "</script>"
+    )
+
+
+def handle_healthz() -> tuple:
+    """Return 200 OK or 503 Service Unavailable based on heartbeat conditions.
+
+    Response shape: {"ok": True} on 200, {"ok": False, "reasons": [...]} on 503.
+    Never raises, never includes a filesystem path."""
+    hb = common.read_heartbeat()
+    if hb is None:
+        return 503, {"ok": False, "reasons": ["no heartbeat yet"]}
+
+    now = time.time()
+    last_sweep_end = hb.get("last_sweep_end")
+    rescan_interval = int(os.environ.get("RESCAN_INTERVAL", "21600"))
+    reasons = []
+
+    if last_sweep_end is None:
+        reasons.append("stale: no sweep has completed yet")
+    elif (now - float(last_sweep_end)) > 3 * rescan_interval:
+        reasons.append(f"stale: last sweep ended {now - float(last_sweep_end):.0f}s ago (threshold {3 * rescan_interval}s)")
+
+    if not hb.get("roots_readable", True):
+        reasons.append("roots_readable is false")
+
+    if not hb.get("order_file_present", True):
+        reasons.append("order_file_present is false")
+
+    if reasons:
+        return 503, {"ok": False, "reasons": reasons}
+    return 200, {"ok": True}
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     # BaseHTTPRequestHandler.timeout is None, and socketserver.StreamRequestHandler.setup()
     # only calls connection.settimeout() when it is not None -- so without this rfile.read()
@@ -1125,13 +1218,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         from urllib.parse import parse_qs, urlparse
 
         u = urlparse(self.path)
+        # A plain page load cannot carry a custom header, so the cookie the token box's own
+        # JS sets is the fallback here -- /api/* callers (curl, the page's own fetch()
+        # calls) keep sending the header, which still wins when present.
+        presented = self.headers.get(TOKEN_HEADER) or _cookie_token(self.headers)
         if u.path == "/shared":
+            if not authorised("GET", presented):
+                return self._send(200, render_locked("shared").encode(), "text/html; charset=utf-8")
             return self._send(200, render_shared().encode(), "text/html; charset=utf-8")
         if u.path in ("/", "/index.html"):
+            if not authorised("GET", presented):
+                return self._send(200, render_locked("page").encode(), "text/html; charset=utf-8")
             stem = (parse_qs(u.query).get("stem") or [""])[0]
             return self._send(200, render_page(stem).encode(), "text/html; charset=utf-8")
+        if u.path == "/healthz":
+            status, payload = handle_healthz()
+            return self._send(status, payload)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
-        status, payload = route("GET", u.path, q, self.headers.get(TOKEN_HEADER))
+        status, payload = route("GET", u.path, q, presented)
         self._send(status, payload)
 
     def do_POST(self):
@@ -1155,7 +1259,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = {}
         if not isinstance(body, dict):
             body = {}
-        status, payload = route("POST", self.path, body, self.headers.get(TOKEN_HEADER))
+        status, payload = route("POST", self.path, body, self.headers.get(TOKEN_HEADER) or _cookie_token(self.headers))
         self._send(status, payload)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 - the base class names it this
@@ -1255,6 +1359,14 @@ def _warm_cache_forever() -> None:
 
 
 def serve(port: int = 0):
+    # Checked before ANYTHING else, including resolve_token() (which would otherwise
+    # mint/print a token nobody needs). A fail-closed opt-in for an unattended deploy:
+    # REQUIRE_TOKEN=1 means "never start wide open", so a REVIEW_AUTH=off left behind
+    # in an old .env is caught at start, not discovered later by whoever finds the
+    # port open.
+    if os.environ.get("REQUIRE_TOKEN") == "1" and not auth_required():
+        log("review server: REQUIRE_TOKEN=1 but auth is disabled (REVIEW_AUTH=off)")
+        raise SystemExit(2)
     resolve_token()  # generates and prints the VALUE on first start, before anything is served
     announce_token()  # and on every start, says where to find it
     srv = BoundedHTTPServer((REVIEW_BIND, port or REVIEW_PORT), Handler)

@@ -1,9 +1,9 @@
 # `README.md` states the original MP4/M4V container is deleted only after a verified, stamped remux.
 
-Status: open
+Status: done 2026-09-22
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 011-fail-closed-stage-status-artifact-merge-pass-exit-capture
 
 ## Description
 
@@ -16,9 +16,8 @@ Delivered by Task 9 of `.procoder/plans/v0-2-0-hardening.md` (sprint 011); the t
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] `README.md` states the original MP4/M4V container is deleted only after a verified, stamped remux.
+- [x] `README.md` states the original MP4/M4V container is deleted only after a verified, stamped remux.
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+README.md now states (added after the migration-script section): "The original MP4/M4V container is deleted only after a verified, stamped remux" -- mux writes the .mkv, verifies it, writes the stamp, and only then removes the original; a failed stamp write rolls back the new .mkv and leaves the original untouched. `grep -n 'deleted only after a verified' README.md` confirms the line is present.

@@ -1,9 +1,9 @@
 # A `words.json` with `transcribe_version` greater than `common.TRANSCRIBE_VERSION` increments `words_version_mismatch` and returns `None` (new test for already-existing behavior).
 
-Status: open
+Status: done 2026-09-23
 Created: 2026-09-21
 Epic: v0-2-0-hardening
-Sprint: -
+Sprint: 012-provenance-and-policy-decoder-identity-in-words-json
 
 ## Description
 
@@ -16,9 +16,8 @@ Delivered by Task 10 and 11 of `.procoder/plans/v0-2-0-hardening.md` (sprint 012
 <!-- Each criterion is testable. Check a box ONLY when it is verifiably
      true — the closer will ask for the evidence. -->
 
-- [ ] A `words.json` with `transcribe_version` greater than `common.TRANSCRIBE_VERSION` increments `words_version_mismatch` and returns `None` (new test for already-existing behavior).
+- [x] A `words.json` with `transcribe_version` greater than `common.TRANSCRIBE_VERSION` increments `words_version_mismatch` and returns `None` (new test for already-existing behavior). A `words.json` with `transcribe_version` greater than `common.TRANSCRIBE_VERSION` increments `words_version_mismatch` and returns `None` (new test for already-existing behavior).
 
 ## Evidence
 
-<!-- Filled at close time: the commands run and what their output proved,
-     one line per criterion. Empty evidence keeps the story open. -->
+`python3 -m pytest tests/test_generate.py -k test_read_words_counts_a_transcribe_version_ahead_of_current_as_a_mismatch -q` -> 1 passed; verified in commit 21e2656.
