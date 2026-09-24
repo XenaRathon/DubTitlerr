@@ -278,3 +278,24 @@ git config commit.template .procoder/github/COMMIT_TEMPLATE.md
 - Adaptation: when a mutation changes no behaviour, check whether the mutated line is
   reachable in the false case before writing a test for it. Dead code is worth deleting, not
   covering, and a test written for it would have asserted something that cannot happen.
+
+## 2026-09-08 beta feedback — a dangling reference inside a new doc
+
+- Class: mechanical
+- Missed by: controller
+- Finding: the first beta feedback entry (`docs/beta-feedback/2026-09-07-r-animedubs.md`)
+  referenced `docs/beta-feedback/README.md` in the method section — a path that does not
+  exist. `procoder format` did not catch it; prettier is a syntactic normaliser, not a
+  semantic checker, so a plausible-looking path to a sibling doc that was never written
+  sails through unformatted-clean. The controller flagged the file only because the code
+  fence was left unclosed in the same edit — a different mistake. The dangling reference
+  would have shipped unnoticed.
+- Missed because: writing a doc that points at another doc creates the illusion of the
+  referenced doc existing. No gate in `procoder check` inspects whether a markdown link
+  or backticked path resolves.
+- Adaptation: before closing a new docs file that references sibling paths, `ls` the
+  directory the reference points at and either confirm the target exists or delete the
+  reference. Also captured in the feedback doc itself — the line now ends "Not built
+  yet" instead of pointing at a README. Related:
+  `docs/beta-feedback/2026-09-07-r-animedubs.md` records the r/Animedubs pull and the
+  fetch pattern used to get it.

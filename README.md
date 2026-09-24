@@ -88,19 +88,28 @@ the mux never fires).
 
 ## Quick start
 
-The full pipeline (transcribe → repair → merge → mux) builds from `Dockerfile.builder`
+The full pipeline (transcribe → repair → merge → mux) is published as
+`ghcr.io/xenarathon/dubtitlerr` and also builds from `Dockerfile.builder`
 and runs as one long-lived, restart-safe container (root, so it can rewrite/chown
 sidecars) — no cron needed, it loops on its own:
 
 ```sh
-# build
-docker build -f Dockerfile.builder -t dubtitle-builder:latest .
+# pull the published image (recommended)
+docker pull ghcr.io/xenarathon/dubtitlerr:latest
 
-# run continuously against your media (env vars configure roots/models/Plex — see the Wiki)
+# or build it yourself from source instead
+docker build -f Dockerfile.builder -t ghcr.io/xenarathon/dubtitlerr:latest .
+
+# run continuously against your media (every variable is documented in the
+# wiki's Reference: https://github.com/xenarathon/DubTitlerr/wiki/Reference)
 docker run --rm -u 0 --gpus all -v "/path/to/your/media:/media" -v "/path/to/config:/config" \
   -p 8842:8842 \
-  -e ANIME_ROOT="/media/Anime Library" dubtitle-builder:latest
+  -e ANIME_ROOT="/media/Anime Library" ghcr.io/xenarathon/dubtitlerr:latest
 ```
+
+**Beta status:** pin a release tag (e.g. `ghcr.io/xenarathon/dubtitlerr:v0.1.0-beta`
+— see [Releases](https://github.com/xenarathon/DubTitlerr/releases)) instead of
+`:latest` if you want reproducible version stamps — see the callout above.
 
 `Dockerfile` (signs+dub merge only, no transcribe/repair) is deprecated — see the comment
 at its top. It builds a plain image whose only content is `dub_signs_merge.py`, which walks
@@ -112,6 +121,27 @@ docker run --rm -v /path/to/media:/media -e MERGE_ROOTS=/media dub-signs-merge p
 ```
 
 `Dockerfile.builder` above is the recommended path for everyone else.
+
+### Or with Docker Compose
+
+`compose.yaml` and `.env.example` in this repo are the Compose equivalent of the
+`pull`/`run` above — same image, same environment variables. Copy `.env.example`
+to `.env`, point `ANIME_ROOT` and the volume paths at your library, then:
+
+```sh
+docker compose pull && docker compose up -d   # use the published image
+# or: docker compose up -d --build            # build from source instead
+docker compose logs -f                        # tail the log
+```
+
+It's the minimal, single-show shape of the tested walkthrough in the wiki's
+[Your first show](https://github.com/xenarathon/DubTitlerr/wiki/Your-First-Show) —
+follow that page for the repair-model server, `anime_order.txt`, and the review
+page at `http://<host>:8842`. Every environment variable, with its default, is
+in the wiki's [Reference](https://github.com/xenarathon/DubTitlerr/wiki/Reference).
+GPU access uses the `nvidia` device spec (the Compose equivalent of `--gpus all`);
+install [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/)
+on the host first, or Whisper falls back to CPU.
 
 <details>
 <summary><b>Make it yours — settings</b></summary>
@@ -163,11 +193,13 @@ detect those, so accepted repairs are queued for a human instead.
 The page is at `http://<host>:8842`. On first start the container logs a token; paste it
 into the box at the top once and the browser remembers it. `REVIEW_TOKEN` sets it
 explicitly; leaving it _unset_ generates one (the server runs as root and its write routes
-rewrite subtitles, so "unset" cannot mean "no auth"). Setting `REVIEW_TOKEN=` to an
-**explicitly empty** value disables auth entirely — only do this on a network you fully
-trust; the server logs a warning at startup if you do this while also bound to `0.0.0.0`
-(the default), since that combination means anything on the LAN can rewrite your subtitles.
-See [SECURITY.md](SECURITY.md) for the full auth model.
+rewrite subtitles, so "unset" cannot mean "no auth"). An **explicitly empty**
+`REVIEW_TOKEN` no longer disables auth — a stray blank env line or an unset Compose
+variable used to open a root-owned write endpoint by accident. Set `REVIEW_AUTH=off`
+instead — only do this on a network you fully trust; the server logs a warning at startup
+if you do this while also bound to `0.0.0.0` (the default), since that combination means
+anything on the LAN can rewrite your subtitles. See [SECURITY.md](SECURITY.md) for the
+full auth model.
 
 The index groups episodes by show and season and leads with the ones holding **admitted**
 repairs — changes that already shipped with nothing checking their meaning. Refusals, where

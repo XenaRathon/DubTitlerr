@@ -55,35 +55,58 @@ def test_an_unset_token_is_generated_persisted_0600_and_required(tmp_path, monke
     assert review_server.resolve_token(str(tmp_path)) == tok, "a second start reuses it rather than rotating"
 
 
-def test_an_explicitly_empty_token_disables_auth_but_unset_does_not(tmp_path, monkeypatch):
-    """ "Unset" and "set to empty" must be distinguished by MEMBERSHIP in os.environ, not by
-    falsiness -- the whole security decision rests on telling those two apart."""
+def test_an_explicitly_empty_token_still_generates_one(tmp_path, monkeypatch):
+    """An earlier version of this server treated REVIEW_TOKEN= as an opt-out of auth. Too
+    many installs left it blank by accident -- a stray .env line, or Compose's
+    ${REVIEW_TOKEN:-} rendering an unset variable as an empty string -- and got an
+    unauthenticated root-owned endpoint without meaning to. An empty value is now treated
+    exactly like an unset one: a token is still generated, and auth stays on."""
+    monkeypatch.delenv("REVIEW_AUTH", raising=False)
+    monkeypatch.setenv("REVIEW_TOKEN", "")
+    tok = review_server.resolve_token(str(tmp_path))
+
+    assert tok and len(tok) >= 32, "an empty REVIEW_TOKEN must still generate a real token"
+    assert review_server.auth_required(str(tmp_path)) is True, "an empty REVIEW_TOKEN must not disable auth"
+
+
+def test_review_auth_off_is_the_only_way_to_disable_auth(tmp_path, monkeypatch):
+    """REVIEW_TOKEN's value -- unset, empty, or set -- must never disable auth by itself.
+    Only REVIEW_AUTH=off does, and it does so regardless of REVIEW_TOKEN."""
+    monkeypatch.delenv("REVIEW_AUTH", raising=False)
+
     monkeypatch.delenv("REVIEW_TOKEN", raising=False)
-    assert review_server.auth_required(str(tmp_path)) is True, "unset must NOT mean open"
+    assert review_server.auth_required(str(tmp_path)) is True, "unset REVIEW_TOKEN must not disable auth"
 
     monkeypatch.setenv("REVIEW_TOKEN", "")
-    assert review_server.auth_required(str(tmp_path)) is False, "explicitly empty is the operator's decision"
+    assert review_server.auth_required(str(tmp_path)) is True, "empty REVIEW_TOKEN must not disable auth"
 
     monkeypatch.setenv("REVIEW_TOKEN", "hunter2")
-    assert review_server.auth_required(str(tmp_path)) is True
-    assert review_server.resolve_token(str(tmp_path)) == "hunter2", "an explicit token wins over the persisted one"
+    assert review_server.auth_required(str(tmp_path)) is True, "a real REVIEW_TOKEN must not disable auth"
+
+    monkeypatch.setenv("REVIEW_AUTH", "off")
+    assert review_server.auth_required(str(tmp_path)) is False, "REVIEW_AUTH=off is the only disable"
 
 
-def test_a_disabled_token_on_the_wide_bind_gets_a_startup_warning(tmp_path, monkeypatch, capsys):
-    """The empty-token opt-out and the default 0.0.0.0 bind are each individually fine and
+def test_review_auth_off_on_the_wide_bind_gets_a_startup_warning(tmp_path, monkeypatch, capsys):
+    """REVIEW_AUTH=off and the default 0.0.0.0 bind are each individually fine and
     documented; together they mean every write route is open to the network. That
     combination lived only in the module docstring -- an operator who finds the opt-out in
     a forum thread should see the risk in their own logs."""
-    monkeypatch.setenv("REVIEW_TOKEN", "")
+    monkeypatch.setenv("REVIEW_AUTH", "off")
     review_server.announce_token(str(tmp_path), bind="0.0.0.0")
     out = capsys.readouterr().out
     assert "WARNING" in out and "0.0.0.0" in out
 
 
-def test_no_warning_when_the_bind_is_host_only_or_a_real_token_is_set(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("REVIEW_TOKEN", "")
+def test_no_warning_when_the_bind_is_host_only_or_auth_is_on(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("REVIEW_AUTH", "off")
     review_server.announce_token(str(tmp_path), bind="127.0.0.1")
     assert "WARNING" not in capsys.readouterr().out
+
+    monkeypatch.delenv("REVIEW_AUTH", raising=False)
+    monkeypatch.setenv("REVIEW_TOKEN", "")
+    review_server.announce_token(str(tmp_path), bind="0.0.0.0")
+    assert "WARNING" not in capsys.readouterr().out, "an empty REVIEW_TOKEN alone must not warn -- only REVIEW_AUTH=off does"
 
     monkeypatch.setenv("REVIEW_TOKEN", "hunter2")
     review_server.announce_token(str(tmp_path), bind="0.0.0.0")

@@ -198,23 +198,52 @@ def build(video, dub_srt, out_ass):
     if len(set(resolutions)) > 1:  # D5: warn only — no coordinate transform (deferred to V3)
         log("WARNING: resolution mismatch between subtitle tracks — signs may be mispositioned")
     # bottom dub dialogue style
+    #
+    # PlayResY is NOT a font scalar: it is the coordinate space every value in the script is
+    # expressed in, including the \pos() of the signs kept above. The merged script inherits
+    # that space from `base` (pysubs2 carries `info` through untouched), so a source signs
+    # track that declares no PlayRes produced an output declaring none either, and renderers
+    # fall back to VSFilter's historical 384x288.
+    #
+    # The bug was not the fallback, it was sizing the dialogue against an invented 720 the
+    # file never declared: libass scaled the whole script by PlayResY/288 = 3.75x on a 1080p
+    # source. Measured on I Parry Everything S01E01, where a two-line card filled a third of
+    # the screen -- while One Pace, whose signs track DOES declare 1440x1080, rendered
+    # correctly from this same code. Declaring 384x288 explicitly makes the assumption and
+    # the output agree; it is the space the inherited events are already in, so no sign moves.
+    #
+    # Declaring the video's PROBED resolution would be more correct, but only together with a
+    # transform of every inherited sign coordinate into the new space -- the transform D5
+    # above still defers to V3. Until that lands, the assumed space is the honest one.
     play_y = 0
     try:
         play_y = int(base.info.get("PlayResY") or 0)
     except Exception:
         pass
-    play_y = play_y or 720
-    fs = max(32, round(play_y / 17))
+    if not play_y:
+        base.info["PlayResX"], base.info["PlayResY"] = "384", "288"
+        play_y = 288
+    # Every constant below is in PlayRes units, so it is a different ON-SCREEN size per
+    # canvas. Express them against the 720 they were chosen for, or the floors inflate a
+    # smaller canvas: max(32, ...) alone forces fontsize 32 into a 288 script, which is 120px
+    # on a 1080p screen -- the very blow-up this block exists to stop. At play_y 720 and 1080
+    # every value below is unchanged, so shows that already declare a canvas are untouched.
+    ref = play_y / 720
+    fs = max(round(32 * ref), round(play_y / 17))
     st = pysubs2.SSAStyle()
     st.fontname = "Arial"
     st.fontsize = fs
     st.bold = True
     st.primarycolor = pysubs2.Color(255, 255, 255)
     st.outlinecolor = pysubs2.Color(0, 0, 0)
-    st.outline = max(1.5, fs / 22)
+    st.outline = max(1.5 * ref, fs / 22)
+    # NOT scaled by ref: at 720 and 1080 that would change shadow on shows already
+    # rendering correctly, and this is a hotfix. A 288 canvas therefore carries a
+    # proportionally heavier shadow than a 720 one -- cosmetic, and it belongs with the
+    # coordinate-transform work, not here.
     st.shadow = 1.0
     st.alignment = pysubs2.Alignment.BOTTOM_CENTER
-    st.marginv = max(10, round(play_y / 22))
+    st.marginv = max(round(10 * ref), round(play_y / 22))
     base.styles["Dubtitles"] = st
     dub = pysubs2.load(dub_srt)
     song_spans = _song_spans(kept)
