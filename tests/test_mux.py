@@ -382,6 +382,32 @@ def test_mkv_source_never_removes_orig(tmp_path, monkeypatch):
     assert os.path.exists(v)
 
 
+def test_process_records_verification_failure_as_mux_build_error(tmp_path, monkeypatch):
+    """A failed verification must be persisted as a valid mux-stage failure record."""
+    import common
+
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    v = _muxable(tmp_path, monkeypatch, [aud(0, "eng")])
+    stem = os.path.splitext(v)[0]
+
+    def fake_run(cmd, **kw):
+        out = cmd[cmd.index("-o") + 1]
+        open(out, "wb").write(b"muxed")
+
+    monkeypatch.setattr(mux.subprocess, "run", fake_run)
+
+    try:
+        result = mux.process(v, apply=True)
+    except ValueError as exc:
+        raise AssertionError("mux must not raise ValueError for a verification failure") from exc
+
+    assert result == "verify-missing-av"
+    assert common.failed_stage(stem) == "mux"
+    record = common.read_stages(stem)["mux"]
+    assert record["outcome"] == "build-error"
+    assert "missing-av" in record["detail"]
+
+
 def test_signs_regression_refused_when_signs_stage_failed_and_only_srt_remains(tmp_path, monkeypatch):
     """[S-8] A forced dub_signs_merge.py failure ("build-error" or "no-video") recorded in
     the stage sidecar must not let mux silently fall back from .ass to the dialogue-only
@@ -769,3 +795,51 @@ def test_an_unreadable_conf_json_holds_everything(tmp_path, monkeypatch):
     monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["Gated Show"])
 
     assert mux.process(v, apply=False) == "held-for-review"
+
+
+def test_process_records_signs_regression_refusal_as_mux_build_error(tmp_path, monkeypatch):
+    """A refused SRT fallback must be observable as a mux-stage build failure."""
+    import common
+
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 100)
+    stem = str(tmp_path / "ep")
+    (tmp_path / ("ep" + mux.SRT_SUFFIX)).write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+    common.write_stage(stem, "signs", "no-video")
+    monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
+
+    assert mux.process(str(v), apply=True) == "signs-regression-refused"
+    record = common.read_stages(stem).get("mux", {})
+    assert record.get("outcome") == "build-error"
+    assert "signs-regression-refused" in record.get("detail", "")
+    assert common.failed_stage(stem) == "mux"
+
+
+def test_process_records_unexpected_mux_exception_as_crashed(tmp_path, monkeypatch):
+    """An unexpected mux exception must be returned, sanitized, and recorded as crashed."""
+    import common
+
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    v = _muxable(tmp_path, monkeypatch, [aud(0, "eng")])
+    stem = os.path.splitext(v)[0]
+    sensitive_path = "/srv/private/anime/Episode 01.mkv"
+    sensitive_message = "authorization=secret-token"
+
+    def boom(cmd, **kw):
+        raise RuntimeError(f"mkvmerge rejected {sensitive_path}: {sensitive_message}")
+
+    monkeypatch.setattr(mux.subprocess, "run", boom)
+
+    try:
+        result = mux.process(v, apply=True)
+    except ValueError as exc:
+        raise AssertionError("mux must not raise ValueError for an unexpected exception") from exc
+
+    assert result == "error"
+    record = common.read_stages(stem).get("mux", {})
+    assert record.get("outcome") == "crashed"
+    detail = record.get("detail", "")
+    assert sensitive_path not in detail
+    assert sensitive_message not in detail
+    assert common.failed_stage(stem) == "mux"

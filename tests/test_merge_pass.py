@@ -9,6 +9,7 @@ binary-presence checks (`mkvmerge`, which is not installed on this dev box) so t
 script reaches its own logic instead of exiting at the FATAL guard."""
 
 import os
+import shlex
 import stat
 import subprocess
 import sys
@@ -110,3 +111,35 @@ def test_crashed_record_written_only_when_stage_left_none(tmp_path):
         check=False,
     )
     assert common.read_stages(stem2)["repair"]["outcome"] == "crashed"
+
+
+def test_apostrophe_stem_records_real_crash_fallback(tmp_path, monkeypatch):
+    root = tmp_path / "library"
+    root.mkdir()
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    monkeypatch.setenv("OUTPUT_ROOT", "")
+
+    stem = str(root / "JoJo's Bizarre Adventure" / "S01E01")
+    os.makedirs(os.path.dirname(stem), exist_ok=True)
+    for suffix in (".eng.dubtitles.ass", ".mkv"):
+        with open(stem + suffix, "w"):
+            pass
+
+    _fake_bin(tmp_path, "ffmpeg")
+    bindir = tmp_path / "fakebin"
+    wrapper = bindir / "python3"
+    wrapper.write_text(
+        f'#!/bin/sh\ncase "$1" in\n  */mux.py) [ "$2" = "--apply" ] && exit 1 ;;\nesac\nexec {shlex.quote(sys.executable)} "$@"\n'
+    )
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    res = _run(tmp_path, root)
+    stages = common.read_stages(stem)
+    record = stages.get("mux", {})
+    output = res.stdout + res.stderr
+
+    assert "SyntaxError" not in output, output
+    assert record.get("outcome") == "crashed", (output, stages)
+    assert record.get("detail") == "rc=1", (output, stages)
+    assert common.failed_stage(stem) == "mux", stages
+    assert "MERGE PASS INCOMPLETE" in res.stdout, output
