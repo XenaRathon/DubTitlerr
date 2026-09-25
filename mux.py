@@ -460,6 +460,7 @@ def process(orig, apply):
         # against, so only a bare "ok" (or no record at all, meaning signs
         # never ran) counts as safe to fall back to the dialogue-only .srt.
         if signs_outcome not in (None, "ok"):
+            write_stage(stem, "mux", "build-error", "signs-regression-refused")
             return "signs-regression-refused"
     if stamp_valid(read_stamp(stamp), orig):
         return "already-muxed"  # stat-only, version-aware stamp is the ONLY guard
@@ -485,6 +486,7 @@ def process(orig, apply):
         if res != "ok":
             if os.path.exists(out):
                 os.remove(out)
+            write_stage(stem, "mux", "build-error", f"verify:{res}")
             return "verify-" + res
         os.chown(out, st.st_uid or MEDIA_UID, st.st_gid or MEDIA_GID)
         _finalize(out, final)  # write the muxed mkv
@@ -525,6 +527,7 @@ def process(orig, apply):
         if os.path.exists(out):
             os.remove(out)
         log("  mux error:", e)
+        write_stage(stem, "mux", "crashed", "mux-exception")
         return "error"
 
 

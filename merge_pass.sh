@@ -12,7 +12,7 @@
 #      MIN_FREE_GB, KEEP_LANGS.
 ROOT="${MERGE_ROOTS:-/media/Anime Library}"
 APP="${APP_DIR:-/scripts}"
-export PYTHONPATH="$APP${PYTHONPATH:+:$PYTHONPATH}"  # so inline `python3 -c "import common"` snippets resolve
+export PYTHONPATH="$APP${PYTHONPATH:+:$PYTHONPATH}" # so inline `python3 -c "import common"` snippets resolve
 command -v ffmpeg >/dev/null 2>&1 || {
 	echo "FATAL: ffmpeg not found — image is misbuilt"
 	exit 1
@@ -53,12 +53,12 @@ find . -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) 
 		python3 "$APP/repair.py" "$stem.dubtitles.conf.json" </dev/null
 		rc=$?
 		if [ $rc -ne 0 ]; then
-			python3 -c "import common,sys; s='$stem'; sys.exit(0 if 'repair' in common.read_stages(s) else common.write_stage(s, 'repair', 'crashed', 'rc=$rc') or 1)" </dev/null >/dev/null 2>&1 || true
+			python3 -c "import common,sys; s=sys.argv[1]; rc=sys.argv[2]; sys.exit(0 if 'repair' in common.read_stages(s) else common.write_stage(s, 'repair', 'crashed', 'rc='+rc) or 1)" "$stem" "$rc" </dev/null >/dev/null 2>&1 || true
 		fi
 		python3 "$APP/dub_signs_merge.py" "$stem.eng.dubtitles.srt" </dev/null
 		rc=$?
 		if [ $rc -ne 0 ]; then
-			python3 -c "import common,sys; s='$stem'; sys.exit(0 if 'signs' in common.read_stages(s) else common.write_stage(s, 'signs', 'crashed', 'rc=$rc') or 1)" </dev/null >/dev/null 2>&1 || true
+			python3 -c "import common,sys; s=sys.argv[1]; rc=sys.argv[2]; sys.exit(0 if 'signs' in common.read_stages(s) else common.write_stage(s, 'signs', 'crashed', 'rc='+rc) or 1)" "$stem" "$rc" </dev/null >/dev/null 2>&1 || true
 		fi
 	fi
 	for ext in mkv mp4 m4v; do # mux the video (root); embeds + stamps
@@ -66,7 +66,7 @@ find . -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) 
 			python3 "$APP/mux.py" --apply "$stem.$ext" </dev/null
 			rc=$?
 			if [ $rc -ne 0 ]; then
-				python3 -c "import common,sys; s='$stem'; sys.exit(0 if 'mux' in common.read_stages(s) else common.write_stage(s, 'mux', 'crashed', 'rc=$rc') or 1)" </dev/null >/dev/null 2>&1 || true
+				python3 -c "import common,sys; s=sys.argv[1]; rc=sys.argv[2]; sys.exit(0 if 'mux' in common.read_stages(s) else common.write_stage(s, 'mux', 'crashed', 'rc='+rc) or 1)" "$stem" "$rc" </dev/null >/dev/null 2>&1 || true
 			fi
 			break
 		}

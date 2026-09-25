@@ -1,10 +1,10 @@
 # Changelog
 
-Format loosely follows [Keep a Changelog](https://keepachangelog.com/). Nothing has been
-tagged yet — this file starts at the public beta. `TRANSCRIBE_VERSION`/`TEXT_VERSION` in
-`common.py` are the pipeline's own version history (they say what changed in the _output_,
-and only a stamp bump puts the fix into already-processed files); the entries below summarize
-that history alongside everything else that shipped since.
+Format loosely follows [Keep a Changelog](https://keepachangelog.com/). This file starts at
+the public beta. `TRANSCRIBE_VERSION`/`TEXT_VERSION` in `common.py` are the pipeline's own
+version history (they say what changed in the _output_, and only a stamp bump puts the fix into
+already-processed files); the entries below summarize that history alongside everything else
+that shipped since.
 
 ## [Unreleased]
 
