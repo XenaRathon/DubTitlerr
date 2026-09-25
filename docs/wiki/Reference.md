@@ -96,21 +96,21 @@ Per **show** rather than per episode: `.lastrun.json` and the glossary's
 
 ### Repair
 
-| Var                                | Default                                     | Meaning                                                                                                                                                                                                                                          |
-| ---------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `REPAIR_MODEL`                     | `qwen3-4b-instruct`                         | Repair model                                                                                                                                                                                                                                     |
-| `REPAIR_BACKEND`                   | `llamacpp`                                  | `llamacpp` or `ollama`                                                                                                                                                                                                                           |
-| `REPAIR_LLAMACPP_URL`              | `http://127.0.0.1:8090/v1/chat/completions` | llama.cpp chat endpoint. The server behind it **must** be started with `--jinja`, or `chat_template_kwargs.enable_thinking=false` is silently ignored and a thinking-capable model burns its whole budget on reasoning and returns empty content |
-| `OLLAMA_URL`                       | `http://127.0.0.1:11434/api/generate`       | Ollama endpoint                                                                                                                                                                                                                                  |
-| `REPAIR_MODEL_SECONDARY`           | _(same as primary)_                         | Second-opinion model for name changes                                                                                                                                                                                                            |
-| `REPAIR_UNANCHORED`                | `1` (deployed 2026-09-06 on the reference install) | Global override; per-show glossary field preferred for new installs — see How-To-Guides.md |
-| `DECISIONS_APPLY`                  | `1`                                         | Apply stored human verdicts during repair                                                                                                                                                                                                        |
-| `LOGPROB_MIN`                      | `-0.4`                                      | Below this average logprob, a line is a repair target                                                                                                                                                                                            |
-| `NSP_MAX`                          | `0.5`                                       | Above this no-speech probability, a line is skipped                                                                                                                                                                                              |
-| `LEN_RATIO_MIN` / `LEN_RATIO_MAX`  | `0.6` / `1.5`                               | Accepted length change                                                                                                                                                                                                                           |
-| `MAX_REF_BORROW`                   | `3`                                         | Words a repair may take from the reference                                                                                                                                                                                                       |
-| `REPAIR_PHONETIC_MIN`              | `0.75`                                      | Phonetic similarity floor for a name correction                                                                                                                                                                                                  |
-| `REPAIR_TIMEOUT_CONNECT` / `_READ` | `10` / `120`                                | Seconds                                                                                                                                                                                                                                          |
+| Var                                | Default                                            | Meaning                                                                                                                                                                                                                                          |
+| ---------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `REPAIR_MODEL`                     | `qwen3-4b-instruct`                                | Repair model                                                                                                                                                                                                                                     |
+| `REPAIR_BACKEND`                   | `llamacpp`                                         | `llamacpp` or `ollama`                                                                                                                                                                                                                           |
+| `REPAIR_LLAMACPP_URL`              | `http://127.0.0.1:8090/v1/chat/completions`        | llama.cpp chat endpoint. The server behind it **must** be started with `--jinja`, or `chat_template_kwargs.enable_thinking=false` is silently ignored and a thinking-capable model burns its whole budget on reasoning and returns empty content |
+| `OLLAMA_URL`                       | `http://127.0.0.1:11434/api/generate`              | Ollama endpoint                                                                                                                                                                                                                                  |
+| `REPAIR_MODEL_SECONDARY`           | _(same as primary)_                                | Second-opinion model for name changes                                                                                                                                                                                                            |
+| `REPAIR_UNANCHORED`                | `1` (deployed 2026-09-06 on the reference install) | Global override; per-show glossary field preferred for new installs — see How-To-Guides.md                                                                                                                                                       |
+| `DECISIONS_APPLY`                  | `1`                                                | Apply stored human verdicts during repair                                                                                                                                                                                                        |
+| `LOGPROB_MIN`                      | `-0.4`                                             | Below this average logprob, a line is a repair target                                                                                                                                                                                            |
+| `NSP_MAX`                          | `0.5`                                              | Above this no-speech probability, a line is skipped                                                                                                                                                                                              |
+| `LEN_RATIO_MIN` / `LEN_RATIO_MAX`  | `0.6` / `1.5`                                      | Accepted length change                                                                                                                                                                                                                           |
+| `MAX_REF_BORROW`                   | `3`                                                | Words a repair may take from the reference                                                                                                                                                                                                       |
+| `REPAIR_PHONETIC_MIN`              | `0.75`                                             | Phonetic similarity floor for a name correction                                                                                                                                                                                                  |
+| `REPAIR_TIMEOUT_CONNECT` / `_READ` | `10` / `120`                                       | Seconds                                                                                                                                                                                                                                          |
 
 ### Punctuation restore
 
@@ -169,15 +169,22 @@ Per **show** rather than per episode: `.lastrun.json` and the glossary's
 
 ### Ordering and watch queue
 
-| Var                                        | Default                     | Meaning                                 |
-| ------------------------------------------ | --------------------------- | --------------------------------------- |
-| `SEASON_START`                             | `0`                         | Global watch-order start season         |
-| `SEASON_PRIORITY_FILE`                     | _(unset)_                   | Per-show start seasons                  |
-| `WATCH_QUEUE_WINDOW_DAYS`                  | _(unset — step skipped)_    | Days of watch history to consider       |
-| `WATCH_QUEUE_PIN`                          | _(unset)_                   | Restrict the watch queue to named shows |
-| `WATCHSTATE_URL` / `WATCHSTATE_API_KEY`    | _(empty)_                   | WatchState source                       |
-| `PLEX_URL` / `PLEX_TOKEN` / `PLEX_SECTION` | _(empty)_ / _(empty)_ / `7` | Plex refresh and watch source           |
-| `PLEX_PATH`                                | _(empty)_                   | Path prefix Plex sees, if it differs    |
+| Var                                        | Default                     | Meaning                                      |
+| ------------------------------------------ | --------------------------- | -------------------------------------------- |
+| `SEASON_START`                             | `0`                         | Global watch-order start season              |
+| `SEASON_PRIORITY_FILE`                     | _(unset)_                   | Per-show start seasons                       |
+| `WATCH_QUEUE_WINDOW_DAYS`                  | _(unset — step skipped)_    | Days of watch history to consider            |
+| `WATCH_QUEUE_PIN`                          | _(unset)_                   | Always queue this show first, watched or not |
+| `WATCHSTATE_URL` / `WATCHSTATE_API_KEY`    | _(empty)_                   | WatchState source                            |
+| `PLEX_URL` / `PLEX_TOKEN` / `PLEX_SECTION` | _(empty)_ / _(empty)_ / `7` | Plex refresh and watch source                |
+| `PLEX_PATH`                                | _(empty)_                   | Path prefix Plex sees, if it differs         |
+
+**How a watched show finds its folder:** by the show's TVDB id first — WatchState's
+`parent.guid_tvdb`, or the `tvdb://` Guid on the Plex show — against the `{tvdb-N}` in the
+folder name. Without an id it falls back to the title: exact, then with the `(YYYY)` kept,
+then with it stripped, then case/punctuation-insensitive. A title two folders share (e.g.
+`JoJo's Bizarre Adventure` for both the 1993 and 2012 series) is reported as unmatched, never
+guessed — so name your folders `Title (YYYY) {tvdb-N}` and the id settles it.
 
 ### Loop cadence
 
