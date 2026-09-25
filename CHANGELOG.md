@@ -8,6 +8,58 @@ that shipped since.
 
 ## [Unreleased]
 
+## 0.2.1 - 2026-09-24
+
+Release-integrity and fail-closed hardening driven by the v0.2.0 adversarial release review
+(findings B1–B9; the original review file is missing — a labeled reconstruction plus a
+post-review evidence log in `docs/Adversarial Reviews/` document the findings and this
+remediation).
+
+### Fixed
+
+- `mux.py`: every failure exit path now writes a real stage record using an outcome from
+  `common.STAGE_OUTCOMES`. Mux verification failures record `build-error` with a
+  `verify:<reason>` detail, signs-regression refusals are recorded as a visible failure
+  instead of a silent return, and unexpected exceptions record a sanitized `crashed`
+  detail. Previously these paths wrote no record (or an invalid one), so `failed_stage()`
+  could not see the failure and the episode could look current.
+- `merge_pass.sh`: the crash-classification fallbacks receive the episode stem via an
+  environment variable instead of inline `'$stem'` interpolation — stems containing
+  apostrophes (e.g. `JoJo's Bizarre Adventure`) no longer raise `SyntaxError` or write
+  bogus crash records.
+
+### Changed
+
+- `release.yml`: image build/push is gated behind a reusable `ci-gate` workflow that
+  re-runs the CI matrix for the tagged commit and skips the image job on any red
+  conclusion — image push cannot follow failed CI (proven on a disposable failed-tag
+  run, see Verification).
+- `uv.lock` resynced to the `pyproject.toml` version; the sprint-015 retro carries a
+  dated correction (the upstream `azrtydxb/procoder#301` issue now exists); stale
+  CHANGELOG sentences and test docstrings fixed.
+
+### Verification
+
+Sanitized evidence recorded 2026-09-24/25 (no secrets; no live mutation accompanied it):
+
+- **CI gate proof (release integrity):** a disposable failed-tag run (temporary branch
+  and annotated tag, both deleted afterwards) went red on the Python 3.11/3.13 tests
+  while lint and osv-scan passed, and the image job was **skipped** as designed. No
+  image build/push or release publication followed the red CI conclusion. The public
+  `v0.2.0` tag was not moved.
+- **Deployment host, read-only audit:** the worker container runs
+  `dubtitle-builder:0.1.3` while the deployed publish service pins `0.1.0` — a pin
+  mismatch is observed, its causal effect unproven, and alignment is tracked separately.
+  Representative media (One Pace S33, sampled 5 of 39 episodes) all carry nonempty
+  `.done` stamps and mux logs with no fail stamps, exactly one default SubRip
+  `Dubtitles` stream each, no external subtitle sidecars, and the sampled episodes
+  decoded cleanly with hundreds of positive subtitle packets and none empty. A full
+  39-file sweep is not proven; conclusions are limited to the sample.
+- **Known open item:** the owner-reported playback symptom (One Pace S33 dubtitle tracks
+  render nothing) is **not root-caused**. Ranked hypotheses and the smallest safe next
+  diagnostic (a bounded read-only probe on the actual player/server host) are recorded
+  in the homelab documentation vault; no causation is claimed.
+
 ## 0.2.0 - 2026-09-23
 
 Scope boundary for the v0.2.0 hardening pass, set 2026-09-21. The scope ids S-1 through
@@ -228,5 +280,6 @@ episode already in your library is stale.
 - **v2** (2026-07-27) — fixed a signs-merge bug that rendered captions as solid black
   and duplicated signs across tracks.
 
+[0.2.1]: https://github.com/XenaRathon/DubTitlerr/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/XenaRathon/DubTitlerr/compare/v0.1.0...v0.2.0
-[Unreleased]: https://github.com/XenaRathon/DubTitlerr/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/XenaRathon/DubTitlerr/compare/v0.2.1...HEAD
