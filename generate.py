@@ -61,13 +61,12 @@ import punctuation
 import qc
 import reflow
 from common import (
-    SIDECAR_MODE,
-    atomic_write,
     STAMP_SUFFIX,
     TRANSCRIBE_VERSION,
     VIDEO_EXTS,
     WORDS_SCHEMA_VERSION,
     WORDS_SUFFIX,
+    atomic_write,
     load_extras,
     out_for,
     read_stamp,

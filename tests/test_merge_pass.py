@@ -286,7 +286,7 @@ def test_a_failed_stage_scan_never_prints_complete(tmp_path, monkeypatch):
     stem = str(root / "Show" / "ep01")
     os.makedirs(os.path.dirname(stem))
     common.write_stage(stem, "repair", "ok")
-    bindir = _fake_bin(tmp_path, "ffmpeg")
+    _fake_bin(tmp_path, "ffmpeg")
     wrapper = tmp_path / "fakebin" / "python3"
     wrapper.write_text(
         f'#!/bin/sh\ncase "$2" in *failed_stage*) exit 1 ;;\nesac\nexec {shlex.quote(sys.executable)} "$@"\n'
