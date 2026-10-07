@@ -8,6 +8,16 @@ that shipped since.
 
 ## [Unreleased]
 
+### Fixed
+
+- `mux.py`: failures in the post-stamp cleanup (removing the old mp4 link, writing
+  `.dubtitles.mux.log`) no longer record the episode as `crashed`. The episode is already
+  muxed and stamped, and the next sweep returns `already-muxed` before any stage write, so
+  the bogus record was never cleared and `merge_pass.sh` reported MERGE PASS INCOMPLETE
+  forever. Cleanup errors now log a warning and the stage records `ok`.
+- Changelog: the 0.2.1 entry for `merge_pass.sh` wrongly says the episode stem is passed
+  via an environment variable; it is actually passed as argv (`sys.argv[1]`, `sys.argv[2]`).
+
 ## 0.2.1 - 2026-09-24
 
 Release-integrity and fail-closed hardening driven by the v0.2.0 adversarial release review

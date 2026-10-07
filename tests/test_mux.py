@@ -843,3 +843,65 @@ def test_process_records_unexpected_mux_exception_as_crashed(tmp_path, monkeypat
     assert sensitive_path not in detail
     assert sensitive_message not in detail
     assert common.failed_stage(stem) == "mux"
+
+
+def test_process_post_stamp_cleanup_failure_still_records_ok(tmp_path, monkeypatch):
+    """Once the stamp is written the episode is done: a failing mux.log write must not
+    turn into a crashed record (the next sweep returns already-muxed before it could
+    ever clear it, leaving merge_pass.sh counting a failed stage forever)."""
+    import common
+
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    v = _muxable(tmp_path, monkeypatch, [aud(0, "eng")])
+    stem = os.path.splitext(v)[0]
+    monkeypatch.setattr(mux.subprocess, "run", lambda cmd, **kw: None)
+    monkeypatch.setattr(mux, "verify", lambda orig, out: "ok")
+    monkeypatch.setattr(mux.os, "chown", lambda *a, **kw: None)
+    monkeypatch.setattr(mux, "_finalize", lambda out, final: None)
+    monkeypatch.setattr(mux, "write_stamp", lambda *a, **kw: None)
+    real_open = open
+
+    def flaky_open(path, *a, **kw):
+        if str(path).endswith(".dubtitles.mux.log"):
+            raise OSError("read-only filesystem")
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(mux, "open", flaky_open, raising=False)
+
+    assert mux.process(v, apply=True) == "muxed"
+    assert common.read_stages(stem)["mux"]["outcome"] == "ok"
+    assert common.failed_stage(stem) is None
+
+
+def test_process_orig_removal_failure_still_removes_sidecars(tmp_path, monkeypatch):
+    """mp4->mkv: if dropping the OLD .mp4 link fails, the sidecar removals and mux.log
+    write that follow must still run, and the stage must record ok."""
+    import common
+
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    v = tmp_path / "ep.mp4"
+    v.write_bytes(b"x" * 100)
+    ass = tmp_path / ("ep" + mux.ASS_SUFFIX)
+    srt = tmp_path / ("ep" + mux.SRT_SUFFIX)
+    ass.write_text("[Script Info]\n")
+    srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+    stem = str(tmp_path / "ep")
+    monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
+    monkeypatch.setattr(mux.subprocess, "run", lambda cmd, **kw: None)
+    monkeypatch.setattr(mux, "verify", lambda orig, out: "ok")
+    monkeypatch.setattr(mux.os, "chown", lambda *a, **kw: None)
+    monkeypatch.setattr(mux, "_finalize", lambda out, final: None)
+    monkeypatch.setattr(mux, "write_stamp", lambda *a, **kw: None)
+    real_remove = os.remove
+
+    def flaky_remove(path, *a, **kw):
+        if os.path.abspath(path) == os.path.abspath(str(v)):
+            raise OSError("permission denied")
+        return real_remove(path, *a, **kw)
+
+    monkeypatch.setattr(mux.os, "remove", flaky_remove)
+
+    assert mux.process(str(v), apply=True) == "muxed"
+    assert common.read_stages(stem)["mux"]["outcome"] == "ok"
+    assert common.failed_stage(stem) is None
+    assert not ass.exists() and not srt.exists()

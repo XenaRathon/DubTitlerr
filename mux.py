@@ -510,16 +510,25 @@ def process(orig, apply):
             )
             write_stage(stem, "mux", "unwritable", str(e))
             return "stamp-write-failed"
-        if os.path.abspath(orig) != os.path.abspath(final) and os.path.exists(orig):
-            os.remove(orig)  # mp4->mkv: drop the OLD library link (partner survives)
-        for suff in (ASS_SUFFIX, SRT_SUFFIX):
-            try:
-                os.remove(stem + suff)
-            except OSError:
-                pass
-        with open(stem + ".dubtitles.mux.log", "w") as f:
-            f.write(f"muxed {os.path.basename(orig)} -> mkv; eng audio + Dubtitles default\n")
-            f.write("dropped non-keep tracks: " + ", ".join(dropped) + "\n")
+        # The stamp is written: the episode IS done. Cleanup failures from here on must not
+        # reach the crashed path below — the next sweep returns already-muxed at the stamp
+        # check before any write_stage, so a crashed record would never be cleared.
+        try:
+            if os.path.abspath(orig) != os.path.abspath(final) and os.path.exists(orig):
+                try:
+                    os.remove(orig)  # mp4->mkv: drop the OLD library link (partner survives)
+                except OSError as e:
+                    log(f"  WARNING: muxed and stamped, but removing {os.path.basename(orig)} failed ({e})")
+            for suff in (ASS_SUFFIX, SRT_SUFFIX):
+                try:
+                    os.remove(stem + suff)
+                except OSError:
+                    pass
+            with open(stem + ".dubtitles.mux.log", "w") as f:
+                f.write(f"muxed {os.path.basename(orig)} -> mkv; eng audio + Dubtitles default\n")
+                f.write("dropped non-keep tracks: " + ", ".join(dropped) + "\n")
+        except OSError as e:
+            log(f"  WARNING: muxed and stamped, but post-stamp cleanup failed ({e})")
         log(f"  muxed ({ext}->mkv); dropped {len(dropped)} foreign track(s)")
         write_stage(stem, "mux", "ok")
         return "muxed"
