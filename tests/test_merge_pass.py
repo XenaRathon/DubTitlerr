@@ -167,8 +167,13 @@ for suffix in (".dubtitles.conf.json", ".eng.dubtitles.srt", ".mkv", ".mp4"):
 with open(os.environ["CALLLOG"], "a") as f:
     f.write(name + " " + os.path.basename(stem) + "\\n")
 mode = os.environ.get("STUB_" + name.upper(), "ok")
+late_crash = mode == "ok-then-exit3"
+if late_crash:
+    mode = "ok"
 if mode == "exit3":  # dies without recording anything
     sys.exit(3)
+if mode == "silent":  # exits 0 without recording anything
+    sys.exit(0)
 if mode != "ok":
     common.write_stage(stem, name, mode)
     sys.exit(0)
@@ -176,6 +181,8 @@ common.write_stage(stem, name, "ok")
 if name == "signs":
     open(stem + ".eng.dubtitles.ass", "w").close()
     os.remove(stem + ".eng.dubtitles.srt")
+if late_crash:
+    sys.exit(3)
 """
 
 
@@ -284,3 +291,62 @@ def test_a_failed_stage_scan_never_prints_complete(tmp_path, monkeypatch):
     assert "MERGE PASS COMPLETE" not in res.stdout, res.stdout + res.stderr
     assert "MERGE PASS INCOMPLETE: failed-stage scan error" in res.stdout
     assert "MERGE_PASS_DONE" in res.stdout
+
+
+def test_a_crash_whose_record_cannot_be_written_still_blocks_mux(tmp_path, monkeypatch):
+    """rc != 0, no record, AND the crash fallback's write fails (here the sidecar path is a
+    directory, so os.replace onto it fails): the gate saw 'no record' and let mux run."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    root, stem = _episode(tmp_path)
+    os.mkdir(stem + common.STAGES_SUFFIX)
+    res, calls = _gated_run(tmp_path, root, repair="exit3")
+    assert calls == ["repair ep01"], (calls, res.stdout, res.stderr)
+    assert "skip mux: repair crashed (no record)" in res.stdout
+
+
+def test_a_signs_crash_whose_record_cannot_be_written_still_blocks_mux(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    root, stem = _episode(tmp_path)
+    os.mkdir(stem + common.STAGES_SUFFIX)
+    # repair exits 0 with no record (passes the gate: rc == 0); signs then dies without one.
+    res, calls = _gated_run(tmp_path, root, repair="silent", signs="exit3")
+    assert calls[:2] == ["repair ep01", "signs ep01"] and "mux ep01" not in calls, (calls, res.stdout, res.stderr)
+    assert "skip mux: signs crashed (no record)" in res.stdout
+
+
+def test_a_crash_after_an_ok_record_does_not_block_mux(tmp_path):
+    """Guard: gate on 'no record', not on rc alone, or a late failure after a good record
+    would re-run the whole stage every pass."""
+    root, stem = _episode(tmp_path)
+    res, calls = _gated_run(tmp_path, root, repair="ok-then-exit3")
+    assert calls == ["repair ep01", "signs ep01", "mux ep01"], (calls, res.stdout, res.stderr)
+
+
+def test_gate_error_skips_mux_and_the_pass_still_finishes(tmp_path):
+    root, stem = _episode(tmp_path)
+    _stub_app(tmp_path)
+    _fake_bin(tmp_path, "ffmpeg")
+    wrapper = tmp_path / "fakebin" / "python3"
+    wrapper.write_text(f'#!/bin/sh\ncase "$2" in *"only=("*) exit 1 ;;\nesac\nexec {shlex.quote(sys.executable)} "$@"\n')
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    res, calls = _gated_run(tmp_path, root)
+    assert calls == ["repair ep01"], (calls, res.stdout, res.stderr)
+    assert "skip mux: repair failed (gate-error)" in res.stdout
+    assert "MERGE_PASS_DONE" in res.stdout
+
+
+def test_failed_counts_from_several_xargs_batches_are_summed(tmp_path, monkeypatch):
+    """Guard for the awk sum: xargs prints one count line per python run."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    root = tmp_path / "library"
+    for i, outcome in enumerate(["crashed", "ok", "build-error", "crashed", "ok"]):
+        stem = str(root / "Show" / f"ep{i}")
+        os.makedirs(os.path.dirname(stem), exist_ok=True)
+        common.write_stage(stem, "repair", outcome)
+    real_xargs = subprocess.run(["sh", "-c", "command -v xargs"], capture_output=True, text=True).stdout.strip()
+    _fake_bin(tmp_path, "ffmpeg")
+    wrapper = tmp_path / "fakebin" / "xargs"
+    wrapper.write_text(f'#!/bin/sh\nexec {shlex.quote(real_xargs)} -n 1 "$@"\n')
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    res = _run(tmp_path, root)
+    assert "MERGE PASS INCOMPLETE: 3 episodes with a failed stage" in res.stdout, res.stdout + res.stderr

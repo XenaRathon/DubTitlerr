@@ -1216,3 +1216,27 @@ def test_process_orig_removal_failure_still_removes_sidecars(tmp_path, monkeypat
     assert common.read_stages(stem)["mux"]["outcome"] == "ok"
     assert common.failed_stage(stem) is None
     assert not ass.exists() and not srt.exists()
+
+
+def test_process_post_stamp_cleanup_removes_a_stale_ass_part(tmp_path, monkeypatch):
+    """A SIGKILL during dub_signs_merge's install leaves <ep>.eng.dubtitles.ass.part behind.
+    Nothing else ever reads or removes it, so the mux cleanup that drops the sidecars takes it too."""
+    import common
+
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    v = tmp_path / "ep.mp4"
+    v.write_bytes(b"x" * 100)
+    ass = tmp_path / ("ep" + mux.ASS_SUFFIX)
+    part = tmp_path / ("ep" + mux.ASS_SUFFIX + ".part")
+    ass.write_text("[Script Info]\n")
+    part.write_text("half-written")
+    monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
+    monkeypatch.setattr(mux.subprocess, "run", lambda cmd, **kw: None)
+    monkeypatch.setattr(mux, "verify", lambda orig, out: "ok")
+    monkeypatch.setattr(mux.os, "chown", lambda *a, **kw: None)
+    monkeypatch.setattr(mux, "_finalize", lambda out, final: None)
+    monkeypatch.setattr(mux, "write_stamp", lambda *a, **kw: None)
+
+    assert mux.process(str(v), apply=True) == "muxed"
+    assert not ass.exists()
+    assert not part.exists()

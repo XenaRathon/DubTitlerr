@@ -314,6 +314,44 @@ def read_words(stem, rec=None, expect: dict | None = None):
     return doc
 
 
+def atomic_write(path, render, mode=SIDECAR_MODE, newline=None):
+    """Write ``path`` through a temp file in the same directory plus os.replace -- the
+    discipline qc.write and glossary_acquire._write_json already follow.
+
+    process() clears the in-flight .dubtitles.fail marker as soon as transcription
+    finishes, BEFORE the srt and conf are written, so a plain open(path, "w") that dies
+    mid-loop leaves a TRUNCATED file with no marker behind it: the default SKIP_IF_SRT=1
+    already-srt guard reads that as a finished episode on the next sweep and mux embeds a
+    cut-off subtitle. Same rule as the stale-sidecar parking fix one function away --
+    never drop known-good output before the replacement exists. os.replace either swaps
+    or does nothing, and a failure leaves neither a partial target nor a temp file.
+
+    The exception is deliberately NOT swallowed (unlike qc.write's): the srt and conf are
+    the episode's product, not observability, and a run that lost them must not report ok.
+
+    ``newline`` is passed to the file object (csv output needs ``newline=""``).
+
+    ``mode`` defaults to common.SIDECAR_MODE (0664); mkstemp creates 0600, which would strip
+    group/other read from every file we ship. It must stay GROUP-WRITABLE -- 0644 meant only
+    the creating uid could ever overwrite a sidecar, which broke every non-root writer (see
+    the SIDECAR_MODE comment above)."""
+    d = os.path.dirname(path) or "."
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(path) + ".", suffix=".tmp")
+        with os.fdopen(fd, "w", newline=newline) as f:
+            render(f)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+        tmp = None
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
 def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
     """Write the .dubtitles.done idempotency stamp recording the muxed file's size+mtime
     and the tier versions that produced it (stamp_valid rejects a stamp behind either
@@ -345,8 +383,7 @@ def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
     }
     if stages:
         doc["stages"] = stages
-    with open(path, "w") as f:
-        json.dump(doc, f)
+    atomic_write(path, lambda f: json.dump(doc, f))
 
 
 def read_stamp(path: str) -> dict | None:
@@ -444,6 +481,8 @@ STAGE_OUTCOMES = (
     "refused",
 )
 
+# "no-reference" is LEGACY: nothing writes it any more (repair's refusal is "refused"), but
+# records from older runs still sit on disk and must keep reading as passed.
 _PASSED_OUTCOMES = {"ok", "no-reference", "no-video"}
 
 

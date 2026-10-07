@@ -49,6 +49,22 @@ that shipped since.
   scan batches are now added up instead of breaking the comparison.
 - `common.failed_stage` reads stages in pipeline order (repair, signs, mux) as its docstring
   says, not in file order, and takes an optional `only=` list of stages.
+- The `.dubtitles.done` stamp and repair's `.srt`, audit `.csv` and summary `.json` are now
+  written through a temp file and renamed into place (`common.atomic_write`, shared with
+  `generate.py`). A crash mid-write no longer truncates the previous stamp, which used to
+  trigger a re-mux of the episode on every sweep, or the shipped `.srt`.
+- A failing ffmpeg no longer produces a truncated transcription: `extract_wav` now checks the
+  exit code, deletes the partial wav and reports `extract-failed`, so the episode is retried
+  instead of getting subtitles for only part of the audio.
+- The publish unit (`deploy/dubtitlerr-publish.service`) no longer puts the GitHub token on
+  the docker command line, where `ps`, the journal and `systemctl status` showed it. It now
+  passes `-e GITHUB_USER -e GITHUB_PAT` without values. Copying the unit to the host is a
+  manual step.
+- `merge_pass.sh` no longer runs mux when repair or signs crashed and the crash record could
+  not be written either (for example an unwritable stage file): that stem is skipped as
+  `<stage> crashed (no record)`. A crash after a stage already recorded `ok` does not block it.
+- A stale `<episode>.eng.dubtitles.ass.part` (left if the pipeline was killed while installing
+  the signs file) is now removed when the episode is muxed.
 
 ## 0.2.1 - 2026-09-24
 

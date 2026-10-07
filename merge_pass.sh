@@ -48,6 +48,11 @@ stage_failure() {
 	python3 -c "import common,sys; s=sys.argv[1]; f=common.failed_stage(s, only=(sys.argv[2],)); print(common.read_stages(s)[f].get('outcome') if f else '')" "$1" "$2" </dev/null 2>/dev/null || echo "gate-error"
 }
 
+# True if the stage left ANY record. Fails closed: a check that cannot run counts as "no".
+has_record() {
+	python3 -c "import common,sys; sys.exit(0 if sys.argv[2] in common.read_stages(sys.argv[1]) else 1)" "$1" "$2" </dev/null >/dev/null 2>&1
+}
+
 before=$(find . -type f -name "*.dubtitles.done" | wc -l)
 # episodes with a sidecar (srt or ass) -> dedup to the stem
 find . -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) |
@@ -63,6 +68,11 @@ find . -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) 
 		rc=$?
 		if [ $rc -ne 0 ]; then
 			python3 -c "import common,sys; s=sys.argv[1]; rc=sys.argv[2]; sys.exit(0 if 'repair' in common.read_stages(s) else common.write_stage(s, 'repair', 'crashed', 'rc='+rc) or 1)" "$stem" "$rc" </dev/null >/dev/null 2>&1 || true
+			# the fallback's own write can fail (unwritable sidecar): no record at all is a failure
+			if ! has_record "$stem" repair; then
+				echo "skip mux: repair crashed (no record)"
+				continue
+			fi
 		fi
 		bad=$(stage_failure "$stem" repair)
 		if [ -n "$bad" ]; then
@@ -73,6 +83,11 @@ find . -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) 
 		rc=$?
 		if [ $rc -ne 0 ]; then
 			python3 -c "import common,sys; s=sys.argv[1]; rc=sys.argv[2]; sys.exit(0 if 'signs' in common.read_stages(s) else common.write_stage(s, 'signs', 'crashed', 'rc='+rc) or 1)" "$stem" "$rc" </dev/null >/dev/null 2>&1 || true
+			# the fallback's own write can fail (unwritable sidecar): no record at all is a failure
+			if ! has_record "$stem" signs; then
+				echo "skip mux: signs crashed (no record)"
+				continue
+			fi
 		fi
 		bad=$(stage_failure "$stem" signs)
 		if [ -n "$bad" ]; then

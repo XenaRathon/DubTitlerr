@@ -280,7 +280,7 @@ def test_extract_wav_appends_audio_filter_by_default(monkeypatch, tmp_path):
     """The default WHISPER_AUDIO_FILTER (highpass+compand) is appended as -af to the
     ffmpeg command, right before the output path."""
     calls = []
-    monkeypatch.setattr(generate.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    monkeypatch.setattr(generate.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or generate.subprocess.CompletedProcess(cmd, 0))
     wav = tmp_path / "a.wav"
     wav.write_bytes(b"x" * 2000)  # extract_wav's success check is stat-only; run() is faked
     assert generate.extract_wav("ep.mkv", 1, str(wav)) is True
@@ -288,6 +288,41 @@ def test_extract_wav_appends_audio_filter_by_default(monkeypatch, tmp_path):
     assert cmd[-1] == str(wav)
     assert cmd[-3:-1] == ["-af", generate.AUDIO_FILTER]
     assert generate.AUDIO_FILTER.startswith("highpass=f=80")  # matches the spec's Data contracts default
+
+
+def _fake_ffmpeg(monkeypatch, returncode, size):
+    """subprocess.run stand-in that writes a `size`-byte wav to the output path (the last
+    argv element) and reports `returncode`."""
+
+    def run(cmd, **kw):
+        with open(cmd[-1], "wb") as f:
+            f.write(b"x" * size)
+        return generate.subprocess.CompletedProcess(cmd, returncode, b"", b"")
+
+    monkeypatch.setattr(generate.subprocess, "run", run)
+
+
+def test_extract_wav_failing_ffmpeg_returns_false_and_removes_the_partial_wav(monkeypatch, tmp_path):
+    """A wav truncated by a failing ffmpeg is bigger than 1000 bytes, so the size check alone
+    called it a success and the episode shipped a subtitle for part of the audio."""
+    wav = tmp_path / "a.wav"
+    _fake_ffmpeg(monkeypatch, returncode=1, size=5000)
+    assert generate.extract_wav("ep.mkv", 1, str(wav)) is False
+    assert not wav.exists()
+
+
+def test_extract_wav_clean_exit_with_a_real_wav_is_true(monkeypatch, tmp_path):
+    """Guard."""
+    wav = tmp_path / "a.wav"
+    _fake_ffmpeg(monkeypatch, returncode=0, size=5000)
+    assert generate.extract_wav("ep.mkv", 1, str(wav)) is True
+
+
+def test_extract_wav_clean_exit_with_a_tiny_wav_is_false(monkeypatch, tmp_path):
+    """Guard: the size check stays."""
+    wav = tmp_path / "a.wav"
+    _fake_ffmpeg(monkeypatch, returncode=0, size=10)
+    assert generate.extract_wav("ep.mkv", 1, str(wav)) is False
 
 
 def test_process_logs_chown_failure_instead_of_swallowing(monkeypatch, tmp_path, capsys):
@@ -318,7 +353,7 @@ def test_extract_wav_no_filter_when_empty(monkeypatch, tmp_path):
     reproducing the exact pre-A8 ffmpeg command."""
     calls = []
     monkeypatch.setattr(generate, "AUDIO_FILTER", "")
-    monkeypatch.setattr(generate.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    monkeypatch.setattr(generate.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or generate.subprocess.CompletedProcess(cmd, 0))
     wav = tmp_path / "a.wav"
     wav.write_bytes(b"x" * 2000)
     generate.extract_wav("ep.mkv", 1, str(wav))

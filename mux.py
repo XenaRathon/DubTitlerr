@@ -551,7 +551,8 @@ def process(orig, apply):
                     os.remove(orig)  # mp4->mkv: drop the OLD library link (partner survives)
                 except OSError as e:
                     log(f"  WARNING: muxed and stamped, but removing {os.path.basename(orig)} failed ({e})")
-            for suff in (ASS_SUFFIX, SRT_SUFFIX):
+            # ASS_SUFFIX + ".part": left by a SIGKILL during dub_signs_merge's install
+            for suff in (ASS_SUFFIX, SRT_SUFFIX, ASS_SUFFIX + ".part"):
                 try:
                     os.remove(stem + suff)
                 except OSError:

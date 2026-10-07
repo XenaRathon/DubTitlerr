@@ -61,6 +61,7 @@ import qc
 import reflow
 from common import (
     SIDECAR_MODE,
+    atomic_write,
     STAMP_SUFFIX,
     TRANSCRIBE_VERSION,
     VIDEO_EXTS,
@@ -355,7 +356,15 @@ def extract_wav(video, idx, wav):
     if AUDIO_FILTER:  # V2 A8: empty WHISPER_AUDIO_FILTER = no filter (pre-A8 behavior)
         cmd += ["-af", AUDIO_FILTER]
     cmd.append(wav)
-    subprocess.run(cmd, capture_output=True, timeout=FFMPEG_TIMEOUT, stdin=subprocess.DEVNULL)
+    r = subprocess.run(cmd, capture_output=True, timeout=FFMPEG_TIMEOUT, stdin=subprocess.DEVNULL)
+    if r.returncode != 0:
+        # A failing ffmpeg can leave a wav well past the size check below, cut off partway:
+        # transcribing it would ship a subtitle for only part of the audio.
+        try:
+            os.remove(wav)
+        except OSError:
+            pass
+        return False
     return os.path.exists(wav) and os.path.getsize(wav) > 1000
 
 
@@ -646,40 +655,9 @@ def _revalidate_after_correction(rec, cards):
         )
 
 
-def _atomic_write(path, render, mode=SIDECAR_MODE):
-    """Write ``path`` through a temp file in the same directory plus os.replace -- the
-    discipline qc.write and glossary_acquire._write_json already follow.
-
-    process() clears the in-flight .dubtitles.fail marker as soon as transcription
-    finishes, BEFORE the srt and conf are written, so a plain open(path, "w") that dies
-    mid-loop leaves a TRUNCATED file with no marker behind it: the default SKIP_IF_SRT=1
-    already-srt guard reads that as a finished episode on the next sweep and mux embeds a
-    cut-off subtitle. Same rule as the stale-sidecar parking fix one function away --
-    never drop known-good output before the replacement exists. os.replace either swaps
-    or does nothing, and a failure leaves neither a partial target nor a temp file.
-
-    The exception is deliberately NOT swallowed (unlike qc.write's): the srt and conf are
-    the episode's product, not observability, and a run that lost them must not report ok.
-
-    ``mode`` defaults to common.SIDECAR_MODE (0664); mkstemp creates 0600, which would strip
-    group/other read from every file we ship. It must stay GROUP-WRITABLE -- 0644 meant only
-    the creating uid could ever overwrite a sidecar, which broke every non-root writer (see
-    the SIDECAR_MODE comment in common.py)."""
-    d = os.path.dirname(path) or "."
-    tmp = None
-    try:
-        fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(path) + ".", suffix=".tmp")
-        with os.fdopen(fd, "w") as f:
-            render(f)
-        os.chmod(tmp, mode)
-        os.replace(tmp, path)
-        tmp = None
-    finally:
-        if tmp is not None:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+# The implementation lives in common.atomic_write (stamp and repair writes use it too); this
+# name stays so existing callers and tests keep working.
+_atomic_write = atomic_write
 
 
 def _write_qc(rec, stem):
