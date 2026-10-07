@@ -31,6 +31,24 @@ that shipped since.
   forever. Cleanup errors now log a warning and the stage records `ok`.
 - Changelog: the 0.2.1 entry for `merge_pass.sh` wrongly says the episode stem is passed
   via an environment variable; it is actually passed as argv (`sys.argv[1]`, `sys.argv[2]`).
+- `merge_pass.sh` no longer runs mux after a failed repair or a failed signs step. The
+  episode is skipped with a `skip mux: ... failed (<outcome>)` line and retried next pass.
+  Records from older runs are cleared before repair and before mux, and an episode that
+  already has its `.ass` is muxed as before whatever old records say.
+- A refused repair (it would have overwritten repairs already shipped with raw ASR) is now
+  recorded as `refused`, which counts as a failure, instead of the passing `no-reference`.
+- A missing `conf.json` (or `.srt`) is no longer recorded as `no-video`. It is recorded as
+  `ok` with detail `no-conf` / `no-srt`; `no-video` now means there is no video.
+- A failed signs build no longer leaves an `.ass` behind for `merge_pass.sh` to trust and mux
+  to prefer. The build goes to `<episode>.eng.dubtitles.ass.part` and replaces the `.ass`
+  only when it succeeds, so a good earlier `.ass` also survives a failed rebuild. If every
+  English subtitle stream fails to extract, signs is now `build-error` / `extract-failed`
+  instead of "no signs".
+- A broken failed-stage scan at the end of `merge_pass.sh` no longer prints `MERGE PASS
+  COMPLETE`. It prints `MERGE PASS INCOMPLETE: failed-stage scan error`. Counts from several
+  scan batches are now added up instead of breaking the comparison.
+- `common.failed_stage` reads stages in pipeline order (repair, signs, mux) as its docstring
+  says, not in file order, and takes an optional `only=` list of stages.
 
 ## 0.2.1 - 2026-09-24
 

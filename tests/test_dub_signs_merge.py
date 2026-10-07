@@ -1,5 +1,7 @@
 """Unit tests for dub_signs_merge.py: keep_event() classifier + build() layer ordering."""
 
+import os
+
 import pysubs2
 
 import common
@@ -140,7 +142,8 @@ def test_process_one_logs_chown_failure_instead_of_swallowing(tmp_path, monkeypa
     srt = str(tmp_path / ("ep" + dsm.SUFFIX))
     open(srt, "w").close()
     monkeypatch.setattr(dsm, "find_video", lambda stem: str(tmp_path / "ep.mkv"))
-    monkeypatch.setattr(dsm, "build", lambda video, srt, out_ass: ("ok", 0, 1))
+    # build() now writes to a temp path that process_one installs; the stub must write it too
+    monkeypatch.setattr(dsm, "build", lambda video, srt, out_ass: open(out_ass, "w").close() or ("ok", 0, 1))
 
     def _boom(*a, **kw):
         raise OSError("Operation not permitted")
@@ -196,6 +199,141 @@ def test_process_one_no_signs_writes_ok_stage_record(tmp_path, monkeypatch):
     rec = common.read_stages(stem)["signs"]
     assert rec["outcome"] == "ok"
     assert rec["detail"] == "no-signs"
+
+
+# --- a failed build must not leave an .ass behind (mux prefers it; merge_pass.sh trusts it) ---
+
+
+def _signs_setup(tmp_path, monkeypatch, writer):
+    """srt + stubbed video; `writer(path)` is what the stubbed build() writes to the path it
+    is handed (whatever that is), returning build()'s tuple."""
+    common.OUTPUT_ROOT = ""
+    srt = str(tmp_path / ("ep" + dsm.SUFFIX))
+    open(srt, "w").close()
+    stem = srt[: -len(dsm.SUFFIX)]
+    monkeypatch.setattr(dsm, "find_video", lambda s: str(tmp_path / "ep.mkv"))
+    monkeypatch.setattr(dsm, "build", lambda video, dub_srt, out_ass: writer(out_ass))
+    return srt, stem, stem + ".eng.dubtitles.ass"
+
+
+def _write_ass(path, text="[Script Info]\nbad\n"):
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def test_zero_dub_lines_leaves_no_ass_behind(tmp_path, monkeypatch):
+    srt, stem, ass = _signs_setup(tmp_path, monkeypatch, lambda p: _write_ass(p) or ("ok", 3, 0))
+    assert dsm.process_one(srt) == "empty"
+    assert common.read_stages(stem)["signs"]["outcome"] == "build-error"
+    assert not os.path.exists(ass), "an .ass from a failed build would be trusted by merge_pass.sh"
+    assert os.path.exists(srt), "the srt must stay so the next pass retries"
+
+
+def test_save_fail_leaves_no_ass_behind(tmp_path, monkeypatch):
+    srt, stem, ass = _signs_setup(tmp_path, monkeypatch, lambda p: _write_ass(p, "") or ("save-fail", 3, 5))
+    assert dsm.process_one(srt) == "save-fail"
+    assert not os.path.exists(ass)
+
+
+def test_build_exception_after_a_partial_write_leaves_no_ass_behind(tmp_path, monkeypatch):
+    def writer(p):
+        _write_ass(p)
+        raise RuntimeError("died mid-save")
+
+    srt, stem, ass = _signs_setup(tmp_path, monkeypatch, writer)
+    assert dsm.process_one(srt) == "build-error"
+    assert not os.path.exists(ass)
+
+
+def test_failed_build_keeps_an_ass_from_an_earlier_good_build(tmp_path, monkeypatch):
+    """Choice for E: build writes to a temp name and only replaces the .ass on success, so
+    a failed re-build can neither leave a bad .ass nor destroy a good earlier one."""
+    srt, stem, ass = _signs_setup(tmp_path, monkeypatch, lambda p: _write_ass(p, "BAD") or ("ok", 3, 0))
+    _write_ass(ass, "GOOD")
+    assert dsm.process_one(srt) == "empty"
+    assert open(ass).read() == "GOOD"
+
+
+def test_successful_build_installs_the_ass_and_leaves_no_temp_file(tmp_path, monkeypatch):
+    """Guard: the happy path still ends with the .ass in place."""
+    srt, stem, ass = _signs_setup(tmp_path, monkeypatch, lambda p: _write_ass(p, "NEW") or ("ok", 3, 4))
+    monkeypatch.setattr(dsm.os, "chown", lambda *a, **k: None)
+    assert dsm.process_one(srt) == "merged"
+    assert open(ass).read() == "NEW"
+    assert not [n for n in os.listdir(tmp_path) if n.endswith(".part")]
+    assert not os.path.exists(srt)
+
+
+def test_every_english_stream_failing_to_extract_is_a_build_error_not_no_signs(tmp_path, monkeypatch):
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nDub line\n\n", encoding="utf-8")
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0, 1])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: False)
+    res = dsm.build("fake.mkv", str(dub_srt), str(tmp_path / "out.ass"))
+    assert res == ("extract-failed", 0, 0)
+
+
+def test_no_english_streams_at_all_is_still_no_signs(tmp_path, monkeypatch):
+    """Guard: a genuinely signs-free episode stays a pass."""
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nDub line\n\n", encoding="utf-8")
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [])
+    assert dsm.build("fake.mkv", str(dub_srt), str(tmp_path / "out.ass")) == ("no-signs", 0, 0)
+
+
+def test_extract_failed_is_recorded_as_build_error_with_that_detail(tmp_path, monkeypatch):
+    srt, stem, ass = _signs_setup(tmp_path, monkeypatch, lambda p: ("extract-failed", 0, 0))
+    assert dsm.process_one(srt) == "extract-failed"
+    rec = common.read_stages(stem)["signs"]
+    assert (rec["outcome"], rec["detail"]) == ("build-error", "extract-failed")
+
+
+# --- the REAL build() with a '.part' output path (nothing stubbed but stream discovery) ---
+
+
+def _real_build_setup(tmp_path, monkeypatch):
+    """A one-sign source track and a two-cue dub srt; only stream discovery/extraction is faked,
+    so build() runs for real all the way to pysubs2's save."""
+    common.OUTPUT_ROOT = ""
+    srt = tmp_path / ("ep" + dsm.SUFFIX)
+    srt.write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\nDub one\n\n2\n00:00:02,000 --> 00:00:03,000\nDub two\n\n",
+        encoding="utf-8",
+    )
+    track = pysubs2.SSAFile()
+    track.styles["Default"] = pysubs2.SSAStyle()
+    track.append(pysubs2.SSAEvent(start=5000, end=6000, text=r"{\pos(100,100)}a sign", style="Default"))
+
+    def fake_extract(video, idx, out_path):
+        track.save(out_path)  # ".ass" name -> real file
+        return True
+
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", fake_extract)
+    monkeypatch.setattr(dsm, "find_video", lambda stem: str(tmp_path / "ep.mkv"))
+    monkeypatch.setattr(dsm.os, "chown", lambda *a, **k: None)
+    return str(srt)
+
+
+def test_real_build_saves_to_a_part_path(tmp_path, monkeypatch):
+    srt = _real_build_setup(tmp_path, monkeypatch)
+    part = str(tmp_path / "ep.eng.dubtitles.ass.part")
+    status, signs, dub = dsm.build("fake.mkv", srt, part)
+    assert (status, signs) == ("ok", 1) and dub == 2
+    assert os.path.getsize(part) > 0
+    loaded = pysubs2.load(part, format_="ass")
+    assert len(loaded.events) == 3
+
+
+def test_process_one_with_the_real_build_installs_the_ass(tmp_path, monkeypatch):
+    srt = _real_build_setup(tmp_path, monkeypatch)
+    stem = srt[: -len(dsm.SUFFIX)]
+    assert dsm.process_one(srt) == "merged"
+    ass = stem + ".eng.dubtitles.ass"
+    assert os.path.getsize(ass) > 0
+    assert not os.path.exists(ass + ".part")
+    assert not os.path.exists(srt)
+    assert common.read_stages(stem)["signs"]["outcome"] == "ok"
 
 
 # --- V2 Phase D: diagnostic logging (D1/D3/D4/D5) ----------------------------

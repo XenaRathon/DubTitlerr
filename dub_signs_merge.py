@@ -149,15 +149,18 @@ def build(video, dub_srt, out_ass):
     seen = set()
     base_ws = None  # D3: base track's WrapStyle, for cross-track comparison
     resolutions = []  # D5: (PlayResX, PlayResY) per source track, for mismatch warning
+    failed_streams = 0  # streams that would not extract/load
     for _n, idx in enumerate(signs_sub_streams(video, SUB_LANGS)):
         with tempfile.TemporaryDirectory() as td:
             ex = os.path.join(td, "s.ass")
             if not extract(video, idx, ex):
+                failed_streams += 1
                 continue
             try:
                 subs = pysubs2.load(ex)
             except Exception as e:
                 log("  load fail", idx, e)
+                failed_streams += 1
                 continue
         src_events = list(subs.events)  # snapshot BEFORE any clearing (base may alias subs)
         resolutions.append((subs.info.get("PlayResX"), subs.info.get("PlayResY")))  # D5
@@ -194,7 +197,9 @@ def build(video, dub_srt, out_ass):
             base.events.append(ev)
             kept.append(ev)
     if base is None:
-        return "no-signs", 0, 0
+        # Nothing loaded. If streams existed but none could be read we do NOT know the
+        # episode is signs-free, so fail closed rather than ship the dialogue-only srt.
+        return ("extract-failed" if failed_streams else "no-signs"), 0, 0
     if len(set(resolutions)) > 1:  # D5: warn only — no coordinate transform (deferred to V3)
         log("WARNING: resolution mismatch between subtitle tracks — signs may be mispositioned")
     # bottom dub dialogue style
@@ -279,7 +284,7 @@ def build(video, dub_srt, out_ass):
         else:
             ev.layer = ev.layer + 1
     base.sort()
-    base.save(out_ass)
+    base.save(out_ass, format_="ass")  # out_ass may be a ".part" path: no extension to infer from
     ok = os.path.exists(out_ass) and os.path.getsize(out_ass) > 0
     return ("ok" if ok else "save-fail"), len(kept), added
 
@@ -291,13 +296,26 @@ def process_one(srt):
     if not video:
         write_stage(stem, "signs", "no-video")
         return "no-video"
+    # Build beside the target and install only on success: an .ass left behind by a failed
+    # build would be trusted by merge_pass.sh's "an .ass exists" check and preferred by mux,
+    # and a failed re-build must not destroy a good .ass from an earlier run either.
+    part = out_ass + ".part"
+
+    def _drop_part():
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+
     try:
-        res, signs, dub = build(video, srt, out_ass)
+        res, signs, dub = build(video, srt, part)
     except Exception as e:
         log("build error:", srt, e)
+        _drop_part()
         write_stage(stem, "signs", "build-error", str(e))
         return "build-error"
     if res == "no-signs":
+        _drop_part()
         # genuinely signs-free episode -- not a failure, mux proceeds on the
         # dialogue-only .srt normally
         write_stage(stem, "signs", "ok", "no-signs")
@@ -306,9 +324,17 @@ def process_one(srt):
         # build() reported a non-"ok"/non-"no-signs" result, or landed zero dub
         # lines -- both are suspicious enough to fail closed rather than silently
         # promote a demoted/empty output to "this episode is done"
+        _drop_part()
         detail = res if res != "ok" else "empty-dub-track"
         write_stage(stem, "signs", "build-error", detail)
         return res if res != "ok" else "empty"
+    try:
+        os.replace(part, out_ass)
+    except OSError as e:
+        log(f"could not install {out_ass}: {e}")
+        _drop_part()
+        write_stage(stem, "signs", "build-error", "install-failed")
+        return "build-error"
     try:
         os.chown(out_ass, MEDIA_UID, MEDIA_GID)
     except OSError as e:

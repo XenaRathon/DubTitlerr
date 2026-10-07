@@ -718,8 +718,11 @@ def process(conf_path):
     # sidecar straight out of the already-muxed track for episodes whose conf was long
     # since cleaned up, and merge_pass.sh calls repair.py unconditionally. That dialogue
     # was already repaired when it was first built, so there is nothing to redo.
-    if not video or not os.path.exists(srt) or not os.path.exists(conf_path):
+    if not video:
         write_stage(stem, "repair", "no-video")
+        return "skip"
+    if not os.path.exists(srt) or not os.path.exists(conf_path):
+        write_stage(stem, "repair", "ok", "no-srt" if not os.path.exists(srt) else "no-conf")
         return "skip"
     conf = json.load(open(conf_path))
     # For card_split's word-alignment path only (see card_split.card_words). None on any episode
@@ -1074,7 +1077,7 @@ def process(conf_path):
             " overwrite them with raw ASR. Declare `unanchored_repair` in this show's glossary if its copies"
             " carry no English subtitles for the Japanese audio."
         )
-        write_stage(stem, "repair", "no-reference")
+        write_stage(stem, "repair", "refused", "prior-repairs")
         return "refused"
     # rewrite srt from (possibly repaired) conf rows. conf.json stores text FLATTENED
     # (generate.py replaces '\n' with ' '), so re-wrap here or every episode that

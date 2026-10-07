@@ -423,8 +423,12 @@ def stamp_valid(stamp: dict | None, video: str) -> bool:
 # The "passed" set for failed_stage() is intentionally narrow: only "ok" and the two
 # skip codes ("no-reference" — repair had no fansub anchor; "no-video" — no media file)
 # are non-failures. Everything else (llm-empty, backend-unreachable, extract-error,
-# build-error, timeout, crashed, unwritable) is a genuine failure that blocks mux.
+# build-error, timeout, crashed, unwritable, refused) is a genuine failure that blocks mux.
+# "refused" is repair declining to overwrite already-shipped repairs: the srt on disk is raw
+# ASR, so it must never be muxed. Records are never reset on their own; merge_pass.sh calls
+# clear_stage() before it re-runs a stage so a stale record cannot stand in for a new one.
 STAGES_SUFFIX = ".dubtitles.stages.json"
+STAGE_ORDER = ("repair", "signs", "mux")
 
 STAGE_OUTCOMES = (
     "ok",
@@ -437,6 +441,7 @@ STAGE_OUTCOMES = (
     "timeout",
     "crashed",
     "unwritable",
+    "refused",
 )
 
 _PASSED_OUTCOMES = {"ok", "no-reference", "no-video"}
@@ -480,14 +485,39 @@ def read_stages(stem: str) -> dict:
         return {}
 
 
-def failed_stage(stem: str) -> str | None:
+def clear_stage(stem: str, *stages: str) -> None:
+    """Remove these stages' records from the sidecar (atomic: temp + os.replace).
+
+    A no-op when the sidecar or a key is missing; never creates a sidecar."""
+    path = _stages_path(stem)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return
+    if not any(st in data for st in stages):
+        return
+    for st in stages:
+        data.pop(st, None)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
+def failed_stage(stem: str, only=None) -> str | None:
     """First stage whose outcome is not in _PASSED_OUTCOMES, or None if all pass.
 
-    Called by merge_pass.sh after all three stages to decide whether to mux or
-    hold. The stage order is fixed (repair -> signs -> mux) so the first failure
-    wins deterministically."""
-    for stage, rec in read_stages(stem).items():
-        if rec.get("outcome") not in _PASSED_OUTCOMES:
+    Stages are read in pipeline order (STAGE_ORDER: repair -> signs -> mux), then any
+    other keys, so the first failure wins deterministically whatever order the sidecar was
+    written in. `only` (an iterable of stage names) limits the check to those stages."""
+    recs = read_stages(stem)
+    names = [st for st in STAGE_ORDER if st in recs] + [st for st in recs if st not in STAGE_ORDER]
+    if only is not None:
+        only = set(only)
+        names = [st for st in names if st in only]
+    for stage in names:
+        if recs[stage].get("outcome") not in _PASSED_OUTCOMES:
             return stage
     return None
 

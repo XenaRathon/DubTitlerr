@@ -42,6 +42,12 @@ cd "$ROOT" || {
 [ -f "$APP/shell/lib.sh" ] && . "$APP/shell/lib.sh"
 PATTERN=$(extras_grep_pattern "$APP/data/extras.txt" 2>/dev/null || echo '(Behind The Scenes|Deleted Scenes|Featurettes|Interviews|Scenes|Shorts|Trailers|Other|Extras)')
 
+# Prints the outcome of a stage that failed, nothing if it passed. Fails CLOSED: if the
+# check itself cannot run, report "gate-error" so mux is skipped rather than run blind.
+stage_failure() {
+	python3 -c "import common,sys; s=sys.argv[1]; f=common.failed_stage(s, only=(sys.argv[2],)); print(common.read_stages(s)[f].get('outcome') if f else '')" "$1" "$2" </dev/null 2>/dev/null || echo "gate-error"
+}
+
 before=$(find . -type f -name "*.dubtitles.done" | wc -l)
 # episodes with a sidecar (srt or ass) -> dedup to the stem
 find . -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) |
@@ -50,19 +56,33 @@ find . -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) 
 	[ -f "$stem.dubtitles.fail" ] && continue # generate crashed on it -> skip
 	if [ ! -f "$stem.eng.dubtitles.ass" ] && [ -f "$stem.eng.dubtitles.srt" ]; then
 		echo "### assemble $stem"
+		# Drop records from older runs so the crash fallbacks and the gates below only ever see
+		# THIS run's outcome (a stale "ok" would otherwise hide a repair that died silently).
+		python3 -c "import common,sys; common.clear_stage(sys.argv[1], 'repair', 'signs')" "$stem" </dev/null >/dev/null 2>&1 || true
 		python3 "$APP/repair.py" "$stem.dubtitles.conf.json" </dev/null
 		rc=$?
 		if [ $rc -ne 0 ]; then
 			python3 -c "import common,sys; s=sys.argv[1]; rc=sys.argv[2]; sys.exit(0 if 'repair' in common.read_stages(s) else common.write_stage(s, 'repair', 'crashed', 'rc='+rc) or 1)" "$stem" "$rc" </dev/null >/dev/null 2>&1 || true
+		fi
+		bad=$(stage_failure "$stem" repair)
+		if [ -n "$bad" ]; then
+			echo "skip mux: repair failed ($bad)" # the .srt stays, no .ass: the next pass retries
+			continue
 		fi
 		python3 "$APP/dub_signs_merge.py" "$stem.eng.dubtitles.srt" </dev/null
 		rc=$?
 		if [ $rc -ne 0 ]; then
 			python3 -c "import common,sys; s=sys.argv[1]; rc=sys.argv[2]; sys.exit(0 if 'signs' in common.read_stages(s) else common.write_stage(s, 'signs', 'crashed', 'rc='+rc) or 1)" "$stem" "$rc" </dev/null >/dev/null 2>&1 || true
 		fi
+		bad=$(stage_failure "$stem" signs)
+		if [ -n "$bad" ]; then
+			echo "skip mux: signs failed ($bad)"
+			continue
+		fi
 	fi
 	for ext in mkv mp4 m4v; do # mux the video (root); embeds + stamps
 		[ -f "$stem.$ext" ] && {
+			python3 -c "import common,sys; common.clear_stage(sys.argv[1], 'mux')" "$stem" </dev/null >/dev/null 2>&1 || true
 			python3 "$APP/mux.py" --apply "$stem.$ext" </dev/null
 			rc=$?
 			if [ $rc -ne 0 ]; then
@@ -83,7 +103,7 @@ fi
 # counter incremented inside it survives past `done` -- the COMPLETE/
 # INCOMPLETE decision is computed here, after the loop exits, by a fresh scan
 # of every stage sidecar under ROOT rather than from any loop-local state.
-failed_count=$(find . -type f -name "*.dubtitles.stages.json" -print0 |
+scan_out=$(find . -type f -name "*.dubtitles.stages.json" -print0 |
 	xargs -0 -r python3 -c "
 import common, sys
 n = 0
@@ -92,8 +112,15 @@ for p in sys.argv[1:]:
     if common.failed_stage(stem) is not None:
         n += 1
 print(n)
-" 2>/dev/null || echo 0)
-if [ "${failed_count:-0}" -eq 0 ]; then
+" 2>/dev/null)
+scan_rc=$?
+# xargs may split a big library into several python runs, one count line each: sum them.
+failed_count=$(printf '%s\n' "$scan_out" | awk '{ n += $1 } END { print n + 0 }')
+if [ "$scan_rc" -ne 0 ]; then
+	# never claim COMPLETE when the scan could not run (a broken `import common` used to
+	# fall through to a count of 0)
+	echo "MERGE PASS INCOMPLETE: failed-stage scan error"
+elif [ "${failed_count:-0}" -eq 0 ]; then
 	echo "MERGE PASS COMPLETE"
 else
 	echo "MERGE PASS INCOMPLETE: $failed_count episodes with a failed stage"

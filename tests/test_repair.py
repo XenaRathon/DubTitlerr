@@ -2326,6 +2326,65 @@ def test_a_pass_that_would_skip_every_target_refuses_to_overwrite_prior_repairs(
     assert json.load(open(summary_path))["repaired"] == 3, "the prior summary was clobbered"
 
 
+def test_refusing_to_overwrite_prior_repairs_records_a_failure_not_no_reference(tmp_path, monkeypatch):
+    """The refusal leaves RAW ASR on disk (the shipped repairs live only in the old muxed
+    track). Recording it as the passing 'no-reference' let merge_pass.sh mux that raw srt
+    and stamp the episode done; 'refused' counts as a failure and blocks the mux."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep_prior_stage")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path,
+        srt_path,
+        [{"start": 0.0, "end": 2.0, "text": "our mods will never give up", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    json.dump({"targets": 144, "repaired": 3, "skipped_no_ref": 0}, open(stem + ".dubtitles.repair-summary.json", "w"))
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_prior_stage.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: glossary.load_dict({"show": "One Pace"}))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])
+
+    assert repair.process(conf_path) == "refused"
+    assert common.read_stages(stem)["repair"]["outcome"] == "refused"
+    assert common.failed_stage(stem) == "repair"
+
+
+def test_missing_conf_json_is_recorded_ok_not_no_video(tmp_path, monkeypatch):
+    """A missing conf.json is a normal state (see process()). Only a missing VIDEO is
+    'no-video'."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep_noconf")
+    open(stem + repair.SRT_SUFFIX, "w").close()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_noconf.mkv"))
+
+    assert repair.process(stem + repair.CONF_SUFFIX) == "skip"
+    rec = common.read_stages(stem)["repair"]
+    assert (rec["outcome"], rec.get("detail")) == ("ok", "no-conf")
+
+
+def test_missing_srt_with_a_video_is_recorded_ok_no_srt(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep_nosrt")
+    open(stem + repair.CONF_SUFFIX, "w").close()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_nosrt.mkv"))
+
+    assert repair.process(stem + repair.CONF_SUFFIX) == "skip"
+    rec = common.read_stages(stem)["repair"]
+    assert (rec["outcome"], rec.get("detail")) == ("ok", "no-srt")
+
+
+def test_missing_video_is_still_recorded_no_video(tmp_path, monkeypatch):
+    """Guard: unchanged behaviour."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep_novideo")
+    open(stem + repair.SRT_SUFFIX, "w").close()
+    monkeypatch.setattr(repair, "find_video", lambda s: None)
+
+    assert repair.process(stem + repair.CONF_SUFFIX) == "skip"
+    assert common.read_stages(stem)["repair"]["outcome"] == "no-video"
+
+
 def test_the_refusal_is_narrow_and_a_quiet_episode_still_rewrites(tmp_path, monkeypatch):
     """A2 guard (c), mutation check. The guard must fire only when EVERY target was skipped
     for want of an anchor. Loosened to `skipped_no_ref > 0` it would refuse any episode that
