@@ -10,6 +10,20 @@ that shipped since.
 
 ### Fixed
 
+- `mux.py`: a failed stamp write on an `.mkv` episode deleted the only copy of the episode
+  (the rollback removed the freshly replaced file, which was also the original). The stamp
+  is now written from the temp file before it replaces the episode, so a stamp failure
+  leaves the original untouched and the next sweep retries. A stamp is only removed again
+  if the rename into place did not complete.
+- `mux.py`: when the cross-device copy in `_finalize` fails partway, the complete temp
+  output is kept as `<episode>.muxtmp.mkv.recovered` (not deleted, and not touched by later
+  sweeps) and mux writes `<episode>.dubtitles.mux-recovery`. It then refuses to re-mux that
+  episode (`recovery-pending`; the stage stays `crashed`, so the pass reports INCOMPLETE)
+  until a human restores the kept file over the episode and deletes the marker. A plain
+  rename failure (for example a permission error) does NOT trigger this: nothing was
+  copied, so the stamp and temp output are removed and the next sweep retries.
+- `mux.py`: known remaining limitation (tracked separately): the cross-device fallback
+  still overwrites the original in place.
 - `mux.py`: failures in the post-stamp cleanup (removing the old mp4 link, writing
   `.dubtitles.mux.log`) no longer record the episode as `crashed`. The episode is already
   muxed and stamped, and the next sweep returns `already-muxed` before any stage write, so

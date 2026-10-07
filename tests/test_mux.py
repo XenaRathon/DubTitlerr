@@ -1,6 +1,9 @@
 """Unit tests for mux.py pure helpers (D1). mkvmerge/ffprobe calls are integration."""
 
+import errno
+import json
 import os
+import shutil
 import time
 
 import mux
@@ -327,11 +330,10 @@ def test_process_reports_a_failed_stamp_write_and_keeps_the_sidecar(tmp_path, mo
     assert "stamp" in capsys.readouterr().out.lower()
 
 
-def test_mp4_stamp_write_failure_rolls_back_final_and_keeps_orig(tmp_path, monkeypatch):
-    """[S-9] MP4/M4V source, orig != final: reordering write_stamp BEFORE os.remove(orig)
-    means a failed stamp write must roll back `final` (the half-done mkv) rather than
-    leave both `final` (stamped or not) and a gone `orig` -- the ONLY retryable state is
-    orig intact, so the next sweep re-muxes cleanly instead of finding neither file whole."""
+def test_mp4_stamp_write_failure_keeps_orig_and_creates_no_final(tmp_path, monkeypatch):
+    """[S-9] MP4/M4V source, orig != final: the stamp is written BEFORE the temp file is
+    renamed into place, so a failed stamp write never creates `final` and never touches
+    `orig` -- the ONLY retryable state is orig intact, so the next sweep re-muxes cleanly."""
     v = tmp_path / "ep.mp4"
     v.write_bytes(b"x" * 100)
     sidecar = tmp_path / ("ep" + mux.SRT_SUFFIX)
@@ -353,7 +355,316 @@ def test_mp4_stamp_write_failure_rolls_back_final_and_keeps_orig(tmp_path, monke
 
     assert mux.process(str(v), apply=True) == "stamp-write-failed"
     assert v.exists()  # orig survives untouched -- the retry target
-    assert not final.exists()  # the half-done mkv is rolled back, not left dangling
+    assert not final.exists()  # never created: the stamp failed before the rename
+
+
+def _stamp_failure_setup(tmp_path, monkeypatch, name):
+    """An episode `name` (.mkv or .mp4) with an srt sidecar, mkvmerge stubbed to write a
+    different payload, and write_stamp raising. Returns (video path, stem)."""
+    import common
+
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    v = tmp_path / name
+    v.write_bytes(b"original-bytes")
+    (tmp_path / ("ep" + mux.SRT_SUFFIX)).write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+    monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
+    monkeypatch.setattr(mux, "verify", lambda orig, out: "ok")
+    monkeypatch.setattr(mux.os, "chown", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(b"muxed")
+    )
+
+    def boom(path, video, **_kw):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(mux, "write_stamp", boom)
+    return v, str(tmp_path / "ep")
+
+
+def test_mkv_stamp_write_failure_never_deletes_the_only_copy(tmp_path, monkeypatch):
+    """An .mkv source has final == orig. The stamp is written BEFORE the replace, so a
+    failed stamp write must leave the original file and its bytes untouched."""
+    import common
+
+    v, stem = _stamp_failure_setup(tmp_path, monkeypatch, "ep.mkv")
+
+    assert mux.process(str(v), apply=True) == "stamp-write-failed"
+    assert v.exists() and v.read_bytes() == b"original-bytes"
+    assert common.read_stages(stem)["mux"]["outcome"] == "unwritable"
+    assert not (tmp_path / "ep.muxtmp.mkv").exists()
+
+
+def test_mp4_stamp_write_failure_leaves_orig_and_no_mkv(tmp_path, monkeypatch):
+    """Same for an .mp4 source: orig survives, no .mkv is ever created, no temp left."""
+    import common
+
+    v, stem = _stamp_failure_setup(tmp_path, monkeypatch, "ep.mp4")
+
+    assert mux.process(str(v), apply=True) == "stamp-write-failed"
+    assert v.exists() and v.read_bytes() == b"original-bytes"
+    assert not (tmp_path / "ep.mkv").exists()
+    assert common.read_stages(stem)["mux"]["outcome"] == "unwritable"
+    assert not (tmp_path / "ep.muxtmp.mkv").exists()
+
+
+def test_stamp_written_from_the_temp_file_matches_the_final_file(tmp_path, monkeypatch):
+    """The stamp is computed from the temp file before the rename; os.replace keeps size
+    and mtime, so the stamp must still validate against the file in its final place."""
+    import common
+
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"original-bytes")
+    (tmp_path / ("ep" + mux.SRT_SUFFIX)).write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+    monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
+    monkeypatch.setattr(mux, "verify", lambda orig, out: "ok")
+    monkeypatch.setattr(mux.os, "chown", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(b"muxed-bigger-payload")
+    )
+
+    assert mux.process(str(v), apply=True) == "muxed"
+    assert v.read_bytes() == b"muxed-bigger-payload"
+    stamp_path = str(tmp_path / ("ep" + mux.STAMP_SUFFIX))
+    assert common.stamp_valid(common.read_stamp(stamp_path), str(v)) is True
+
+
+def _real_stamp_setup(tmp_path, monkeypatch, payload=b"muxed-complete-payload", name="ep.mkv"):
+    """An .mkv episode (final == orig) with the REAL write_stamp/_finalize; mkvmerge is
+    stubbed to write `payload` at the temp output. Returns (video path, stem)."""
+    import common
+
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    v = tmp_path / name
+    v.write_bytes(b"original-bytes")
+    (tmp_path / ("ep" + mux.SRT_SUFFIX)).write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+    monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
+    monkeypatch.setattr(mux, "verify", lambda orig, out: "ok")
+    monkeypatch.setattr(mux.os, "chown", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(payload)
+    )
+    return v, str(tmp_path / "ep")
+
+
+def test_failed_cross_device_copy_keeps_temp_output_and_drops_stamp(tmp_path, monkeypatch):
+    """EXDEV fallback: shutil.move overwrites final (== orig for an .mkv) in place, so if
+    it fails partway the temp output is the ONLY complete copy and must survive. The
+    stamp written for this run must go, so nothing reads the episode as done."""
+    import common
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    real_replace = os.replace
+
+    def exdev_replace(src, dst, *a, **kw):
+        if str(src).endswith(".muxtmp.mkv") and not str(dst).endswith(".recovered"):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_replace(src, dst, *a, **kw)
+
+    def partial_move(src, dst, *a, **kw):
+        with open(dst, "wb") as f:
+            f.write(b"muxed-com")  # the copy dies partway
+        raise OSError("input/output error")
+
+    monkeypatch.setattr(mux.os, "replace", exdev_replace)
+    monkeypatch.setattr(mux.shutil, "move", partial_move)
+
+    assert mux.process(str(v), apply=True) == "error"
+    # moved aside so a later sweep (rebuild or orphan cleanup) cannot destroy it
+    assert not (tmp_path / "ep.muxtmp.mkv").exists()
+    recovered = tmp_path / "ep.muxtmp.mkv.recovered"
+    assert recovered.exists() and recovered.read_bytes() == b"muxed-complete-payload"
+    assert not (tmp_path / ("ep" + mux.STAMP_SUFFIX)).exists()
+    assert common.read_stages(stem)["mux"]["outcome"] == "crashed"
+
+
+def test_finalize_failure_removes_the_stamp_written_this_run(tmp_path, monkeypatch):
+    """Existence-only readers (merge_pass.sh counts stamp files) must never see a false
+    'done' when the rename into place failed."""
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+
+    def boom(out, final):
+        raise OSError("disk on fire")
+
+    monkeypatch.setattr(mux, "_finalize", boom)
+
+    assert mux.process(str(v), apply=True) == "error"
+    assert not (tmp_path / ("ep" + mux.STAMP_SUFFIX)).exists()
+    assert v.read_bytes() == b"original-bytes"
+
+
+def test_failure_after_a_completed_rename_keeps_the_valid_stamp(tmp_path, monkeypatch):
+    """The stamp is only withdrawn when the rename did NOT complete. A later failure (here
+    the 'ok' stage write) must not delete a valid stamp and force a multi-GB re-mux."""
+    import common
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    real_write_stage = mux.write_stage
+
+    def flaky_write_stage(stem_, stage, outcome, *a, **kw):
+        if outcome == "ok":
+            raise RuntimeError("stage store exploded")
+        return real_write_stage(stem_, stage, outcome, *a, **kw)
+
+    monkeypatch.setattr(mux, "write_stage", flaky_write_stage)
+
+    assert mux.process(str(v), apply=True) == "error"
+    stamp_path = str(tmp_path / ("ep" + mux.STAMP_SUFFIX))
+    assert os.path.exists(stamp_path)
+    assert common.stamp_valid(common.read_stamp(stamp_path), str(v)) is True
+    assert common.read_stages(stem)["mux"]["outcome"] == "crashed"
+
+
+_REAL_REPLACE = os.replace
+_REAL_MOVE = shutil.move
+
+
+def _break_finalize(monkeypatch, rename_fails):
+    """EXDEV on the rename into place, then a shutil.move that overwrites final with partial
+    bytes and dies. With rename_fails, moving `out` aside to .recovered fails too."""
+    real_replace = os.replace
+
+    def replace(src, dst, *a, **kw):
+        if str(dst).endswith(".recovered"):
+            if rename_fails:
+                raise OSError("cannot rename")
+        elif str(src).endswith(".muxtmp.mkv"):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_replace(src, dst, *a, **kw)
+
+    def partial_move(src, dst, *a, **kw):
+        with open(dst, "wb") as f:
+            f.write(b"muxed-com")
+        raise OSError("input/output error")
+
+    monkeypatch.setattr(mux.os, "replace", replace)
+    monkeypatch.setattr(mux.shutil, "move", partial_move)
+
+
+def _heal_and_remux_differently(monkeypatch):
+    """Normal stubs again, with an mkvmerge that would write DIFFERENT bytes, so any
+    re-mux of the damaged episode is detectable."""
+    monkeypatch.setattr(mux.os, "replace", _REAL_REPLACE)
+    monkeypatch.setattr(mux.shutil, "move", _REAL_MOVE)
+    monkeypatch.setattr(
+        mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(b"SECOND-RUN")
+    )
+
+
+def test_failed_finalize_rename_fails_marker_blocks_next_sweep(tmp_path, monkeypatch):
+    import common
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    _break_finalize(monkeypatch, rename_fails=True)
+    assert mux.process(str(v), apply=True) == "error"
+    marker = tmp_path / ("ep" + mux.RECOVERY_SUFFIX)
+    doc = json.loads(marker.read_text())
+    assert doc["fallback"] == str(tmp_path / "ep.muxtmp.mkv")
+    assert doc["kept"] == str(tmp_path / "ep.muxtmp.mkv.recovered")
+
+    _heal_and_remux_differently(monkeypatch)
+    assert mux.process(str(v), apply=True) == "recovery-pending"
+    assert (tmp_path / "ep.muxtmp.mkv").read_bytes() == b"muxed-complete-payload"
+    assert not (tmp_path / ("ep" + mux.STAMP_SUFFIX)).exists()
+    rec = common.read_stages(stem)["mux"]
+    assert rec["outcome"] == "crashed" and rec["detail"] == "recovery-pending"
+
+
+def test_failed_finalize_rename_succeeds_marker_blocks_next_sweep(tmp_path, monkeypatch):
+    import common
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    _break_finalize(monkeypatch, rename_fails=False)
+    assert mux.process(str(v), apply=True) == "error"
+    assert (tmp_path / ("ep" + mux.RECOVERY_SUFFIX)).exists()
+
+    _heal_and_remux_differently(monkeypatch)
+    assert mux.process(str(v), apply=True) == "recovery-pending"
+    assert (tmp_path / "ep.muxtmp.mkv.recovered").read_bytes() == b"muxed-complete-payload"
+    assert not (tmp_path / "ep.muxtmp.mkv").exists()
+    assert not (tmp_path / ("ep" + mux.STAMP_SUFFIX)).exists()
+    assert common.read_stages(stem)["mux"]["detail"] == "recovery-pending"
+
+
+def test_normal_mux_and_stamp_failure_write_no_recovery_marker(tmp_path, monkeypatch):
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    assert mux.process(str(v), apply=True) == "muxed"
+    assert not (tmp_path / ("ep" + mux.RECOVERY_SUFFIX)).exists()
+
+    d = tmp_path / "b"
+    d.mkdir()
+    v2, _ = _stamp_failure_setup(d, monkeypatch, "ep.mkv")
+    assert mux.process(str(v2), apply=True) == "stamp-write-failed"
+    assert not (d / ("ep" + mux.RECOVERY_SUFFIX)).exists()
+
+
+def test_recovery_marker_wins_over_a_valid_stamp(tmp_path, monkeypatch):
+    """Chosen: recovery-pending first. The marker means the episode file may be damaged,
+    so a valid-looking stamp (size/mtime of the temp file) must not read as 'done'."""
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    assert mux.process(str(v), apply=True) == "muxed"
+    (tmp_path / ("ep" + mux.RECOVERY_SUFFIX)).write_text("{}")
+    assert mux.process(str(v), apply=True) == "recovery-pending"
+
+
+def test_plain_rename_failure_takes_no_recovery_path_and_retries(tmp_path, monkeypatch):
+    """A non-EXDEV os.replace error (EACCES) fails BEFORE any copy starts: the original is
+    untouched, so no marker, no .recovered; the next sweep simply retries."""
+    import common
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+
+    def eacces(src, dst, *a, **kw):
+        if str(src).endswith(".muxtmp.mkv"):
+            raise OSError(errno.EACCES, "Permission denied")
+        return _REAL_REPLACE(src, dst, *a, **kw)
+
+    monkeypatch.setattr(mux.os, "replace", eacces)
+    assert mux.process(str(v), apply=True) == "error"
+    assert not (tmp_path / ("ep" + mux.RECOVERY_SUFFIX)).exists()
+    assert not (tmp_path / "ep.muxtmp.mkv.recovered").exists()
+    assert not (tmp_path / "ep.muxtmp.mkv").exists()
+    assert not (tmp_path / ("ep" + mux.STAMP_SUFFIX)).exists()
+    assert v.read_bytes() == b"original-bytes"
+    assert common.read_stages(stem)["mux"]["outcome"] == "crashed"
+
+    monkeypatch.setattr(mux.os, "replace", _REAL_REPLACE)
+    assert mux.process(str(v), apply=True) == "muxed"
+    assert v.read_bytes() == b"muxed-complete-payload"
+
+
+def test_mp4_recovery_warning_says_original_is_intact(tmp_path, monkeypatch, capsys):
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch, name="ep.mp4")
+    _break_finalize(monkeypatch, rename_fails=False)
+    assert mux.process(str(v), apply=True) == "error"
+    out = capsys.readouterr().out
+    assert v.read_bytes() == b"original-bytes"
+    assert "original ep.mp4 is intact" in out
+    assert "original may be damaged" not in out
+
+
+def test_unwritable_recovery_marker_log_is_accurate(tmp_path, monkeypatch, capsys):
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    _break_finalize(monkeypatch, rename_fails=False)
+    real_open = open
+
+    def flaky_open(path, *a, **kw):
+        if str(path).endswith(mux.RECOVERY_SUFFIX):
+            raise OSError("read-only filesystem")
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(mux, "open", flaky_open, raising=False)
+    assert mux.process(str(v), apply=True) == "error"
+    assert "will re-mux from a possibly damaged original and overwrite it" in capsys.readouterr().out
+
+
+def test_recovery_pending_writes_no_stage_in_dry_run(tmp_path, monkeypatch):
+    import common
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    (tmp_path / ("ep" + mux.RECOVERY_SUFFIX)).write_text("{}")
+    assert mux.process(str(v), apply=False) == "recovery-pending"
+    assert "mux" not in common.read_stages(stem)
 
 
 def test_mkv_source_never_removes_orig(tmp_path, monkeypatch):

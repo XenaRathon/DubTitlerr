@@ -429,19 +429,45 @@ def _free_bytes(path):
         return float("inf")
 
 
+class FinalizeCopyError(OSError):
+    """The cross-device copy in _finalize STARTED and failed: it overwrites dst in place,
+    so dst may be partial and tmp may be the only complete copy. Any other _finalize
+    failure happens before dst is touched."""
+
+
 def _finalize(tmp, dst):
     """Move tmp -> dst atomically; fall back to a cross-branch copy on mergerfs EXDEV."""
     try:
         os.replace(tmp, dst)
     except OSError as e:
         if getattr(e, "errno", None) == errno.EXDEV:
-            shutil.move(tmp, dst)
+            try:
+                shutil.move(tmp, dst)
+            except OSError as ce:
+                raise FinalizeCopyError(str(ce)) from ce
         else:
             raise
 
 
+# Written when a failed cross-device copy may have damaged the episode (see process());
+# while it exists mux refuses to touch that episode. A human resolves it.
+RECOVERY_SUFFIX = ".dubtitles.mux-recovery"
+
+
 def process(orig, apply):
     stem, ext = os.path.splitext(orig)
+    marker = stem + RECOVERY_SUFFIX
+    if os.path.exists(marker):
+        # Checked before everything, even a valid stamp: the marker means the episode file
+        # may be damaged and `.muxtmp.mkv(.recovered)` may be the only complete copy.
+        # Touch nothing; keep the stage crashed so every pass reports INCOMPLETE.
+        log(f"  WARNING: {os.path.basename(orig)}: recovery pending, see {marker} — not touching it")
+        if apply:
+            try:
+                write_stage(stem, "mux", "crashed", "recovery-pending")
+            except OSError:
+                pass
+        return "recovery-pending"
     stamp = stem + STAMP_SUFFIX
     src = sub_source(stem)
     if src is None:
@@ -479,6 +505,7 @@ def process(orig, apply):
     if not apply:
         log(f"  PLAN mux {os.path.basename(orig)} ({ext}->mkv)  drop-tracks={dropped}")
         return "plan"
+    stamped = False
     try:
         st = os.stat(orig)
         subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=1800, check=False)
@@ -489,27 +516,32 @@ def process(orig, apply):
             write_stage(stem, "mux", "build-error", f"verify:{res}")
             return "verify-" + res
         os.chown(out, st.st_uid or MEDIA_UID, st.st_gid or MEDIA_GID)
-        _finalize(out, final)  # write the muxed mkv
         try:
-            write_stamp(stamp, final, stages=_stages_ran(stem, src))
-            # stamp BEFORE removing the original source (crash-safe: a crash here
-            # leaves both orig and final on disk, re-verified next sweep instead
-            # of silently losing the only record that this file is done)
+            # Stamp BEFORE the rename, from the temp file: write_stamp stats the path it
+            # is given, and os.replace / the EXDEV shutil.move fallback preserve size and
+            # mtime (all _stamp_matches_file compares), so the stamp matches `final` once
+            # `out` lands there. For an .mkv source final == orig, so a stamp failure AFTER
+            # the rename would leave no copy to roll back to; failing before it leaves the
+            # original untouched. If _finalize fails, the handler below removes this stamp
+            # (existence-only readers must not see "done") and keeps `out`.
+            write_stamp(stamp, out, stages=_stages_ran(stem, src))
+            stamped = True
         except OSError as e:
-            # The remux already landed, but the stamp is now the ONLY record that this
-            # file is done (the ffprobe backstop is gone). Without a stamp the next sweep
-            # redoes the whole multi-GB mkvmerge — every sweep, forever. Roll back `final`
-            # so the original survives untouched and the next sweep retries cleanly.
+            # The stamp is the ONLY record that a file is done (the ffprobe backstop is
+            # gone), so don't install an unstamped mkv: that would re-mux every sweep.
+            # Drop the temp output; orig is untouched and the next sweep retries cleanly.
             try:
-                os.remove(final)
+                os.remove(out)
             except OSError:
                 pass
             log(
-                f"  ERROR: muxed OK but stamp write FAILED ({e}) — {os.path.basename(final)} "
-                f"will be re-muxed every sweep until the stamp can be written"
+                f"  ERROR: muxed OK but stamp write FAILED ({e}) — {os.path.basename(orig)} "
+                f"left untouched and will be re-muxed next sweep until the stamp can be written"
             )
             write_stage(stem, "mux", "unwritable", str(e))
             return "stamp-write-failed"
+        _finalize(out, final)  # write the muxed mkv
+        stamped = False  # renamed: the stamp is now valid, keep it whatever follows
         # The stamp is written: the episode IS done. Cleanup failures from here on must not
         # reach the crashed path below — the next sweep returns already-muxed at the stamp
         # check before any write_stage, so a crashed record would never be cleared.
@@ -533,7 +565,42 @@ def process(orig, apply):
         write_stage(stem, "mux", "ok")
         return "muxed"
     except Exception as e:
-        if os.path.exists(out):
+        if stamped:
+            # written by THIS run for a rename that did not complete: not "done"
+            try:
+                os.remove(stamp)
+            except OSError:
+                pass
+        if isinstance(e, FinalizeCopyError) and os.path.exists(out):
+            # a failed cross-device copy overwrites final (== orig for an .mkv) in place,
+            # so `out` may now be the only complete copy: keep it
+            # Marker FIRST (it must exist even if we die before the rename), naming both
+            # places the copy may end up. While it exists process() refuses this episode.
+            kept = out + ".recovered"
+            try:
+                with open(marker, "w") as f:
+                    json.dump({"kept": kept, "fallback": out, "at": time.time(), "why": "finalize failed"}, f)
+            except OSError as me:
+                log(f"  ERROR: could not write recovery marker {marker} ({me}) — the next sweep will re-mux from a possibly damaged original and overwrite it")
+            # Move it aside: the next sweep rebuilds `out`, and the window-close sweep
+            # deletes orphan *.muxtmp.mkv. ".recovered" is not an .mkv, so neither mux's
+            # walk, Plex nor that sweep will touch it.
+            try:
+                os.replace(out, kept)
+            except OSError:
+                kept = out
+            damaged = (
+                f"the partial new {os.path.basename(final)} may be damaged and the original "
+                f"{os.path.basename(orig)} is intact"
+                if os.path.abspath(orig) != os.path.abspath(final)
+                else "the original may be damaged"
+            )
+            log(
+                f"  WARNING: finalize failed; {kept} holds the only complete copy of the "
+                f"muxed episode and {damaged}. To resolve: confirm {kept} "
+                f"plays, move it over {final}, then delete {marker}"
+            )
+        elif os.path.exists(out):
             os.remove(out)
         log("  mux error:", e)
         write_stage(stem, "mux", "crashed", "mux-exception")
