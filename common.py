@@ -314,6 +314,14 @@ def read_words(stem, rec=None, expect: dict | None = None):
     return doc
 
 
+def stop_requested():
+    """True once the soft-stop flag file exists (container_run.sh touches $STOP_FLAG on
+    SIGTERM). Callers check it BEFORE starting a unit of work, never inside one. With
+    STOP_FLAG unset (manual runs, tests) nothing ever stops."""
+    flag = os.environ.get("STOP_FLAG")
+    return bool(flag) and os.path.exists(flag)
+
+
 def atomic_write(path, render, mode=SIDECAR_MODE, newline=None):
     """Write ``path`` through a temp file in the same directory plus os.replace -- the
     discipline qc.write and glossary_acquire._write_json already follow.

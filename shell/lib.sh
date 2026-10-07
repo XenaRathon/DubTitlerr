@@ -24,3 +24,37 @@ extras_grep_pattern() {
 	[ -z "$pattern" ] && return 1
 	printf '(%s)' "$pattern"
 }
+
+# stop_requested — true once the soft-stop flag file exists. container_run.sh (PID 1) touches
+# $STOP_FLAG on SIGTERM; every loop that STARTS work checks it and winds down instead of
+# starting the next unit. With STOP_FLAG unset (manual runs, tests) nothing ever stops.
+# Use inside if/&&/|| only: it returns 1 in the normal case, which `set -e` would treat as fatal.
+stop_requested() {
+	[ -n "${STOP_FLAG:-}" ] && [ -e "$STOP_FLAG" ]
+}
+
+# sleep_unless_stopped SECONDS — an interruptible sleep without any signal plumbing: sleeps in
+# 5 s steps and returns early once the stop flag exists. Always returns 0 (safe under set -e).
+# An argument that is not a plain integer ("1.5", "6h") is passed to plain sleep as is.
+sleep_unless_stopped() {
+	case "${1:-}" in
+	'' | *[!0-9]*) # not whole seconds ("1.5", "6h"): let sleep parse it, uninterruptibly
+		sleep "${1:-0}"
+		return 0
+		;;
+	esac
+	_sus_left="$1"
+	while [ "$_sus_left" -gt 0 ]; do
+		if stop_requested; then
+			return 0
+		fi
+		if [ "$_sus_left" -gt 5 ]; then
+			sleep 5
+			_sus_left=$((_sus_left - 5))
+		else
+			sleep "$_sus_left"
+			_sus_left=0
+		fi
+	done
+	return 0
+}

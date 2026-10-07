@@ -10,6 +10,10 @@ that shipped since.
 
 ### Fixed
 
+- The container now exits softly on SIGTERM. `container_run.sh` stays as a supervisor instead of handing PID 1 to a bare `sh`, which ignored the signal: on `docker stop` it only raises a stop flag, the generate, merge and review loops start no new episode, the one in flight finishes, and the container exits 0. Before, the container kept starting new episodes for the whole stop grace period and was then killed mid-transcription.
+- That nightly kill used to poison episodes: a transcription killed part-way leaves a permanent `.dubtitles.fail` marker and the episode is skipped forever (seven were affected). The stop flag is only ever read between episodes, so no marker is written by a stop. A stop also skips the per-show MINE, ACQUIRE and VERIFY steps that have not started yet, and a merge pass cut short by a stop now says `MERGE PASS STOPPED` instead of `COMPLETE`.
+- Still to do outside this change: the host's `docker stop -t` has to be raised above the longest episode, and the host unit has to be updated and copied over; neither is part of this change.
+
 - `mux.py`: a failed stamp write on an `.mkv` episode deleted the only copy of the episode
   (the rollback removed the freshly replaced file, which was also the original). The stamp
   is now written from the temp file before it replaces the episode, so a stamp failure

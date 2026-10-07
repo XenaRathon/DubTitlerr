@@ -40,6 +40,8 @@ cd "$ROOT" || {
 # silently -- no output, status 2, nothing assembled -- whenever APP_DIR was not /app,
 # which is exactly the fallback case the comment above claims to support.
 [ -f "$APP/shell/lib.sh" ] && . "$APP/shell/lib.sh"
+# Soft stop: stop_requested comes from lib.sh; without it nothing ever stops.
+command -v stop_requested >/dev/null 2>&1 || stop_requested() { return 1; }
 PATTERN=$(extras_grep_pattern "$APP/data/extras.txt" 2>/dev/null || echo '(Behind The Scenes|Deleted Scenes|Featurettes|Interviews|Scenes|Shorts|Trailers|Other|Extras)')
 
 # Prints the outcome of a stage that failed, nothing if it passed. Fails CLOSED: if the
@@ -58,6 +60,12 @@ before=$(find . -type f -name "*.dubtitles.done" | wc -l)
 find . -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) |
 	grep -ivE "/$PATTERN/" |
 	sed -E 's/\.eng\.dubtitles\.(srt|ass)$//' | sort -u | while IFS= read -r stem; do
+	# window closed (container_run.sh got SIGTERM): start no new stem. This loop is a pipe
+	# subshell, so `break`, not `exit`: the census and the COMPLETE/DONE lines below still run.
+	if stop_requested; then
+		echo "merge_pass: soft stop, not starting $stem"
+		break
+	fi
 	[ -f "$stem.dubtitles.fail" ] && continue # generate crashed on it -> skip
 	if [ ! -f "$stem.eng.dubtitles.ass" ] && [ -f "$stem.eng.dubtitles.srt" ]; then
 		echo "### assemble $stem"
@@ -95,6 +103,10 @@ find . -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) 
 			continue
 		fi
 	fi
+	if stop_requested; then
+		echo "skip mux: soft stop (the assembled sidecar waits for the next pass)"
+		continue
+	fi
 	for ext in mkv mp4 m4v; do # mux the video (root); embeds + stamps
 		[ -f "$stem.$ext" ] && {
 			python3 -c "import common,sys; common.clear_stage(sys.argv[1], 'mux')" "$stem" </dev/null >/dev/null 2>&1 || true
@@ -131,7 +143,11 @@ print(n)
 scan_rc=$?
 # xargs may split a big library into several python runs, one count line each: sum them.
 failed_count=$(printf '%s\n' "$scan_out" | awk '{ n += $1 } END { print n + 0 }')
-if [ "$scan_rc" -ne 0 ]; then
+if [ "$scan_rc" -eq 0 ] && [ "${failed_count:-0}" -eq 0 ] && stop_requested; then
+	# stems skipped by a soft stop have no failure record, so COMPLETE would be misleading.
+	# Real failures win over this line: a count is more useful than "stopped" (see below).
+	echo "MERGE PASS STOPPED (soft stop): some stems were not processed"
+elif [ "$scan_rc" -ne 0 ]; then
 	# never claim COMPLETE when the scan could not run (a broken `import common` used to
 	# fall through to a count of 0)
 	echo "MERGE PASS INCOMPLETE: failed-stage scan error"

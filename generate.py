@@ -53,6 +53,7 @@ import time
 
 from faster_whisper import WhisperModel
 
+import common
 import glossary
 import hallucination
 import ordering
@@ -1155,7 +1156,10 @@ def main():
     # The model is loaded ONLY when something actually needs the decoder. A text-only
     # sweep otherwise paid a ~40s GPU model load to perform zero transcription, which
     # would have made the cheap tier quietly not cheap.
-    if transcribe_todo:
+    if transcribe_todo and common.stop_requested():
+        # the loops below break on their first check; do not pay the load for nothing
+        log("stop requested: not loading the model")
+    elif transcribe_todo:
         globals()["WMODEL"] = WhisperModel(MODEL, device="cuda", compute_type=COMPUTE, download_root=MODEL_DIR)
     else:
         log("text-tier work only — skipping the model load")
@@ -1165,12 +1169,18 @@ def main():
     # Text tier first: it is CPU-minutes per episode, so the cheap wins land before the
     # GPU queue starts consuming the night.
     for v in text_todo:
+        if common.stop_requested():
+            log("stop requested: not starting", os.path.basename(v))
+            break
         log("→", os.path.basename(v), "(text)")
         try:
             log("  ", process_text(v))
         except Exception as e:
             log("  ERROR", type(e).__name__, e)  # one bad sidecar must not abort the show
     for v in transcribe_todo:
+        if common.stop_requested():
+            log("stop requested: not starting", os.path.basename(v))
+            break
         log("→", os.path.basename(v))
         try:
             status = process(v)  # one bad episode must not abort the show
