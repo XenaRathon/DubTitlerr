@@ -33,25 +33,31 @@ Env:
   REPAIR_OPENAI_URL      full chat/completions URL
   REPAIR_OPENAI_KEY_ENV  the NAME of the env var holding the API key (read at call time; trailing
                          CR/LF is stripped; the value is never logged)
-  REPAIR_MAX_TOKENS      max_tokens, default 1024 (a bad value warns and uses the default)
+  REPAIR_MAX_TOKENS      max_tokens, default 1024, minimum 1 (a bad value warns and uses the default)
   REPAIR_EXTRA_BODY      optional JSON object merged into the request body, e.g.
                          {"enable_thinking": false} (cannot replace model/messages; checked per call)
-  REPAIR_OPENAI_RETRIES  retries after HTTP 429 / 5xx, default 2 (so 3 attempts); waits a finite
-                         Retry-After capped at 30 s, else 2 s then 4 s. HTTP 400/404/409/413/422 mean
-                         "this request was rejected": the line gets no repair, no retry. 401/403/408 and
+  REPAIR_OPENAI_RETRIES  retries after HTTP 429 / 5xx, default 2, clamped to 0..5 (so up to 3 attempts); waits a finite
+                         Retry-After capped at 30 s, else 2 s then 4 s. HTTP 400/404/409/413/422 (on every
+                         backend, llamacpp and ollama too) mean "this request was rejected": the line
+                         gets no repair, no retry; if EVERY request that reached the model is rejected
+                         the episode is refused (wrong model id or URL). 401/403/408/429/5xx and
                          transport errors count as the backend being unreachable.
   Failure handling (all backends, including the default llamacpp/ollama):
   REPAIR_UNREACHABLE_REFUSE_PCT  default 10 (1..100): refuse the episode (keep the shipped srt, stage
                          backend-unreachable) when the backend failed this percent or more of the
                          targets; the loop stops as soon as that is certain
-  REPAIR_MAX_CONSECUTIVE_UNREACHABLE  default 5: that many failures in a row = outage, stop and refuse
-  REPAIR_RETRY_SLEEP_BUDGET  default 600 s: total retry sleep per episode; once spent, each remaining
-                         target gets a single attempt
-  REPAIR_REQUEST_DEADLINE  default 300 s (min 10): total wall time of ONE HTTP request (connect +
-                         response); REPAIR_TIMEOUT_READ alone is per socket read and a trickling
-                         server defeats it
-  REPAIR_EPISODE_DEADLINE  default 3600 s (0 = off): wall time per episode, checked between targets and
-                         before each retry sleep; exceeded = refuse like an outage
+  REPAIR_MAX_CONSECUTIVE_UNREACHABLE  default 5, minimum 1: that many failures in a row = outage, stop
+                         and refuse
+  REPAIR_RETRY_SLEEP_BUDGET  default 600 s, minimum 0: total retry sleep per episode; once spent (0 =
+                         from the start) each remaining target gets a single attempt, except that a
+                         Retry-After of 0 s still retries
+  REPAIR_REQUEST_DEADLINE  default 300 s (min 10): total wall time of the response to ONE HTTP request,
+                         counted from after the connection is made (connecting is bounded by
+                         REPAIR_TIMEOUT_CONNECT); REPAIR_TIMEOUT_READ alone is per socket read and a
+                         trickling server defeats it
+  REPAIR_EPISODE_DEADLINE  default 3600 s (0 or less = off): wall time per episode, checked between targets,
+                         before each retry sleep and before the secondary-model call; exceeded = refuse
+                         like an outage, logging the elapsed time and how far it got
   STOP_FLAG              soft stop (set by container_run.sh): checked between targets and before any
                          retry; repair stops without rewriting the srt and records the failed stage
                          `stopped`, so the next pass re-runs it
@@ -204,12 +210,29 @@ _REJECTED_STATUSES = frozenset({400, 404, 409, 413, 422})
 _last_reject = None  # status of the last request-scoped rejection from llm_openai; read via _take_reject()
 
 
+def _deadline_passed():
+    return _episode_deadline_at is not None and time.monotonic() >= _episode_deadline_at
+
+
+def _client_rejection(e):
+    """True (after recording it) when ``e`` is an HTTP error about this one request: the caller returns ""
+    for the line instead of reporting the backend unreachable. Shared by every backend."""
+    global _last_reject
+    if isinstance(e, _HttpError) and e.status in _REJECTED_STATUSES:
+        log(f"  llm fail: HTTP {e.status} (the request was rejected; no repair for this line)")
+        _last_reject = e.status
+        return True
+    return False
+
+
 def _take_reject():
     global _last_reject
     status, _last_reject = _last_reject, None
     return status
 
 
+_episode_started_at = None
+_episode_limit_s = 0
 _episode_deadline_at = None  # time.monotonic() value after which this episode is out of time; None = no limit
 _retry_budget_left = None  # seconds of retry sleep this episode may still spend; None = unlimited (no episode)
 _retry_slept = 0.0  # total seconds spent in retry sleeps; lets callers time the attempts alone
@@ -763,6 +786,8 @@ def llm_ollama(prompt, model=None):
         out = _post_json(OLLAMA, body).get("response", "").strip()
         return out.splitlines()[0].strip().strip('"').strip() if out else ""
     except Exception as e:
+        if _client_rejection(e):
+            return ""
         log("  llm fail:", e)
         return LLM_UNREACHABLE
 
@@ -804,6 +829,8 @@ def llm_llamacpp(prompt, model):
         out = (msg.get("content") or "").strip()
         return out.splitlines()[0].strip().strip('"').strip() if out else ""
     except Exception as e:
+        if _client_rejection(e):
+            return ""
         log("  llm fail:", e)
         return LLM_UNREACHABLE
 
@@ -855,13 +882,11 @@ def llm_openai(prompt, model):
                 return LLM_UNREACHABLE
             return out.splitlines()[0].strip().strip('"').strip() if out else ""
         except _HttpError as e:
-            if e.status in _REJECTED_STATUSES:
-                log(f"  llm fail: HTTP {e.status} (the request was rejected; no repair for this line)")
-                _last_reject = e.status
+            if _client_rejection(e):
                 return ""
             # Rate limits and server errors are worth another try; other 4xx (bad key, bad model) are not.
             if (e.status == 429 or e.status >= 500) and attempt < retries:
-                if stop_requested() or (_episode_deadline_at is not None and time.monotonic() >= _episode_deadline_at):
+                if stop_requested() or _deadline_passed():
                     log(f"  llm fail: HTTP {e.status} (retry skipped: soft stop or episode deadline)")
                     return LLM_UNREACHABLE
                 wait = _retry_wait(e.retry_after, attempt)
@@ -973,10 +998,11 @@ def prior_repairs(stem):
 def process(conf_path):
     """Repair one episode. Wraps the work so the per-episode retry-sleep budget (REPAIR_RETRY_SLEEP_BUDGET
     seconds, default 600) starts full for this episode and is lifted again afterwards."""
-    global _retry_budget_left, _episode_deadline_at
+    global _retry_budget_left, _episode_deadline_at, _episode_started_at, _episode_limit_s
     _retry_budget_left = float(env_int("REPAIR_RETRY_SLEEP_BUDGET", 600, lo=0))
     limit = env_int("REPAIR_EPISODE_DEADLINE", 3600, lo=0)  # 0 disables
-    _episode_deadline_at = time.monotonic() + limit if limit else None
+    _episode_started_at, _episode_limit_s = time.monotonic(), limit
+    _episode_deadline_at = _episode_started_at + limit if limit else None
     try:
         return _process_episode(conf_path)
     finally:
@@ -1066,6 +1092,7 @@ def _process_episode(conf_path):
     max_streak = env_int("REPAIR_MAX_CONSECUTIVE_UNREACHABLE", 5, lo=1)
     streak = 0  # unreachable targets in a row; any answer (even an empty one) resets it
     deadline_hit = False
+    deadline_note = ""
     refuse_why = None  # set when the episode must be refused: what to say in the log
     rejected_4xx = 0  # request-scoped client errors (llm_openai): no repair for that line, not an outage
     rejected_secondary = 0  # C5: second-pass output refused by the gate
@@ -1083,9 +1110,13 @@ def _process_episode(conf_path):
     verdict_unfittable = 0  # an applying verdict refused by fits_card (C1)
     verdict_stale = 0  # the human approved OTHER wording for this line; the model moved on
     repaired_lines = []  # A10: per-line detail for the summary
-    for i, c in targets:
-        if _episode_deadline_at is not None and time.monotonic() >= _episode_deadline_at:
+    for pos, (i, c) in enumerate(targets):
+        if _deadline_passed():
             deadline_hit = True
+            deadline_note = (
+                f"{time.monotonic() - _episode_started_at:.0f}s elapsed (limit {_episode_limit_s}s)"
+                f" after {pos} of {len(targets)} targets; raise REPAIR_EPISODE_DEADLINE if the backend is healthy but slow"
+            )
             break
         if stop_requested():
             # Soft stop (container_run.sh got SIGTERM): checked between targets, never inside one. The srt
@@ -1302,7 +1333,9 @@ def _process_episode(conf_path):
             # admitted and then quietly replaced by the second model's wording -- and the
             # suppression below would write no queue entry, because the line counts as
             # settled. The substitution would reach the viewer with nothing recording it.
-            if not ruling and MODEL_SECONDARY != MODEL and _needs_secondary_check(c["text"], new, gloss):
+            # (not once the episode deadline has passed: that bounds the overrun to one request)
+            wants_second = MODEL_SECONDARY != MODEL and not _deadline_passed()
+            if not ruling and wants_second and _needs_secondary_check(c["text"], new, gloss):
                 t1, slept1 = time.monotonic(), _retry_slept
                 new2 = llm(prompt, model=MODEL_SECONDARY)
                 latency_ms += round((time.monotonic() - t1 - (_retry_slept - slept1)) * 1000)
@@ -1382,12 +1415,13 @@ def _process_episode(conf_path):
     if refuse_why is None and not deadline_hit and llm_calls and unreachable * 100 >= refuse_pct * llm_calls:
         refuse_why = f"{unreachable} of {llm_calls} targets that reached it (threshold {refuse_pct}%)"
     if deadline_hit:
-        problem = "episode deadline exceeded (REPAIR_EPISODE_DEADLINE); the repair run took too long"
+        problem = f"episode deadline exceeded: {deadline_note}"
     elif refuse_why is not None:
         problem = f"the repair backend was unreachable for {refuse_why}"
-    elif llm_calls >= 3 and rejected_4xx == llm_calls:
+    elif llm_calls >= 1 and rejected_4xx == llm_calls:
         # Every request that reached the model came back a client error: that is a wrong model id or URL,
-        # not 3+ coincidentally bad lines. (One bad line in twenty is not this: it ships.)
+        # at any episode size (a tiny episode would otherwise be rebuilt as raw ASR over shipped repairs).
+        # One bad line among several answered ones is not this: it ships.
         problem = "every request was rejected with a client error: check the model id and URL"
     else:
         problem = None

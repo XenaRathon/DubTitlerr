@@ -3676,10 +3676,15 @@ def test_every_request_rejected_is_a_misconfiguration_and_refuses(tmp_path, monk
     assert "every request was rejected with a client error: check the model id and URL" in capsys.readouterr().out
 
 
-def test_two_rejected_requests_are_too_few_to_call_it_a_misconfiguration(tmp_path, monkeypatch):
-    """The misconfiguration rule needs llm_calls >= 3."""
-    stem, conf_path = _rejecting_episode(tmp_path, monkeypatch, 2, {0, 1})
-    assert repair.process(conf_path) == "repaired"
+@pytest.mark.parametrize("n", [1, 2])
+def test_a_wrong_model_id_on_a_tiny_episode_refuses_instead_of_overwriting_the_srt(tmp_path, monkeypatch, n):
+    """Every request rejected is a misconfiguration at ANY size; with 1 or 2 targets it used to rebuild
+    the srt as raw ASR over the shipped repairs."""
+    stem, conf_path = _rejecting_episode(tmp_path, monkeypatch, n, set(range(n)), status=404)
+    shipped = open(stem + repair.SRT_SUFFIX, "rb").read()
+    assert repair.process(conf_path) == "refused"
+    assert open(stem + repair.SRT_SUFFIX, "rb").read() == shipped
+    assert common.read_stages(stem)["repair"]["outcome"] == "backend-unreachable"
 
 
 def test_a_rejection_in_twenty_lines_ships(tmp_path, monkeypatch):
@@ -3821,3 +3826,107 @@ def test_a_stop_flag_set_during_the_backoff_sleep_sends_no_second_request(monkey
     monkeypatch.setattr(repair, "_sleep", lambda s: slept.append(s) or flag.write_text(""))
     assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
     assert slept == [2.0] and len(calls) == 1
+
+
+# --- round 4: client errors on the default backends, deadline reporting -------------------
+
+
+def _default_backend_episode(tmp_path, monkeypatch, n, rejected, call, reply, status=400):
+    """n targets through the real llm_llamacpp / llm_ollama; cards in `rejected` get HTTP `status`."""
+
+    def fake_post(url, body, headers=None):
+        prompt = body["messages"][0]["content"] if "messages" in body else body["prompt"]
+        k = int(prompt.split("ASR line: garbled line ")[1].split("\n")[0])
+        if k in rejected:
+            raise repair._HttpError(status, f"HTTP {status}: context size exceeded")
+        return reply(k)
+
+    monkeypatch.setattr(repair, "_post_json", fake_post)
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, n, n, lambda p, model=None: None)
+    monkeypatch.setattr(repair, "llm", lambda p, model=None: call(p, model))
+    return stem, conf_path
+
+
+_BACKEND_CALLS = pytest.mark.parametrize(
+    "call", [lambda p, m: repair.llm_llamacpp(p, m), lambda p, m: repair.llm_ollama(p, m)], ids=["llamacpp", "ollama"]
+)
+
+
+def _llamacpp_reply(k):
+    return {"choices": [{"message": {"content": f"a garbled line {k}"}}]}
+
+
+def _ollama_reply(k):
+    return {"response": f"a garbled line {k}"}
+
+
+@pytest.mark.parametrize(
+    "call,reply",
+    [(lambda p, m: repair.llm_llamacpp(p, m), _llamacpp_reply), (lambda p, m: repair.llm_ollama(p, m), _ollama_reply)],
+    ids=["llamacpp", "ollama"],
+)
+def test_one_context_overflow_400_on_a_small_default_backend_episode_ships(tmp_path, monkeypatch, call, reply):
+    """1 of 8 lines drawing HTTP 400 is 12.5%: it used to refuse the episode on every pass."""
+    stem, conf_path = _default_backend_episode(tmp_path, monkeypatch, 8, {3}, call, reply)
+    assert repair.process(conf_path) == "repaired"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["repaired"] == 7 and summary["rejected_4xx"] == 1 and summary["unreachable"] == 0
+
+
+@_BACKEND_CALLS
+@pytest.mark.parametrize("status", [400, 404, 409, 413, 422])
+def test_default_backends_map_request_scoped_statuses_to_no_repair(monkeypatch, call, status):
+    def boom(url, body, headers=None):
+        raise repair._HttpError(status, f"HTTP {status}: x")
+
+    monkeypatch.setattr(repair, "_post_json", boom)
+    assert call("P", None) == "" and repair._take_reject() == status
+
+
+@_BACKEND_CALLS
+@pytest.mark.parametrize("status", [401, 403, 408, 429, 500, 503])
+def test_default_backends_keep_outage_like_statuses_unreachable(monkeypatch, call, status):
+    """GUARD: passes on the old code."""
+
+    def boom(url, body, headers=None):
+        raise repair._HttpError(status, f"HTTP {status}: x")
+
+    monkeypatch.setattr(repair, "_post_json", boom)
+    assert call("P", None) == repair.LLM_UNREACHABLE and repair._take_reject() is None
+
+
+def test_default_backends_keep_transport_errors_unreachable(monkeypatch):
+    """GUARD: passes on the old code."""
+    monkeypatch.setattr(repair, "_post_json", lambda *a, **k: (_ for _ in ()).throw(OSError("down")))
+    assert repair.llm_llamacpp("P", None) == repair.LLM_UNREACHABLE
+    assert repair.llm_ollama("P", None) == repair.LLM_UNREACHABLE
+
+
+def test_the_deadline_refusal_says_how_far_it_got_and_how_to_raise_it(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("REPAIR_EPISODE_DEADLINE", "250")
+    stem, conf_path, _ = _clocked_episode(tmp_path, monkeypatch, 10, 100.0, [])
+    repair.process(conf_path)
+    out = capsys.readouterr().out
+    assert "300s elapsed" in out and "limit 250s" in out and "3 of 10 targets" in out and "raise REPAIR_EPISODE_DEADLINE" in out
+
+
+def test_the_secondary_model_is_not_called_once_the_episode_deadline_has_passed(tmp_path, monkeypatch):
+    import types
+
+    clock = [1000.0]
+    monkeypatch.setattr(repair, "time", types.SimpleNamespace(monotonic=lambda: clock[0]))
+    models = []
+
+    def fake_llm(prompt, model=None):
+        models.append(model)
+        clock[0] += 100.0
+        return "I saw Spandam"
+
+    stem = str(tmp_path / "ep_sec_deadline")
+    conf_path = _repair_env(
+        tmp_path, monkeypatch, stem, [_conf_row(0.0, 3.0, "I saw spondum")], fake_llm, g=gl(names=["Spandam"])
+    )
+    monkeypatch.setattr(repair, "MODEL_SECONDARY", "secondary-model")
+    monkeypatch.setenv("REPAIR_EPISODE_DEADLINE", "50")
+    assert repair.process(conf_path) == "repaired"
+    assert models == [None]  # the first pass pushed the clock past the deadline: no second request

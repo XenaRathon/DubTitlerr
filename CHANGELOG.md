@@ -56,10 +56,15 @@ that shipped since.
   shipped srt is kept; the loop stops as soon as the refusal is certain. A stray bad line still ships.
   HTTP 400/404/409/413/422 from the openai backend are per-line (no repair for that line, counted as
   `rejected_4xx`, queued as `llm_empty`); if 3 or more requests are all rejected that way the episode is
-  refused as a wrong model id or URL. `REPAIR_REQUEST_DEADLINE` bounds one HTTP request in total
+  refused as a wrong model id or URL (at any episode size, so a wrong model id can no longer rebuild a
+  small episode as raw ASR). The same request-scoped statuses are treated per line on the llamacpp and
+  ollama backends too, so llama.cpp answering 400 "context size exceeded" on one line of a small
+  episode no longer refuses it on every pass; 401/403/408/429/5xx and transport errors still count as
+  the backend being down. `REPAIR_REQUEST_DEADLINE` bounds one HTTP request in total
   (a trickling server no longer holds it open) and `REPAIR_EPISODE_DEADLINE` bounds an episode. The
   3600 s default is measured: across 1631 production episodes the median repair took 52 s, p99 256 s,
-  max 897 s, so it is about 4x the slowest real episode. A soft stop also ends retries at once.
+  max 897 s, so it is about 4x the slowest real episode. The refusal log gives the elapsed seconds, how many targets were reached and
+  the limit, and the secondary-model call is skipped once the deadline has passed. A soft stop also ends retries at once.
 - **New stage outcome `stopped`** (a failed outcome): repair honoured the soft stop, left the srt alone,
   and `merge_pass.sh` holds the episode back until the next pass re-runs repair.
 - **Environment variables added (defaults):** `REPAIR_OPENAI_URL`, `REPAIR_OPENAI_KEY_ENV`,
