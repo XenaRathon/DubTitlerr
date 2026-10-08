@@ -3273,10 +3273,10 @@ def test_refuse_pct_bad_values_fall_back_or_clamp(monkeypatch, raw, pct):
 
 def test_five_unreachable_in_a_row_stop_the_loop_as_an_outage(tmp_path, monkeypatch):
     calls = []
-    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, 12, 12, _flaky_llm(set(range(12)), calls))
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, 60, 60, _flaky_llm(set(range(60)), calls))
     shipped = open(stem + repair.SRT_SUFFIX, encoding="utf-8").read()
     assert repair.process(conf_path) == "refused"
-    assert calls == [0, 1, 2, 3, 4]  # the other 7 targets were never sent
+    assert calls == [0, 1, 2, 3, 4]  # the other 55 targets were never sent
     assert open(stem + repair.SRT_SUFFIX, encoding="utf-8").read() == shipped
     assert common.read_stages(stem)["repair"]["outcome"] == "backend-unreachable"
 
@@ -3292,12 +3292,12 @@ def test_four_failures_then_a_success_do_not_trip_the_streak_cutoff(tmp_path, mo
 def test_the_streak_limit_is_configurable_and_a_bad_value_falls_back_to_five(tmp_path, monkeypatch):
     monkeypatch.setenv("REPAIR_MAX_CONSECUTIVE_UNREACHABLE", "2")
     calls = []
-    _, conf_path = _many_target_episode(tmp_path, monkeypatch, 6, 6, _flaky_llm(set(range(6)), calls))
+    _, conf_path = _many_target_episode(tmp_path, monkeypatch, 60, 60, _flaky_llm(set(range(60)), calls))
     repair.process(conf_path)
     assert calls == [0, 1]
     monkeypatch.setenv("REPAIR_MAX_CONSECUTIVE_UNREACHABLE", "many")
     calls.clear()
-    _, conf_path = _many_target_episode(tmp_path, monkeypatch, 8, 8, _flaky_llm(set(range(8)), calls))
+    _, conf_path = _many_target_episode(tmp_path, monkeypatch, 80, 80, _flaky_llm(set(range(80)), calls))
     repair.process(conf_path)
     assert calls == [0, 1, 2, 3, 4]
 
@@ -3315,6 +3315,7 @@ def _throttled_episode(tmp_path, monkeypatch, n, sleeps):
 
     monkeypatch.setattr(repair, "_post_json", fake_post)
     monkeypatch.setenv("REPAIR_MAX_CONSECUTIVE_UNREACHABLE", "1000")
+    monkeypatch.setenv("REPAIR_UNREACHABLE_REFUSE_PCT", "100")  # keep the early stop out of the budget tests
     stem, conf_path = _many_target_episode(tmp_path, monkeypatch, n, n, lambda p, model=None: None)
     monkeypatch.setattr(repair, "llm", lambda p, model=None: repair.llm_openai(p, model))
     return conf_path, posts
@@ -3405,7 +3406,7 @@ def test_openai_gives_up_after_three_attempts_on_5xx(monkeypatch, capsys):
     assert "HTTP 503" in _all_text(capsys)
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 404])
+@pytest.mark.parametrize("status", [401, 403, 408])
 def test_openai_does_not_retry_other_4xx(monkeypatch, status):
     """GUARD: passes on the old code (it never retried anything)."""
     sleeps = []
@@ -3615,3 +3616,83 @@ def test_main_stops_walking_episodes_after_a_soft_stop_and_exits_cleanly(monkeyp
     monkeypatch.setattr(repair.sys, "argv", ["repair.py", "b.conf.json", "a.conf.json", "c.conf.json"])
     repair.main()  # returns normally: exit code 0
     assert seen == ["a.conf.json"]  # the rest would only each write another `stopped` record
+
+
+# --- round 3: per-line client errors, early stop ---------------------------------------
+
+
+@pytest.mark.parametrize("status", [400, 404, 409, 413, 422])
+def test_a_request_scoped_client_error_is_no_repair_for_the_line_not_an_outage(monkeypatch, capsys, status):
+    sleeps = []
+    calls = _scripted_openai(monkeypatch, [(status, {})], sleeps)
+    assert repair.llm_openai("P", None) == ""
+    assert len(calls) == 1 and sleeps == []  # never retried
+    text = _all_text(capsys)
+    assert f"HTTP {status}" in text and _SECRET not in text
+
+
+@pytest.mark.parametrize("status", [401, 403, 408])
+def test_auth_and_timeout_client_errors_stay_unreachable(monkeypatch, status):
+    """GUARD: passes on the old code. A bad key must not silently ship zero repairs."""
+    calls = _scripted_openai(monkeypatch, [(status, {})], [])
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE and len(calls) == 1
+
+
+def _rejecting_episode(tmp_path, monkeypatch, n, rejected, status=400):
+    """n targets through the real llm_openai; the cards numbered in `rejected` get HTTP `status`."""
+    _openai_env(monkeypatch)
+    monkeypatch.setenv("REPAIR_OPENAI_RETRIES", "0")
+
+    def fake_post(url, body, headers=None):
+        k = int(body["messages"][0]["content"].split("ASR line: garbled line ")[1].split("\n")[0])
+        if k in rejected:
+            raise repair._HttpError(status, f"HTTP {status}: x")
+        return {"choices": [{"message": {"content": f"a garbled line {k}"}}]}
+
+    monkeypatch.setattr(repair, "_post_json", fake_post)
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, n, n, lambda p, model=None: None)
+    monkeypatch.setattr(repair, "llm", lambda p, model=None: repair.llm_openai(p, model))
+    return stem, conf_path
+
+
+def test_one_deterministic_400_in_five_lines_ships_the_other_four(tmp_path, monkeypatch):
+    """The reviewer's probe_poison.py: this episode was refused on every pass."""
+    stem, conf_path = _rejecting_episode(tmp_path, monkeypatch, 5, {2})
+    assert repair.process(conf_path) == "repaired"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["repaired"] == 4 and summary["rejected_4xx"] == 1 and summary["unreachable"] == 0
+    assert summary["llm_empty"] == 1  # the rejected line lands in the existing llm_empty bucket
+    queued = [json.loads(line) for line in open(stem + ".dubtitles.unresolved.jsonl")]
+    empties = [q for q in queued if q["reason"] == "llm_empty"]
+    assert len(empties) == 1 and empties[0]["original_text"] == "garbled line 2"
+
+
+def test_every_request_rejected_is_a_misconfiguration_and_refuses(tmp_path, monkeypatch, capsys):
+    stem, conf_path = _rejecting_episode(tmp_path, monkeypatch, 3, {0, 1, 2}, status=404)
+    shipped = open(stem + repair.SRT_SUFFIX, "rb").read()
+    assert repair.process(conf_path) == "refused"
+    assert open(stem + repair.SRT_SUFFIX, "rb").read() == shipped
+    assert common.read_stages(stem)["repair"]["outcome"] == "backend-unreachable"
+    assert "every request was rejected with a client error: check the model id and URL" in capsys.readouterr().out
+
+
+def test_two_rejected_requests_are_too_few_to_call_it_a_misconfiguration(tmp_path, monkeypatch):
+    """The misconfiguration rule needs llm_calls >= 3."""
+    stem, conf_path = _rejecting_episode(tmp_path, monkeypatch, 2, {0, 1})
+    assert repair.process(conf_path) == "repaired"
+
+
+def test_a_rejection_in_twenty_lines_ships(tmp_path, monkeypatch):
+    stem, conf_path = _rejecting_episode(tmp_path, monkeypatch, 20, {7})
+    assert repair.process(conf_path) == "repaired"
+
+
+def test_the_loop_stops_as_soon_as_the_refusal_is_certain(tmp_path, monkeypatch):
+    """150 targets failing every other line: 15 failures = 10% of 150 and llm_calls can never exceed
+    len(targets), so the rate rule is already decided -- no reason to send the other 120 lines."""
+    calls = []
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, 150, 150, _flaky_llm(set(range(0, 150, 2)), calls))
+    shipped = open(stem + repair.SRT_SUFFIX, "rb").read()
+    assert repair.process(conf_path) == "refused"
+    assert len(calls) == 29  # the 15th failure is the 29th call
+    assert open(stem + repair.SRT_SUFFIX, "rb").read() == shipped

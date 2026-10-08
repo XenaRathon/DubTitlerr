@@ -181,6 +181,19 @@ def _openai_retries():
     return env_int("REPAIR_OPENAI_RETRIES", 2, lo=0, hi=5)
 
 
+# HTTP statuses that are about THIS request (bad payload, unknown model, too large, a content filter),
+# not about the backend: the line gets no repair and the episode carries on. Everything else that fails
+# (401/403 bad key, 408, 429, 5xx, transport) is outage-like: it must never silently ship zero repairs.
+_REJECTED_STATUSES = frozenset({400, 404, 409, 413, 422})
+_last_reject = None  # status of the last request-scoped rejection from llm_openai; read via _take_reject()
+
+
+def _take_reject():
+    global _last_reject
+    status, _last_reject = _last_reject, None
+    return status
+
+
 _retry_budget_left = None  # seconds of retry sleep this episode may still spend; None = unlimited (no episode)
 _retry_slept = 0.0  # total seconds spent in retry sleeps; lets callers time the attempts alone
 
@@ -760,6 +773,8 @@ def llm_openai(prompt, model):
     repair". The key is looked up by NAME at call time and only the name is ever logged.
     The explicit User-Agent matters: CommandCode's Cloudflare 403s Python's default one.
     No chat_template_kwargs -- that is llama.cpp-only; use REPAIR_EXTRA_BODY for provider flags."""
+    global _last_reject
+    _last_reject = None
     raw_key = os.environ.get(OPENAI_KEY_ENV, "") if OPENAI_KEY_ENV else ""
     key_name = OPENAI_KEY_ENV or "REPAIR_OPENAI_KEY_ENV"
     if not OPENAI_URL or not raw_key.strip():
@@ -795,6 +810,10 @@ def llm_openai(prompt, model):
                 return LLM_UNREACHABLE
             return out.splitlines()[0].strip().strip('"').strip() if out else ""
         except _HttpError as e:
+            if e.status in _REJECTED_STATUSES:
+                log(f"  llm fail: HTTP {e.status} (the request was rejected; no repair for this line)")
+                _last_reject = e.status
+                return ""
             # Rate limits and server errors are worth another try; other 4xx (bad key, bad model) are not.
             if (e.status == 429 or e.status >= 500) and attempt < retries:
                 wait = _retry_wait(e.retry_after, attempt)
@@ -995,7 +1014,8 @@ def _process_episode(conf_path):
     refuse_pct = env_int("REPAIR_UNREACHABLE_REFUSE_PCT", 10, lo=1, hi=100)
     max_streak = env_int("REPAIR_MAX_CONSECUTIVE_UNREACHABLE", 5, lo=1)
     streak = 0  # unreachable targets in a row; any answer (even an empty one) resets it
-    outage = False
+    refuse_why = None  # set when the episode must be refused: what to say in the log
+    rejected_4xx = 0  # request-scoped client errors (llm_openai): no repair for that line, not an outage
     rejected_secondary = 0  # C5: second-pass output refused by the gate
     unreachable_secondary = 0  # the second-pass backend call itself failed (first pass stands)
     # The model returned the line verbatim -- the single most common outcome of this stage
@@ -1064,7 +1084,9 @@ def _process_episode(conf_path):
         prompt = build_prompt(c["text"], ref, gloss, prev_text, next_text, arc, episode)
         t0, slept0 = time.monotonic(), _retry_slept  # V2 A2: per-call latency
         llm_calls += 1
+        _take_reject()
         new = llm(prompt)
+        was_rejected = _take_reject() is not None
         latency_ms = round((time.monotonic() - t0 - (_retry_slept - slept0)) * 1000)  # backoff is not model time
         if new:
             new = glossary.correct(new, gloss)[0]  # enforce canonical spelling on output
@@ -1090,10 +1112,16 @@ def _process_episode(conf_path):
             if streak >= max_streak:
                 # A run of consecutive failures is an outage, not a poison pill: stop sending
                 # the rest of the episode to a dead backend (and sleeping through retries).
-                outage = True
+                refuse_why = f"{streak} targets in a row"
+                break
+            if unreachable * 100 >= refuse_pct * len(targets):
+                # llm_calls can never exceed len(targets), so the rate rule below is already decided.
+                refuse_why = f"{unreachable} of {len(targets)} targets (threshold {refuse_pct}%)"
                 break
             continue
         streak = 0
+        if was_rejected:
+            rejected_4xx += 1
         if not new:
             bucket = apply_human_text(c, store, stem, words_doc)
             if bucket == "rescued":
@@ -1296,14 +1324,19 @@ def _process_episode(conf_path):
     # when it failed REPAIR_MAX_CONSECUTIVE_UNREACHABLE targets in a row. Repairs live only in the srt,
     # so a rebuild after a partial outage would overwrite shipped repairs with raw ASR. A single
     # poison-pill line (a few percent) still ships.
-    if outage or (llm_calls and unreachable * 100 >= refuse_pct * llm_calls):
-        why = (
-            f"{streak} targets in a row"
-            if outage
-            else f"{unreachable} of {llm_calls} targets that reached it (threshold {refuse_pct}%)"
-        )
+    if refuse_why is None and llm_calls and unreachable * 100 >= refuse_pct * llm_calls:
+        refuse_why = f"{unreachable} of {llm_calls} targets that reached it (threshold {refuse_pct}%)"
+    if refuse_why is not None:
+        problem = f"the repair backend was unreachable for {refuse_why}"
+    elif llm_calls >= 3 and rejected_4xx == llm_calls:
+        # Every request that reached the model came back a client error: that is a wrong model id or URL,
+        # not 3+ coincidentally bad lines. (One bad line in twenty is not this: it ships.)
+        problem = "every request was rejected with a client error: check the model id and URL"
+    else:
+        problem = None
+    if problem:
         log(
-            f"  REFUSED {os.path.basename(stem)}: the repair backend was unreachable for {why}."
+            f"  REFUSED {os.path.basename(stem)}: {problem}."
             " Rebuilding the srt would overwrite the shipped text with"
             " raw ASR, and a dead endpoint is not a review item, so nothing was queued."
             " Check REPAIR_LLAMACPP_URL / REPAIR_BACKEND and re-run."
@@ -1353,6 +1386,7 @@ def _process_episode(conf_path):
         "skipped_no_ref": skipped_no_ref,
         "llm_empty": llm_empty,
         "unreachable": unreachable,
+        "rejected_4xx": rejected_4xx,  # subset of llm_empty: the provider rejected that one request
         "rejected_guard": rejected,  # model proposed an edit, accept_repair() refused it
         "unreachable_secondary": unreachable_secondary,
         "rejected_secondary": rejected_secondary,  # C5: second pass refused, first pass kept
