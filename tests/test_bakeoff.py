@@ -796,3 +796,210 @@ def test_main_rejects_openai_url_without_key_env(tmp_path, monkeypatch):
     monkeypatch.setattr(bo.sys, "argv", ["bakeoff", "--conf", conf, "--openai-url", "https://x/v1/chat/completions"])
     with pytest.raises(SystemExit):
         bo.main()
+
+
+# --- anchored mode: --dump-refs / --refs ----------------------------------------
+#
+# Production's normal path is ANCHORED: repair.process hands each target the overlapping line
+# of the video's embedded English subtitle track as `ref`. The media lives on another machine,
+# so the bake-off is split: --dump-refs (needs the video, no model calls) writes the refs,
+# --refs (needs only the conf + that file) runs the models with them.
+
+import common as _common  # noqa: E402
+import hallucination as _hallucination  # noqa: E402
+
+
+def _row(text, lp, start, end, **kw):
+    return {**_conf_row(text, lp=lp), "start": start, "end": end, **kw}
+
+
+_ANCHOR_ROWS = [
+    _row("A perfectly clear line.", -0.1, 0.0, 2.0),  # 0: not a target
+    _row("grbled one", -1.4, 0.0, 2.0),  # 1: overlaps "ref A"
+    _row("grbled two", -1.4, 2.5, 3.5),  # 2: overlaps nothing -> no ref
+    _row("grbled three", -1.4, 4.0, 6.0),  # 3: overlaps "ref B" but its source window is bad -> ""
+    _row("grbled four", -1.4, 0.0, 2.0, source_start=4.0, source_end=5.5),  # 4: ref comes from the SOURCE window
+]
+
+
+def _fake_media(monkeypatch):
+    seen = {}
+
+    def fake_intervals(video):
+        seen["video"] = video
+        return [(0.0, 2.0, "ref A"), (4.0, 6.0, "ref B")]
+
+    monkeypatch.setattr(_common, "dialogue_intervals", fake_intervals)
+    monkeypatch.setattr(_hallucination, "bad_source_window", lambda c, rec=None: c["text"] == "grbled three")
+    return seen
+
+
+def _dump(tmp_path, monkeypatch, limit=0, sample="spread"):
+    seen = _fake_media(monkeypatch)
+    conf = _write(tmp_path, _ANCHOR_ROWS)
+    cards = bo.load_cards(None, conf)
+    doc = bo.dump_refs(conf, cards, _glossary.load(""), "/media/ep.mkv", limit, sample)
+    return doc, seen, conf
+
+
+def test_dump_refs_selects_the_ref_exactly_like_repair_process(tmp_path, monkeypatch):
+    doc, seen, _ = _dump(tmp_path, monkeypatch)
+    assert seen["video"] == "/media/ep.mkv"
+    assert doc["conf"] == "ep.dubtitles.conf.json" and doc["cards"] == 5
+    got = [(t["idx"], t["text"], t["ref"], t["prev"], t["next"]) for t in doc["targets"]]
+    assert got == [
+        (1, "grbled one", "ref A", "A perfectly clear line.", "grbled two"),
+        (2, "grbled two", "", "grbled one", "grbled three"),
+        (3, "grbled three", "", "grbled two", "grbled four"),  # bad source window -> "" despite the overlap
+        (4, "grbled four", "ref B", "grbled three", ""),  # source_start/end, not start/end
+    ]
+
+
+def test_dump_refs_limit_zero_means_all_and_a_limit_samples(tmp_path, monkeypatch):
+    doc, _, _ = _dump(tmp_path, monkeypatch, limit=0)
+    assert len(doc["targets"]) == 4
+    doc, _, _ = _dump(tmp_path, monkeypatch, limit=2, sample="head")
+    assert [t["idx"] for t in doc["targets"]] == [1, 2]
+
+
+def test_dump_refs_cli_makes_no_model_calls_and_prints_counts(tmp_path, monkeypatch, capsys):
+    _fake_media(monkeypatch)
+    conf = _write(tmp_path, _ANCHOR_ROWS)
+    out = tmp_path / "refs.json"
+    monkeypatch.setattr(bo, "ask", lambda *a, **k: pytest.fail("dump-refs must not call a model"))
+    monkeypatch.setattr(bo, "_post_json", lambda *a, **k: pytest.fail("no network"))
+    g = tmp_path / "g.json"
+    g.write_text(json.dumps({"names": []}))
+    argv = ["bakeoff", "--conf", conf, "--glossary", str(g), "--dump-refs", str(out), "--video", "/media/ep.mkv"]
+    argv += ["--limit", "0"]
+    monkeypatch.setattr(bo.sys, "argv", argv)
+    bo.main()
+    text = capsys.readouterr().out
+    assert "targets=4" in text and "with_ref=2" in text and "without_ref=2" in text
+    assert len(json.loads(out.read_text())["targets"]) == 4
+
+
+def test_dump_refs_cli_requires_conf_and_video(tmp_path, monkeypatch):
+    conf = _write(tmp_path, _ANCHOR_ROWS)
+    g = tmp_path / "g.json"
+    g.write_text(json.dumps({"names": []}))
+    argv = ["bakeoff", "--conf", conf, "--glossary", str(g), "--dump-refs", str(tmp_path / "r.json")]
+    monkeypatch.setattr(bo.sys, "argv", argv)
+    with pytest.raises(SystemExit):
+        bo.main()
+
+
+def _run_refs(tmp_path, monkeypatch, capsys, *extra, gloss_path=""):
+    doc, _, conf = _dump(tmp_path, monkeypatch)
+    refs = tmp_path / "refs.json"
+    refs.write_text(json.dumps(doc))
+    prompts = []
+    monkeypatch.setattr(bo, "ask", lambda ollama, m, p, *a, **k: (prompts.append(p) or "grbled one fixed", 0.1))
+    argv = ["bakeoff", "--conf", conf, "--refs", str(refs), "--models", "m1", "--glossary", gloss_path, *extra]
+    monkeypatch.setattr(bo.sys, "argv", argv)
+    bo.main()
+    return prompts, capsys.readouterr().out
+
+
+def test_refs_round_trip_builds_anchored_prompts_and_skips_unanchored(tmp_path, monkeypatch, capsys):
+    prompts, out = _run_refs(tmp_path, monkeypatch, capsys)
+    assert len(prompts) == 2  # idx 2 and 3 have no ref -> skipped, as production skips them
+    assert "<official_subtitle_reference>ref A</official_subtitle_reference>" in prompts[0]
+    assert 'Previous line (for context): "A perfectly clear line."' in prompts[0]
+    assert 'Next line (for context): "grbled two"' in prompts[0]
+    assert "<official_subtitle_reference>ref B</official_subtitle_reference>" in prompts[1]
+    assert "2 target(s) skipped" in out and "no fansub reference" in out
+
+
+def test_include_unanchored_keeps_the_ref_less_targets(tmp_path, monkeypatch, capsys):
+    prompts, _ = _run_refs(tmp_path, monkeypatch, capsys, "--include-unanchored")
+    assert len(prompts) == 4
+    assert "<official_subtitle_reference>" not in prompts[1]
+
+
+def test_a_glossary_declaring_unanchored_repair_keeps_them_without_the_flag(tmp_path, monkeypatch, capsys):
+    g = tmp_path / "g.json"
+    g.write_text(json.dumps({"names": [], "unanchored_repair": True}))
+    prompts, _ = _run_refs(tmp_path, monkeypatch, capsys, gloss_path=str(g))
+    assert len(prompts) == 4
+
+
+def test_refs_that_do_not_match_the_conf_fail_loudly(tmp_path, monkeypatch):
+    doc, _, conf = _dump(tmp_path, monkeypatch)
+    doc["targets"][1]["text"] = "something else entirely"
+    cards = bo.load_cards(None, conf)
+    refs = tmp_path / "refs.json"
+    refs.write_text(json.dumps(doc))
+    with pytest.raises(SystemExit) as e:
+        bo.load_refs(str(refs), cards)
+    msg = str(e.value)
+    assert "idx 2" in msg and "something else entirely" in msg and "grbled two" in msg
+
+
+def test_refs_idx_out_of_range_fails_loudly(tmp_path, monkeypatch):
+    doc, _, conf = _dump(tmp_path, monkeypatch)
+    doc["targets"][0]["idx"] = 99
+    refs = tmp_path / "refs.json"
+    refs.write_text(json.dumps(doc))
+    with pytest.raises(SystemExit):
+        bo.load_refs(str(refs), bo.load_cards(None, conf))
+
+
+def test_score_model_hands_each_targets_own_ref_to_accept_repair(monkeypatch):
+    seen = []
+    monkeypatch.setattr(_repair, "accept_repair", lambda orig, new, ref, dur, gloss: seen.append(ref) or True)
+    ts = [
+        {"text": "grbled one", "start": 0, "end": 2, "_ref": "REF-1"},
+        {"text": "grbled two", "start": 0, "end": 2, "_ref": "REF-2"},
+    ]
+    bo.score_model("m", ts, ["grabled one", "grabled two"], 1.0, _glossary.load(""))
+    assert seen == ["REF-1", "REF-2"]
+
+
+def test_score_model_single_ref_signature_still_works(monkeypatch):
+    seen = []
+    monkeypatch.setattr(_repair, "accept_repair", lambda orig, new, ref, dur, gloss: seen.append(ref) or True)
+    ts = [{"text": "grbled one", "start": 0, "end": 2}]
+    bo.score_model("m", ts, ["grabled one"], 1.0, _glossary.load(""), ref="SHARED")
+    assert seen == ["SHARED"]
+
+
+def test_ref_borrow_counts_outputs_that_import_words_from_the_fansub():
+    ts = [
+        {"text": "he drew his sword", "start": 0, "end": 3, "_ref": "He drew his blade swiftly."},
+        {"text": "he drew his sword", "start": 0, "end": 3, "_ref": "He drew his blade swiftly."},
+        {"text": "he drew his sword", "start": 0, "end": 3, "_ref": "Unrelated words entirely."},
+    ]
+    outs = ["he drew his blade swiftly", "he drew his sword now", "he drew his sword"]
+    s = bo.score_model("m", ts, outs, 1.0, _glossary.load(""))
+    assert s["ref_borrow"] == 1  # only the first copies reference words that were not in the ASR line
+    assert s["anchored"] is True
+    table = bo.format_summary(bo.rank_models([s]))
+    assert "borrow" in table
+    glossary_only = bo.score_model("m", [{"text": "a b", "start": 0, "end": 2}], ["a c"], 1.0, _glossary.load(""))
+    assert glossary_only["anchored"] is False and "borrow" not in bo.format_summary(bo.rank_models([glossary_only]))
+
+
+def test_json_rows_are_admitted_with_each_targets_own_ref(tmp_path, monkeypatch, capsys):
+    """format_comparison rebuilds the side-by-side from these rows, so their `admitted` must
+    be the same verdict the summary's ship column uses -- computed against the same ref."""
+    seen = []
+    real = _repair.accept_repair
+    monkeypatch.setattr(_repair, "accept_repair", lambda o, n, ref, d, g: seen.append((o, ref)) or real(o, n, ref, d, g))
+    out_json = tmp_path / "rows.json"
+    _run_refs(tmp_path, monkeypatch, capsys, "--json", str(out_json))
+    rows = json.loads(out_json.read_text())["m1"]
+    assert [r["ref"] for r in rows] == ["ref A", "ref B"]
+    assert ("grbled one", "ref A") in seen[-2:] and ("grbled four", "ref B") in seen[-2:]
+    assert seen[-2:] == [("grbled one", "ref A"), ("grbled four", "ref B")]
+
+
+def test_dump_refs_requires_the_glossary(tmp_path, monkeypatch):
+    """is_target consults glossary.name_suspect, so a dump cut without the glossary silently
+    drops the name-suspect targets and the later --refs run cannot tell."""
+    conf = _write(tmp_path, _ANCHOR_ROWS)
+    argv = ["bakeoff", "--conf", conf, "--dump-refs", str(tmp_path / "r.json"), "--video", "/v.mkv"]
+    monkeypatch.setattr(bo.sys, "argv", argv)
+    with pytest.raises(SystemExit) as e:
+        bo.main()
+    assert "--glossary" in str(e.value)

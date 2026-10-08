@@ -7,9 +7,11 @@ Pipeline: load cards -- either a captured raw whisper dump (--raw, reflowed here
 production <stem>.dubtitles.conf.json (--conf, already reflowed; the same file repair.py
 consumes, so the models are judged on exactly the lines production sends them) --
 -> apply the deterministic glossary correction -> pick the repair targets (is_target) ->
-ask each model to repair each target (glossary-only prompt; pass --refs for an mkv's
-fansub if you have one) -> print orig vs each model, then SCORE every model and suggest a
-shortlist to hand-judge.
+ask each model to repair each target -> print orig vs each model, then SCORE every model
+and suggest a shortlist to hand-judge. By default the prompt is glossary-only; production's
+normal path is ANCHORED (the line plus the overlapping line of the video's embedded English
+subtitle track), which the two-step --dump-refs / --refs mode reproduces: the video is only
+needed for the first step, so the model runs can happen on a machine without the media.
 
 Why the scores exist: the candidate pool is ~19 models, and at --limit 15 that is ~285
 line pairs for a human to read. docs/model-candidates-4-5gb-vram.md names three judging
@@ -27,6 +29,19 @@ Usage:
       --ollama http://127.0.0.1:11434/api/generate \\
       --models qwen3:8b qwen3.5:4b qwen2.5:7b --limit 15
 
+  # anchored, step 1 (where the video is; no model calls; --limit 0 = every target):
+  python3 tools/bakeoff.py --conf "/media/.../Ep.dubtitles.conf.json" \\
+      --glossary "glossaries/One Pace.json" --video "/media/.../Ep.mkv" \\
+      --dump-refs refs.json --limit 0
+  # anchored, step 2 (anywhere; targets without a fansub line are skipped unless
+  # --include-unanchored or the glossary sets unanchored_repair):
+  python3 tools/bakeoff.py --conf "Ep.dubtitles.conf.json" --glossary "glossaries/One Pace.json" \\
+      --refs refs.json --models qwen3:8b qwen2.5:7b
+
+  # any OpenAI-compatible API (key is read from the env var NAMED by --key-env):
+  python3 tools/bakeoff.py --conf ... --models vendor/model-x \\
+      --openai-url https://api.example.com/v1/chat/completions --key-env EXAMPLE_API_KEY
+
 No GPU needed locally — the models run on the Ollama host. Built with help of Claude.
 """
 
@@ -39,7 +54,10 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, ".")
+import common  # noqa: E402
 import glossary  # noqa: E402
+import hallucination  # noqa: E402
+import qc  # noqa: E402
 import reflow  # noqa: E402
 import repair  # noqa: E402
 
@@ -76,6 +94,57 @@ def cards_from_raw(raw):
         for w in s["words"] or []:
             words.append({"text": w["word"], "start": w["start"], "end": w["end"], "prob": w["probability"] or 1.0, "seg": si})
     return reflow.reflow(words, segments)
+
+
+def dump_refs(conf_path, cards, gloss, video, limit, sample):
+    """Anchored step 1: the fansub reference for each target, exactly as repair.process
+    selects it, as a JSON-able dict. Needs the video; makes no model calls.
+
+    ``cards`` are the conf rows AFTER glossary.correct (what main() does), so the targets are
+    the ones the bake-off would pick; ``idx`` is the row's position in the conf list, which is
+    what --refs keys on. ``limit`` 0 means every target. prev/next are the neighbouring rows'
+    text (post-correct, since the cards were corrected in place)."""
+    ivals = common.dialogue_intervals(video)
+    rec = qc.Recorder()
+    picked = [(i, c) for i, c in enumerate(cards) if repair.is_target(c, gloss)]
+    out = []
+    for i, c in sample_targets(picked, limit, sample):
+        # Same two lines as repair.process: S-6 bad source window -> no reference, else the
+        # overlap on the SOURCE window (C6).
+        if hallucination.bad_source_window(c, rec=rec):
+            ref = ""
+        else:
+            ref = repair.overlap_ref(ivals, c.get("source_start", c["start"]), c.get("source_end", c["end"]))
+        out.append(
+            {
+                "idx": i,
+                "text": c["text"],
+                "ref": ref,
+                "prev": cards[i - 1]["text"] if i > 0 else "",
+                "next": cards[i + 1]["text"] if i + 1 < len(cards) else "",
+            }
+        )
+    return {"conf": os.path.basename(conf_path), "cards": len(cards), "targets": out}
+
+
+def load_refs(refs_path, cards):
+    """Anchored step 2: targets from a --dump-refs file, as card dicts carrying their own
+    ``_ref`` / ``_prev`` / ``_next``. ``cards`` must be the conf rows after glossary.correct;
+    a row whose text differs from the dump's (wrong conf, or the glossary changed since) is a
+    different bake-off than the one the refs were cut for, so it fails naming the first one."""
+    doc = json.load(open(refs_path))
+    out = []
+    for t in doc.get("targets", []):
+        i = t.get("idx")
+        if not isinstance(i, int) or not 0 <= i < len(cards):
+            sys.exit(f"{refs_path}: idx {i!r} is not a card in this conf ({len(cards)} cards)")
+        if cards[i]["text"] != t["text"]:
+            sys.exit(
+                f"{refs_path}: idx {i} does not match this conf: refs file has {t['text']!r}, "
+                f"conf card is {cards[i]['text']!r} (wrong --conf, or the glossary changed?)"
+            )
+        out.append({**cards[i], "_ref": t["ref"], "_prev": t["prev"], "_next": t["next"]})
+    return out
 
 
 def parse_llamacpp_specs(specs):
@@ -329,12 +398,17 @@ def score_model(model, targets, outs, total_s, gloss, ref=""):
     against a reference the model was never shown would measure a gate the run did not
     face, and the empty reference is what keeps ``substitutes_a_vouched_name`` live.
 
+    A target carrying its own ``_ref`` (anchored mode) overrides ``ref`` for that target;
+    ``ref_borrow`` counts outputs that import at least one word present in that reference
+    and absent from the ASR line -- the model copying the fansub.
+
     Every rate is over ``scored`` (results actually produced) and is None when that is 0,
     so a model that returned nothing renders as a row rather than a ZeroDivisionError."""
     n = len(outs)
-    inert = changed = errors = empties = admitted = name_edits = no_duration = 0
+    inert = changed = errors = empties = admitted = name_edits = no_duration = ref_borrow = 0
     for i, out in enumerate(outs):
         orig = targets[i]["text"] if i < len(targets) else ""
+        t_ref = targets[i].get("_ref", ref) if i < len(targets) else ref
         # <ERROR ...>/<EMPTY ...> mean the model produced NOTHING. They are never compared
         # against the original: "" or an error marker is not the model leaving the line
         # alone, and scoring it that way turns a dead backend into a clean no-op.
@@ -350,13 +424,15 @@ def score_model(model, targets, outs, total_s, gloss, ref=""):
         changed += 1
         if changed_a_name(orig, out):
             name_edits += 1
+        if repair.borrowed_from_ref(orig, out, t_ref):
+            ref_borrow += 1
         dur = _card_duration(targets[i]) if i < len(targets) else None
         if dur is None:
             no_duration += 1
             continue
         # THE production gate itself, not a re-implemented bar: what this counts is what
         # would actually ship if this model were REPAIR_MODEL.
-        if repair.accept_repair(orig, out, ref, dur, gloss):
+        if repair.accept_repair(orig, out, t_ref, dur, gloss):
             admitted += 1
 
     def rate(k):
@@ -374,6 +450,8 @@ def score_model(model, targets, outs, total_s, gloss, ref=""):
         "admitted": admitted,
         "name_edits": name_edits,
         "no_duration": no_duration,
+        "ref_borrow": ref_borrow,
+        "anchored": bool(targets) and all("_ref" in t for t in targets),
         "inert_rate": rate(inert),
         "change_rate": rate(changed),
         "error_rate": rate(errors + empties),
@@ -469,20 +547,28 @@ def format_summary(ranked, bounds=()):
     that never ran, a mid-run kill); they are printed unconditionally so a partial run is
     never read as a complete one."""
     w = max([len(s["model"]) for s in ranked] + [5])
+    anchored = any(s.get("anchored") for s in ranked)
     out = ["\n=== SCORES (ranked; safe-fix quality still needs your eyes) ==="]
-    out.append(f"  {'#':>2}  {'model':<{w}}  {'ship':>5} {'inert':>5} {'names':>5} {'err':>5}  {'lines':>7}  {'s/line':>7}")
+    borrow_h = f" {'borrow':>6}" if anchored else ""
+    out.append(
+        f"  {'#':>2}  {'model':<{w}}  {'ship':>5} {'inert':>5} {'names':>5} {'err':>5}{borrow_h}  {'lines':>7}  {'s/line':>7}"
+    )
     for s in ranked:
         lat = "    n/a" if s["avg_latency_s"] is None else f"{s['avg_latency_s']:7.1f}"
         lines = f"{s['scored']:>3}/{s['targets']:<3}"
+        borrow = f" {s.get('ref_borrow', 0):>6}" if anchored else ""
         out.append(
             f"  {s['rank']:>2}  {s['model']:<{w}}  {_pct(s['admitted_rate'])} {_pct(s['inert_rate'])} "
-            f"{_pct(s['name_edit_rate'])} {_pct(s['error_rate'])}  {lines}  {lat}"
+            f"{_pct(s['name_edit_rate'])} {_pct(s['error_rate'])}{borrow}  {lines}  {lat}"
         )
     out.append("")
-    out.append("  ship  = would repair.accept_repair() write it? (production's own gate, no reference)")
+    ref_note = "each line's own fansub reference" if anchored else "no reference"
+    out.append(f"  ship  = would repair.accept_repair() write it? (production's own gate, {ref_note})")
     out.append("  inert = reply identical to the input after casefold/whitespace — no fix offered")
     out.append("  names = touched a proper noun (right or wrong; pair with ship to tell which)")
     out.append("  err   = <ERROR>/<EMPTY> — the model produced nothing, NOT 'left the line alone'")
+    if anchored:
+        out.append("  borrow = outputs importing a word from the fansub reference that the ASR line lacked (copying)")
     out.append("")
     for s in ranked:
         out.append(f"  {s['rank']:>2}. {s['model']}: {s['note']}")
@@ -584,6 +670,7 @@ def format_score_line(s):
     return (
         f"  SCORE {s['model']}: ship {s['admitted']}/{s['scored']} | inert {s['inert']} | "
         f"names {s['name_edits']} | err {s['errors'] + s['empties']} | {s['avg_latency_s']:.1f}s/line"
+        + (f" | borrow {s['ref_borrow']}" if s.get("anchored") else "")
     )
 
 
@@ -638,7 +725,40 @@ def main():
     ap.add_argument(
         "--extra-body", default="", metavar="JSON", help="JSON object merged into the body, e.g. '{\"enable_thinking\": false}'"
     )
+    ap.add_argument(
+        "--video",
+        help="the episode's video (with --dump-refs): its embedded English subtitle track supplies the fansub reference",
+    )
+    ap.add_argument(
+        "--dump-refs",
+        metavar="OUT.json",
+        help="anchored step 1: write each target's fansub reference to OUT.json and exit "
+        "(needs --conf and --video; no model calls; --limit 0 = every target)",
+    )
+    ap.add_argument(
+        "--refs",
+        metavar="REFS.json",
+        help="anchored step 2: judge the models on the targets in this --dump-refs file, with "
+        "their references in the prompt (needs --conf; the file's targets are used as-is, "
+        "--limit/--sample do not apply)",
+    )
+    ap.add_argument(
+        "--include-unanchored",
+        action="store_true",
+        help="with --refs: also judge targets that have no fansub reference (production skips "
+        "them unless the glossary sets unanchored_repair)",
+    )
     a = ap.parse_args()
+
+    if a.dump_refs and a.refs:
+        sys.exit("--dump-refs and --refs are two separate steps; give one")
+    if (a.dump_refs or a.refs) and not a.conf:
+        sys.exit("--dump-refs / --refs work from a production --conf")
+    if a.dump_refs and not a.video:
+        sys.exit("--dump-refs needs --video (the file whose embedded English subtitles are the reference)")
+    if a.dump_refs and not a.glossary:
+        # is_target consults glossary.name_suspect: a dump cut without the glossary silently drops those targets.
+        sys.exit("--dump-refs needs --glossary (it decides which lines are targets)")
 
     openai = None
     if a.openai_url:
@@ -651,10 +771,36 @@ def main():
     cards = load_cards(a.raw, a.conf)
     for c in cards:  # deterministic layer first (as in prod)
         c["text"] = glossary.correct(c["text"], gloss)[0]
-    all_targets = [c for c in cards if repair.is_target(c, gloss)]
-    targets = sample_targets(all_targets, a.limit, a.sample)
-    prompts = [repair.build_prompt(c["text"], "", gloss) for c in targets]  # glossary-only (mp4)
-    print(f"cards={len(cards)} targets={len(targets)} of {len(all_targets)} (--limit {a.limit})  models={a.models}\n")
+    if a.dump_refs:
+        doc = dump_refs(a.conf, cards, gloss, a.video, a.limit, a.sample)
+        with open(a.dump_refs, "w") as f:
+            json.dump(doc, f, indent=2)
+        with_ref = sum(1 for t in doc["targets"] if t["ref"])
+        n = len(doc["targets"])
+        print(f"targets={n} with_ref={with_ref} without_ref={n - with_ref} -> {a.dump_refs}")
+        return
+    extra_bounds = []
+    if a.refs:
+        entries = load_refs(a.refs, cards)
+        targets = [t for t in entries if a.include_unanchored or not repair.skips_unanchored(t["_ref"], gloss)]
+        all_targets = targets  # --limit does not apply here; the dump already chose
+        if len(targets) < len(entries):
+            extra_bounds.append(
+                f"{len(entries) - len(targets)} target(s) skipped: no fansub reference, and production skips those "
+                "(--include-unanchored, or unanchored_repair in the glossary, judges them)"
+            )
+        # arc/episode are omitted: repair.process passes them from the library layout, which a
+        # standalone bake-off does not have, so the glossary tiering is the unweighted order.
+        prompts = [repair.build_prompt(t["text"], t["_ref"], gloss, t["_prev"], t["_next"]) for t in targets]
+        print(
+            f"cards={len(cards)} targets={len(targets)} of {len(entries)} in {a.refs} "
+            f"({len(entries) - len(targets)} skipped for no ref)  models={a.models}\n"
+        )
+    else:
+        all_targets = [c for c in cards if repair.is_target(c, gloss)]
+        targets = sample_targets(all_targets, a.limit, a.sample)
+        prompts = [repair.build_prompt(c["text"], "", gloss) for c in targets]  # glossary-only (mp4)
+        print(f"cards={len(cards)} targets={len(targets)} of {len(all_targets)} (--limit {a.limit})  models={a.models}\n")
 
     # model-OUTER so each model loads once (avoids reload thrash on the 8GB GPU).
     # Each model's block is printed AS SOON AS that model finishes: these runs can take
@@ -684,12 +830,14 @@ def main():
             rows = []
             for i, (c, out) in enumerate(zip(targets, outs[m])):
                 dur = (c.get("end") or 0) - (c.get("start") or 0)
-                admitted = bool(
-                    dur > 0 and not out.startswith(("<ERROR", "<EMPTY")) and repair.accept_repair(c["text"], out, "", dur, gloss)
-                )
+                ref = c.get("_ref", "")  # anchored targets carry their own; glossary-only runs score with none
+                live = dur > 0 and not out.startswith(("<ERROR", "<EMPTY"))
+                admitted = bool(live and repair.accept_repair(c["text"], out, ref, dur, gloss))
                 row = {"orig": c["text"], "out": out, "admitted": admitted}
                 if i < len(usages[m]) and usages[m][i]:
                     row.update(usages[m][i])  # prompt_tokens / completion_tokens / cached_tokens
+                if a.refs:
+                    row["ref"] = c["_ref"]
                 rows.append(row)
             with open(a.json, "w") as f:
                 json.dump({m: rows}, f, indent=2)
@@ -702,7 +850,8 @@ def main():
             print(f"  {m:16}: {got}")
         print()
 
-    print(format_summary(rank_models(scores, a.shortlist), coverage_bounds(scores, all_targets, targets, a.limit, gloss)))
+    bounds = [*coverage_bounds(scores, all_targets, targets, a.limit, gloss), *extra_bounds]
+    print(format_summary(rank_models(scores, a.shortlist), bounds))
 
 
 if __name__ == "__main__":

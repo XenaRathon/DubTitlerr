@@ -18,6 +18,12 @@ that shipped since.
   reply, and writes token counts to `--json`. The default llamacpp/ollama paths are unchanged.
   A malformed `REPAIR_EXTRA_BODY` is checked on each call, not at import: the stage logs the
   variable name and reports the backend unreachable, so nothing ships and the run is retried.
+- **Bake-off can test the anchored prompt.** `tools/bakeoff.py --dump-refs OUT.json --video V`
+  (no model calls) records each target's fansub reference, chosen the way `repair.process` does;
+  `--refs OUT.json` then runs the models with those references and neighbouring lines, scores each
+  target against its own reference, skips targets with no reference (as production does, unless
+  `--include-unanchored` or the glossary sets `unanchored_repair`), and adds a `borrow` column for
+  outputs that copy words from the fansub. Without either flag the glossary-only run is unchanged.
 - **mux verification measures the video track itself.** When the video stream carries neither a
   duration nor a DURATION tag, `video_duration()` now takes the end of the last video packet
   (scanning the final minute) instead of the container duration, which in Matroska is the longest
