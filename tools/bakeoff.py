@@ -38,6 +38,9 @@ Usage:
   python3 tools/bakeoff.py --conf "Ep.dubtitles.conf.json" --glossary "glossaries/One Pace.json" \\
       --refs refs.json --models qwen3:8b qwen2.5:7b
 
+  # a rate-limited free tier (~40 requests a minute): pace the calls, 429s then stay out of the score
+  python3 tools/bakeoff.py --conf ... --models vendor/model-x --openai-url ... --key-env NAME --delay 1.5
+
   # any OpenAI-compatible API (key is read from the env var NAMED by --key-env):
   python3 tools/bakeoff.py --conf ... --models vendor/model-x \\
       --openai-url https://api.example.com/v1/chat/completions --key-env EXAMPLE_API_KEY
@@ -221,6 +224,17 @@ def parse_llamacpp_specs(specs):
     return out
 
 
+def _delay_seconds(raw):
+    """argparse type for --delay: a finite, non-negative number of seconds."""
+    try:
+        value = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a number of seconds") from None
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError(f"{raw!r} must be a finite number of seconds, 0 or more")
+    return value
+
+
 def parse_extra_body(raw):
     """``--extra-body`` JSON object -> dict (exit on anything else, like the other arg parsers)."""
     if not raw:
@@ -312,7 +326,8 @@ def ask_llamacpp_chat(url, prompt):
 
 def _retry_after(err, default=5.0, cap=60.0):
     """Seconds to wait after a 429. Only a finite number of seconds in 0..cap is believed;
-    nan, inf, negatives, an HTTP-date or garbage all fall back to ``default``."""
+    nan, inf, negatives, an HTTP-date or garbage all fall back to ``default`` (the caller makes
+    that at least --delay, capped at ``cap`` too)."""
     try:
         wait = float(err.headers.get("Retry-After"))
     except (TypeError, ValueError, AttributeError):
@@ -349,7 +364,7 @@ def _error_label(e):
     return name
 
 
-def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None, max_tokens=1024):
+def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None, max_tokens=1024, delay=0.0):
     """Any OpenAI-compatible chat API; mirrors repair.llm_openai (same body and headers).
 
     The key is read from the env var NAMED ``key_env`` and never printed (a key with spaces or
@@ -360,6 +375,7 @@ def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None, ma
     ``<ERROR truncated ...>``. Redirects are refused.
 
     The returned latency covers the last attempt only: a Retry-After sleep is not model time.
+    ``delay`` (--delay) is the floor of the 429 wait when the provider sends no usable Retry-After.
     ``usage_sink`` (a list) gets exactly one entry per call: the token counts from ``usage``
     (``cached_tokens`` when the provider reports it) or None."""
     usage = None
@@ -394,7 +410,7 @@ def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None, ma
             except urllib.error.HTTPError as e:
                 if e.code == 429:
                     if attempt == 0:
-                        time.sleep(_retry_after(e))
+                        time.sleep(_retry_after(e, default=min(max(5.0, delay), 60.0)))
                         continue
                     out = "<ERROR rate-limited (HTTP 429)>"
                 else:
@@ -417,7 +433,14 @@ def ask(ollama, model, prompt, llamacpp=None, llamacpp_chat=None, openai=None, u
         return ask_llamacpp_chat(chat, prompt)
     if openai:
         return ask_openai(
-            openai["url"], model, prompt, openai["key_env"], openai.get("extra_body"), usage_sink, openai.get("max_tokens", 1024)
+            openai["url"],
+            model,
+            prompt,
+            openai["key_env"],
+            openai.get("extra_body"),
+            usage_sink,
+            openai.get("max_tokens", 1024),
+            openai.get("delay", 0.0),
         )
     return ask_ollama(ollama, model, prompt)
 
@@ -836,6 +859,16 @@ def main():
         "names also listed in --llamacpp / --llamacpp-chat go there instead. Needs --models and --key-env",
     )
     ap.add_argument(
+        "--delay",
+        type=_delay_seconds,
+        default=0.0,
+        metavar="SECONDS",
+        help="sleep this long between consecutive model calls in every mode (not before a model's first call, "
+        "not counted in the latency), for providers that answer HTTP 429 to a fast loop (NVIDIA's free "
+        "tier allows ~40 requests a minute: use 1.5). Also the floor of the 429 retry wait when the "
+        "provider sends no Retry-After. Default 0",
+    )
+    ap.add_argument(
         "--max-tokens",
         type=int,
         default=repair.env_int("REPAIR_MAX_TOKENS", 1024, lo=1),
@@ -908,6 +941,7 @@ def main():
             "key_env": a.key_env,
             "extra_body": parse_extra_body(a.extra_body),
             "max_tokens": a.max_tokens,
+            "delay": a.delay,
         }
     if not a.models:
         a.models = ["qwen3:8b", "qwen3.5:4b", "qwen2.5:7b"]
@@ -962,6 +996,8 @@ def main():
     scores = []
     for m in a.models:
         for n, p in enumerate(prompts, 1):
+            if n > 1 and a.delay:
+                time.sleep(a.delay)  # between calls only, and outside ask(): never part of the latency
             out, dt = ask(a.ollama, m, p, llamacpp, llamacpp_chat, openai, usages[m])
             outs[m].append(out)
             totals[m] += dt

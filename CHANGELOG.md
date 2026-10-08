@@ -15,7 +15,9 @@ that shipped since.
   `reasoning_content`; a missing key or a transport failure counts as unreachable and the key
   value is never logged. `tools/bakeoff.py` gains `--openai-url`, `--key-env` and `--extra-body`,
   reports HTTP 429 as rate-limited (one retry, `Retry-After` capped at 60 s) instead of an empty
-  reply, and writes token counts to `--json`. The default llamacpp/ollama paths are unchanged.
+  reply, takes `--delay SECONDS` (a pause between consecutive calls in every mode, outside the recorded
+  latency, and the floor of the 429 retry wait) so a rate-limited free tier doesn't score its own throttling as
+  model failures, and writes token counts to `--json`. The default llamacpp/ollama paths are unchanged.
   A malformed `REPAIR_EXTRA_BODY` is checked on each call, not at import: the stage logs the
   variable name and reports the backend unreachable, so nothing ships and the run is retried.
   The key is stripped of a trailing CR/LF (CRLF `.env` files) and a key with spaces or control

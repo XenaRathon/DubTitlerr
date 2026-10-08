@@ -1443,3 +1443,113 @@ def test_main_threads_the_glossary_path_into_dump_and_refs(tmp_path, monkeypatch
         bo.main()
     monkeypatch.setattr(bo.sys, "argv", run + ["--allow-glossary-mismatch"])
     bo.main()
+
+
+# --- --delay: pace the calls for rate-limited providers -------------------------------
+
+
+def _three_targets(tmp_path):
+    rows = [_conf_row(f"grbled nnsense {w}", lp=-1.4, nsp=0.02) for w in ("one", "two", "three")]
+    return _write(tmp_path, rows)
+
+
+def _run_main(monkeypatch, *argv):
+    monkeypatch.setattr(bo.sys, "argv", ["bakeoff", *argv])
+    bo.main()
+
+
+def test_delay_sits_between_consecutive_calls_not_before_the_first_or_after_the_last(tmp_path, monkeypatch):
+    conf = _three_targets(tmp_path)
+    events = []
+    monkeypatch.setattr(bo, "ask", lambda *a, **k: events.append("ask") or ("x", 0.1))
+    monkeypatch.setattr(bo.time, "sleep", lambda s: events.append(("sleep", s)))
+    _run_main(monkeypatch, "--conf", conf, "--models", "m1", "m2", "--delay", "2.5")
+    per_model = ["ask", ("sleep", 2.5), "ask", ("sleep", 2.5), "ask"]
+    assert events == per_model + per_model  # nothing before a model's first call, nothing after its last
+
+
+def test_delay_applies_in_every_mode(tmp_path, monkeypatch):
+    """ollama (default), llamacpp, llamacpp-chat and openai all go through the same loop."""
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    conf = _three_targets(tmp_path)
+    modes = [
+        [],
+        ["--llamacpp", "m1=http://h/completion"],
+        ["--llamacpp-chat", "m1=http://h/v1/chat/completions"],
+        ["--openai-url", "https://x/v1/chat/completions", "--key-env", "TEST_BAKE_KEY"],
+    ]
+    for extra in modes:
+        slept = []
+        monkeypatch.setattr(
+            bo,
+            "_post_json",
+            lambda u, b, timeout=180, headers=None, **kw: {"response": "x", "content": "x", **_ok("x")},
+        )
+        monkeypatch.setattr(bo.time, "sleep", slept.append)
+        _run_main(monkeypatch, "--conf", conf, "--models", "m1", "--delay", "1", *extra)
+        assert slept == [1.0, 1.0], extra
+
+
+def test_delay_is_not_part_of_the_recorded_latency(tmp_path, monkeypatch, capsys):
+    import types
+
+    clock = [0.0]
+    monkeypatch.setattr(
+        bo,
+        "time",
+        types.SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s)),
+    )
+
+    def fake_post(u, b, timeout=180, headers=None, **kw):
+        clock[0] += 0.5  # the model takes 0.5 s
+        return {"response": "x"}
+
+    monkeypatch.setattr(bo, "_post_json", fake_post)
+    _run_main(monkeypatch, "--conf", _three_targets(tmp_path), "--models", "m1", "--delay", "30")
+    out = capsys.readouterr().out
+    assert "0.5s" in out and "30.5s" not in out
+    assert "(avg 0.5s/line" in out
+
+
+@pytest.mark.parametrize("bad", ["-1", "abc", "nan", "inf", ""])
+def test_a_bad_delay_is_a_clean_argparse_error(tmp_path, monkeypatch, capsys, bad):
+    with pytest.raises(SystemExit) as e:
+        _run_main(monkeypatch, "--conf", _three_targets(tmp_path), "--delay", bad)
+    assert e.value.code == 2
+    assert "--delay" in capsys.readouterr().err
+
+
+def test_delay_zero_is_byte_identical_to_no_flag_and_never_sleeps(tmp_path, monkeypatch, capsys):
+    """GUARD: passes on the old code for the no-flag half."""
+    conf = _three_targets(tmp_path)
+    monkeypatch.setattr(bo, "ask", lambda *a, **k: ("grabled one", 0.5))
+    monkeypatch.setattr(bo.time, "sleep", lambda s: pytest.fail("no delay, no sleep"))
+    _run_main(monkeypatch, "--conf", conf, "--models", "m1", "m2")
+    plain = capsys.readouterr().out
+    _run_main(monkeypatch, "--conf", conf, "--models", "m1", "m2", "--delay", "0")
+    assert capsys.readouterr().out == plain
+
+
+@pytest.mark.parametrize(
+    "retry_after,delay,expected",
+    [
+        (None, 20.0, 20.0),
+        (None, 90.0, 60.0),
+        (None, 0.0, 5.0),
+        (None, 2.0, 5.0),
+        ("7", 20.0, 7.0),
+        ("nan", 20.0, 20.0),
+        ("inf", 90.0, 60.0),
+    ],
+)
+def test_the_429_retry_uses_delay_as_the_floor_when_there_is_no_usable_retry_after(monkeypatch, retry_after, delay, expected):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    slept = []
+
+    def fake_post(u, b, timeout=180, headers=None, **kw):
+        raise _http_error(429, retry_after)
+
+    monkeypatch.setattr(bo, "_post_json", fake_post)
+    monkeypatch.setattr(bo.time, "sleep", slept.append)
+    bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY", delay=delay)
+    assert slept == [expected]
