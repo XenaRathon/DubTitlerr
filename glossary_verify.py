@@ -27,7 +27,7 @@ import time
 import urllib.parse
 import urllib.request
 
-from common import llm_chat
+from common import llm_chat, stop_requested
 
 
 def log(*a):
@@ -534,21 +534,42 @@ def verify(gloss_path: str, override: str | None = None, force: bool = False) ->
         tl = {t.lower() for t in titles}
         if not any(n.lower() in tl for n in gloss.get("names", [])):
             return {**rep, "wiki": api, "note": "wiki mismatch (no known names found) — set a 'wiki' override"}
+
     # V2 C2: adjudicate() is one blocking HTTP call to the local Ollama server per term --
     # a glossary with dozens of pending terms serialized those one at a time. Run them
     # concurrently (I/O-bound, so threads are fine); ThreadPoolExecutor.map preserves the
     # input order in its output, so zipping it back onto `terms` keeps the exact same
     # dict ordering/semantics as the old comprehension, just built concurrently.
+    # Soft stop (SIGTERM at window close): the flag is checked before each term's adjudication,
+    # so a term is either fully adjudicated or skipped. Skipped terms are left out of `results`
+    # and therefore stay pending (apply_results marks every term in it as verified); the next
+    # sweep picks them up. Everything completed is written once, atomically, below.
+    def _one(t):
+        if stop_requested():
+            return None
+        return adjudicate(t, candidates(t, titles), show)
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=VERIFY_WORKERS) as ex:
-        adjudications = ex.map(lambda t: adjudicate(t, candidates(t, titles), show), terms)
-        results = dict(zip(terms, adjudications))
+        adjudications = ex.map(_one, terms)
+        done = {t: a for t, a in zip(terms, adjudications) if a is not None}
+    stopped = len(done) < len(terms)
+    if stopped:
+        log(f"stop requested: leaving verify after {len(done)} terms")
+        if not done:
+            return {**rep, "wiki": api, "note": "stopped"}
+    results = done
     new = apply_results(gloss, results)
     new.setdefault("wiki", api)
+    # Imported at call time for the same cycle reason as is_expansion below.
+    from glossary_acquire import _write_json
+
     try:
-        with open(gloss_path, "w", encoding="utf-8") as f:
-            json.dump(new, f, indent=2, ensure_ascii=False)
-            f.write("\n")  # POSIX line: prettier flags a glossary without it
+        _write_json(gloss_path, new)
     except OSError as e:
+        try:
+            os.remove(gloss_path + ".tmp")
+        except OSError:
+            pass
         return {**rep, "wiki": api, "note": f"write-failed: {e}"}
     # Count what ACTUALLY happened, not what was proposed. Before 2026-08-21 every
     # high-confidence changed term was written straight into names/phrases, so "proposed"
@@ -561,10 +582,11 @@ def verify(gloss_path: str, override: str | None = None, force: bool = False) ->
     return {
         "show": show,
         "wiki": api,
-        "checked": len(terms),
+        "checked": len(done),
         "applied": applied,
         "escalated": len(changed) - applied,
         "flagged": len(new.get("flagged", {})),
+        **({"note": "stopped"} if stopped else {}),
     }
 
 

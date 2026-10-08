@@ -8,6 +8,25 @@ that shipped since.
 
 ## [Unreleased]
 
+- **mux verification measures the video track itself.** When the video stream carries neither a
+  duration nor a DURATION tag, `video_duration()` now takes the end of the last video packet
+  (scanning the final minute) instead of the container duration, which in Matroska is the longest
+  track. Three episodes whose dropped foreign subtitle tracks made the remux look 11-31 s short, and
+  so failed verification on every pass, will now mux. A truly truncated output is still rejected.
+- **README shows table is generated at publish time.** New `tools/render_readme_table.py` rewrites
+  the region between `<!-- shows-table:start -->` and `<!-- shows-table:end -->` from the
+  `manifest/` files (counts, sorted, `{tvdb-N}` stripped); no markers means no change.
+  The table (and its date) changes only when the numbers or rows change, so publishing makes no
+  daily noise commit; with no loadable manifest it leaves the README alone. A missing or odd
+  `status` counts as unreviewed. `tools/publish_subtitles.sh` calls it before the change check,
+  and a failure there never blocks publishing.
+- **Glossary steps stop between units on a soft stop.** `mine_glossary.py` (between episodes),
+  `glossary_verify.py` (between terms) and `glossary_acquire.py` (between escalation pairs, tier-B
+  terms and admission episodes) check the stop flag, log `stop requested: leaving <step> after <n>
+  <unit>s` and exit 0 instead of running past the docker stop grace into a SIGKILL. Verify writes
+  its completed terms atomically; acquire keeps finished escalation pairs in its cache; mine and
+  acquire write nothing on a stop.
+
 ## 0.2.2 - 2026-10-08
 
 Hardening pass from a whole-repository review of `main`: no failed stage is muxed and stamped as done any

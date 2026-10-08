@@ -21,7 +21,7 @@ from collections.abc import Collection
 
 import pysubs2
 
-from common import NON_DIALOGUE_STYLE, SIGNS_TITLE, is_our_track, load_extras, stream_title
+from common import NON_DIALOGUE_STYLE, SIGNS_TITLE, is_our_track, load_extras, stop_requested, stream_title
 
 EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_extras)
 
@@ -295,6 +295,7 @@ def main():
 
     counter, poss, mid = {}, {}, set()
     mined_eps = 0
+    read_eps = 0
     for dp, dns, fs in os.walk(show_dir):
         dns[:] = [d for d in dns if d.lower() not in EXTRA_DIRS]
         for fn in fs:
@@ -304,6 +305,14 @@ def main():
             # only NEW episodes (no dubtitle yet) -> each episode mined exactly once, additively
             if os.path.exists(stem + ".eng.dubtitles.ass") or os.path.exists(stem + ".eng.dubtitles.srt"):
                 continue
+            # Soft stop (SIGTERM at window close). Between episodes is the safe point: nothing
+            # is persisted until the whole walk is counted, so leave WITHOUT writing -- a
+            # glossary admitted from half the episodes would apply MIN_COUNT to a partial
+            # tally. The unmined episodes still have no dubtitle, so the next sweep re-reads them.
+            if stop_requested():
+                print(f"stop requested: leaving mine after {read_eps} episodes")
+                return
+            read_eps += 1
             txt = eng_sub_text(os.path.join(dp, fn))
             if txt:
                 mine_text(txt, counter, poss, mid)
