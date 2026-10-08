@@ -824,6 +824,111 @@ def test_verify_still_catches_a_genuinely_truncated_remux(monkeypatch):
     assert mux.verify("orig.mkv", "out.mkv") == "duration-mismatch"
 
 
+# --- video_duration(): measure the video packets when the stream has no duration ----------
+#
+# Measured on three real originals: the video stream reports duration=N/A and has no DURATION
+# tag, so video_duration() fell through to the CONTAINER duration (longest track). Long foreign
+# subtitle tracks and attachments the remux drops left the output 11-31 s shorter, and verify()
+# returned duration-mismatch on every pass.
+
+
+def _stub_probes(monkeypatch, containers, packets):
+    """containers/packets: {path: value}. Stream carries neither duration nor tag."""
+    monkeypatch.setattr(mux, "identify", lambda p: _ok_info())
+    monkeypatch.setattr(mux, "_ffprobe_video", lambda p: {"duration": "N/A"})
+    monkeypatch.setattr(mux, "duration", lambda p: containers[p])
+    monkeypatch.setattr(mux, "_ffprobe_video_packets", lambda p, start: packets[p], raising=False)
+
+
+def test_verify_ok_when_stream_has_no_duration_and_dropped_tracks_shorten_the_container(monkeypatch):
+    _stub_probes(
+        monkeypatch,
+        {"orig.mkv": 1480.96, "out.mkv": 1469.99},
+        {"orig.mkv": [(1469.9, 0.0417), (1469.93, 0.0417)], "out.mkv": [(1469.93, 0.0417)]},
+    )
+    assert mux.verify("orig.mkv", "out.mkv") == "ok"
+
+
+def test_verify_still_catches_truncation_measured_from_packets(monkeypatch):
+    """GUARD (passes on old code too): a truncated output is still rejected."""
+    _stub_probes(
+        monkeypatch,
+        {"orig.mkv": 1480.96, "out.mkv": 1400.5},
+        {"orig.mkv": [(1469.93, 0.0417)], "out.mkv": [(1399.9, 0.0417)]},
+    )
+    assert mux.verify("orig.mkv", "out.mkv") == "duration-mismatch"
+
+
+def test_video_duration_falls_back_to_container_when_packet_scan_is_empty(monkeypatch):
+    """GUARD: no packets -> the container figure exactly as before."""
+    _stub_probes(monkeypatch, {"x.mkv": 1480.96}, {"x.mkv": []})
+    assert mux.video_duration("x.mkv") == 1480.96
+
+
+def test_video_duration_takes_the_max_end_not_the_last_packet(monkeypatch):
+    """B-frame reordering: the last packet in file order is not the latest pts."""
+    _stub_probes(
+        monkeypatch,
+        {"x.mkv": 99.0},
+        {"x.mkv": [(10.0, 0.04), (10.12, 0.04), (10.04, 0.04), (10.08, 0.04)]},
+    )
+    assert abs(mux.video_duration("x.mkv") - 10.16) < 0.001
+
+
+def test_video_duration_scans_the_last_minute_of_the_container(monkeypatch):
+    seen = []
+    _stub_probes(monkeypatch, {"x.mkv": 1480.96}, {})
+    monkeypatch.setattr(mux, "_ffprobe_video_packets", lambda p, s: seen.append(s) or [(1.0, 0.5)], raising=False)
+    mux.video_duration("x.mkv")
+    assert abs(seen[0] - 1420.96) < 0.001
+
+
+def test_ffprobe_video_packets_parses_rows_and_tolerates_na(monkeypatch):
+    class R:
+        stdout = "1469.9,0.041\nN/A,N/A\n1469.95,N/A\n\n1470.0,0.04\n"
+
+    monkeypatch.setattr(mux.subprocess, "run", lambda *a, **k: R())
+    assert mux._ffprobe_video_packets("x.mkv", 0) == [(1469.9, 0.041), (1469.95, 0.0), (1470.0, 0.04)]
+
+
+def test_verify_catches_a_mismatch_when_only_the_originals_packet_scan_fails(monkeypatch):
+    """Original falls back to its container (11 s longer than its video); output is measured."""
+    _stub_probes(
+        monkeypatch,
+        {"orig.mkv": 1480.96, "out.mkv": 1469.99},
+        {"orig.mkv": [], "out.mkv": [(1469.93, 0.0417)]},
+    )
+    assert mux.verify("orig.mkv", "out.mkv") == "duration-mismatch"
+
+
+def test_verify_catches_truncation_when_only_the_outputs_packet_scan_fails(monkeypatch):
+    """Output's video ends at 1400 s but its container (fallback) says 1480; original measured."""
+    _stub_probes(
+        monkeypatch,
+        {"orig.mkv": 1469.99, "out.mkv": 1480.5},
+        {"orig.mkv": [(1469.93, 0.0417)], "out.mkv": []},
+    )
+    assert mux.verify("orig.mkv", "out.mkv") == "duration-mismatch"
+
+
+def test_verify_ok_when_the_output_has_a_duration_tag_and_the_original_needs_packets(monkeypatch):
+    _stub_probes(monkeypatch, {"orig.mkv": 1480.96, "out.mkv": 1469.99}, {"orig.mkv": [(1469.93, 0.0417)]})
+    monkeypatch.setattr(
+        mux,
+        "_ffprobe_video",
+        lambda p: {"duration": "N/A", "tags": {"DURATION": "00:24:29.970000000"}} if p == "out.mkv" else {"duration": "N/A"},
+    )
+    assert mux.verify("orig.mkv", "out.mkv") == "ok"
+
+
+def test_ffprobe_video_packets_clamps_a_negative_duration_to_zero(monkeypatch):
+    class R:
+        stdout = "10.0,-0.5\n11.0,0.04\n"
+
+    monkeypatch.setattr(mux.subprocess, "run", lambda *a, **k: R())
+    assert mux._ffprobe_video_packets("x.mkv", 0) == [(10.0, 0.0), (11.0, 0.04)]
+
+
 # --- 2026-08-22: dead destructive knob, removed ---------------------------------------
 
 

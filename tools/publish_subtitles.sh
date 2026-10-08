@@ -74,6 +74,13 @@ echo "$shows" | while IFS= read -r show; do
 	echo "$show: $(echo "$out" | tail -1)"
 done
 
+# The README's shows table is generated from the manifests just written. Non-fatal: a stale
+# table must never block publishing the subtitles themselves. A README without the
+# <!-- shows-table:start/end --> markers is left untouched by the tool.
+python3 "$APP/tools/render_readme_table.py" \
+	--manifest-dir "$SUBS_REPO/manifest" \
+	--readme "$SUBS_REPO/README.md" || echo "publish: README table not updated" >&2
+
 cd "$SUBS_REPO"
 
 if [ -z "$(git status --porcelain)" ]; then

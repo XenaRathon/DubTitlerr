@@ -1749,3 +1749,30 @@ def test_review_items_carries_the_possessive_crossing_evidence():
 def test_review_items_still_normalises_a_legacy_string_entry():
     item = ga.review_items({"flagged": {"Yuji": "no-match"}})[0]
     assert item["reason"] == "no-match" and item["context"] == [] and item["canonical"] == ""
+
+
+# --- _write_json: mode and tmp hygiene ---------------------------------------------------
+
+
+def test_write_json_preserves_the_existing_files_mode(tmp_path):
+    import os
+
+    gp = tmp_path / "g.json"
+    gp.write_text("{}")
+    os.chmod(gp, 0o640)
+
+    ga._write_json(str(gp), {"a": 1})
+
+    assert os.stat(gp).st_mode & 0o777 == 0o640
+    assert json.loads(gp.read_text()) == {"a": 1}
+
+
+def test_write_json_removes_the_tmp_on_any_exception_and_keeps_the_original(tmp_path):
+    gp = tmp_path / "g.json"
+    gp.write_text('{"keep": true}')
+
+    with pytest.raises(TypeError):  # NOT an OSError
+        ga._write_json(str(gp), {"bad": object()})
+
+    assert not (tmp_path / "g.json.tmp").exists()
+    assert json.loads(gp.read_text()) == {"keep": True}

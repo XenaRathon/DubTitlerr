@@ -28,7 +28,7 @@ import glossary
 import glossary_verify
 import mine_glossary
 import ordering
-from common import find_video, llm_chat, log
+from common import find_video, llm_chat, log, stop_requested
 
 _DISAMBIG_RE = re.compile(r"\s*\([^)]*\)\s*$")
 _REDUCE_RE = re.compile("[\\s" + chr(0x27) + chr(0x2019) + "-]")
@@ -383,6 +383,15 @@ def adjudicate_merge(variant: str, canonical: str, ctx_v: list, ctx_c: list, sho
     return {"same_entity": d.get("same_entity") is True, "confidence": conf if conf in ("high", "low", "none") else "low"}
 
 
+class StopRequested(Exception):
+    """The soft-stop flag appeared between units of a long step. `step` names it, `done` is
+    how many units had completed; everything completed is already in the caller's cache."""
+
+    def __init__(self, step: str, done: int, unit: str):
+        super().__init__(f"stop requested: leaving {step} after {done} {unit}s")
+        self.step, self.done, self.unit = step, done, unit
+
+
 def escalate(proposals: list, ctx: dict, show: str, cache: dict | None = None) -> list:
     """Re-decide share-too-close proposals with context. Other verdicts pass through.
 
@@ -395,15 +404,23 @@ def escalate(proposals: list, ctx: dict, show: str, cache: dict | None = None) -
 
     `cache`, if given, memoises the LLM call per (variant, canonical) pair -- see
     acquire_cache's module docstring for why the PAIR's adjudication is cached and not the
-    proposal's final verdict. Mutated in place; the caller owns saving it."""
+    proposal's final verdict. Mutated in place; the caller owns saving it.
+
+    Raises StopRequested BEFORE a fresh (uncached) adjudication once the soft-stop flag is up:
+    each completed pair is already in `cache`, and the proposals are only decided if every
+    pair is, so a stopped run returns no verdicts at all rather than a partly-escalated set."""
     out = []
+    asked = 0
     for p in proposals:
         if p.get("reason") != "share-too-close":
             out.append(p)
             continue
         adj = cache is not None and acquire_cache.escalation_for(cache, p["variant"], p["canonical"])
         if not adj:
+            if stop_requested():
+                raise StopRequested("escalate", asked, "pair")
             adj = adjudicate_merge(p["variant"], p["canonical"], ctx.get(p["variant"], []), ctx.get(p["canonical"], []), show)
+            asked += 1
             if cache is not None:
                 acquire_cache.remember_escalation(cache, p["variant"], p["canonical"], adj)
         if adj["same_entity"] and adj["confidence"] == "high":
@@ -856,10 +873,22 @@ def _write_json(path: str, obj) -> None:
     curated glossary is gone. The tmp+replace dance means a failed write leaves the
     original untouched; explicit encoding='utf-8' removes the locale dependency."""
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2, ensure_ascii=False)
-        f.write("\n")  # POSIX line: prettier flags a glossary without it
-    os.replace(tmp, path)
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except OSError:
+        mode = None  # new file: keep the umask default
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=2, ensure_ascii=False)
+            f.write("\n")  # POSIX line: prettier flags a glossary without it
+        if mode is not None:
+            os.chmod(tmp, mode)  # a replace must not silently change who can read/write the glossary
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.remove(tmp)  # gone after a successful replace; otherwise never leave it behind
+        except OSError:
+            pass
 
 
 def _format_episode_page(pattern: str, **kw) -> str | None:
@@ -960,7 +989,12 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     admission_fn = None
     resolved_admitted = resolved
     if admission_active:
-        for s in scope:
+        for done_eps, s in enumerate(scope):
+            # Soft stop between episodes: nothing here is persisted (wiki titles are cached by
+            # fetch_titles), so leave without writing anything.
+            if stop_requested():
+                log(f"stop requested: leaving admission after {done_eps} episodes")
+                return {"show": show, "wiki": api, "note": "stopped", "files": files}
             video = find_video(s)
             if not video:
                 continue
@@ -1015,7 +1049,13 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
         # an operator wants to re-derive every adjudication after changing a threshold.
         cache = {} if os.environ.get("ACQUIRE_NO_CACHE") else acquire_cache.load(gloss_path)
         toks = sorted({p["variant"] for p in close} | {p["canonical"] for p in close})
-        proposals = escalate(proposals, context_lines(show_dir, toks), show, cache=cache)
+        try:
+            proposals = escalate(proposals, context_lines(show_dir, toks), show, cache=cache)
+        except StopRequested as e:
+            # Keep what was adjudicated (a pair costs ~1.3 s of LLM time), apply nothing.
+            acquire_cache.save(gloss_path, cache)
+            log(str(e))
+            return {"show": show, "wiki": api, "note": "stopped", "files": files}
         # Never fatal: a cache that cannot be written is a slow next run, not a failed this
         # one. Not gated on `apply` -- the cache is a memo of LLM answers, not a glossary
         # mutation, so the dry-run safety convention does not apply to it.
@@ -1033,7 +1073,12 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
             if p["verdict"] == "flag":
                 p["context"] = fctx.get(p["variant"], [])
     tier_b = {}
-    for term in unmatched(counts, mid, titles, resolved=resolved_admitted):
+    for done_terms, term in enumerate(unmatched(counts, mid, titles, resolved=resolved_admitted)):
+        # Soft stop between terms. Tier B is one LLM call per term and nothing it finds is
+        # persisted until the single glossary write below, so leave without writing.
+        if stop_requested():
+            log(f"stop requested: leaving tier-b after {done_terms} terms")
+            return {"show": show, "wiki": api, "note": "stopped", "files": files}
         try:
             adj = glossary_verify.adjudicate(term, glossary_verify.candidates(term, titles), show)
         except Exception as e:

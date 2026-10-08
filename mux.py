@@ -200,6 +200,49 @@ def _ffprobe_video(path):
         return {}
 
 
+def _ffprobe_video_packets(path, start):
+    """(pts_time, duration_time) of the first video stream's packets from `start` seconds on
+    (split out so tests can stub the I/O). N/A or empty fields become 0.0; [] on any failure."""
+    try:
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "packet=pts_time,duration_time",
+                "-of",
+                "csv=p=0",
+                "-read_intervals",
+                f"{start}%",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
+    except Exception:
+        return []
+    rows = []
+    for line in r.stdout.splitlines():
+        parts = line.strip().split(",")
+        if len(parts) < 2:
+            continue
+        try:
+            pts = float(parts[0])
+        except ValueError:
+            continue
+        try:
+            dur = float(parts[1])
+        except ValueError:
+            dur = 0.0
+        rows.append((pts, max(dur, 0.0)))
+    return rows
+
+
 def video_duration(path):
     """Duration of the VIDEO track -- the only thing a truncated remux would shorten.
 
@@ -219,7 +262,14 @@ def video_duration(path):
     except (TypeError, ValueError):
         pass
     tagged = _parse_duration((st.get("tags") or {}).get("DURATION"))
-    return tagged if tagged is not None else duration(path)
+    if tagged is not None:
+        return tagged
+    # Neither field present (measured on real originals): the container figure is the longest
+    # track, so measure where the video packets actually end, over the last minute only.
+    container = duration(path)
+    rows = _ffprobe_video_packets(path, max(container - 60, 0))
+    ends = [pts + dur for pts, dur in rows]
+    return max(ends) if ends else container
 
 
 _partners_cache: dict[tuple[int, int], list[str]] = {}
