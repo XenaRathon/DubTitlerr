@@ -39,10 +39,13 @@ that shipped since.
   conf). Model replies are now passed through `glossary.correct` before the ship gate, as
   production does, so glossary-only scores change slightly with this fix (a reply that only needed
   a glossary fix is no longer penalised).
-- **A dead backend is no longer hidden by cards that never asked it.** Repair's "backend
-  unreachable" refusal now compares against the targets that actually reached the model, so an
-  episode with some cards skipped for want of a fansub line and every other call failing is
-  refused (the shipped srt is kept) instead of being rebuilt from raw ASR.
+- **Repair refuses an episode when the backend is down for a meaningful share of it.** If the
+  backend failed `REPAIR_UNREACHABLE_REFUSE_PCT` percent (default 10) or more of the targets that
+  reached it (cards skipped for want of a fansub line don't count), or `REPAIR_MAX_CONSECUTIVE_UNREACHABLE`
+  (default 5) in a row, the episode is refused with `backend-unreachable` and the shipped srt is
+  kept, instead of being rebuilt from raw ASR. A stray bad line (a few percent) still ships. A run
+  of consecutive failures stops the loop early. `REPAIR_RETRY_SLEEP_BUDGET` (default 600 s) caps the
+  total retry sleep per episode; once it is spent each remaining target gets one attempt.
 - **The openai backend retries HTTP 429 and 5xx** up to `REPAIR_OPENAI_RETRIES` times (default 2),
   waiting a finite `Retry-After` (at most 30 s) or 2 s then 4 s, then reports the backend
   unreachable. Other 4xx errors do not retry.

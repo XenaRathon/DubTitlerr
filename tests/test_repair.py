@@ -3227,15 +3227,133 @@ def test_skipped_for_no_ref_cards_do_not_hide_a_dead_backend(tmp_path, monkeypat
     assert common.read_stages(stem)["repair"]["outcome"] == "backend-unreachable"
 
 
-def test_a_partly_reachable_backend_with_skipped_cards_never_refuses(tmp_path, monkeypatch):
-    """GUARD: passes on the old code. Some skipped, some repaired, some unreachable: a normal episode."""
+def _flaky_llm(dead_indexes, calls=None):
+    """llm() that is unreachable for the cards whose number is in dead_indexes, repairs the rest."""
 
-    def flaky(prompt, model=None):
-        dead = "ASR line: garbled line 1\n" in prompt
-        return repair.LLM_UNREACHABLE if dead else "a garbled line"
+    def fn(prompt, model=None):
+        n = int(prompt.split("ASR line: garbled line ")[1].split("\n")[0])
+        if calls is not None:
+            calls.append(n)
+        return repair.LLM_UNREACHABLE if n in dead_indexes else f"a garbled line {n}"
 
-    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, 6, 4, flaky)
+    return fn
+
+
+def test_a_partial_outage_at_or_above_the_threshold_refuses(tmp_path, monkeypatch):
+    """6 targets, 2 skipped for no ref, 1 of the 4 that reached the backend unreachable = 25%."""
+    monkeypatch.setenv("REPAIR_MAX_CONSECUTIVE_UNREACHABLE", "1000")
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, 6, 4, _flaky_llm({1}))
+    shipped = open(stem + repair.SRT_SUFFIX, encoding="utf-8").read()
+    assert repair.process(conf_path) == "refused"
+    assert open(stem + repair.SRT_SUFFIX, encoding="utf-8").read() == shipped
+    assert common.read_stages(stem)["repair"]["outcome"] == "backend-unreachable"
+
+
+def test_a_poison_pill_line_below_the_threshold_still_ships(tmp_path, monkeypatch):
+    """GUARD: passes on the old code. 1 line of 20 always failing is 5%: the episode completes."""
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, 20, 20, _flaky_llm({7}))
     assert repair.process(conf_path) == "repaired"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["unreachable"] == 1 and summary["repaired"] == 19
+
+
+def test_exactly_the_threshold_refuses_and_the_pct_is_configurable(tmp_path, monkeypatch):
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, 20, 20, _flaky_llm({3, 12}))  # 2/20 = 10%
+    assert repair.process(conf_path) == "refused"
+    monkeypatch.setenv("REPAIR_UNREACHABLE_REFUSE_PCT", "11")
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, 20, 20, _flaky_llm({3, 12}))
+    assert repair.process(conf_path) == "repaired"
+
+
+@pytest.mark.parametrize("raw,pct", [("abc", 10), ("0", 1), ("500", 100)])
+def test_refuse_pct_bad_values_fall_back_or_clamp(monkeypatch, raw, pct):
+    monkeypatch.setenv("REPAIR_UNREACHABLE_REFUSE_PCT", raw)
+    assert repair.env_int("REPAIR_UNREACHABLE_REFUSE_PCT", 10, lo=1, hi=100) == pct
+
+
+def test_five_unreachable_in_a_row_stop_the_loop_as_an_outage(tmp_path, monkeypatch):
+    calls = []
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, 12, 12, _flaky_llm(set(range(12)), calls))
+    shipped = open(stem + repair.SRT_SUFFIX, encoding="utf-8").read()
+    assert repair.process(conf_path) == "refused"
+    assert calls == [0, 1, 2, 3, 4]  # the other 7 targets were never sent
+    assert open(stem + repair.SRT_SUFFIX, encoding="utf-8").read() == shipped
+    assert common.read_stages(stem)["repair"]["outcome"] == "backend-unreachable"
+
+
+def test_four_failures_then_a_success_do_not_trip_the_streak_cutoff(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPAIR_UNREACHABLE_REFUSE_PCT", "100")  # isolate the streak rule from the rate rule
+    calls = []
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, 10, 10, _flaky_llm({0, 1, 2, 3, 5, 6, 7, 8}, calls))
+    assert repair.process(conf_path) == "repaired"
+    assert calls == list(range(10))
+
+
+def test_the_streak_limit_is_configurable_and_a_bad_value_falls_back_to_five(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPAIR_MAX_CONSECUTIVE_UNREACHABLE", "2")
+    calls = []
+    _, conf_path = _many_target_episode(tmp_path, monkeypatch, 6, 6, _flaky_llm(set(range(6)), calls))
+    repair.process(conf_path)
+    assert calls == [0, 1]
+    monkeypatch.setenv("REPAIR_MAX_CONSECUTIVE_UNREACHABLE", "many")
+    calls.clear()
+    _, conf_path = _many_target_episode(tmp_path, monkeypatch, 8, 8, _flaky_llm(set(range(8)), calls))
+    repair.process(conf_path)
+    assert calls == [0, 1, 2, 3, 4]
+
+
+def _throttled_episode(tmp_path, monkeypatch, n, sleeps):
+    """n targets whose openai backend answers 503 forever, through the real llm_openai."""
+    _openai_env(monkeypatch)
+    monkeypatch.delenv("REPAIR_OPENAI_RETRIES", raising=False)
+    monkeypatch.setattr(repair, "_sleep", sleeps.append)
+    posts = []
+
+    def fake_post(url, body, headers=None):
+        posts.append(body["messages"][0]["content"])
+        raise repair._HttpError(503, "HTTP 503: x")
+
+    monkeypatch.setattr(repair, "_post_json", fake_post)
+    monkeypatch.setenv("REPAIR_MAX_CONSECUTIVE_UNREACHABLE", "1000")
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, n, n, lambda p, model=None: None)
+    monkeypatch.setattr(repair, "llm", lambda p, model=None: repair.llm_openai(p, model))
+    return conf_path, posts
+
+
+def test_the_retry_sleep_budget_stops_retrying_but_every_target_still_gets_a_first_attempt(tmp_path, monkeypatch):
+    sleeps = []
+    conf_path, posts = _throttled_episode(tmp_path, monkeypatch, 3, sleeps)
+    monkeypatch.setenv("REPAIR_RETRY_SLEEP_BUDGET", "2")
+    repair.process(conf_path)
+    assert sum(sleeps) <= 2 and sleeps == [2.0]
+    assert len(posts) == 4  # target 0: attempt + one retry; targets 1 and 2: the first attempt only
+    assert len({p for p in posts}) == 3
+
+
+def test_a_zero_budget_means_no_retries_at_all(tmp_path, monkeypatch):
+    sleeps = []
+    conf_path, posts = _throttled_episode(tmp_path, monkeypatch, 2, sleeps)
+    monkeypatch.setenv("REPAIR_RETRY_SLEEP_BUDGET", "0")
+    repair.process(conf_path)
+    assert sleeps == [] and len(posts) == 2
+
+
+def test_the_retry_budget_resets_for_each_episode(tmp_path, monkeypatch):
+    sleeps = []
+    conf_path, posts = _throttled_episode(tmp_path, monkeypatch, 1, sleeps)
+    monkeypatch.setenv("REPAIR_RETRY_SLEEP_BUDGET", "2")
+    repair.process(conf_path)
+    repair.process(conf_path)
+    assert sleeps == [2.0, 2.0]
+
+
+def test_outside_an_episode_the_retry_budget_is_unlimited(monkeypatch):
+    """GUARD: passes on the old code (there was no budget). Direct llm_openai calls are never throttled by it."""
+    sleeps = []
+    _scripted_openai(monkeypatch, [(503, {})], sleeps)
+    monkeypatch.setenv("REPAIR_RETRY_SLEEP_BUDGET", "0")
+    repair.llm_openai("P", None)
+    assert sleeps == [2.0, 4.0]
 
 
 def test_an_episode_where_every_card_is_skipped_for_no_ref_does_not_trip_the_unreachable_guard(tmp_path, monkeypatch):

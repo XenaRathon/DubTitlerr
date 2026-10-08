@@ -33,6 +33,10 @@ Env:
   REPAIR_OPENAI_KEY_ENV  openai backend: the NAME of the env var holding the API key (read at
                          call time; the value is never logged)
   REPAIR_MAX_TOKENS      openai backend: max_tokens, default 1024
+  REPAIR_UNREACHABLE_REFUSE_PCT  default 10 (1..100): refuse the episode (keep the shipped srt) when the
+                         backend failed this percent or more of the targets that reached it
+  REPAIR_MAX_CONSECUTIVE_UNREACHABLE  default 5: that many failures in a row = outage, stop and refuse
+  REPAIR_RETRY_SLEEP_BUDGET  default 600 s: total retry sleep per episode; once spent, targets get one attempt
   REPAIR_OPENAI_RETRIES  openai backend: retries after HTTP 429 / 5xx, default 2 (so 3 attempts);
                          waits a finite Retry-After capped at 30 s, else 2 s then 4 s
   REPAIR_EXTRA_BODY      openai backend: optional JSON object merged into the request body,
@@ -166,13 +170,16 @@ def _openai_retries():
     return env_int("REPAIR_OPENAI_RETRIES", 2, lo=0, hi=5)
 
 
+_retry_budget_left = None  # seconds of retry sleep this episode may still spend; None = unlimited (no episode)
 _retry_slept = 0.0  # total seconds spent in retry sleeps; lets callers time the attempts alone
 
 
 def _retry_sleep(seconds):
-    global _retry_slept
+    global _retry_slept, _retry_budget_left
     _sleep(seconds)
     _retry_slept += seconds
+    if _retry_budget_left is not None:
+        _retry_budget_left -= seconds
 
 
 def _retry_wait(retry_after, attempt):
@@ -779,9 +786,13 @@ def llm_openai(prompt, model):
         except _HttpError as e:
             # Rate limits and server errors are worth another try; other 4xx (bad key, bad model) are not.
             if (e.status == 429 or e.status >= 500) and attempt < retries:
-                log(f"  llm retry {attempt + 1}/{retries} after HTTP {e.status}")
-                _retry_sleep(_retry_wait(e.retry_after, attempt))
-                continue
+                wait = _retry_wait(e.retry_after, attempt)
+                if _retry_budget_left is None or wait <= _retry_budget_left:
+                    log(f"  llm retry {attempt + 1}/{retries} after HTTP {e.status}")
+                    _retry_sleep(wait)
+                    continue
+                # The episode's retry-sleep budget is spent: this target keeps its first attempt only.
+                _log_once("retry-budget", "  llm: retry sleep budget spent for this episode (REPAIR_RETRY_SLEEP_BUDGET)")
             # Never log str(e): it carries the response body, and a provider may echo the key there.
             log(f"  llm fail: HTTP {e.status}")
             return LLM_UNREACHABLE
@@ -882,6 +893,17 @@ def prior_repairs(stem):
 
 
 def process(conf_path):
+    """Repair one episode. Wraps the work so the per-episode retry-sleep budget (REPAIR_RETRY_SLEEP_BUDGET
+    seconds, default 600) starts full for this episode and is lifted again afterwards."""
+    global _retry_budget_left
+    _retry_budget_left = float(env_int("REPAIR_RETRY_SLEEP_BUDGET", 600, lo=0))
+    try:
+        return _process_episode(conf_path)
+    finally:
+        _retry_budget_left = None
+
+
+def _process_episode(conf_path):
     stem = conf_path[: -len(CONF_SUFFIX)]
     srt = stem + SRT_SUFFIX
     video = find_video(stem)
@@ -959,6 +981,10 @@ def process(conf_path):
     llm_empty = 0
     unreachable = 0
     llm_calls = 0  # targets that actually reached llm(): the denominator of the unreachable guard
+    refuse_pct = env_int("REPAIR_UNREACHABLE_REFUSE_PCT", 10, lo=1, hi=100)
+    max_streak = env_int("REPAIR_MAX_CONSECUTIVE_UNREACHABLE", 5, lo=1)
+    streak = 0  # unreachable targets in a row; any answer (even an empty one) resets it
+    outage = False
     rejected_secondary = 0  # C5: second-pass output refused by the gate
     unreachable_secondary = 0  # the second-pass backend call itself failed (first pass stands)
     # The model returned the line verbatim -- the single most common outcome of this stage
@@ -1034,6 +1060,7 @@ def process(conf_path):
             # own docstring says llm_empty carries no proposal and was never a decision --
             # so nothing is queued. The episode-level guard below refuses the rewrite.
             unreachable += 1
+            streak += 1
             new = ""
             bucket = apply_human_text(c, store, stem, words_doc)
             if bucket == "rescued":
@@ -1042,7 +1069,13 @@ def process(conf_path):
                 verdict_unfittable += 1
             elif bucket == "owed":
                 verdict_owed += 1
+            if streak >= max_streak:
+                # A run of consecutive failures is an outage, not a poison pill: stop sending
+                # the rest of the episode to a dead backend (and sleeping through retries).
+                outage = True
+                break
             continue
+        streak = 0
         if not new:
             bucket = apply_human_text(c, store, stem, words_doc)
             if bucket == "rescued":
@@ -1240,12 +1273,20 @@ def process(conf_path):
     # Refusing is deliberately narrow: it fires only when EVERY target was skipped for want of
     # a reference AND the last run shipped repairs. An episode that genuinely has nothing to
     # fix still rewrites normally, and the first run of a new episode has no prior summary.
-    # Compared with the targets that reached llm(), not len(targets): cards skipped for want of a
-    # fansub line never asked the backend anything, so they cannot make a dead one look alive.
-    if llm_calls and unreachable == llm_calls:
+    # Refuse when the backend was down for REPAIR_UNREACHABLE_REFUSE_PCT percent or more of the targets
+    # that actually reached llm() (cards skipped for want of a fansub line never asked it anything), or
+    # when it failed REPAIR_MAX_CONSECUTIVE_UNREACHABLE targets in a row. Repairs live only in the srt,
+    # so a rebuild after a partial outage would overwrite shipped repairs with raw ASR. A single
+    # poison-pill line (a few percent) still ships.
+    if outage or (llm_calls and unreachable * 100 >= refuse_pct * llm_calls):
+        why = (
+            f"{streak} targets in a row"
+            if outage
+            else f"{unreachable} of {llm_calls} targets that reached it (threshold {refuse_pct}%)"
+        )
         log(
-            f"  REFUSED {os.path.basename(stem)}: the repair backend was unreachable for all"
-            f" {llm_calls} targets that reached it. Rebuilding the srt would overwrite the shipped text with"
+            f"  REFUSED {os.path.basename(stem)}: the repair backend was unreachable for {why}."
+            " Rebuilding the srt would overwrite the shipped text with"
             " raw ASR, and a dead endpoint is not a review item, so nothing was queued."
             " Check REPAIR_LLAMACPP_URL / REPAIR_BACKEND and re-run."
         )
