@@ -1379,3 +1379,67 @@ def test_differential_with_an_arc_matches_too(tmp_path, monkeypatch, capsys):
     """Arc and episode weighting reorder the glossary terms in the prompt."""
     prod, bake = _differential(tmp_path, monkeypatch, capsys, arc="Dressrosa")
     assert prod and bake == prod
+
+
+# --- review round 3: safe env default, source window, glossary fingerprint ---------------
+
+
+def test_a_bad_repair_max_tokens_env_falls_back_to_1024_in_the_bakeoff(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    monkeypatch.setenv("REPAIR_MAX_TOKENS", "1k")
+    conf = _write(tmp_path, [_conf_row("grbled nnsense here", lp=-1.4, nsp=0.02)])
+    bodies = []
+    monkeypatch.setattr(
+        bo, "_post_json", lambda u, b, timeout=180, headers=None, **kw: bodies.append(b["max_tokens"]) or _ok("x")
+    )
+    argv = ["bakeoff", "--conf", conf, "--models", "m", "--openai-url", "https://x/c", "--key-env", "TEST_BAKE_KEY"]
+    monkeypatch.setattr(bo.sys, "argv", argv)
+    bo.main()
+    assert bodies == [1024]
+
+
+def test_a_moved_source_window_since_the_dump_exits(tmp_path, monkeypatch):
+    _fake_media(monkeypatch)
+    conf = _write(tmp_path, _ANCHOR_ROWS)
+    cards = bo.load_cards(None, conf)
+    doc = bo.dump_refs(conf, cards, _glossary.load(""), "/v.mkv", 0, "spread")
+    assert [t["source_start"] for t in doc["targets"]] == [None, None, None, 4.0]
+    cards[4]["source_start"] = 0.0  # the window moved, so the dumped ref no longer belongs to it
+    _expect_exit(tmp_path, doc, cards, conf, "idx 4", "source_start")
+
+
+def test_the_dump_records_a_glossary_fingerprint_and_refs_exits_when_it_differs(tmp_path, monkeypatch):
+    import hashlib
+
+    _fake_media(monkeypatch)
+    conf = _write(tmp_path, _ANCHOR_ROWS)
+    g1 = _gfile(tmp_path, {"names": ["Alpha"]}, "g1.json")
+    g2 = _gfile(tmp_path, {"names": ["Beta"]}, "g2.json")
+    cards = bo.load_cards(None, conf)
+    doc = bo.dump_refs(conf, cards, _glossary.load(g1), "/v.mkv", 0, "spread", glossary_path=g1)
+    assert doc["glossary_sha256"] == hashlib.sha256(open(g1, "rb").read()).hexdigest()
+    refs = tmp_path / "refs.json"
+    refs.write_text(json.dumps(doc))
+    assert bo.load_refs(str(refs), cards, conf, glossary_path=g1)  # same glossary: fine
+    with pytest.raises(SystemExit) as e:
+        bo.load_refs(str(refs), cards, conf, glossary_path=g2)
+    msg = str(e.value)
+    assert doc["glossary_sha256"][:12] in msg and hashlib.sha256(open(g2, "rb").read()).hexdigest()[:12] in msg
+    assert bo.load_refs(str(refs), cards, conf, glossary_path=g2, allow_glossary_mismatch=True)
+
+
+def test_main_threads_the_glossary_path_into_dump_and_refs(tmp_path, monkeypatch, capsys):
+    _fake_media(monkeypatch)
+    conf = _write(tmp_path, _ANCHOR_ROWS)
+    g1 = _gfile(tmp_path, {"names": []}, "g1.json")
+    g2 = _gfile(tmp_path, {"names": ["Other"]}, "g2.json")
+    refs = tmp_path / "r.json"
+    monkeypatch.setattr(bo.sys, "argv", ["bakeoff", "--conf", conf, "--glossary", g1, "--dump-refs", str(refs), "--video", "v"])
+    bo.main()
+    monkeypatch.setattr(bo, "ask", lambda *a, **k: ("x", 0.1))
+    run = ["bakeoff", "--conf", conf, "--glossary", g2, "--refs", str(refs), "--models", "m"]
+    monkeypatch.setattr(bo.sys, "argv", run)
+    with pytest.raises(SystemExit):
+        bo.main()
+    monkeypatch.setattr(bo.sys, "argv", run + ["--allow-glossary-mismatch"])
+    bo.main()

@@ -46,6 +46,11 @@ that shipped since.
 - **The openai backend retries HTTP 429 and 5xx** up to `REPAIR_OPENAI_RETRIES` times (default 2),
   waiting a finite `Retry-After` (at most 30 s) or 2 s then 4 s, then reports the backend
   unreachable. Other 4xx errors do not retry.
+  Each retry is logged (status only), retry sleeps are not counted in the latency stats, and a
+  refused redirect is a clean `HTTP 3xx` failure. A bad `REPAIR_MAX_TOKENS` (or
+  `REPAIR_OPENAI_RETRIES`) logs one warning naming the variable and falls back to the default
+  instead of crashing `import repair`. `--refs` also exits if a card's source window moved or the
+  glossary file differs from the one the refs were cut with (`--allow-glossary-mismatch`).
 - **mux verification measures the video track itself.** When the video stream carries neither a
   duration nor a DURATION tag, `video_duration()` now takes the end of the last video packet
   (scanning the final minute) instead of the container duration, which in Matroska is the longest

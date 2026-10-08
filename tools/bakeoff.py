@@ -46,6 +46,7 @@ No GPU needed locally — the models run on the Ollama host. Built with help of 
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -98,7 +99,12 @@ def cards_from_raw(raw):
     return reflow.reflow(words, segments)
 
 
-def dump_refs(conf_path, cards, gloss, video, limit, sample):
+def _sha256_file(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def dump_refs(conf_path, cards, gloss, video, limit, sample, glossary_path=""):
     """Anchored step 1: the fansub reference for each target, exactly as repair.process
     selects it, as a JSON-able dict. Needs the video; makes no model calls.
 
@@ -107,7 +113,8 @@ def dump_refs(conf_path, cards, gloss, video, limit, sample):
     the prev/next lines all see that same raw text. (main() therefore skips its correction
     pass in the anchored modes.) ``idx`` is the row's position in the conf list, which --refs
     keys on; ``start``/``end`` let --refs notice a conf that was retimed since. ``limit`` 0
-    means every target. ``episode``/``arc`` are what process() passes to build_prompt."""
+    means every target. ``episode``/``arc`` are what process() passes to build_prompt.
+    ``glossary_path`` is fingerprinted (sha256 of the file) so --refs can tell a changed glossary."""
     ivals = common.dialogue_intervals(video)
     rec = qc.Recorder()
     picked = [(i, c) for i, c in enumerate(cards) if repair.is_target(c, gloss)]
@@ -128,6 +135,8 @@ def dump_refs(conf_path, cards, gloss, video, limit, sample):
                 "next": cards[i + 1]["text"] if i + 1 < len(cards) else "",
                 "start": c.get("start"),
                 "end": c.get("end"),
+                "source_start": c.get("source_start"),
+                "source_end": c.get("source_end"),
             }
         )
     return {
@@ -135,11 +144,12 @@ def dump_refs(conf_path, cards, gloss, video, limit, sample):
         "cards": len(cards),
         "episode": ordering.episode_key(video),
         "arc": glossary.arc_for(video),
+        "glossary_sha256": _sha256_file(glossary_path) if glossary_path else None,
         "targets": out,
     }
 
 
-def load_refs(refs_path, cards, conf_path, allow_conf_mismatch=False):
+def load_refs(refs_path, cards, conf_path, allow_conf_mismatch=False, glossary_path="", allow_glossary_mismatch=False):
     """Anchored step 2: targets from a --dump-refs file, as card dicts carrying their own
     ``_ref`` / ``_prev`` / ``_next`` / ``_arc`` / ``_episode``. ``cards`` are the RAW conf rows.
 
@@ -155,6 +165,14 @@ def load_refs(refs_path, cards, conf_path, allow_conf_mismatch=False):
             f"{refs_path}: cut from {doc.get('conf')!r}, but --conf is {os.path.basename(conf_path)!r} "
             "(--allow-conf-mismatch if it is a renamed copy)"
         )
+    dumped_sha = doc.get("glossary_sha256")
+    if dumped_sha and glossary_path and not allow_glossary_mismatch:
+        now = _sha256_file(glossary_path)
+        if now != dumped_sha:
+            sys.exit(
+                f"{refs_path}: cut with glossary sha256 {dumped_sha[:12]}, but --glossary is {now[:12]} "
+                "(--allow-glossary-mismatch to run anyway)"
+            )
     if doc.get("cards") != len(cards):
         sys.exit(f"{refs_path}: cut from a conf with {doc.get('cards')} cards, this one has {len(cards)}")
     out, seen = [], set()
@@ -172,7 +190,7 @@ def load_refs(refs_path, cards, conf_path, allow_conf_mismatch=False):
                 f"{refs_path}: idx {i} does not match this conf: refs file has {t['text']!r}, "
                 f"conf card is {cards[i]['text']!r} (wrong --conf?)"
             )
-        for k in ("start", "end"):
+        for k in ("start", "end", "source_start", "source_end"):
             if k in t and t[k] != cards[i].get(k):
                 sys.exit(f"{refs_path}: idx {i} was retimed since the dump ({k} {t[k]!r} -> {cards[i].get(k)!r})")
         out.append(
@@ -820,7 +838,7 @@ def main():
     ap.add_argument(
         "--max-tokens",
         type=int,
-        default=int(os.environ.get("REPAIR_MAX_TOKENS", "1024")),
+        default=repair.env_int("REPAIR_MAX_TOKENS", 1024, lo=1),
         help="max_tokens for --openai-url requests (default: $REPAIR_MAX_TOKENS or 1024)",
     )
     ap.add_argument("--key-env", default="", metavar="NAME", help="NAME of the env var holding the API key (with --openai-url)")
@@ -854,6 +872,11 @@ def main():
         "--allow-conf-mismatch",
         action="store_true",
         help="with --refs: accept a refs file cut from a conf with a different file name (a renamed copy)",
+    )
+    ap.add_argument(
+        "--allow-glossary-mismatch",
+        action="store_true",
+        help="with --refs: run even though the glossary file differs from the one the refs were cut with",
     )
     a = ap.parse_args()
 
@@ -898,7 +921,7 @@ def main():
         for c in cards:
             c["text"] = glossary.correct(c["text"], gloss)[0]
     if a.dump_refs:
-        doc = dump_refs(a.conf, cards, gloss, a.video, a.limit, a.sample)
+        doc = dump_refs(a.conf, cards, gloss, a.video, a.limit, a.sample, a.glossary)
         with open(a.dump_refs, "w") as f:
             json.dump(doc, f, indent=2)
         with_ref = sum(1 for t in doc["targets"] if t["ref"])
@@ -907,7 +930,7 @@ def main():
         return
     extra_bounds = []
     if a.refs:
-        entries = load_refs(a.refs, cards, a.conf, a.allow_conf_mismatch)
+        entries = load_refs(a.refs, cards, a.conf, a.allow_conf_mismatch, a.glossary, a.allow_glossary_mismatch)
         targets = [t for t in entries if a.include_unanchored or not repair.skips_unanchored(t["_ref"], gloss)]
         all_targets = targets  # --limit does not apply here; the dump already chose
         if len(targets) < len(entries):

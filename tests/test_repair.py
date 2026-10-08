@@ -3340,3 +3340,93 @@ def test_post_json_error_carries_status_and_retry_after_without_changing_its_tex
         repair._post_json("http://example.local/x", {})
     assert e.value.status == 429 and e.value.retry_after == "9"
     assert str(e.value).startswith("HTTP 429: b'") and "slow down" in str(e.value)
+
+
+# --- review round 3: env parsing, retry logging, latency, redirects --------------------
+
+
+def test_a_bad_repair_max_tokens_does_not_crash_import_and_falls_back(monkeypatch, capsys):
+    import importlib
+
+    names = ("REPAIR_BACKEND", "MODEL", "OPENAI_MAX_TOKENS")
+    before = {n: getattr(repair, n) for n in names}
+    monkeypatch.setenv("REPAIR_MAX_TOKENS", "1k")
+    try:
+        importlib.reload(repair)  # used to raise ValueError for EVERY backend
+        assert repair.OPENAI_MAX_TOKENS == 1024
+        text = _all_text(capsys)
+        assert text.count("REPAIR_MAX_TOKENS") == 1 and "1k" not in text
+    finally:
+        monkeypatch.undo()
+        importlib.reload(repair)
+    assert {n: getattr(repair, n) for n in names} == before
+
+
+def test_env_int_clamps_and_falls_back(monkeypatch, capsys):
+    monkeypatch.setattr(repair, "_LOGGED_ONCE", set())
+    monkeypatch.setenv("T_INT", "500")
+    assert repair.env_int("T_INT", 10, lo=1, hi=100) == 100
+    monkeypatch.setenv("T_INT", "0")
+    assert repair.env_int("T_INT", 10, lo=1, hi=100) == 1
+    monkeypatch.setenv("T_INT", "x")
+    assert repair.env_int("T_INT", 10) == 10 and repair.env_int("T_INT", 10) == 10
+    assert _all_text(capsys).count("T_INT") == 1
+    monkeypatch.delenv("T_INT")
+    assert repair.env_int("T_INT", 10) == 10
+
+
+def test_a_garbage_repair_openai_retries_is_named_once(monkeypatch, capsys):
+    monkeypatch.setattr(repair, "_LOGGED_ONCE", set())
+    monkeypatch.setenv("REPAIR_OPENAI_RETRIES", "lots")
+    assert repair._openai_retries() == 2 and repair._openai_retries() == 2
+    assert _all_text(capsys).count("REPAIR_OPENAI_RETRIES") == 1
+
+
+def test_each_retry_is_logged_with_the_status_only(monkeypatch, capsys):
+    sleeps = []
+    _scripted_openai(monkeypatch, [(503, {})], sleeps)
+    repair.llm_openai("P", None)
+    text = _all_text(capsys)
+    assert "llm retry 1/2 after HTTP 503" in text and "llm retry 2/2 after HTTP 503" in text
+    assert _SECRET not in text
+
+
+def test_retry_sleeps_do_not_inflate_the_reported_latency(tmp_path, monkeypatch):
+    import types
+
+    clock = [0.0]
+    monkeypatch.setattr(repair, "time", types.SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(repair, "_sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    _openai_env(monkeypatch)
+    monkeypatch.delenv("REPAIR_OPENAI_RETRIES", raising=False)
+    calls = []
+
+    def fake_post(url, body, headers=None):
+        clock[0] += 1.0  # each attempt takes 1 s
+        calls.append(1)
+        if len(calls) < 3:
+            raise repair._HttpError(503, "HTTP 503: x")
+        return {"choices": [{"message": {"content": "a garbled line here"}}]}
+
+    monkeypatch.setattr(repair, "_post_json", fake_post)
+    stem = str(tmp_path / "ep_lat")
+    conf_path = _repair_env(tmp_path, monkeypatch, stem, [_conf_row(0.0, 2.0, "garbled line here")], lambda p, model=None: None)
+    monkeypatch.setattr(repair, "llm", lambda p, model=None: repair.llm_openai(p, model))
+    assert repair.process(conf_path) == "repaired"
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["mean_latency_ms"] == 3000  # three 1 s attempts; the 2 s + 4 s of backoff are not model time
+
+
+def test_a_refused_redirect_is_a_clean_http_status_not_a_parse_error(monkeypatch, capsys):
+    _openai_env(monkeypatch)
+    _FakeConn.instances.clear()
+
+    class RedirConn(_FakeConn):
+        def getresponse(self):
+            return _FakeResponse("<html>moved</html>", status=302)
+
+    monkeypatch.setattr(repair.http.client, "HTTPSConnection", RedirConn)
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+    text = _all_text(capsys)
+    assert "HTTP 302" in text and "KeyError" not in text and "JSONDecode" not in text
+    assert len(_FakeConn.instances) == 1  # nothing followed it

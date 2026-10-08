@@ -92,6 +92,29 @@ import reflow
 import unresolved
 from common import MEDIA_GID, MEDIA_UID, atomic_write, dialogue_intervals, find_video, out_for, read_words, ts_srt, write_stage
 
+_LOGGED_ONCE = set()
+
+
+def env_int(name, default, lo=None, hi=None):
+    """An integer env var, read safely: unset -> ``default``; not an integer -> ``default`` plus one
+    warning that names the variable (never its content); otherwise clamped to lo..hi. A typo in one
+    of these must not take down ``import repair`` for every backend."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        if name not in _LOGGED_ONCE:
+            _LOGGED_ONCE.add(name)
+            print(f"  WARNING {name} is not a whole number; using {default}", flush=True)
+        return default
+    if lo is not None:
+        value = max(value, lo)
+    if hi is not None:
+        value = min(value, hi)
+    return value
+
 OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 # qwen3-4b-instruct, not nanbeige4.2-3b -- flipped 2026-09-01 on a live anchored bake-off
 # against real production data (Trigun, MARRIAGETOXIN, Serial Experiments Lain), each
@@ -120,7 +143,7 @@ LLAMACPP_URL = os.environ.get("REPAIR_LLAMACPP_URL", "http://127.0.0.1:8090/v1/c
 MODEL_SECONDARY = os.environ.get("REPAIR_MODEL_SECONDARY", MODEL)
 OPENAI_URL = os.environ.get("REPAIR_OPENAI_URL", "")
 OPENAI_KEY_ENV = os.environ.get("REPAIR_OPENAI_KEY_ENV", "")
-OPENAI_MAX_TOKENS = int(os.environ.get("REPAIR_MAX_TOKENS", "1024"))
+OPENAI_MAX_TOKENS = env_int("REPAIR_MAX_TOKENS", 1024, lo=1)
 TIMEOUT_CONNECT = float(os.environ.get("REPAIR_TIMEOUT_CONNECT", "10"))
 TIMEOUT_READ = float(os.environ.get("REPAIR_TIMEOUT_READ", "120"))
 LOGPROB_MIN = float(os.environ.get("LOGPROB_MIN", "-0.4"))  # mid-confidence-and-lower (C1)
@@ -135,16 +158,21 @@ def log(*a):
     print(*a, flush=True)
 
 
-_LOGGED_ONCE = set()
 _sleep = time.sleep  # indirection so tests can run the retry loop without sleeping
 
 
 def _openai_retries():
-    """REPAIR_OPENAI_RETRIES (default 2, clamped to 0..5; garbage -> 2), read per call."""
-    try:
-        return min(max(int(os.environ.get("REPAIR_OPENAI_RETRIES", "2")), 0), 5)
-    except ValueError:
-        return 2
+    """REPAIR_OPENAI_RETRIES (default 2, clamped to 0..5; garbage -> 2 with one warning), read per call."""
+    return env_int("REPAIR_OPENAI_RETRIES", 2, lo=0, hi=5)
+
+
+_retry_slept = 0.0  # total seconds spent in retry sleeps; lets callers time the attempts alone
+
+
+def _retry_sleep(seconds):
+    global _retry_slept
+    _sleep(seconds)
+    _retry_slept += seconds
 
 
 def _retry_wait(retry_after, attempt):
@@ -408,7 +436,7 @@ def _post_json(url, body, headers=None):
         conn.request("POST", path, body=json.dumps(body).encode(), headers=hdrs)
         resp = conn.getresponse()
         data = resp.read()
-        if resp.status >= 400:
+        if resp.status >= 300:  # http.client never follows redirects; a 3xx body is not a JSON answer
             getheader = getattr(resp, "getheader", None)
             retry_after = getheader("Retry-After") if getheader else None
             raise _HttpError(resp.status, f"HTTP {resp.status}: {data[:200]!r}", retry_after)
@@ -751,7 +779,8 @@ def llm_openai(prompt, model):
         except _HttpError as e:
             # Rate limits and server errors are worth another try; other 4xx (bad key, bad model) are not.
             if (e.status == 429 or e.status >= 500) and attempt < retries:
-                _sleep(_retry_wait(e.retry_after, attempt))
+                log(f"  llm retry {attempt + 1}/{retries} after HTTP {e.status}")
+                _retry_sleep(_retry_wait(e.retry_after, attempt))
                 continue
             # Never log str(e): it carries the response body, and a provider may echo the key there.
             log(f"  llm fail: HTTP {e.status}")
@@ -989,10 +1018,10 @@ def process(conf_path):
         prev_text = conf[i - 1]["text"] if i > 0 else ""
         next_text = conf[i + 1]["text"] if i + 1 < len(conf) else ""
         prompt = build_prompt(c["text"], ref, gloss, prev_text, next_text, arc, episode)
-        t0 = time.monotonic()  # V2 A2: per-call latency
+        t0, slept0 = time.monotonic(), _retry_slept  # V2 A2: per-call latency
         llm_calls += 1
         new = llm(prompt)
-        latency_ms = round((time.monotonic() - t0) * 1000)
+        latency_ms = round((time.monotonic() - t0 - (_retry_slept - slept0)) * 1000)  # backoff is not model time
         if new:
             new = glossary.correct(new, gloss)[0]  # enforce canonical spelling on output
         # C2: the card's DISPLAY duration -- how long the viewer actually has to read it.
@@ -1140,9 +1169,9 @@ def process(conf_path):
             # suppression below would write no queue entry, because the line counts as
             # settled. The substitution would reach the viewer with nothing recording it.
             if not ruling and MODEL_SECONDARY != MODEL and _needs_secondary_check(c["text"], new, gloss):
-                t1 = time.monotonic()
+                t1, slept1 = time.monotonic(), _retry_slept
                 new2 = llm(prompt, model=MODEL_SECONDARY)
-                latency_ms += round((time.monotonic() - t1) * 1000)
+                latency_ms += round((time.monotonic() - t1 - (_retry_slept - slept1)) * 1000)
                 if new2 == LLM_UNREACHABLE:
                     # The marker is truthy text, not an answer: never gate it. The first-pass
                     # repair stands, as for any second pass that does not verify.
