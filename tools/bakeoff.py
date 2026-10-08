@@ -47,6 +47,7 @@ No GPU needed locally — the models run on the Ollama host. Built with help of 
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -175,11 +176,23 @@ def parse_extra_body(raw):
     return extra
 
 
-def _post_json(url, body, timeout=180, headers=None):
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib would re-send a redirected POST (as a GET) with the Authorization header to
+    whatever host the Location names. Refuse: the 3xx surfaces as an HTTPError instead."""
+
+    def redirect_request(self, *a, **k):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _post_json(url, body, timeout=180, headers=None, follow_redirects=True):
     req = urllib.request.Request(
         url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json", **(headers or {})}
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    opener = urllib.request.urlopen if follow_redirects else _NO_REDIRECT_OPENER.open
+    with opener(req, timeout=timeout) as r:
         return json.loads(r.read())
 
 
@@ -239,34 +252,70 @@ def ask_llamacpp_chat(url, prompt):
     return out, time.monotonic() - t0
 
 
-def _retry_after(err):
-    """Seconds to wait after a 429: the Retry-After header (seconds form), capped at 60."""
+def _retry_after(err, default=5.0, cap=60.0):
+    """Seconds to wait after a 429. Only a finite number of seconds in 0..cap is believed;
+    nan, inf, negatives, an HTTP-date or garbage all fall back to ``default``."""
     try:
         wait = float(err.headers.get("Retry-After"))
     except (TypeError, ValueError, AttributeError):
-        wait = 5.0
-    return min(max(wait, 0.0), 60.0)
+        return default
+    return wait if math.isfinite(wait) and 0 <= wait <= cap else default
 
 
-def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None):
+def _dig(obj, *path):
+    """obj[path[0]][path[1]]... through dicts only; None when anything on the way is not one."""
+    for p in path:
+        obj = obj.get(p) if isinstance(obj, dict) else None
+    return obj
+
+
+def _usage_of(resp):
+    u = resp.get("usage") if isinstance(resp, dict) else None
+    if not isinstance(u, dict):
+        return None
+    usage = {"prompt_tokens": u.get("prompt_tokens"), "completion_tokens": u.get("completion_tokens")}
+    cached = _dig(u, "prompt_tokens_details", "cached_tokens")
+    if cached is not None:
+        usage["cached_tokens"] = cached
+    return usage
+
+
+def _error_label(e):
+    """What may be printed about a failure. Never str(e): http.client's ValueError quotes the
+    Authorization header value, and a provider's error body may echo the key."""
+    if isinstance(e, urllib.error.HTTPError):
+        return f"HTTP {e.code} redirect refused" if 300 <= e.code < 400 else f"HTTP {e.code}"
+    name = type(e).__name__
+    if isinstance(e, urllib.error.URLError):
+        name += f"({type(e.reason).__name__})"
+    return name
+
+
+def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None, max_tokens=1024):
     """Any OpenAI-compatible chat API; mirrors repair.llm_openai (same body and headers).
 
-    The key is read from the env var NAMED ``key_env`` and never printed. HTTP 429 is the
-    provider throttling us, not the model saying nothing, so it is retried once (honouring
-    Retry-After, capped at 60 s) and, if it persists, reported as ``<ERROR rate-limited ...>``
-    -- a dead call in the score, never an <EMPTY> and never "left the line alone".
+    The key is read from the env var NAMED ``key_env`` and never printed (a key with spaces or
+    control characters exits naming only the variable). HTTP 429 is the provider throttling us,
+    not the model saying nothing, so it is retried once (Retry-After honoured when it is 0..60 s,
+    else 5 s) and, if it persists, reported as ``<ERROR rate-limited ...>`` -- a dead call in the
+    score, never an <EMPTY>. A reply cut off at max_tokens with no content is
+    ``<ERROR truncated ...>``. Redirects are refused.
 
-    ``usage_sink`` (a list) gets exactly one entry per call: the token counts from
-    ``usage`` (``cached_tokens`` when the provider reports it) or None."""
-    t0 = time.monotonic()
+    The returned latency covers the last attempt only: a Retry-After sleep is not model time.
+    ``usage_sink`` (a list) gets exactly one entry per call: the token counts from ``usage``
+    (``cached_tokens`` when the provider reports it) or None."""
     usage = None
-    key = os.environ.get(key_env, "")
+    raw = os.environ.get(key_env, "")
+    key = repair.clean_api_key(raw)
+    if raw.strip() and key is None:
+        sys.exit(f"the key in env var {key_env} contains spaces or control characters (CRLF .env?)")
+    t0 = time.monotonic()
     if not key:
         out = f"<ERROR env var {key_env} is not set>"
     else:
         body = {
             "temperature": 0,
-            "max_tokens": 1024,
+            "max_tokens": max_tokens,
             **(extra_body or {}),
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
@@ -274,18 +323,15 @@ def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None):
         headers = {"Authorization": f"Bearer {key}", "User-Agent": "DubTitlerr/repair"}
         out = None
         for attempt in (0, 1):
+            t0 = time.monotonic()
             try:
-                resp = _post_json(url, body, headers=headers)
-                msg = resp["choices"][0]["message"]
-                out = _first_line((msg.get("content") or "").strip())
+                resp = _post_json(url, body, headers=headers, follow_redirects=False)
+                choice = resp["choices"][0]
+                out = _first_line((choice["message"].get("content") or "").strip())
                 if not out:
-                    out = "<EMPTY no content>"
-                u = resp.get("usage")
-                if u:
-                    usage = {"prompt_tokens": u.get("prompt_tokens"), "completion_tokens": u.get("completion_tokens")}
-                    cached = (u.get("prompt_tokens_details") or {}).get("cached_tokens")
-                    if cached is not None:
-                        usage["cached_tokens"] = cached
+                    truncated = choice.get("finish_reason") == "length"
+                    out = "<ERROR truncated (finish_reason=length)>" if truncated else "<EMPTY no content>"
+                usage = _usage_of(resp)
                 break
             except urllib.error.HTTPError as e:
                 if e.code == 429:
@@ -294,10 +340,10 @@ def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None):
                         continue
                     out = "<ERROR rate-limited (HTTP 429)>"
                 else:
-                    out = f"<ERROR {e}>"
+                    out = f"<ERROR {_error_label(e)}>"
                 break
             except Exception as e:
-                out = f"<ERROR {e}>"
+                out = f"<ERROR {_error_label(e)}>"
                 break
     if usage_sink is not None:
         usage_sink.append(usage)
@@ -312,7 +358,9 @@ def ask(ollama, model, prompt, llamacpp=None, llamacpp_chat=None, openai=None, u
     if chat:
         return ask_llamacpp_chat(chat, prompt)
     if openai:
-        return ask_openai(openai["url"], model, prompt, openai["key_env"], openai.get("extra_body"), usage_sink)
+        return ask_openai(
+            openai["url"], model, prompt, openai["key_env"], openai.get("extra_body"), usage_sink, openai.get("max_tokens", 1024)
+        )
     return ask_ollama(ollama, model, prompt)
 
 
@@ -680,7 +728,12 @@ def main():
     ap.add_argument("--conf", help="a production <stem>.dubtitles.conf.json (what repair.py reads)")
     ap.add_argument("--glossary", default="")
     ap.add_argument("--ollama", default="http://127.0.0.1:11434/api/generate")
-    ap.add_argument("--models", nargs="+", default=["qwen3:8b", "qwen3.5:4b", "qwen2.5:7b"])
+    ap.add_argument(
+        "--models",
+        nargs="+",
+        default=None,
+        help="model names (default: qwen3:8b qwen3.5:4b qwen2.5:7b; required with --openai-url)",
+    )
     ap.add_argument("--limit", type=int, default=15)
     ap.add_argument("--json", help="also write per-line results here, for cross-model comparison")
     ap.add_argument(
@@ -718,8 +771,15 @@ def main():
     ap.add_argument(
         "--openai-url",
         default="",
-        help="send every --models name (as the request's \"model\") to this OpenAI-compatible "
-        "chat/completions URL instead of Ollama (OpenRouter, Kilo, CommandCode, NVIDIA, ...)",
+        help="send the --models names (as the request's \"model\") to this OpenAI-compatible "
+        "chat/completions URL instead of Ollama (OpenRouter, Kilo, CommandCode, NVIDIA, ...); "
+        "names also listed in --llamacpp / --llamacpp-chat go there instead. Needs --models and --key-env",
+    )
+    ap.add_argument(
+        "--max-tokens",
+        type=int,
+        default=int(os.environ.get("REPAIR_MAX_TOKENS", "1024")),
+        help="max_tokens for --openai-url requests (default: $REPAIR_MAX_TOKENS or 1024)",
     )
     ap.add_argument("--key-env", default="", metavar="NAME", help="NAME of the env var holding the API key (with --openai-url)")
     ap.add_argument(
@@ -764,7 +824,21 @@ def main():
     if a.openai_url:
         if not a.key_env:
             sys.exit("--openai-url needs --key-env NAME")
-        openai = {"url": a.openai_url, "key_env": a.key_env, "extra_body": parse_extra_body(a.extra_body)}
+        if not a.models:
+            sys.exit("--openai-url needs an explicit --models list (the Ollama defaults must never be sent to a provider)")
+        raw_key = os.environ.get(a.key_env, "")
+        if not raw_key.strip():
+            sys.exit(f"--key-env: env var {a.key_env} is not set")
+        if repair.clean_api_key(raw_key) is None:
+            sys.exit(f"--key-env: the key in env var {a.key_env} contains spaces or control characters (CRLF .env?)")
+        openai = {
+            "url": a.openai_url,
+            "key_env": a.key_env,
+            "extra_body": parse_extra_body(a.extra_body),
+            "max_tokens": a.max_tokens,
+        }
+    if not a.models:
+        a.models = ["qwen3:8b", "qwen3.5:4b", "qwen2.5:7b"]
     llamacpp = parse_llamacpp_specs(a.llamacpp)
     llamacpp_chat = parse_llamacpp_specs(a.llamacpp_chat)
     gloss = glossary.load(a.glossary)

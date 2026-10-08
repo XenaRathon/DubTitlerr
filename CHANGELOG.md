@@ -18,6 +18,14 @@ that shipped since.
   reply, and writes token counts to `--json`. The default llamacpp/ollama paths are unchanged.
   A malformed `REPAIR_EXTRA_BODY` is checked on each call, not at import: the stage logs the
   variable name and reports the backend unreachable, so nothing ships and the run is retried.
+  The key is stripped of a trailing CR/LF (CRLF `.env` files) and a key with spaces or control
+  characters is a config error that names only the variable; failures log a fixed text with the
+  exception class or HTTP status, never the exception text or response body. An empty reply that hit
+  `max_tokens` (`finish_reason=length`) counts as unreachable, not "no repair", so raw ASR is not
+  shipped silently. An unreachable second-pass model is counted as `unreachable_secondary` (the
+  first-pass repair stands, as before). The bake-off refuses redirects, only trusts a `Retry-After`
+  of 0 to 60 s (else 5 s), no longer counts the sleep as model latency, tolerates odd `usage`
+  shapes, takes `--max-tokens`, and refuses `--openai-url` without an explicit `--models`.
 - **Bake-off can test the anchored prompt.** `tools/bakeoff.py --dump-refs OUT.json --video V`
   (no model calls) records each target's fansub reference, chosen the way `repair.process` does;
   `--refs OUT.json` then runs the models with those references and neighbouring lines, scores each

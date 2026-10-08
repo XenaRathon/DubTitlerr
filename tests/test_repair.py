@@ -3083,3 +3083,112 @@ def test_llm_openai_reads_the_extra_body_on_each_call(monkeypatch):
     monkeypatch.setenv("REPAIR_EXTRA_BODY", '{"b": 2}')
     repair.llm_openai("P", None)
     assert seen[0]["a"] == 1 and "a" not in seen[1] and seen[1]["b"] == 2
+
+
+# --- review fixes: key hygiene, truncation, secondary-pass marker ------------------
+
+
+def _all_text(capsys):
+    out = capsys.readouterr()
+    return out.out + out.err
+
+
+def test_a_key_with_a_trailing_cr_is_stripped_before_it_reaches_the_header(monkeypatch):
+    """CRLF .env files leave a trailing \\r on the value."""
+    _openai_env(monkeypatch, key=_SECRET + "\r")
+    _FakeConn.instances.clear()
+
+    class OkConn(_FakeConn):
+        def getresponse(self):
+            return _FakeResponse({"choices": [{"message": {"content": "fixed"}}]})
+
+    monkeypatch.setattr(repair.http.client, "HTTPSConnection", OkConn)
+    assert repair.llm_openai("P", None) == "fixed"
+    assert _FakeConn.instances[-1].requested[3]["Authorization"] == f"Bearer {_SECRET}"
+
+
+@pytest.mark.parametrize("bad", ["sk-abc def\nxyz", "sk-abc\x07def", "sk-abc def"])
+def test_a_key_with_spaces_or_control_characters_is_a_config_error(monkeypatch, capsys, bad):
+    _openai_env(monkeypatch, key=bad)
+    monkeypatch.setattr(repair, "_post_json", lambda *a, **k: pytest.fail("must not post"))
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+    text = _all_text(capsys)
+    assert "TEST_REPAIR_KEY" in text
+    assert "sk-abc" not in text and "def" not in text.replace("default", "")
+
+
+def test_no_log_line_is_built_from_an_exception_raised_while_the_key_is_in_scope(monkeypatch, capsys):
+    """http.client.putheader raises ValueError("Invalid header value b'Bearer sk-...\\r'"); the repr
+    defeats any str.replace(key, ...) scrub, so nothing may be logged from str(e)."""
+    _openai_env(monkeypatch)
+
+    class StrictConn(_FakeConn):
+        def request(self, method, path, body=None, headers=None):
+            raise ValueError(f"Invalid header value {headers['Authorization'].encode()!r}")
+
+    monkeypatch.setattr(repair.http.client, "HTTPSConnection", StrictConn)
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+    text = _all_text(capsys)
+    assert _SECRET not in text and "sk-test" not in text
+    assert "ValueError" in text
+
+
+def test_a_401_body_that_echoes_a_fragment_of_the_key_is_not_logged(monkeypatch, capsys):
+    _openai_env(monkeypatch)
+
+    class EchoConn(_FakeConn):
+        def getresponse(self):
+            return _FakeResponse({"error": f"bad key {_SECRET[:12]}..."}, status=401)
+
+    monkeypatch.setattr(repair.http.client, "HTTPSConnection", EchoConn)
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+    text = _all_text(capsys)
+    assert _SECRET[:12] not in text and "401" in text
+
+
+def test_empty_content_with_finish_reason_length_is_unreachable_not_no_repair(monkeypatch, capsys):
+    """A reasoning model that spent all of max_tokens thinking: "" would silently ship raw ASR."""
+    _openai_env(monkeypatch)
+    resp = {"choices": [{"message": {"content": "", "reasoning_content": "hmm"}, "finish_reason": "length"}]}
+    monkeypatch.setattr(repair, "_post_json", lambda u, b, timeout=180, headers=None: resp)
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+    assert "truncated (finish_reason=length)" in _all_text(capsys)
+
+
+def test_empty_content_with_finish_reason_stop_is_still_no_repair(monkeypatch):
+    """GUARD: passes on the old code too; the truncation rule must not widen to every empty reply."""
+    _openai_env(monkeypatch)
+    resp = {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]}
+    monkeypatch.setattr(repair, "_post_json", lambda u, b, timeout=180, headers=None: resp)
+    assert repair.llm_openai("P", None) == ""
+
+
+def test_the_bad_extra_body_line_is_logged_once_per_process(monkeypatch, capsys):
+    _openai_env(monkeypatch)
+    monkeypatch.setattr(repair, "_LOGGED_ONCE", set())
+    monkeypatch.setenv("REPAIR_EXTRA_BODY", "{bad")
+    for _ in range(3):
+        assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+    assert _all_text(capsys).count("REPAIR_EXTRA_BODY") == 1
+
+
+def test_an_unreachable_secondary_pass_is_counted_separately_and_never_gated(tmp_path, monkeypatch):
+    """The marker is truthy: it used to go through glossary.correct/accept_repair and count as
+    rejected_secondary. The first-pass repair stands, exactly as for any failed second pass."""
+    stem = str(tmp_path / "ep_sec_dead")
+    g = gl(names=["Spandam"])
+
+    def fake_llm(prompt, model=None):
+        return repair.LLM_UNREACHABLE if model == "secondary-model" else "I saw Spandam"
+
+    conf_path = _repair_env(tmp_path, monkeypatch, stem, [_conf_row(0.0, 3.0, "I saw spondum")], fake_llm, g=g)
+    monkeypatch.setattr(repair, "MODEL_SECONDARY", "secondary-model")
+    gated = []
+    real_accept, real_correct = repair.accept_repair, repair.glossary.correct
+    monkeypatch.setattr(repair, "accept_repair", lambda o, n, *a, **k: gated.append(n) or real_accept(o, n, *a, **k))
+    monkeypatch.setattr(repair.glossary, "correct", lambda t, *a, **k: gated.append(t) or real_correct(t, *a, **k))
+    assert repair.process(conf_path) == "repaired"
+    assert repair.LLM_UNREACHABLE not in gated
+    summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
+    assert summary["repaired"] == 1 and summary["rejected_secondary"] == 0
+    assert summary["unreachable_secondary"] == 1 and summary["unreachable"] == 0

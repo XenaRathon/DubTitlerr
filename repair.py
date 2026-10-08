@@ -132,6 +132,26 @@ def log(*a):
     print(*a, flush=True)
 
 
+_LOGGED_ONCE = set()
+
+
+def _log_once(tag, *a):
+    """Log a config problem on the first call only (it repeats identically for every card)."""
+    if tag not in _LOGGED_ONCE:
+        _LOGGED_ONCE.add(tag)
+        log(*a)
+
+
+def clean_api_key(raw):
+    """The key from an env value, or None when it is unusable. Strips surrounding whitespace
+    (a CRLF .env leaves a trailing \\r); anything left that is not printable, space-free ASCII
+    is a config error -- http.client would refuse it with an error text that quotes the key."""
+    key = (raw or "").strip()
+    if not key or any(not 33 <= ord(ch) <= 126 for ch in key):
+        return None
+    return key
+
+
 def _parse_extra_body(raw):
     """REPAIR_EXTRA_BODY -> dict, ValueError on bad JSON. Parsed per call by llm_openai, not
     at import: a typo must not take down every importer, and must not silently send requests
@@ -333,6 +353,14 @@ def overlap_ref(ivals, a, b):
     return " ".join(hits)[:300]
 
 
+class _HttpError(RuntimeError):
+    """HTTP >= 400 from _post_json. Same text as before; ``status`` lets a caller log the code alone."""
+
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+
+
 def _post_json(url, body, headers=None):
     """POST body (dict) as JSON to url with separate connect (TIMEOUT_CONNECT) and read
     (TIMEOUT_READ) timeouts (V2 A2). stdlib's urllib.request.urlopen only exposes a single
@@ -354,7 +382,7 @@ def _post_json(url, body, headers=None):
         resp = conn.getresponse()
         data = resp.read()
         if resp.status >= 400:
-            raise RuntimeError(f"HTTP {resp.status}: {data[:200]!r}")
+            raise _HttpError(resp.status, f"HTTP {resp.status}: {data[:200]!r}")
         return json.loads(data)
     finally:
         conn.close()
@@ -657,14 +685,19 @@ def llm_openai(prompt, model):
     repair". The key is looked up by NAME at call time and only the name is ever logged.
     The explicit User-Agent matters: CommandCode's Cloudflare 403s Python's default one.
     No chat_template_kwargs -- that is llama.cpp-only; use REPAIR_EXTRA_BODY for provider flags."""
-    key = os.environ.get(OPENAI_KEY_ENV, "") if OPENAI_KEY_ENV else ""
-    if not OPENAI_URL or not key:
-        log(f"  llm fail: REPAIR_OPENAI_URL or the key env var {OPENAI_KEY_ENV or 'REPAIR_OPENAI_KEY_ENV'} is not set")
+    raw_key = os.environ.get(OPENAI_KEY_ENV, "") if OPENAI_KEY_ENV else ""
+    key_name = OPENAI_KEY_ENV or "REPAIR_OPENAI_KEY_ENV"
+    if not OPENAI_URL or not raw_key.strip():
+        log(f"  llm fail: REPAIR_OPENAI_URL or the key env var {key_name} is not set")
+        return LLM_UNREACHABLE
+    key = clean_api_key(raw_key)
+    if key is None:
+        log(f"  llm fail: the key in env var {key_name} contains spaces or control characters (CRLF .env?)")
         return LLM_UNREACHABLE
     try:
         extra = _parse_extra_body(os.environ.get("REPAIR_EXTRA_BODY", ""))
     except ValueError:
-        log("  llm fail: REPAIR_EXTRA_BODY is not a valid JSON object")  # name only, never the content
+        _log_once("extra-body", "  llm fail: REPAIR_EXTRA_BODY is not a valid JSON object")  # name only, never the content
         return LLM_UNREACHABLE
     body = {
         "temperature": 0,
@@ -675,12 +708,22 @@ def llm_openai(prompt, model):
     }
     headers = {"Authorization": f"Bearer {key}", "User-Agent": "DubTitlerr/repair"}
     try:
-        msg = _post_json(OPENAI_URL, body, headers=headers)["choices"][0]["message"]
-        out = (msg.get("content") or "").strip()
+        choice = _post_json(OPENAI_URL, body, headers=headers)["choices"][0]
+        out = (choice["message"].get("content") or "").strip()
+        if not out and choice.get("finish_reason") == "length":
+            log(
+                "  llm fail: truncated (finish_reason=length): raise REPAIR_MAX_TOKENS"
+                " or disable reasoning via REPAIR_EXTRA_BODY"
+            )
+            return LLM_UNREACHABLE
         return out.splitlines()[0].strip().strip('"').strip() if out else ""
+    except _HttpError as e:
+        # Never log str(e): it carries the response body, and a provider may echo the key there.
+        log(f"  llm fail: HTTP {e.status}")
+        return LLM_UNREACHABLE
     except Exception as e:
-        # _post_json puts the response body in its error; a provider may echo the key there.
-        log("  llm fail:", str(e).replace(key, "***"))
+        # Nor here: http.client quotes the header value (the key) in its ValueError. Class name only.
+        log(f"  llm fail: {type(e).__name__}")
         return LLM_UNREACHABLE
 
 
@@ -851,6 +894,7 @@ def process(conf_path):
     llm_empty = 0
     unreachable = 0
     rejected_secondary = 0  # C5: second-pass output refused by the gate
+    unreachable_secondary = 0  # the second-pass backend call itself failed (first pass stands)
     # The model returned the line verbatim -- the single most common outcome of this stage
     # (568 of 836 targets on the SAO pass). accept_repair refuses it and the `not admitted`
     # inner guard is false by construction, so before this counter it incremented nothing
@@ -1061,6 +1105,11 @@ def process(conf_path):
                 t1 = time.monotonic()
                 new2 = llm(prompt, model=MODEL_SECONDARY)
                 latency_ms += round((time.monotonic() - t1) * 1000)
+                if new2 == LLM_UNREACHABLE:
+                    # The marker is truthy text, not an answer: never gate it. The first-pass
+                    # repair stands, as for any second pass that does not verify.
+                    unreachable_secondary += 1
+                    new2 = ""
                 if new2:
                     new2 = glossary.correct(new2, gloss)[0]
                     # C5: a stronger model is still a model. Its output went straight over
@@ -1177,6 +1226,7 @@ def process(conf_path):
         "llm_empty": llm_empty,
         "unreachable": unreachable,
         "rejected_guard": rejected,  # model proposed an edit, accept_repair() refused it
+        "unreachable_secondary": unreachable_secondary,
         "rejected_secondary": rejected_secondary,  # C5: second pass refused, first pass kept
         "unchanged": unchanged,  # model echoed the line back; nothing proposed, nothing shipped
         # [S-4]. targets == repaired + skipped_no_ref + llm_empty + rejected_guard +

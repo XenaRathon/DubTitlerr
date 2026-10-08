@@ -650,7 +650,7 @@ def test_openai_request_shape(monkeypatch):
     monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
     seen = {}
 
-    def fake_post(url, body, timeout=180, headers=None):
+    def fake_post(url, body, timeout=180, headers=None, **kw):
         seen.update(url=url, body=body, headers=headers)
         return _ok(' "Zoro drew his blade."\nnoise')
 
@@ -668,9 +668,9 @@ def test_openai_request_shape(monkeypatch):
 
 def test_openai_ignores_reasoning_content_and_flags_empty(monkeypatch):
     monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
-    monkeypatch.setattr(bo, "_post_json", lambda u, b, timeout=180, headers=None: _ok("Answer.", reasoning_content="think"))
+    monkeypatch.setattr(bo, "_post_json", lambda u, b, timeout=180, headers=None, **kw: _ok("Answer.", reasoning_content="think"))
     assert bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")[0] == "Answer."
-    monkeypatch.setattr(bo, "_post_json", lambda u, b, timeout=180, headers=None: _ok("", reasoning_content="think"))
+    monkeypatch.setattr(bo, "_post_json", lambda u, b, timeout=180, headers=None, **kw: _ok("", reasoning_content="think"))
     assert bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")[0].startswith("<EMPTY")
 
 
@@ -684,7 +684,7 @@ def test_openai_missing_key_is_an_error_and_never_posts(monkeypatch):
 def test_openai_error_text_never_contains_the_key(monkeypatch):
     monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
 
-    def boom(u, b, timeout=180, headers=None):
+    def boom(u, b, timeout=180, headers=None, **kw):
         raise _http_error(500)
 
     monkeypatch.setattr(bo, "_post_json", boom)
@@ -696,7 +696,7 @@ def test_openai_429_retries_once_honouring_retry_after_then_succeeds(monkeypatch
     monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
     calls, slept = [], []
 
-    def fake_post(u, b, timeout=180, headers=None):
+    def fake_post(u, b, timeout=180, headers=None, **kw):
         calls.append(1)
         if len(calls) == 1:
             raise _http_error(429, "7")
@@ -708,24 +708,24 @@ def test_openai_429_retries_once_honouring_retry_after_then_succeeds(monkeypatch
     assert len(calls) == 2 and slept == [7.0]
 
 
-def test_openai_429_retry_after_is_capped_at_60s(monkeypatch):
+def test_openai_429_retry_after_beyond_60s_falls_back(monkeypatch):
     monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
     slept = []
 
-    def fake_post(u, b, timeout=180, headers=None):
+    def fake_post(u, b, timeout=180, headers=None, **kw):
         raise _http_error(429, "3600")
 
     monkeypatch.setattr(bo, "_post_json", fake_post)
     monkeypatch.setattr(bo.time, "sleep", slept.append)
     bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")
-    assert slept == [60.0]
+    assert slept == [5.0]  # out of the 0..60 range -> the 5 s fallback, not a cap
 
 
 def test_openai_persistent_429_is_reported_rate_limited_not_empty(monkeypatch):
     monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
     calls = []
 
-    def fake_post(u, b, timeout=180, headers=None):
+    def fake_post(u, b, timeout=180, headers=None, **kw):
         calls.append(1)
         raise _http_error(429)
 
@@ -743,11 +743,11 @@ def test_openai_persistent_429_is_reported_rate_limited_not_empty(monkeypatch):
 def test_openai_records_usage_including_cached_tokens(monkeypatch):
     monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
     usage = {"prompt_tokens": 100, "completion_tokens": 9, "prompt_tokens_details": {"cached_tokens": 64}}
-    monkeypatch.setattr(bo, "_post_json", lambda u, b, timeout=180, headers=None: {**_ok("x"), "usage": usage})
+    monkeypatch.setattr(bo, "_post_json", lambda u, b, timeout=180, headers=None, **kw: {**_ok("x"), "usage": usage})
     sink = []
     bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY", usage_sink=sink)
     assert sink == [{"prompt_tokens": 100, "completion_tokens": 9, "cached_tokens": 64}]
-    monkeypatch.setattr(bo, "_post_json", lambda u, b, timeout=180, headers=None: _ok("x"))
+    monkeypatch.setattr(bo, "_post_json", lambda u, b, timeout=180, headers=None, **kw: _ok("x"))
     bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY", usage_sink=sink)
     assert sink[1] is None  # one entry per call, so the sink stays aligned with outs
 
@@ -775,7 +775,7 @@ def test_main_openai_mode_writes_token_usage_into_the_json_rows(tmp_path, monkey
     out_json = tmp_path / "res.json"
     seen = {}
 
-    def fake_post(url, body, timeout=180, headers=None):
+    def fake_post(url, body, timeout=180, headers=None, **kw):
         seen.update(url=url, model=body["model"])
         usage = {"prompt_tokens": 50, "completion_tokens": 4, "prompt_tokens_details": {"cached_tokens": 32}}
         return {**_ok("garbled nonsense here"), "usage": usage}
@@ -1003,3 +1003,206 @@ def test_dump_refs_requires_the_glossary(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as e:
         bo.main()
     assert "--glossary" in str(e.value)
+
+
+# --- review fixes: key hygiene, redirects, Retry-After, truncation ------------------
+
+import http.server  # noqa: E402
+import threading  # noqa: E402
+import types  # noqa: E402
+
+
+def _capture(monkeypatch, resp=None, exc=None):
+    seen = {}
+
+    def fake_post(url, body, timeout=180, headers=None, **kw):
+        seen.update(url=url, body=body, headers=headers)
+        if exc:
+            raise exc
+        return resp if resp is not None else _ok("fixed")
+
+    monkeypatch.setattr(bo, "_post_json", fake_post)
+    return seen
+
+
+def test_openai_strips_a_trailing_cr_from_the_key(monkeypatch):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY + "\r")
+    seen = _capture(monkeypatch)
+    assert bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")[0] == "fixed"
+    assert seen["headers"]["Authorization"] == f"Bearer {_KEY}"
+
+
+@pytest.mark.parametrize("bad", ["sk-abc def\nxyz", "sk-abc def", "sk-abc\x07def"])
+def test_openai_key_with_spaces_or_control_characters_exits_naming_only_the_variable(monkeypatch, bad):
+    monkeypatch.setenv("TEST_BAKE_KEY", bad)
+    monkeypatch.setattr(bo, "_post_json", lambda *a, **k: pytest.fail("must not post"))
+    with pytest.raises(SystemExit) as e:
+        bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")
+    assert "TEST_BAKE_KEY" in str(e.value) and "sk-abc" not in str(e.value)
+
+
+def test_openai_never_builds_output_from_an_exception_that_quotes_the_header(tmp_path, monkeypatch, capsys):
+    """http.client's ValueError quotes the header value; the bake-off used to write
+    <ERROR {e}> into stdout AND the --json rows."""
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    _capture(monkeypatch, exc=ValueError(f"Invalid header value b'Bearer {_KEY}\\r'"))
+    out, _ = bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")
+    assert out == "<ERROR ValueError>"
+    conf = _write(tmp_path, [_conf_row("grbled nnsense here", lp=-1.4, nsp=0.02)])
+    out_json = tmp_path / "r.json"
+    argv = ["bakeoff", "--conf", conf, "--models", "m", "--openai-url", "https://x/v1/chat/completions"]
+    monkeypatch.setattr(bo.sys, "argv", argv + ["--key-env", "TEST_BAKE_KEY", "--json", str(out_json)])
+    bo.main()
+    cap = capsys.readouterr()
+    assert _KEY not in cap.out + cap.err + out_json.read_text() and "sk-bakeoff" not in cap.out + out_json.read_text()
+
+
+def test_openai_http_error_reports_only_the_status(monkeypatch):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    _capture(monkeypatch, exc=_http_error(401))
+    assert bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")[0] == "<ERROR HTTP 401>"
+
+
+def test_openai_truncated_empty_reply_is_an_error_not_an_empty(monkeypatch):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    resp = {"choices": [{"message": {"content": "", "reasoning_content": "hmm"}, "finish_reason": "length"}]}
+    _capture(monkeypatch, resp=resp)
+    out, _ = bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")
+    assert out == "<ERROR truncated (finish_reason=length)>"
+    s = bo.score_model("m", [{"text": "x", "start": 0, "end": 2}], [out], 1.0, _glossary.load(""))
+    assert s["errors"] == 1 and s["empties"] == 0 and s["inert"] == 0
+
+
+class _Recorder(http.server.BaseHTTPRequestHandler):
+    seen = []
+
+    def _record(self):
+        type(self).seen.append(self.headers.get("Authorization"))
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'{"choices":[{"message":{"content":"x"}}]}')
+
+    do_POST = do_GET = _record  # urllib turns a redirected POST into a GET
+
+    def log_message(self, *a):
+        pass
+
+
+def _serve(handler):
+    srv = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def test_openai_does_not_follow_a_redirect_and_never_forwards_the_key(monkeypatch):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    _Recorder.seen = []
+    target = _serve(_Recorder)
+
+    class Redirector(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{target.server_port}/v1/chat/completions")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    first = _serve(Redirector)
+    try:
+        out, _ = bo.ask_openai(f"http://127.0.0.1:{first.server_port}/x", "m", "P", "TEST_BAKE_KEY")
+    finally:
+        first.shutdown()
+        target.shutdown()
+    assert out == "<ERROR HTTP 302 redirect refused>"
+    assert _Recorder.seen == []  # the second server received nothing at all
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "-3", "Wed, 21 Oct 2026 07:28:00 GMT", "soon", "3600", "60.5"])
+def test_openai_retry_after_outside_0_to_60_or_not_a_number_falls_back_to_5s(monkeypatch, raw):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    slept = []
+
+    def fake_post(u, b, timeout=180, headers=None, **kw):
+        raise _http_error(429, raw)
+
+    monkeypatch.setattr(bo, "_post_json", fake_post)
+    monkeypatch.setattr(bo.time, "sleep", slept.append)
+    out, _ = bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")  # must not raise
+    assert slept == [5.0] and "rate-limited" in out
+
+
+def test_openai_a_valid_retry_after_is_honoured(monkeypatch):
+    """GUARD: passes on the old code (7 s was already honoured)."""
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    slept = []
+    calls = []
+
+    def fake_post(u, b, timeout=180, headers=None, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise _http_error(429, "7")
+        return _ok("ok")
+
+    monkeypatch.setattr(bo, "_post_json", fake_post)
+    monkeypatch.setattr(bo.time, "sleep", slept.append)
+    assert bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")[0] == "ok" and slept == [7.0]
+
+
+@pytest.mark.parametrize("usage", [[1], "x", {"prompt_tokens_details": [1]}, {"prompt_tokens_details": "x", "prompt_tokens": 3}])
+def test_openai_odd_usage_never_discards_a_valid_reply(monkeypatch, usage):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    _capture(monkeypatch, resp={**_ok("fine"), "usage": usage})
+    sink = []
+    assert bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY", usage_sink=sink)[0] == "fine"
+    assert len(sink) == 1
+
+
+def test_openai_url_without_explicit_models_exits(tmp_path, monkeypatch):
+    conf = _write(tmp_path, [_conf_row()])
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    argv = ["bakeoff", "--conf", conf, "--openai-url", "https://x/v1/chat/completions", "--key-env", "TEST_BAKE_KEY"]
+    monkeypatch.setattr(bo.sys, "argv", argv)
+    with pytest.raises(SystemExit) as e:
+        bo.main()
+    assert "--models" in str(e.value)
+
+
+def test_max_tokens_flag_and_env_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    monkeypatch.setenv("REPAIR_MAX_TOKENS", "333")
+    conf = _write(tmp_path, [_conf_row("grbled nnsense here", lp=-1.4, nsp=0.02)])
+    bodies = []
+
+    def fake_post(u, b, timeout=180, headers=None, **kw):
+        bodies.append(b["max_tokens"])
+        return _ok("x")
+
+    monkeypatch.setattr(bo, "_post_json", fake_post)
+    base = ["bakeoff", "--conf", conf, "--models", "m", "--openai-url", "https://x/c", "--key-env", "TEST_BAKE_KEY"]
+    monkeypatch.setattr(bo.sys, "argv", base)
+    bo.main()
+    monkeypatch.setattr(bo.sys, "argv", base + ["--max-tokens", "77"])
+    bo.main()
+    assert bodies == [333, 77]
+
+
+def test_openai_latency_excludes_the_retry_after_sleep(monkeypatch):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    clock = [0.0]
+    fake_time = types.SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+    calls = []
+
+    def fake_post(u, b, timeout=180, headers=None, **kw):
+        calls.append(1)
+        clock[0] += 2.0  # each attempt takes 2 s
+        if len(calls) == 1:
+            raise _http_error(429, "30")
+        return _ok("ok")
+
+    monkeypatch.setattr(bo, "_post_json", fake_post)
+    monkeypatch.setattr(bo, "time", fake_time)
+    _, dt = bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")
+    assert dt == 2.0  # not 34.0
