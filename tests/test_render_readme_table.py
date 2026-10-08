@@ -41,8 +41,12 @@ def test_table_content_and_ordering(tmp_path):
     r.render(str(m), str(readme), "2026-10-08")
 
     text = readme.read_text(encoding="utf-8")
-    assert "As of 2026-10-08: **9 episodes across 3 shows**, all unreviewed. " in text
-    assert "`manifest/` is the authoritative list." in text
+    assert "Last updated 2026-10-08: **9 episodes across 3 shows**, all unreviewed. " in text
+    assert (
+        "Episodes and shows are added automatically as DubTitlerr finishes them, and this table is rebuilt from "
+        "`manifest/` with each update. `manifest/` has the full per-episode list.\n"
+    ) in text
+    assert "snapshot" not in text and "\u2014" not in text
     table = "| Show | Episodes |\n| --- | ---: |\n| Big | 5 |\n| Alpha | 2 |\n| Beta | 2 |\n"
     assert table in text
     # only the marked region changed
@@ -93,7 +97,7 @@ def test_same_manifests_on_a_later_date_leave_the_file_untouched(tmp_path):
     assert r.render(str(m), str(readme), "2026-10-09") is False
 
     assert readme.read_bytes() == first
-    assert "As of 2026-10-08:" in readme.read_text(encoding="utf-8")  # the OLD date is kept
+    assert "Last updated 2026-10-08:" in readme.read_text(encoding="utf-8")  # the OLD date is kept
 
 
 def test_a_changed_count_on_a_later_date_rewrites_with_the_new_date(tmp_path):
@@ -108,7 +112,7 @@ def test_a_changed_count_on_a_later_date_rewrites_with_the_new_date(tmp_path):
     assert r.render(str(m), str(readme), "2026-10-09") is True
 
     text = readme.read_text(encoding="utf-8")
-    assert "As of 2026-10-09: **4 episodes across 1 shows**" in text
+    assert "Last updated 2026-10-09: **4 episodes across 1 shows**" in text
     assert "2026-10-08" not in text
 
 
@@ -157,6 +161,41 @@ def test_nothing_is_reviewed_without_positive_evidence(tmp_path):
     r.render(str(m), str(readme), "2026-10-08")
 
     assert "**3 episodes across 1 shows**, all unreviewed. " in readme.read_text(encoding="utf-8")
+
+
+def test_a_review_status_change_with_the_same_rows_rewrites(tmp_path):
+    import tools.render_readme_table as r
+
+    m, readme = _setup(tmp_path)
+    _manifest(m, "A", 3)
+    _readme(readme)
+    r.render(str(m), str(readme), "2026-10-08")
+    _manifest(m, "A", 3, status="reviewed")
+
+    assert r.render(str(m), str(readme), "2026-10-09") is True
+    assert "Last updated 2026-10-09: **3 episodes across 1 shows**, 3 of 3 reviewed. " in readme.read_text(encoding="utf-8")
+
+
+def test_a_block_with_the_legacy_wording_is_rewritten_once_then_left_alone(tmp_path):
+    import tools.render_readme_table as r
+
+    m, readme = _setup(tmp_path)
+    _manifest(m, "A", 3)
+    old = (
+        "As of 2026-10-07: **3 episodes across 1 shows**, all unreviewed. New episodes and shows are added "
+        "automatically as DubTitlerr finishes them, so this table is a snapshot; `manifest/` is the authoritative list.\n"
+        "\n| Show | Episodes |\n| --- | ---: |\n| A | 3 |\n"
+    )
+    _readme(readme, body=old)
+
+    assert r.render(str(m), str(readme), "2026-10-08") is True
+    text = readme.read_text(encoding="utf-8")
+    assert "Last updated 2026-10-08: **3 episodes across 1 shows**, all unreviewed. Episodes and shows" in text
+    assert "snapshot" not in text and "As of" not in text
+
+    first = readme.read_bytes()
+    assert r.render(str(m), str(readme), "2026-10-09") is False
+    assert readme.read_bytes() == first
 
 
 def test_missing_markers_change_nothing_and_warn(tmp_path, capsys):
@@ -243,7 +282,7 @@ def test_cli_renders_with_explicit_date(tmp_path):
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert "As of 2026-01-02: **1 episodes across 1 shows**" in readme.read_text(encoding="utf-8")
+    assert "Last updated 2026-01-02: **1 episodes across 1 shows**" in readme.read_text(encoding="utf-8")
 
 
 # --- publish_subtitles.sh wiring ---------------------------------------------------------

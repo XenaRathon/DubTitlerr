@@ -20,6 +20,9 @@ that shipped since.
   daily noise commit; with no loadable manifest it leaves the README alone. A missing or odd
   `status` counts as unreviewed. `tools/publish_subtitles.sh` calls it before the change check,
   and a failure there never blocks publishing.
+- **README table lead line reworded.** It now reads "Last updated <date>: ... this table is rebuilt
+  from `manifest/` with each update" instead of calling itself a snapshot. A block still holding the
+  old "As of" wording is rewritten once; after that only a change in the numbers rewrites it.
 - **Glossary steps stop between units on a soft stop.** `mine_glossary.py` (between episodes),
   `glossary_verify.py` (between terms) and `glossary_acquire.py` (between escalation pairs, tier-B
   terms and admission episodes) check the stop flag, log `stop requested: leaving <step> after <n>
