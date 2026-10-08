@@ -314,6 +314,52 @@ def read_words(stem, rec=None, expect: dict | None = None):
     return doc
 
 
+def stop_requested():
+    """True once the soft-stop flag file exists (container_run.sh touches $STOP_FLAG on
+    SIGTERM). Callers check it BEFORE starting a unit of work, never inside one. With
+    STOP_FLAG unset (manual runs, tests) nothing ever stops."""
+    flag = os.environ.get("STOP_FLAG")
+    return bool(flag) and os.path.exists(flag)
+
+
+def atomic_write(path, render, mode=SIDECAR_MODE, newline=None):
+    """Write ``path`` through a temp file in the same directory plus os.replace -- the
+    discipline qc.write and glossary_acquire._write_json already follow.
+
+    process() clears the in-flight .dubtitles.fail marker as soon as transcription
+    finishes, BEFORE the srt and conf are written, so a plain open(path, "w") that dies
+    mid-loop leaves a TRUNCATED file with no marker behind it: the default SKIP_IF_SRT=1
+    already-srt guard reads that as a finished episode on the next sweep and mux embeds a
+    cut-off subtitle. Same rule as the stale-sidecar parking fix one function away --
+    never drop known-good output before the replacement exists. os.replace either swaps
+    or does nothing, and a failure leaves neither a partial target nor a temp file.
+
+    The exception is deliberately NOT swallowed (unlike qc.write's): the srt and conf are
+    the episode's product, not observability, and a run that lost them must not report ok.
+
+    ``newline`` is passed to the file object (csv output needs ``newline=""``).
+
+    ``mode`` defaults to common.SIDECAR_MODE (0664); mkstemp creates 0600, which would strip
+    group/other read from every file we ship. It must stay GROUP-WRITABLE -- 0644 meant only
+    the creating uid could ever overwrite a sidecar, which broke every non-root writer (see
+    the SIDECAR_MODE comment above)."""
+    d = os.path.dirname(path) or "."
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(path) + ".", suffix=".tmp")
+        with os.fdopen(fd, "w", newline=newline) as f:
+            render(f)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+        tmp = None
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
 def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
     """Write the .dubtitles.done idempotency stamp recording the muxed file's size+mtime
     and the tier versions that produced it (stamp_valid rejects a stamp behind either
@@ -345,8 +391,7 @@ def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
     }
     if stages:
         doc["stages"] = stages
-    with open(path, "w") as f:
-        json.dump(doc, f)
+    atomic_write(path, lambda f: json.dump(doc, f))
 
 
 def read_stamp(path: str) -> dict | None:
@@ -423,8 +468,12 @@ def stamp_valid(stamp: dict | None, video: str) -> bool:
 # The "passed" set for failed_stage() is intentionally narrow: only "ok" and the two
 # skip codes ("no-reference" — repair had no fansub anchor; "no-video" — no media file)
 # are non-failures. Everything else (llm-empty, backend-unreachable, extract-error,
-# build-error, timeout, crashed, unwritable) is a genuine failure that blocks mux.
+# build-error, timeout, crashed, unwritable, refused) is a genuine failure that blocks mux.
+# "refused" is repair declining to overwrite already-shipped repairs: the srt on disk is raw
+# ASR, so it must never be muxed. Records are never reset on their own; merge_pass.sh calls
+# clear_stage() before it re-runs a stage so a stale record cannot stand in for a new one.
 STAGES_SUFFIX = ".dubtitles.stages.json"
+STAGE_ORDER = ("repair", "signs", "mux")
 
 STAGE_OUTCOMES = (
     "ok",
@@ -437,8 +486,11 @@ STAGE_OUTCOMES = (
     "timeout",
     "crashed",
     "unwritable",
+    "refused",
 )
 
+# "no-reference" is LEGACY: nothing writes it any more (repair's refusal is "refused"), but
+# records from older runs still sit on disk and must keep reading as passed.
 _PASSED_OUTCOMES = {"ok", "no-reference", "no-video"}
 
 
@@ -480,14 +532,39 @@ def read_stages(stem: str) -> dict:
         return {}
 
 
-def failed_stage(stem: str) -> str | None:
+def clear_stage(stem: str, *stages: str) -> None:
+    """Remove these stages' records from the sidecar (atomic: temp + os.replace).
+
+    A no-op when the sidecar or a key is missing; never creates a sidecar."""
+    path = _stages_path(stem)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return
+    if not any(st in data for st in stages):
+        return
+    for st in stages:
+        data.pop(st, None)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
+def failed_stage(stem: str, only=None) -> str | None:
     """First stage whose outcome is not in _PASSED_OUTCOMES, or None if all pass.
 
-    Called by merge_pass.sh after all three stages to decide whether to mux or
-    hold. The stage order is fixed (repair -> signs -> mux) so the first failure
-    wins deterministically."""
-    for stage, rec in read_stages(stem).items():
-        if rec.get("outcome") not in _PASSED_OUTCOMES:
+    Stages are read in pipeline order (STAGE_ORDER: repair -> signs -> mux), then any
+    other keys, so the first failure wins deterministically whatever order the sidecar was
+    written in. `only` (an iterable of stage names) limits the check to those stages."""
+    recs = read_stages(stem)
+    names = [st for st in STAGE_ORDER if st in recs] + [st for st in recs if st not in STAGE_ORDER]
+    if only is not None:
+        only = set(only)
+        names = [st for st in names if st in only]
+    for stage in names:
+        if recs[stage].get("outcome") not in _PASSED_OUTCOMES:
             return stage
     return None
 

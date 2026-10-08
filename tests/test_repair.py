@@ -2326,6 +2326,128 @@ def test_a_pass_that_would_skip_every_target_refuses_to_overwrite_prior_repairs(
     assert json.load(open(summary_path))["repaired"] == 3, "the prior summary was clobbered"
 
 
+def test_refusing_to_overwrite_prior_repairs_records_a_failure_not_no_reference(tmp_path, monkeypatch):
+    """The refusal leaves RAW ASR on disk (the shipped repairs live only in the old muxed
+    track). Recording it as the passing 'no-reference' let merge_pass.sh mux that raw srt
+    and stamp the episode done; 'refused' counts as a failure and blocks the mux."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep_prior_stage")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    _write_conf(
+        conf_path,
+        srt_path,
+        [{"start": 0.0, "end": 2.0, "text": "our mods will never give up", "avg_logprob": -0.9, "no_speech_prob": 0.1}],
+    )
+    json.dump({"targets": 144, "repaired": 3, "skipped_no_ref": 0}, open(stem + ".dubtitles.repair-summary.json", "w"))
+    monkeypatch.setattr(repair, "REPAIR_UNANCHORED", False)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_prior_stage.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: glossary.load_dict({"show": "One Pace"}))
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [])
+
+    assert repair.process(conf_path) == "refused"
+    assert common.read_stages(stem)["repair"]["outcome"] == "refused"
+    assert common.failed_stage(stem) == "repair"
+
+
+def test_missing_conf_json_is_recorded_ok_not_no_video(tmp_path, monkeypatch):
+    """A missing conf.json is a normal state (see process()). Only a missing VIDEO is
+    'no-video'."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep_noconf")
+    open(stem + repair.SRT_SUFFIX, "w").close()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_noconf.mkv"))
+
+    assert repair.process(stem + repair.CONF_SUFFIX) == "skip"
+    rec = common.read_stages(stem)["repair"]
+    assert (rec["outcome"], rec.get("detail")) == ("ok", "no-conf")
+
+
+def test_missing_srt_with_a_video_is_recorded_ok_no_srt(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep_nosrt")
+    open(stem + repair.CONF_SUFFIX, "w").close()
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_nosrt.mkv"))
+
+    assert repair.process(stem + repair.CONF_SUFFIX) == "skip"
+    rec = common.read_stages(stem)["repair"]
+    assert (rec["outcome"], rec.get("detail")) == ("ok", "no-srt")
+
+
+def test_missing_video_is_still_recorded_no_video(tmp_path, monkeypatch):
+    """Guard: unchanged behaviour."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep_novideo")
+    open(stem + repair.SRT_SUFFIX, "w").close()
+    monkeypatch.setattr(repair, "find_video", lambda s: None)
+
+    assert repair.process(stem + repair.CONF_SUFFIX) == "skip"
+    assert common.read_stages(stem)["repair"]["outcome"] == "no-video"
+
+
+def _atomic_repair_setup(tmp_path, monkeypatch, n_cards=2):
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep_atomic")
+    conf_path = stem + repair.CONF_SUFFIX
+    srt_path = stem + repair.SRT_SUFFIX
+    rows = [
+        {"start": float(i * 2), "end": float(i * 2 + 1.5), "text": f"line {i}", "avg_logprob": -0.9, "no_speech_prob": 0.1}
+        for i in range(n_cards)
+    ]
+    _write_conf(conf_path, srt_path, rows)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_atomic.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda video: gl())
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 9.0, "a reference line")])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: "line fixed")
+    return stem, conf_path, srt_path
+
+
+def test_an_interrupted_srt_write_leaves_the_previous_srt_intact(tmp_path, monkeypatch):
+    stem, conf_path, srt_path = _atomic_repair_setup(tmp_path, monkeypatch)
+    open(srt_path, "w").write("PREVIOUS SHIPPED SRT\n")
+    calls = []
+
+    def flaky_wrap(text, *a, **k):
+        calls.append(text)
+        if len(calls) == 2:
+            raise RuntimeError("died on card 2")
+        return text
+
+    monkeypatch.setattr(repair.reflow, "wrap_balance", flaky_wrap)
+    try:
+        repair.process(conf_path)
+    except RuntimeError:
+        pass
+    assert open(srt_path).read() == "PREVIOUS SHIPPED SRT\n"
+    assert not [n for n in os.listdir(tmp_path) if n.endswith(".tmp")]
+
+
+def test_an_interrupted_csv_write_leaves_the_previous_csv_intact(tmp_path, monkeypatch):
+    stem, conf_path, srt_path = _atomic_repair_setup(tmp_path, monkeypatch)
+    csv_path = stem + ".dubtitles.repair.csv"
+    open(csv_path, "w").write("PREVIOUS CSV\n")
+
+    def boom(f, *a, **k):
+        raise RuntimeError("csv died")
+
+    monkeypatch.setattr(repair.csv, "writer", boom)
+    try:
+        repair.process(conf_path)
+    except RuntimeError:
+        pass
+    assert open(csv_path).read() == "PREVIOUS CSV\n"
+
+
+def test_repair_outputs_have_the_sidecar_mode_and_unchanged_rendering(tmp_path, monkeypatch):
+    stem, conf_path, srt_path = _atomic_repair_setup(tmp_path, monkeypatch)
+    repair.process(conf_path)
+    for suffix in (repair.SRT_SUFFIX, ".dubtitles.repair.csv", ".dubtitles.repair-summary.json"):
+        assert os.stat(stem + suffix).st_mode & 0o777 == common.SIDECAR_MODE, suffix
+    assert open(srt_path).read().startswith("1\n00:00:00,000 --> 00:00:01,500\n")
+    assert open(stem + ".dubtitles.repair.csv", newline="").read().startswith("orig,repaired,ref,latency_ms\r\n")
+    assert open(stem + ".dubtitles.repair-summary.json").read().startswith("{\n  \"targets\"")
+
+
 def test_the_refusal_is_narrow_and_a_quiet_episode_still_rewrites(tmp_path, monkeypatch):
     """A2 guard (c), mutation check. The guard must fire only when EVERY target was skipped
     for want of an anchor. Loosened to `skipped_no_ref > 0` it would refuse any episode that

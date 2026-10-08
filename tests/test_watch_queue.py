@@ -204,3 +204,85 @@ def test_fold_does_not_collide_distinct_villainess_shows():
     ]
     order, misses = wq.match_dirs({"I'm in Love with the Villainess": 1}, dirs)
     assert order == [dirs[0]] and misses == []
+
+
+JOJO = ["JoJo's Bizarre Adventure (1993) {tvdb-83950}", "JoJo's Bizarre Adventure (2012) {tvdb-262954}"]
+
+
+def test_an_ambiguous_clean_title_is_reported_not_guessed():
+    """2026-09-25, live: Plex and WatchState both report the 2012 series as the bare
+    "JoJo's Bizarre Adventure". Both directories clean to that, and the clean tier's
+    setdefault() silently handed every play to the alphabetically-first (1993) OVA."""
+    order, misses = wq.match_dirs({"JoJo's Bizarre Adventure": 1}, JOJO)
+    assert order == [] and misses == ["JoJo's Bizarre Adventure"]
+
+
+def test_a_tvdb_tagged_title_resolves_to_that_directory_even_when_the_name_is_shared():
+    order, misses = wq.match_dirs({"JoJo's Bizarre Adventure {tvdb-262954}": 1}, JOJO)
+    assert order == [JOJO[1]] and misses == []
+
+
+def test_a_title_with_a_year_resolves_to_that_year():
+    """Jellyfin-sourced WatchState rows carry "JoJo's Bizarre Adventure (2012)"."""
+    order, misses = wq.match_dirs({"JoJo's Bizarre Adventure (2012)": 1}, JOJO)
+    assert order == [JOJO[1]] and misses == []
+
+
+def test_an_unknown_tvdb_id_falls_back_to_the_title():
+    """A show whose id matches no directory still resolves by name when that is unambiguous."""
+    order, misses = wq.match_dirs({"One Pace {tvdb-999}": 1}, ["One Pace"])
+    assert order == ["One Pace"] and misses == []
+
+
+def test_watchstate_tags_each_title_with_its_parent_tvdb(monkeypatch):
+    import json
+
+    rows = [
+        {"type": "episode", "watched": 1, "updated": 500, "title": "JoJo's Bizarre Adventure", "parent": {"guid_tvdb": "262954"}},
+        {"type": "episode", "watched": 1, "updated": 400, "title": "One Pace", "parent": {}},
+    ]
+    monkeypatch.setattr(wq, "WATCHSTATE_URL", "http://ws")
+    monkeypatch.setattr(wq, "WATCHSTATE_API_KEY", "k")
+    monkeypatch.setattr(wq, "_get", lambda url, headers=None: json.dumps({"history": rows, "paging": {"last_page": 1}}).encode())
+    assert wq.from_watchstate(0) == {"JoJo's Bizarre Adventure {tvdb-262954}": 500, "One Pace": 400}
+
+
+def test_plex_tags_each_title_with_its_show_tvdb(monkeypatch):
+    """Plex history rows carry only grandparentTitle; the show's tvdb id is on its metadata."""
+    history = (
+        '<MediaContainer><Video grandparentTitle="JoJo&#39;s Bizarre Adventure" '
+        'grandparentKey="/library/metadata/7" viewedAt="500"/>'
+        '<Video grandparentTitle="One Pace" grandparentKey="/library/metadata/8" viewedAt="400"/></MediaContainer>'
+    )
+    shows = {
+        "7": '<MediaContainer><Directory><Guid id="imdb://tt1"/><Guid id="tvdb://262954"/></Directory></MediaContainer>',
+        "8": "<MediaContainer><Directory></Directory></MediaContainer>",
+    }
+
+    def fake_get(url, headers=None):
+        if "/status/sessions/history/all" in url:
+            return history.encode()
+        return shows[url.split("/library/metadata/")[1].split("?")[0]].encode()
+
+    monkeypatch.setattr(wq, "PLEX_URL", "http://plex")
+    monkeypatch.setattr(wq, "PLEX_TOKEN", "t")
+    monkeypatch.setattr(wq, "_get", fake_get)
+    assert wq.from_plex(0) == {"JoJo's Bizarre Adventure {tvdb-262954}": 500, "One Pace": 400}
+
+
+def test_a_failed_plex_show_lookup_keeps_the_bare_title(monkeypatch):
+    """The id is an enrichment: its lookup failing must not turn a readable source unreachable."""
+    history = (
+        '<MediaContainer><Video grandparentTitle="One Pace" '
+        'grandparentKey="/library/metadata/8" viewedAt="400"/></MediaContainer>'
+    )
+
+    def fake_get(url, headers=None):
+        if "/status/sessions/history/all" in url:
+            return history.encode()
+        raise wq.Unreachable("metadata down")
+
+    monkeypatch.setattr(wq, "PLEX_URL", "http://plex")
+    monkeypatch.setattr(wq, "PLEX_TOKEN", "t")
+    monkeypatch.setattr(wq, "_get", fake_get)
+    assert wq.from_plex(0) == {"One Pace": 400}

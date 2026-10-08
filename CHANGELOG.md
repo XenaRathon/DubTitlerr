@@ -1,12 +1,126 @@
 # Changelog
 
-Format loosely follows [Keep a Changelog](https://keepachangelog.com/). Nothing has been
-tagged yet — this file starts at the public beta. `TRANSCRIBE_VERSION`/`TEXT_VERSION` in
-`common.py` are the pipeline's own version history (they say what changed in the _output_,
-and only a stamp bump puts the fix into already-processed files); the entries below summarize
-that history alongside everything else that shipped since.
+Format loosely follows [Keep a Changelog](https://keepachangelog.com/). This file starts at
+the public beta. `TRANSCRIBE_VERSION`/`TEXT_VERSION` in `common.py` are the pipeline's own
+version history (they say what changed in the _output_, and only a stamp bump puts the fix into
+already-processed files); the entries below summarize that history alongside everything else
+that shipped since.
 
 ## [Unreleased]
+
+### Fixed
+
+- The container now exits softly on SIGTERM. `container_run.sh` stays as a supervisor instead of handing PID 1 to a bare `sh`, which ignored the signal: on `docker stop` it only raises a stop flag, the generate, merge and review loops start no new episode, the one in flight finishes, and the container exits 0. Before, the container kept starting new episodes for the whole stop grace period and was then killed mid-transcription.
+- That nightly kill used to poison episodes: a transcription killed part-way leaves a permanent `.dubtitles.fail` marker and the episode is skipped forever (seven were affected). The stop flag is only ever read between episodes, so no marker is written by a stop. A stop also skips the per-show MINE, ACQUIRE and VERIFY steps that have not started yet, and a merge pass cut short by a stop now says `MERGE PASS STOPPED` instead of `COMPLETE`.
+- Still to do outside this change: the host's `docker stop -t` has to be raised above the longest episode, and the host unit has to be updated and copied over; neither is part of this change.
+
+- `mux.py`: a failed stamp write on an `.mkv` episode deleted the only copy of the episode
+  (the rollback removed the freshly replaced file, which was also the original). The stamp
+  is now written from the temp file before it replaces the episode, so a stamp failure
+  leaves the original untouched and the next sweep retries. A stamp is only removed again
+  if the rename into place did not complete.
+- `mux.py`: when the cross-device copy in `_finalize` fails partway, the complete temp
+  output is kept as `<episode>.muxtmp.mkv.recovered` (not deleted, and not touched by later
+  sweeps) and mux writes `<episode>.dubtitles.mux-recovery`. It then refuses to re-mux that
+  episode (`recovery-pending`; the stage stays `crashed`, so the pass reports INCOMPLETE)
+  until a human restores the kept file over the episode and deletes the marker. A plain
+  rename failure (for example a permission error) does NOT trigger this: nothing was
+  copied, so the stamp and temp output are removed and the next sweep retries.
+- `mux.py`: known remaining limitation (tracked separately): the cross-device fallback
+  still overwrites the original in place.
+- `mux.py`: failures in the post-stamp cleanup (removing the old mp4 link, writing
+  `.dubtitles.mux.log`) no longer record the episode as `crashed`. The episode is already
+  muxed and stamped, and the next sweep returns `already-muxed` before any stage write, so
+  the bogus record was never cleared and `merge_pass.sh` reported MERGE PASS INCOMPLETE
+  forever. Cleanup errors now log a warning and the stage records `ok`.
+- Changelog: the 0.2.1 entry for `merge_pass.sh` wrongly says the episode stem is passed
+  via an environment variable; it is actually passed as argv (`sys.argv[1]`, `sys.argv[2]`).
+- `merge_pass.sh` no longer runs mux after a failed repair or a failed signs step. The
+  episode is skipped with a `skip mux: ... failed (<outcome>)` line and retried next pass.
+  Records from older runs are cleared before repair and before mux, and an episode that
+  already has its `.ass` is muxed as before whatever old records say.
+- A refused repair (it would have overwritten repairs already shipped with raw ASR) is now
+  recorded as `refused`, which counts as a failure, instead of the passing `no-reference`.
+- A missing `conf.json` (or `.srt`) is no longer recorded as `no-video`. It is recorded as
+  `ok` with detail `no-conf` / `no-srt`; `no-video` now means there is no video.
+- A failed signs build no longer leaves an `.ass` behind for `merge_pass.sh` to trust and mux
+  to prefer. The build goes to `<episode>.eng.dubtitles.ass.part` and replaces the `.ass`
+  only when it succeeds, so a good earlier `.ass` also survives a failed rebuild. If every
+  English subtitle stream fails to extract, signs is now `build-error` / `extract-failed`
+  instead of "no signs".
+- A broken failed-stage scan at the end of `merge_pass.sh` no longer prints `MERGE PASS
+  COMPLETE`. It prints `MERGE PASS INCOMPLETE: failed-stage scan error`. Counts from several
+  scan batches are now added up instead of breaking the comparison.
+- `common.failed_stage` reads stages in pipeline order (repair, signs, mux) as its docstring
+  says, not in file order, and takes an optional `only=` list of stages.
+- The `.dubtitles.done` stamp and repair's `.srt`, audit `.csv` and summary `.json` are now
+  written through a temp file and renamed into place (`common.atomic_write`, shared with
+  `generate.py`). A crash mid-write no longer truncates the previous stamp, which used to
+  trigger a re-mux of the episode on every sweep, or the shipped `.srt`.
+- A failing ffmpeg no longer produces a truncated transcription: `extract_wav` now checks the
+  exit code, deletes the partial wav and reports `extract-failed`, so the episode is retried
+  instead of getting subtitles for only part of the audio.
+- The publish unit (`deploy/dubtitlerr-publish.service`) no longer puts the GitHub token on
+  the docker command line, where `ps`, the journal and `systemctl status` showed it. It now
+  passes `-e GITHUB_USER -e GITHUB_PAT` without values. Copying the unit to the host is a
+  manual step.
+- `merge_pass.sh` no longer runs mux when repair or signs crashed and the crash record could
+  not be written either (for example an unwritable stage file): that stem is skipped as
+  `<stage> crashed (no record)`. A crash after a stage already recorded `ok` does not block it.
+- A stale `<episode>.eng.dubtitles.ass.part` (left if the pipeline was killed while installing
+  the signs file) is now removed when the episode is muxed.
+
+## 0.2.1 - 2026-09-24
+
+Release-integrity and fail-closed hardening driven by the v0.2.0 adversarial release review
+(findings B1–B9; the original review file is missing — a labeled reconstruction plus a
+post-review evidence log in `docs/Adversarial Reviews/` document the findings and this
+remediation).
+
+### Fixed
+
+- `mux.py`: every failure exit path now writes a real stage record using an outcome from
+  `common.STAGE_OUTCOMES`. Mux verification failures record `build-error` with a
+  `verify:<reason>` detail, signs-regression refusals are recorded as a visible failure
+  instead of a silent return, and unexpected exceptions record a sanitized `crashed`
+  detail. Previously these paths wrote no record (or an invalid one), so `failed_stage()`
+  could not see the failure and the episode could look current.
+- `merge_pass.sh`: the crash-classification fallbacks receive the episode stem via an
+  environment variable instead of inline `'$stem'` interpolation — stems containing
+  apostrophes (e.g. `JoJo's Bizarre Adventure`) no longer raise `SyntaxError` or write
+  bogus crash records.
+
+### Changed
+
+- `release.yml`: image build/push is gated behind a reusable `ci-gate` workflow that
+  re-runs the CI matrix for the tagged commit and skips the image job on any red
+  conclusion — image push cannot follow failed CI (proven on a disposable failed-tag
+  run, see Verification).
+- `uv.lock` resynced to the `pyproject.toml` version; the sprint-015 retro carries a
+  dated correction (the upstream `azrtydxb/procoder#301` issue now exists); stale
+  CHANGELOG sentences and test docstrings fixed.
+
+### Verification
+
+Sanitized evidence recorded 2026-09-24/25 (no secrets; no live mutation accompanied it):
+
+- **CI gate proof (release integrity):** a disposable failed-tag run (temporary branch
+  and annotated tag, both deleted afterwards) went red on the Python 3.11/3.13 tests
+  while lint and osv-scan passed, and the image job was **skipped** as designed. No
+  image build/push or release publication followed the red CI conclusion. The public
+  `v0.2.0` tag was not moved.
+- **Deployment host, read-only audit:** the worker container runs
+  `dubtitle-builder:0.1.3` while the deployed publish service pins `0.1.0` — a pin
+  mismatch is observed, its causal effect unproven, and alignment is tracked separately.
+  Representative media (One Pace S33, sampled 5 of 39 episodes) all carry nonempty
+  `.done` stamps and mux logs with no fail stamps, exactly one default SubRip
+  `Dubtitles` stream each, no external subtitle sidecars, and the sampled episodes
+  decoded cleanly with hundreds of positive subtitle packets and none empty. A full
+  39-file sweep is not proven; conclusions are limited to the sample.
+- **Known open item:** the owner-reported playback symptom (One Pace S33 dubtitle tracks
+  render nothing) is **not root-caused**. Ranked hypotheses and the smallest safe next
+  diagnostic (a bounded read-only probe on the actual player/server host) are recorded
+  in the homelab documentation vault; no causation is claimed.
 
 ## 0.2.0 - 2026-09-23
 
@@ -228,5 +342,6 @@ episode already in your library is stale.
 - **v2** (2026-07-27) — fixed a signs-merge bug that rendered captions as solid black
   and duplicated signs across tracks.
 
+[0.2.1]: https://github.com/XenaRathon/DubTitlerr/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/XenaRathon/DubTitlerr/compare/v0.1.0...v0.2.0
-[Unreleased]: https://github.com/XenaRathon/DubTitlerr/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/XenaRathon/DubTitlerr/compare/v0.2.1...HEAD

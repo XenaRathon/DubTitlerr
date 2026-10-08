@@ -662,3 +662,19 @@ def test_publish_pushes_without_a_token_when_none_is_supplied(tmp_path):
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "pushed" in proc.stdout
+
+
+def test_publish_unit_keeps_the_github_token_off_the_command_line():
+    """`-e GITHUB_PAT=${GITHUB_PAT}` expands into docker's argv, which `ps`, the journal and
+    `systemctl status` all show. `-e GITHUB_PAT` (no value) makes docker read it from its own
+    environment, which systemd fills from Environment=/EnvironmentFile=."""
+    import os
+    import re
+
+    unit = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "deploy", "dubtitlerr-publish.service")
+    text = open(unit).read()
+    exec_start = re.search(r"^ExecStart=((?:.*\\\n)*.*)$", text, re.M).group(1).replace("\\\n", " ")
+    assert "${GITHUB_PAT}" not in exec_start and "${GITHUB_USER}" not in exec_start
+    assert not re.search(r"GITHUB_(PAT|USER)=", exec_start)
+    assert re.search(r"-e GITHUB_PAT(\s|$)", exec_start)
+    assert re.search(r"-e GITHUB_USER(\s|$)", exec_start)

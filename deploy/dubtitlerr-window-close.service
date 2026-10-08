@@ -1,0 +1,25 @@
+[Unit]
+Description=Close the nightly DubTitlerr pipeline window
+After=docker.service
+
+[Service]
+Type=oneshot
+# Must exceed the `docker stop -t` below plus the sweep, or systemd kills this unit first.
+TimeoutStartSec=25min
+# SOFT EXIT. The container's entrypoint traps SIGTERM: it stops STARTING new episodes, lets
+# the one in flight finish, and exits 0 (see container_run.sh / STOP_FLAG). `docker stop`
+# only sends SIGKILL after the -t grace below, so the grace must cover the longest single
+# unit of work: one episode's transcription, or one mux including a cross-device copy.
+# 900 s is a starting point; tune it from the logs (time between "-> ep" lines, mux
+# timestamps). Before this change the entrypoint ignored SIGTERM, kept starting episodes for
+# the whole grace and was SIGKILLed mid-transcription, which leaves a permanent
+# <stem>.dubtitles.fail poison marker.
+ExecStart=/usr/bin/docker stop -t 900 dubtitle-builder
+# Exit code 0 means the soft exit worked; 137 means the grace ran out and SIGKILL landed.
+ExecStart=-/bin/sh -c 'c=$$(/usr/bin/docker inspect -f "{{.State.ExitCode}}" dubtitle-builder); echo "dubtitle-builder exit code: $$c"; [ "$$c" = 0 ] || echo "WARNING: not a soft exit (code $$c)"'
+# A SIGKILL mid-mux can still leave an orphan <stem>.muxtmp.mkv, which Plex indexes as a
+# phantom episode -- hence the sweep. mux.py os.replace()s into place, so a kill mid-mux does
+# not corrupt a library file, EXCEPT on the cross-device copy fallback, which overwrites the
+# episode in place: there a failed copy writes <stem>.dubtitles.mux-recovery and the muxtmp
+# file may be the only complete copy, so the sweep SKIPS any stem that has that marker.
+ExecStart=/bin/sh -c "find \"/mnt/r520-media-full/Anime Library\" -name \x27*.muxtmp.mkv\x27 2>/dev/null | while IFS= read -r f; do s=\"$${f%%.muxtmp.mkv}\"; if [ -e \"$$s.dubtitles.mux-recovery\" ]; then echo \"kept (recovery marker): $$f\"; else echo \"$$f\"; rm -f -- \"$$f\"; fi; done || true"

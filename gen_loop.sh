@@ -11,7 +11,22 @@ ORDER="${ANIME_ORDER:-/config/anime_order.txt}"
 ANIME="${ANIME_ROOT:-/media/Anime Library}"
 GLOSS_DIR="${GLOSSARY_DIR:-/config/glossaries}"
 
+# Soft stop (container_run.sh touches $STOP_FLAG on SIGTERM): stop STARTING work, never kill
+# work in flight -- a killed generate.py leaves a permanent .dubtitles.fail poison marker. So
+# this script has no `trap` and no `wait`; it only looks at the flag between units.
+APP_DIR="${APP_DIR:-/app}"
+if [ -f "$APP_DIR/shell/lib.sh" ]; then
+	. "$APP_DIR/shell/lib.sh"
+else # lib missing (misbuilt image): never stop, plain sleeps
+	stop_requested() { return 1; }
+	sleep_unless_stopped() { sleep "$1"; }
+fi
+
 while :; do
+	if stop_requested; then
+		echo "gen_loop: soft stop, not starting the next sweep"
+		exit 0
+	fi
 	# Watch-gated queue: rewrite $ORDER from what is actually being watched, unioning
 	# WatchState (household/Jellyfin) with Plex history across ALL accounts. Neither source
 	# is a superset of the other. watch_queue.py exits non-zero and leaves $ORDER untouched
@@ -19,18 +34,22 @@ while :; do
 	# a safe answer, an empty one is not. Disabled by leaving WATCH_QUEUE_WINDOW_DAYS unset.
 	if [ -n "${WATCH_QUEUE_WINDOW_DAYS:-}" ]; then
 		echo "#### WATCH QUEUE $(date)"
-		ANIME_ROOT="$ANIME" python3 /app/watch_queue.py \
+		ANIME_ROOT="$ANIME" python3 "$APP_DIR"/watch_queue.py \
 			--window-days "$WATCH_QUEUE_WINDOW_DAYS" --out "$ORDER" \
 			${WATCH_QUEUE_PIN:+--pin "$WATCH_QUEUE_PIN"} </dev/null ||
 			echo "  watch_queue declined to write (keeping the existing order file)"
 	fi
 	if [ ! -f "$ORDER" ]; then
 		echo "gen_loop: no order file $ORDER — idle 300s"
-		sleep 300
+		sleep_unless_stopped 300
 		continue
 	fi
 	echo "==== GENERATE SWEEP $(date) ===="
 	while IFS= read -r show; do
+		if stop_requested; then
+			echo "gen_loop: soft stop, not starting ${show:-the next show}"
+			exit 0
+		fi
 		case "$show" in '' | \#*) continue ;; esac
 		[ -d "$ANIME/$show" ] || {
 			echo "skip-missing: $show"
@@ -39,8 +58,14 @@ while :; do
 		# ADDITIVE dictionary: load the show's existing glossary + mine its NEW episodes'
 		# embedded subs for new proper nouns, appending them (never rebuilds). Runs before
 		# generate so the grown dictionary applies to the episodes about to be transcribed.
+		# Each prep step can run for many minutes (ACQUIRE up to 30, VERIFY up to 20): a stop
+		# that arrives during one show's prep must not wait for the rest of it.
+		if stop_requested; then
+			echo "gen_loop: soft stop, not starting MINE on $show"
+			exit 0
+		fi
 		echo "#### MINE $show $(date)"
-		GLOSSARY_DIR="$GLOSS_DIR" python3 /app/mine_glossary.py "$ANIME/$show" </dev/null 2>&1 || echo "  mine failed (continuing)"
+		GLOSSARY_DIR="$GLOSS_DIR" python3 "$APP_DIR"/mine_glossary.py "$ANIME/$show" </dev/null 2>&1 || echo "  mine failed (continuing)"
 		# Acquire names the miner cannot reach: releases with no embedded fansub track leave the
 		# glossary empty for that stretch of the show. Wiki-owned canonicals only. Two separate
 		# gates: ACQUIRE enables the step at all (default on, dry-run: it only logs proposals);
@@ -48,6 +73,10 @@ while :; do
 		# dry-run-and-log until the Punk Hazard verification run has passed. Failure-swallowed
 		# so it can never stall a sweep either way.
 		if [ "${ACQUIRE:-1}" != "0" ] && [ -f "$GLOSS_DIR/$show.json" ]; then
+			if stop_requested; then
+				echo "gen_loop: soft stop, not starting ACQUIRE on $show"
+				exit 0
+			fi
 			echo "#### ACQUIRE $show $(date)"
 			ACQ_FLAGS=""
 			[ -n "${ACQUIRE_APPLY:-}" ] && ACQ_FLAGS="--apply"
@@ -61,7 +90,7 @@ while :; do
 			# surfaced for a human).
 			# 600s was also an incremental-era number; a first full acquisition pass over 463
 			# episodes exceeded it and was killed mid-harvest on 2026-08-21.
-			timeout "${ACQUIRE_TIMEOUT:-1800}" python3 /app/glossary_acquire.py \
+			timeout "${ACQUIRE_TIMEOUT:-1800}" python3 "$APP_DIR"/glossary_acquire.py \
 				"$GLOSS_DIR/$show.json" "$ANIME/$show" \
 				$ACQ_FLAGS </dev/null 2>&1 || echo "  acquire skipped (continuing)"
 		fi
@@ -70,6 +99,10 @@ while :; do
 		# wiki-verify the (mined/updated) glossary: canonical, dub-preferred spellings. Incremental +
 		# cached, and timeout-bounded + failure-swallowed so a slow/down wiki never stalls the sweep.
 		if [ -n "$GLOSS" ]; then
+			if stop_requested; then
+				echo "gen_loop: soft stop, not starting VERIFY on $show"
+				exit 0
+			fi
 			echo "#### VERIFY $show $(date)"
 			# 300s was sized for INCREMENTAL verification -- pending_terms() skips anything
 			# already in `verified`, so a steady-state run adjudicates a handful of terms. A
@@ -82,7 +115,7 @@ while :; do
 			# rc-classified message below ever runs. Verified on vm102 2026-09-05: every restart
 			# over the prior 14h exited with code 124, journal-confirmed, with VERIFY_TIMEOUT
 			# (1200s) firing on One Pace within ~2s of the restart in every measured instance.
-			timeout "${VERIFY_TIMEOUT:-1200}" python3 /app/glossary_verify.py "$GLOSS" </dev/null 2>&1 && rc=0 || rc=$?
+			timeout "${VERIFY_TIMEOUT:-1200}" python3 "$APP_DIR"/glossary_verify.py "$GLOSS" </dev/null 2>&1 && rc=0 || rc=$?
 			[ "$rc" -eq 0 ] || { [ "$rc" -eq 124 ] &&
 				echo "  verify TIMED OUT after ${VERIFY_TIMEOUT:-1200}s (continuing; terms stay unverified)" ||
 				echo "  verify failed rc=$rc (continuing)"; }
@@ -91,13 +124,17 @@ while :; do
 		# crash-resume: re-run until clean exit or no progress (poison files get a .fail marker)
 		attempt=0
 		while :; do
+			if stop_requested; then
+				echo "gen_loop: soft stop, not starting a generate pass on $show"
+				break
+			fi
 			attempt=$((attempt + 1))
 			before=$(find "$ANIME/$show" \( -name "*.eng.dubtitles.srt" -o -name "*.dubtitles.fail" \) 2>/dev/null | wc -l)
 			# `&& rc=0 || rc=$?` (not a bare command + `rc=$?` on the next line) so a nonzero
 			# exit from generate.py doesn't trip `set -e` and kill the container before the
 			# crash-resume logic below ever sees it — while still capturing the real exit code.
 			SHOW_NAME="$show" GLOSSARY_FILE="$GLOSS" REQUIRE_ENG=1 COMPUTE_TYPE="${COMPUTE_TYPE:-int8}" \
-				python3 /app/generate.py --root "$ANIME/$show" </dev/null && rc=0 || rc=$?
+				python3 "$APP_DIR"/generate.py --root "$ANIME/$show" </dev/null && rc=0 || rc=$?
 			after=$(find "$ANIME/$show" \( -name "*.eng.dubtitles.srt" -o -name "*.dubtitles.fail" \) 2>/dev/null | wc -l)
 			[ "$rc" = "0" ] && break
 			if [ "$after" -le "$before" ]; then
@@ -112,5 +149,9 @@ while :; do
 		done
 	done <"$ORDER"
 	echo "==== SWEEP COMPLETE — idle ${RESCAN_INTERVAL:-21600}s $(date) ===="
-	sleep "${RESCAN_INTERVAL:-21600}"
+	sleep_unless_stopped "${RESCAN_INTERVAL:-21600}"
+	if stop_requested; then
+		echo "gen_loop: soft stop, leaving the idle wait"
+		exit 0
+	fi
 done

@@ -1,0 +1,16 @@
+[Unit]
+# The nightly dubtitle window. The pipeline holds the GPU and hammers the media mount, so
+# it runs 00:00-10:00 and leaves the day to the household -- the same window this homelab
+# used before the pipeline moved to this host.
+Description=Open the nightly DubTitlerr pipeline window
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# `docker start`, not `compose up`: the container already exists and is managed by the
+# compose stack. Recreating it here would fight that record.
+ExecStart=/usr/bin/docker start dubtitle-builder
+
+[Install]
+WantedBy=multi-user.target

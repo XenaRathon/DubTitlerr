@@ -81,7 +81,7 @@ import ordering
 import qc
 import reflow
 import unresolved
-from common import MEDIA_GID, MEDIA_UID, dialogue_intervals, find_video, out_for, read_words, ts_srt, write_stage
+from common import MEDIA_GID, MEDIA_UID, atomic_write, dialogue_intervals, find_video, out_for, read_words, ts_srt, write_stage
 
 OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 # qwen3-4b-instruct, not nanbeige4.2-3b -- flipped 2026-09-01 on a live anchored bake-off
@@ -718,8 +718,11 @@ def process(conf_path):
     # sidecar straight out of the already-muxed track for episodes whose conf was long
     # since cleaned up, and merge_pass.sh calls repair.py unconditionally. That dialogue
     # was already repaired when it was first built, so there is nothing to redo.
-    if not video or not os.path.exists(srt) or not os.path.exists(conf_path):
+    if not video:
         write_stage(stem, "repair", "no-video")
+        return "skip"
+    if not os.path.exists(srt) or not os.path.exists(conf_path):
+        write_stage(stem, "repair", "ok", "no-srt" if not os.path.exists(srt) else "no-conf")
         return "skip"
     conf = json.load(open(conf_path))
     # For card_split's word-alignment path only (see card_split.card_words). None on any episode
@@ -1074,7 +1077,7 @@ def process(conf_path):
             " overwrite them with raw ASR. Declare `unanchored_repair` in this show's glossary if its copies"
             " carry no English subtitles for the Japanese audio."
         )
-        write_stage(stem, "repair", "no-reference")
+        write_stage(stem, "repair", "refused", "prior-repairs")
         return "refused"
     # rewrite srt from (possibly repaired) conf rows. conf.json stores text FLATTENED
     # (generate.py replaces '\n' with ' '), so re-wrap here or every episode that
@@ -1082,7 +1085,7 @@ def process(conf_path):
     # the library did until this fix.
     srt_out = out_for(srt)
     rep_out = out_for(stem + ".dubtitles.repair.csv")
-    with open(srt_out, "w") as f:
+    def _render_srt(f):
         i = 0
         for c in conf:
             # `_split` is set ONLY by the card_split path above and never written back to
@@ -1092,10 +1095,16 @@ def process(conf_path):
             for p in c.get("_split") or ({"start": c["start"], "end": c["end"], "text": c["text"]},):
                 i += 1
                 f.write(f"{i}\n{ts_srt(p['start'])} --> {ts_srt(p['end'])}\n{reflow.wrap_balance(p['text'])}\n\n")
-    with open(rep_out, "w", newline="") as f:
+
+    def _render_csv(f):
         w = csv.writer(f)
         w.writerow(["orig", "repaired", "ref", "latency_ms"])
         w.writerows(audit)
+
+    # Atomic: a crash mid-write must not truncate the shipped srt (SKIP_IF_SRT reads a
+    # truncated file as a finished episode) or the audit csv.
+    atomic_write(srt_out, _render_srt)
+    atomic_write(rep_out, _render_csv, newline="")
     # A10: per-show repair summary, written alongside the srt/csv
     lat_values = [r["latency_ms"] for r in repaired_lines]
     summary = {
@@ -1132,8 +1141,7 @@ def process(conf_path):
         "repaired_lines": repaired_lines,
     }
     summary_out = out_for(stem + ".dubtitles.repair-summary.json")
-    with open(summary_out, "w") as f:
-        json.dump(summary, f, indent=2)
+    atomic_write(summary_out, lambda f: json.dump(summary, f, indent=2))
     for p in (srt_out, rep_out, summary_out):
         try:
             os.chown(p, MEDIA_UID, MEDIA_GID)

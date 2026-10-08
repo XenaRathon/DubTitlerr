@@ -9,6 +9,7 @@ binary-presence checks (`mkvmerge`, which is not installed on this dev box) so t
 script reaches its own logic instead of exiting at the FATAL guard."""
 
 import os
+import shlex
 import stat
 import subprocess
 import sys
@@ -110,3 +111,314 @@ def test_crashed_record_written_only_when_stage_left_none(tmp_path):
         check=False,
     )
     assert common.read_stages(stem2)["repair"]["outcome"] == "crashed"
+
+
+def test_apostrophe_stem_records_real_crash_fallback(tmp_path, monkeypatch):
+    root = tmp_path / "library"
+    root.mkdir()
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    monkeypatch.setenv("OUTPUT_ROOT", "")
+
+    stem = str(root / "JoJo's Bizarre Adventure" / "S01E01")
+    os.makedirs(os.path.dirname(stem), exist_ok=True)
+    for suffix in (".eng.dubtitles.ass", ".mkv"):
+        with open(stem + suffix, "w"):
+            pass
+
+    _fake_bin(tmp_path, "ffmpeg")
+    bindir = tmp_path / "fakebin"
+    wrapper = bindir / "python3"
+    wrapper.write_text(
+        f'#!/bin/sh\ncase "$1" in\n  */mux.py) [ "$2" = "--apply" ] && exit 1 ;;\nesac\nexec {shlex.quote(sys.executable)} "$@"\n'
+    )
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    res = _run(tmp_path, root)
+    stages = common.read_stages(stem)
+    record = stages.get("mux", {})
+    output = res.stdout + res.stderr
+
+    assert "SyntaxError" not in output, output
+    assert record.get("outcome") == "crashed", (output, stages)
+    assert record.get("detail") == "rc=1", (output, stages)
+    assert common.failed_stage(stem) == "mux", stages
+    assert "MERGE PASS INCOMPLETE" in res.stdout, output
+
+
+# --- stage gating: a failed repair/signs must not be muxed -------------------------------
+#
+# These drive the real merge_pass.sh against a stub APP_DIR whose repair/signs/mux scripts
+# log every call and record the stage outcome the env asks for. The real common.py is reached
+# through PYTHONPATH, so stage records, failed_stage() and clear_stage() are the real ones.
+
+_REPO = os.path.dirname(MERGE_PASS)
+
+_STUB = """\
+import os, sys
+sys.path.insert(0, {repo!r})
+import common
+common.OUTPUT_ROOT = ""
+name = {name!r}
+arg = sys.argv[-1]
+for suffix in (".dubtitles.conf.json", ".eng.dubtitles.srt", ".mkv", ".mp4"):
+    if arg.endswith(suffix):
+        stem = arg[: -len(suffix)]
+        break
+with open(os.environ["CALLLOG"], "a") as f:
+    f.write(name + " " + os.path.basename(stem) + "\\n")
+if os.environ.get("STUB_STOP_AFTER") == name:  # the window closes while this stage runs
+    open(os.environ["STOP_FLAG"], "w").close()
+mode = os.environ.get("STUB_" + name.upper(), "ok")
+late_crash = mode == "ok-then-exit3"
+if late_crash:
+    mode = "ok"
+if mode == "exit3":  # dies without recording anything
+    sys.exit(3)
+if mode == "silent":  # exits 0 without recording anything
+    sys.exit(0)
+if mode != "ok":
+    common.write_stage(stem, name, mode)
+    sys.exit(0)
+common.write_stage(stem, name, "ok")
+if name == "signs":
+    open(stem + ".eng.dubtitles.ass", "w").close()
+    os.remove(stem + ".eng.dubtitles.srt")
+if late_crash:
+    sys.exit(3)
+"""
+
+
+def _stub_app(tmp_path):
+    app = tmp_path / "app"
+    app.mkdir()
+    for name, script in (("repair", "repair.py"), ("signs", "dub_signs_merge.py"), ("mux", "mux.py")):
+        (app / script).write_text(_STUB.format(repo=_REPO, name=name))
+    (app / "shell").mkdir()  # the real helpers, as in the image (/app/shell/lib.sh)
+    (app / "shell" / "lib.sh").write_text(open(os.path.join(_REPO, "shell", "lib.sh")).read())
+    return app
+
+
+def _episode(tmp_path, with_ass=False):
+    root = tmp_path / "library"
+    stem = root / "Show" / "ep01"
+    stem.parent.mkdir(parents=True)
+    (tmp_path / "calls.log").write_text("")
+    (stem.parent / "ep01.mkv").write_text("")
+    (stem.parent / "ep01.eng.dubtitles.srt").write_text("")
+    if with_ass:
+        (stem.parent / "ep01.eng.dubtitles.ass").write_text("")
+    return root, str(stem)
+
+
+def _gated_run(tmp_path, root, extra_env=None, **stub_modes):
+    app = _stub_app(tmp_path) if not (tmp_path / "app").exists() else tmp_path / "app"
+    bindir = _fake_bin(tmp_path, "mkvmerge")
+    _fake_bin(tmp_path, "ffmpeg")
+    env = dict(os.environ)
+    env["PATH"] = bindir + os.pathsep + env["PATH"]
+    env.update(MERGE_ROOTS=str(root), APP_DIR=str(app), PYTHONPATH=_REPO, CALLLOG=str(tmp_path / "calls.log"))
+    for k, v in stub_modes.items():
+        env["STUB_" + k.upper()] = v
+    env.update(extra_env or {})
+    res = subprocess.run(["/bin/sh", MERGE_PASS], env=env, cwd=str(root), capture_output=True, text=True, timeout=60)
+    return res, (tmp_path / "calls.log").read_text().split("\n")[:-1]
+
+
+def test_failed_repair_skips_signs_and_mux_and_the_stem_is_retried(tmp_path):
+    root, stem = _episode(tmp_path)
+    res, calls = _gated_run(tmp_path, root, repair="backend-unreachable")
+    assert calls == ["repair ep01"], (calls, res.stdout, res.stderr)
+    assert "skip mux: repair failed (backend-unreachable)" in res.stdout
+    assert "MERGE PASS INCOMPLETE" in res.stdout
+    # the srt is still there and no .ass exists, so the next pass retries
+    res2, calls2 = _gated_run(tmp_path, root, repair="backend-unreachable")
+    assert calls2 == ["repair ep01", "repair ep01"], calls2
+
+
+def test_a_repair_that_dies_silently_is_not_masked_by_a_stale_ok_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    root, stem = _episode(tmp_path)
+    common.write_stage(stem, "repair", "ok")  # stale, from an older run
+    res, calls = _gated_run(tmp_path, root, repair="exit3")
+    assert calls == ["repair ep01"], (calls, res.stdout, res.stderr)
+    assert common.read_stages(stem)["repair"]["outcome"] == "crashed"
+
+
+def test_failed_signs_skips_mux(tmp_path):
+    root, stem = _episode(tmp_path)
+    res, calls = _gated_run(tmp_path, root, signs="build-error")
+    assert calls == ["repair ep01", "signs ep01"], (calls, res.stdout, res.stderr)
+    assert "skip mux: signs failed (build-error)" in res.stdout
+    res2, calls2 = _gated_run(tmp_path, root, signs="build-error")
+    assert calls2[2:] == ["repair ep01", "signs ep01"], "the next pass must retry from repair"
+
+
+def test_repair_and_signs_passing_runs_mux(tmp_path):
+    root, stem = _episode(tmp_path)
+    res, calls = _gated_run(tmp_path, root)
+    assert calls == ["repair ep01", "signs ep01", "mux ep01"], (calls, res.stdout, res.stderr)
+
+
+def test_existing_ass_runs_mux_even_with_an_old_failure_record(tmp_path, monkeypatch):
+    """Guard: stale records must never block mux when the assemble block did not run, or the
+    episode would be stuck forever with no retry path."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    root, stem = _episode(tmp_path, with_ass=True)
+    common.write_stage(stem, "repair", "crashed")
+    common.write_stage(stem, "signs", "build-error")
+    res, calls = _gated_run(tmp_path, root)
+    assert calls == ["mux ep01"], (calls, res.stdout, res.stderr)
+
+
+def test_mux_that_dies_silently_is_recorded_crashed_despite_a_stale_ok(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    root, stem = _episode(tmp_path, with_ass=True)
+    common.write_stage(stem, "mux", "ok")  # stale
+    res, calls = _gated_run(tmp_path, root, mux="exit3")
+    assert calls == ["mux ep01"]
+    rec = common.read_stages(stem)["mux"]
+    assert (rec["outcome"], rec.get("detail")) == ("crashed", "rc=3"), (rec, res.stdout, res.stderr)
+
+
+def test_a_failed_stage_scan_never_prints_complete(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    root = tmp_path / "library"
+    stem = str(root / "Show" / "ep01")
+    os.makedirs(os.path.dirname(stem))
+    common.write_stage(stem, "repair", "ok")
+    _fake_bin(tmp_path, "ffmpeg")
+    wrapper = tmp_path / "fakebin" / "python3"
+    wrapper.write_text(
+        f'#!/bin/sh\ncase "$2" in *failed_stage*) exit 1 ;;\nesac\nexec {shlex.quote(sys.executable)} "$@"\n'
+    )
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    res = _run(tmp_path, root)
+    assert "MERGE PASS COMPLETE" not in res.stdout, res.stdout + res.stderr
+    assert "MERGE PASS INCOMPLETE: failed-stage scan error" in res.stdout
+    assert "MERGE_PASS_DONE" in res.stdout
+
+
+def test_a_crash_whose_record_cannot_be_written_still_blocks_mux(tmp_path, monkeypatch):
+    """rc != 0, no record, AND the crash fallback's write fails (here the sidecar path is a
+    directory, so os.replace onto it fails): the gate saw 'no record' and let mux run."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    root, stem = _episode(tmp_path)
+    os.mkdir(stem + common.STAGES_SUFFIX)
+    res, calls = _gated_run(tmp_path, root, repair="exit3")
+    assert calls == ["repair ep01"], (calls, res.stdout, res.stderr)
+    assert "skip mux: repair crashed (no record)" in res.stdout
+
+
+def test_a_signs_crash_whose_record_cannot_be_written_still_blocks_mux(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    root, stem = _episode(tmp_path)
+    os.mkdir(stem + common.STAGES_SUFFIX)
+    # repair exits 0 with no record (passes the gate: rc == 0); signs then dies without one.
+    res, calls = _gated_run(tmp_path, root, repair="silent", signs="exit3")
+    assert calls[:2] == ["repair ep01", "signs ep01"] and "mux ep01" not in calls, (calls, res.stdout, res.stderr)
+    assert "skip mux: signs crashed (no record)" in res.stdout
+
+
+def test_a_crash_after_an_ok_record_does_not_block_mux(tmp_path):
+    """Guard: gate on 'no record', not on rc alone, or a late failure after a good record
+    would re-run the whole stage every pass."""
+    root, stem = _episode(tmp_path)
+    res, calls = _gated_run(tmp_path, root, repair="ok-then-exit3")
+    assert calls == ["repair ep01", "signs ep01", "mux ep01"], (calls, res.stdout, res.stderr)
+
+
+def test_gate_error_skips_mux_and_the_pass_still_finishes(tmp_path):
+    root, stem = _episode(tmp_path)
+    _stub_app(tmp_path)
+    _fake_bin(tmp_path, "ffmpeg")
+    wrapper = tmp_path / "fakebin" / "python3"
+    wrapper.write_text(f'#!/bin/sh\ncase "$2" in *"only=("*) exit 1 ;;\nesac\nexec {shlex.quote(sys.executable)} "$@"\n')
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    res, calls = _gated_run(tmp_path, root)
+    assert calls == ["repair ep01"], (calls, res.stdout, res.stderr)
+    assert "skip mux: repair failed (gate-error)" in res.stdout
+    assert "MERGE_PASS_DONE" in res.stdout
+
+
+def test_failed_counts_from_several_xargs_batches_are_summed(tmp_path, monkeypatch):
+    """Guard for the awk sum: xargs prints one count line per python run."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    root = tmp_path / "library"
+    for i, outcome in enumerate(["crashed", "ok", "build-error", "crashed", "ok"]):
+        stem = str(root / "Show" / f"ep{i}")
+        os.makedirs(os.path.dirname(stem), exist_ok=True)
+        common.write_stage(stem, "repair", outcome)
+    real_xargs = subprocess.run(["sh", "-c", "command -v xargs"], capture_output=True, text=True).stdout.strip()
+    _fake_bin(tmp_path, "ffmpeg")
+    wrapper = tmp_path / "fakebin" / "xargs"
+    wrapper.write_text(f'#!/bin/sh\nexec {shlex.quote(real_xargs)} -n 1 "$@"\n')
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    res = _run(tmp_path, root)
+    assert "MERGE PASS INCOMPLETE: 3 episodes with a failed stage" in res.stdout, res.stdout + res.stderr
+
+
+# --- soft stop: the pass stops STARTING stems once STOP_FLAG exists --------------------------
+
+
+def _second_episode(root):
+    d = root / "Show"
+    (d / "ep02.mkv").write_text("")
+    (d / "ep02.eng.dubtitles.srt").write_text("")
+
+
+def test_stop_flag_preset_processes_no_stem_but_the_pass_still_reports(tmp_path):
+    root, stem = _episode(tmp_path)
+    _second_episode(root)
+    flag = tmp_path / "stop.flag"
+    flag.write_text("")
+    res, calls = _gated_run(tmp_path, root, extra_env={"STOP_FLAG": str(flag)})
+    assert calls == [], (calls, res.stdout, res.stderr)
+    assert "soft stop" in res.stdout
+    assert "MERGE PASS STOPPED (soft stop): some stems were not processed" in res.stdout, res.stdout
+    assert "MERGE PASS COMPLETE" not in res.stdout
+    assert "MERGE_PASS_DONE" in res.stdout
+
+
+def test_stop_flag_without_the_variable_never_stops(tmp_path):
+    root, stem = _episode(tmp_path)
+    res, calls = _gated_run(tmp_path, root)
+    assert calls == ["repair ep01", "signs ep01", "mux ep01"], calls
+
+
+def test_stop_during_mux_of_the_first_stem_leaves_the_second_unstarted(tmp_path):
+    root, stem = _episode(tmp_path)
+    _second_episode(root)
+    flag = tmp_path / "stop.flag"
+    res, calls = _gated_run(tmp_path, root, extra_env={"STOP_FLAG": str(flag)}, stop_after="mux")
+    assert calls == ["repair ep01", "signs ep01", "mux ep01"], (calls, res.stdout)
+    assert "MERGE_PASS_DONE" in res.stdout
+
+
+def test_stop_between_assemble_and_mux_skips_mux_for_that_stem(tmp_path):
+    root, stem = _episode(tmp_path)
+    flag = tmp_path / "stop.flag"
+    res, calls = _gated_run(tmp_path, root, extra_env={"STOP_FLAG": str(flag)}, stop_after="signs")
+    assert calls == ["repair ep01", "signs ep01"], (calls, res.stdout)
+    assert "skip mux: soft stop" in res.stdout
+    assert "MERGE_PASS_DONE" in res.stdout
+
+
+def test_a_real_failure_still_wins_over_the_stopped_line(tmp_path, monkeypatch):
+    # chosen: a failure count is the more useful signal; the "soft stop" lines still show the stop
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    root, stem = _episode(tmp_path)
+    other = root / "Show" / "old01"
+    common.write_stage(str(other), "repair", "backend-unreachable")
+    flag = tmp_path / "stop.flag"
+    flag.write_text("")
+    res, calls = _gated_run(tmp_path, root, extra_env={"STOP_FLAG": str(flag)})
+    assert "MERGE PASS INCOMPLETE: 1 episodes with a failed stage" in res.stdout, res.stdout
+    assert "STOPPED" not in res.stdout
+    assert "MERGE_PASS_DONE" in res.stdout
+
+
+def test_a_stop_after_the_last_stem_still_reports_stopped(tmp_path):
+    root, stem = _episode(tmp_path)
+    flag = tmp_path / "stop.flag"
+    res, calls = _gated_run(tmp_path, root, extra_env={"STOP_FLAG": str(flag)}, stop_after="signs")
+    assert "MERGE PASS STOPPED (soft stop)" in res.stdout, res.stdout

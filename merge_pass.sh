@@ -12,7 +12,7 @@
 #      MIN_FREE_GB, KEEP_LANGS.
 ROOT="${MERGE_ROOTS:-/media/Anime Library}"
 APP="${APP_DIR:-/scripts}"
-export PYTHONPATH="$APP${PYTHONPATH:+:$PYTHONPATH}"  # so inline `python3 -c "import common"` snippets resolve
+export PYTHONPATH="$APP${PYTHONPATH:+:$PYTHONPATH}" # so inline `python3 -c "import common"` snippets resolve
 command -v ffmpeg >/dev/null 2>&1 || {
 	echo "FATAL: ffmpeg not found — image is misbuilt"
 	exit 1
@@ -40,33 +40,80 @@ cd "$ROOT" || {
 # silently -- no output, status 2, nothing assembled -- whenever APP_DIR was not /app,
 # which is exactly the fallback case the comment above claims to support.
 [ -f "$APP/shell/lib.sh" ] && . "$APP/shell/lib.sh"
+# Soft stop: stop_requested comes from lib.sh; without it nothing ever stops.
+command -v stop_requested >/dev/null 2>&1 || stop_requested() { return 1; }
 PATTERN=$(extras_grep_pattern "$APP/data/extras.txt" 2>/dev/null || echo '(Behind The Scenes|Deleted Scenes|Featurettes|Interviews|Scenes|Shorts|Trailers|Other|Extras)')
+
+# Prints the outcome of a stage that failed, nothing if it passed. Fails CLOSED: if the
+# check itself cannot run, report "gate-error" so mux is skipped rather than run blind.
+stage_failure() {
+	python3 -c "import common,sys; s=sys.argv[1]; f=common.failed_stage(s, only=(sys.argv[2],)); print(common.read_stages(s)[f].get('outcome') if f else '')" "$1" "$2" </dev/null 2>/dev/null || echo "gate-error"
+}
+
+# True if the stage left ANY record. Fails closed: a check that cannot run counts as "no".
+has_record() {
+	python3 -c "import common,sys; sys.exit(0 if sys.argv[2] in common.read_stages(sys.argv[1]) else 1)" "$1" "$2" </dev/null >/dev/null 2>&1
+}
 
 before=$(find . -type f -name "*.dubtitles.done" | wc -l)
 # episodes with a sidecar (srt or ass) -> dedup to the stem
 find . -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) |
 	grep -ivE "/$PATTERN/" |
 	sed -E 's/\.eng\.dubtitles\.(srt|ass)$//' | sort -u | while IFS= read -r stem; do
+	# window closed (container_run.sh got SIGTERM): start no new stem. This loop is a pipe
+	# subshell, so `break`, not `exit`: the census and the COMPLETE/DONE lines below still run.
+	if stop_requested; then
+		echo "merge_pass: soft stop, not starting $stem"
+		break
+	fi
 	[ -f "$stem.dubtitles.fail" ] && continue # generate crashed on it -> skip
 	if [ ! -f "$stem.eng.dubtitles.ass" ] && [ -f "$stem.eng.dubtitles.srt" ]; then
 		echo "### assemble $stem"
+		# Drop records from older runs so the crash fallbacks and the gates below only ever see
+		# THIS run's outcome (a stale "ok" would otherwise hide a repair that died silently).
+		python3 -c "import common,sys; common.clear_stage(sys.argv[1], 'repair', 'signs')" "$stem" </dev/null >/dev/null 2>&1 || true
 		python3 "$APP/repair.py" "$stem.dubtitles.conf.json" </dev/null
 		rc=$?
 		if [ $rc -ne 0 ]; then
-			python3 -c "import common,sys; s='$stem'; sys.exit(0 if 'repair' in common.read_stages(s) else common.write_stage(s, 'repair', 'crashed', 'rc=$rc') or 1)" </dev/null >/dev/null 2>&1 || true
+			python3 -c "import common,sys; s=sys.argv[1]; rc=sys.argv[2]; sys.exit(0 if 'repair' in common.read_stages(s) else common.write_stage(s, 'repair', 'crashed', 'rc='+rc) or 1)" "$stem" "$rc" </dev/null >/dev/null 2>&1 || true
+			# the fallback's own write can fail (unwritable sidecar): no record at all is a failure
+			if ! has_record "$stem" repair; then
+				echo "skip mux: repair crashed (no record)"
+				continue
+			fi
+		fi
+		bad=$(stage_failure "$stem" repair)
+		if [ -n "$bad" ]; then
+			echo "skip mux: repair failed ($bad)" # the .srt stays, no .ass: the next pass retries
+			continue
 		fi
 		python3 "$APP/dub_signs_merge.py" "$stem.eng.dubtitles.srt" </dev/null
 		rc=$?
 		if [ $rc -ne 0 ]; then
-			python3 -c "import common,sys; s='$stem'; sys.exit(0 if 'signs' in common.read_stages(s) else common.write_stage(s, 'signs', 'crashed', 'rc=$rc') or 1)" </dev/null >/dev/null 2>&1 || true
+			python3 -c "import common,sys; s=sys.argv[1]; rc=sys.argv[2]; sys.exit(0 if 'signs' in common.read_stages(s) else common.write_stage(s, 'signs', 'crashed', 'rc='+rc) or 1)" "$stem" "$rc" </dev/null >/dev/null 2>&1 || true
+			# the fallback's own write can fail (unwritable sidecar): no record at all is a failure
+			if ! has_record "$stem" signs; then
+				echo "skip mux: signs crashed (no record)"
+				continue
+			fi
 		fi
+		bad=$(stage_failure "$stem" signs)
+		if [ -n "$bad" ]; then
+			echo "skip mux: signs failed ($bad)"
+			continue
+		fi
+	fi
+	if stop_requested; then
+		echo "skip mux: soft stop (the assembled sidecar waits for the next pass)"
+		continue
 	fi
 	for ext in mkv mp4 m4v; do # mux the video (root); embeds + stamps
 		[ -f "$stem.$ext" ] && {
+			python3 -c "import common,sys; common.clear_stage(sys.argv[1], 'mux')" "$stem" </dev/null >/dev/null 2>&1 || true
 			python3 "$APP/mux.py" --apply "$stem.$ext" </dev/null
 			rc=$?
 			if [ $rc -ne 0 ]; then
-				python3 -c "import common,sys; s='$stem'; sys.exit(0 if 'mux' in common.read_stages(s) else common.write_stage(s, 'mux', 'crashed', 'rc=$rc') or 1)" </dev/null >/dev/null 2>&1 || true
+				python3 -c "import common,sys; s=sys.argv[1]; rc=sys.argv[2]; sys.exit(0 if 'mux' in common.read_stages(s) else common.write_stage(s, 'mux', 'crashed', 'rc='+rc) or 1)" "$stem" "$rc" </dev/null >/dev/null 2>&1 || true
 			fi
 			break
 		}
@@ -83,7 +130,7 @@ fi
 # counter incremented inside it survives past `done` -- the COMPLETE/
 # INCOMPLETE decision is computed here, after the loop exits, by a fresh scan
 # of every stage sidecar under ROOT rather than from any loop-local state.
-failed_count=$(find . -type f -name "*.dubtitles.stages.json" -print0 |
+scan_out=$(find . -type f -name "*.dubtitles.stages.json" -print0 |
 	xargs -0 -r python3 -c "
 import common, sys
 n = 0
@@ -92,8 +139,19 @@ for p in sys.argv[1:]:
     if common.failed_stage(stem) is not None:
         n += 1
 print(n)
-" 2>/dev/null || echo 0)
-if [ "${failed_count:-0}" -eq 0 ]; then
+" 2>/dev/null)
+scan_rc=$?
+# xargs may split a big library into several python runs, one count line each: sum them.
+failed_count=$(printf '%s\n' "$scan_out" | awk '{ n += $1 } END { print n + 0 }')
+if [ "$scan_rc" -eq 0 ] && [ "${failed_count:-0}" -eq 0 ] && stop_requested; then
+	# stems skipped by a soft stop have no failure record, so COMPLETE would be misleading.
+	# Real failures win over this line: a count is more useful than "stopped" (see below).
+	echo "MERGE PASS STOPPED (soft stop): some stems were not processed"
+elif [ "$scan_rc" -ne 0 ]; then
+	# never claim COMPLETE when the scan could not run (a broken `import common` used to
+	# fall through to a count of 0)
+	echo "MERGE PASS INCOMPLETE: failed-stage scan error"
+elif [ "${failed_count:-0}" -eq 0 ]; then
 	echo "MERGE PASS COMPLETE"
 else
 	echo "MERGE PASS INCOMPLETE: $failed_count episodes with a failed stage"

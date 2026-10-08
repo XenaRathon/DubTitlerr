@@ -55,6 +55,131 @@ def test_failed_stage_none_when_all_pass_else_first_offender(tmp_path, monkeypat
     assert common.failed_stage(stem) == "signs"
 
 
+def test_failed_stage_reads_stages_in_pipeline_order_not_insertion_order(tmp_path, monkeypatch):
+    """The docstring promised repair -> signs -> mux; the code iterated the sidecar in JSON
+    insertion order, so a stale mux record written first hid a newer repair failure."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep01")
+    common.write_stage(stem, "mux", "crashed")  # inserted first
+    common.write_stage(stem, "signs", "build-error")
+    common.write_stage(stem, "repair", "backend-unreachable")
+    assert common.STAGE_ORDER == ("repair", "signs", "mux")
+    assert common.failed_stage(stem) == "repair"
+
+
+def test_failed_stage_checks_unknown_stage_keys_after_the_known_ones(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep01")
+    common.write_stage(stem, "extra", "crashed")
+    assert common.failed_stage(stem) == "extra"
+    common.write_stage(stem, "mux", "crashed")
+    assert common.failed_stage(stem) == "mux"
+
+
+def test_failed_stage_only_limits_the_stages_considered(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep01")
+    common.write_stage(stem, "repair", "crashed")
+    common.write_stage(stem, "signs", "ok")
+    assert common.failed_stage(stem, only=("signs",)) is None
+    assert common.failed_stage(stem, only=("repair",)) == "repair"
+    assert common.failed_stage(stem, only=("signs", "repair")) == "repair"
+    assert common.failed_stage(stem, only=()) is None
+    assert common.failed_stage(stem) == "repair"  # one-argument form unchanged
+
+
+def test_clear_stage_removes_only_the_named_keys(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep01")
+    common.write_stage(stem, "repair", "crashed")
+    common.write_stage(stem, "signs", "build-error")
+    common.write_stage(stem, "mux", "ok")
+    common.clear_stage(stem, "repair", "signs")
+    assert set(common.read_stages(stem)) == {"mux"}
+    assert common.failed_stage(stem) is None
+    assert not os.path.exists(common._stages_path(stem) + ".tmp"), "temp file left behind"
+
+
+def test_clear_stage_is_a_no_op_for_a_missing_sidecar_or_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep01")
+    common.clear_stage(stem, "repair")  # no sidecar: no error, none created
+    assert not os.path.exists(common._stages_path(stem))
+    common.write_stage(stem, "mux", "ok")
+    before = common.read_stages(stem)
+    common.clear_stage(stem, "repair", "signs")  # keys absent
+    assert common.read_stages(stem) == before
+
+
+def test_refused_is_a_recordable_outcome_and_counts_as_a_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep01")
+    assert "refused" in common.STAGE_OUTCOMES
+    common.write_stage(stem, "repair", "refused", "prior repairs")
+    assert common.failed_stage(stem) == "repair"
+
+
+# --- atomic writes: a failed render must never destroy the previous good file ------------
+
+
+def test_generate_atomic_write_is_the_common_helper():
+    import sys
+
+    sys.modules.setdefault("faster_whisper", types.SimpleNamespace(WhisperModel=object))
+    import generate
+
+    assert generate._atomic_write is common.atomic_write
+
+
+def test_atomic_write_failure_keeps_the_old_file_and_leaves_no_temp(tmp_path):
+    target = tmp_path / "x.json"
+    target.write_text("OLD")
+
+    def render(f):
+        f.write("half")
+        raise RuntimeError("boom")
+
+    try:
+        common.atomic_write(str(target), render)
+    except RuntimeError:
+        pass
+    assert target.read_text() == "OLD"
+    assert os.listdir(tmp_path) == ["x.json"]
+
+
+def test_atomic_write_applies_the_sidecar_mode(tmp_path):
+    target = tmp_path / "x.json"
+    common.atomic_write(str(target), lambda f: f.write("new"))
+    assert os.stat(target).st_mode & 0o777 == common.SIDECAR_MODE
+
+
+def test_write_stamp_render_failure_leaves_the_previous_stamp_byte_identical(tmp_path, monkeypatch):
+    video = tmp_path / "ep.mkv"
+    video.write_bytes(b"x" * 10)
+    stamp = tmp_path / "ep.dubtitles.done"
+    common.write_stamp(str(stamp), str(video))
+    before = stamp.read_bytes()
+
+    def boom(*a, **k):
+        raise RuntimeError("died mid-dump")
+
+    monkeypatch.setattr(common.json, "dump", boom)
+    try:
+        common.write_stamp(str(stamp), str(video), stages={"repair": True})
+    except RuntimeError:
+        pass
+    assert stamp.read_bytes() == before
+    assert sorted(os.listdir(tmp_path)) == ["ep.dubtitles.done", "ep.mkv"]
+
+
+def test_write_stamp_file_has_the_sidecar_mode(tmp_path):
+    video = tmp_path / "ep.mkv"
+    video.write_bytes(b"x")
+    stamp = tmp_path / "ep.dubtitles.done"
+    common.write_stamp(str(stamp), str(video))
+    assert os.stat(stamp).st_mode & 0o777 == common.SIDECAR_MODE
+
+
 # --- is_dialogue_event() matrix ----------------------------------------------
 
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Open the DubTitlerr pipeline window at midnight
+
+[Timer]
+# Host runs UTC; the window is defined in the household timezone, so it is pinned here
+# rather than inherited.
+OnCalendar=*-*-* 00:00:00 America/New_York
+Persistent=false
+RandomizedDelaySec=2m
+Unit=dubtitlerr-window-open.service
+
+[Install]
+WantedBy=timers.target

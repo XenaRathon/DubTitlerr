@@ -1,0 +1,12 @@
+[Unit]
+Description=Close the DubTitlerr pipeline window at 10:00
+
+[Timer]
+OnCalendar=*-*-* 10:00:00 America/New_York
+# Deliberately NOT Persistent: a missed close means the host was down, and a boot at noon
+# should not immediately kill a window that never opened.
+Persistent=false
+Unit=dubtitlerr-window-close.service
+
+[Install]
+WantedBy=timers.target

@@ -101,6 +101,8 @@ def from_watchstate(since: int) -> dict:
             ts = int(it.get("updated") or 0)
             title = (it.get("title") or "").strip()
             if title and ts >= since:
+                # the SHOW's id; `guids` on the row is the episode's
+                title = tag_tvdb(title, (it.get("parent") or {}).get("guid_tvdb"))
                 out[title] = max(out.get(title, 0), ts)
         page += 1
     return out
@@ -117,6 +119,7 @@ def from_plex(since: int) -> dict:
     url = f"{PLEX_URL.rstrip('/')}/status/sessions/history/all?librarySectionID={PLEX_SECTION}&X-Plex-Token={PLEX_TOKEN}"
     xml = _get(url).decode("utf-8", "replace")
     out: dict[str, int] = {}
+    show_tvdb: dict[str, str | None] = {}
     for row in re.findall(r"<Video\b[^>]*>", xml):
         g = re.search(r'grandparentTitle="([^"]*)"', row)
         v = re.search(r'viewedAt="(\d+)"', row)
@@ -125,8 +128,26 @@ def from_plex(since: int) -> dict:
         ts = int(v.group(1))
         if ts >= since:
             t = html.unescape(g.group(1))
+            key = re.search(r'grandparentKey="(/library/metadata/\d+)"', row)
+            if key:
+                t = tag_tvdb(t, _plex_show_tvdb(key.group(1), show_tvdb))
             out[t] = max(out.get(t, 0), ts)
     return out
+
+
+def _plex_show_tvdb(key: str, cache: dict) -> str | None:
+    """The show's tvdb id from its Plex metadata, fetched once per show. History rows carry
+    only the title, and two series can share one ("JoJo's Bizarre Adventure", 1993 and
+    2012). A failed lookup is None, never Unreachable: the id only sharpens a match the
+    title can still make, so it must not turn a readable source into an unreadable one."""
+    if key not in cache:
+        try:
+            xml = _get(f"{PLEX_URL.rstrip('/')}{key}?X-Plex-Token={PLEX_TOKEN}").decode("utf-8", "replace")
+            m = re.search(r'<Guid id="tvdb://(\d+)"', xml)
+            cache[key] = m.group(1) if m else None
+        except Unreachable:
+            cache[key] = None
+    return cache[key]
 
 
 def library_dirs(root: str) -> list:
@@ -151,26 +172,57 @@ def fold(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", clean_title(title).casefold())
 
 
-def _dir_index(dirs: list) -> tuple:
-    """The three lookup tiers over the library directory names, built once."""
-    by_exact = {d: d for d in dirs}
-    by_clean, by_fold, fold_dupes = {}, {}, set()
-    for d in dirs:
-        by_clean.setdefault(clean_title(d), d)
-        k = fold(d)
-        if k in by_fold:
-            fold_dupes.add(k)  # ambiguous: two directories fold together
-        else:
-            by_fold[k] = d
-    return by_exact, by_clean, by_fold, fold_dupes
+_TVDB_RE = re.compile(r"\{tvdb-(\d+)\}")
 
 
-def resolve_dir(title: str, index: tuple) -> str | None:
+def tag_tvdb(title: str, tvdb) -> str:
+    """`title {tvdb-N}` -- the library's own directory convention -- so a source can hand
+    the show's id to resolve_dir() through the plain {title: ts} shape. No id, no tag."""
+    return f"{title} {{tvdb-{tvdb}}}" if tvdb else title
+
+
+def _untag(title: str) -> str:
+    """Strip only the `{...}` suffix, keeping `(YYYY)`: the year is what tells same-named
+    series apart when no id is available."""
+    return re.sub(r"\s*\{[^}]*\}", "", title).strip()
+
+
+def _unique(pairs) -> dict:
+    """key -> directory, with a key that two directories share mapped to None (ambiguous)."""
+    out: dict = {}
+    for k, d in pairs:
+        out[k] = None if k in out else d
+    return out
+
+
+def _dir_index(dirs: list) -> dict:
+    """The lookup tiers over the library directory names, built once. EVERY name-derived
+    tier is ambiguity-aware: the clean tier used setdefault() and silently handed the 2012
+    "JoJo's Bizarre Adventure" to the alphabetically-first 1993 directory (2026-09-25)."""
+    return {
+        "tvdb": _unique((m.group(1), d) for d in dirs for m in [_TVDB_RE.search(d)] if m),
+        "exact": {d: d for d in dirs},
+        "untag": _unique((_untag(d), d) for d in dirs),
+        "clean": _unique((clean_title(d), d) for d in dirs),
+        "fold": _unique((fold(d), d) for d in dirs),
+    }
+
+
+def resolve_dir(title: str, index: dict) -> str | None:
     """The library directory this title names, or None when nothing (or more than one
-    thing) matches. Exact, then the `(YYYY)`/`{tvdb-}` normalisation, then `fold()`."""
-    by_exact, by_clean, by_fold, fold_dupes = index
-    k = fold(title)
-    return by_exact.get(title) or by_clean.get(clean_title(title)) or (None if k in fold_dupes else by_fold.get(k))
+    thing) matches. The show's tvdb id first (a `{tvdb-N}` tag), then exact, then the name
+    with its year kept, then the `(YYYY)`/`{tvdb-}` normalisation, then `fold()`."""
+    m = _TVDB_RE.search(title)
+    if m and index["tvdb"].get(m.group(1)):
+        return index["tvdb"][m.group(1)]
+    name = _untag(title)
+    return (
+        index["exact"].get(title)
+        or index["exact"].get(name)
+        or index["untag"].get(name)
+        or index["clean"].get(clean_title(name))
+        or index["fold"].get(fold(name))
+    )
 
 
 def match_dirs(titles: dict, dirs: list) -> tuple[list, list]:

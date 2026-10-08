@@ -19,6 +19,10 @@ committed: 7
 done: 5 (20260921-agents-md-documents-the-local-bin-osv-scanner-shim-as-host, 20260921-changelog-md-s-0-2-0-section-carries-a-release-date-and-the, 20260921-procoder-check-is-clean-and-the-full-suite-passes-on-the, 20260921-procoder-release-0-2-0-completes-clean-version-sync, 20260921-pyproject-toml-s-version-field-reads-0-2-0)
 carried: 2 (20260921-a-tracked-issue-github-issue-or-procoder-backlog-entry, 20260921-the-release-note-records-verification-against)
 
+### Correction — 2026-09-24
+
+[`azrtydxb/procoder#301`](https://github.com/azrtydxb/procoder/issues/301) was subsequently filed for the `uv.lock`/OSV extractor gap. This supersedes the 2026-09-23 statement below that no upstream issue existed and makes the issue reference in `.github/workflows/ci.yml` valid.
+
 ## Retro
 
 The release controller was the cheap part: it runs its five checks itself — `pyproject.toml`

@@ -122,23 +122,23 @@ def _container_run():
 
 
 def test_container_run_starts_the_review_server_as_a_background_loop():
-    """[S-8]. The generate loop is the container's FOREGROUND process -- `exec` replaces the
-    shell, so it IS the payload keeping the container alive. The review server must never
-    occupy that position: launched in the exec slot it would end the GPU sweep, and a sweep
-    killed mid-episode leaves a .dubtitles.fail poison marker that must be removed by hand
-    before the episode can be retried."""
+    """[S-8]. The generate loop is the container's payload and container_run.sh supervises it
+    (soft stop: no `exec`, so PID 1 keeps its SIGTERM trap). The review server must never
+    be what the supervisor waits on: a sweep killed mid-episode leaves a .dubtitles.fail
+    poison marker that must be removed by hand before the episode can be retried."""
     body = _container_run()
     # Executable lines only. Matching the whole file would be satisfied by the word
     # appearing in a COMMENT -- the guard would pass while nothing started the server.
     code = [ln.strip() for ln in body.splitlines() if ln.strip() and not ln.strip().startswith("#")]
     launches = [i for i, ln in enumerate(code) if "review_server.py" in ln]
-    execs = [i for i, ln in enumerate(code) if ln.startswith("exec ")]
+    gen = [i for i, ln in enumerate(code) if "gen_loop.sh" in ln]
 
     assert launches, "the server has to actually be started, not just mentioned"
-    assert code[launches[0]].startswith("python3 "), "started as a process, not assigned to a variable"
-    assert execs and code[execs[0]] == "exec sh /app/gen_loop.sh", "the generate loop keeps its foreground slot"
-    assert launches[0] < execs[0], "started BEFORE the exec, or it never starts at all"
-    assert not any(i > execs[0] for i in launches), "nothing after exec ever runs"
+    assert code[launches[0]].startswith("python3 ") and code[launches[0]].endswith("&"), "a background process"
+    assert gen and code[gen[0]].endswith("&"), "the generate loop is started in the background and supervised"
+    assert not any(ln.startswith("exec ") for ln in code), "exec would drop the SIGTERM trap (soft stop)"
+    assert 'wait "$gen_pid"' in code, "the supervisor waits on the generate loop, not the review server"
+    assert launches[0] < gen[0], "started BEFORE the supervisor's wait, or it never starts at all"
 
 
 def test_the_review_server_loop_cannot_end_the_container():
@@ -149,12 +149,12 @@ def test_the_review_server_loop_cannot_end_the_container():
     code = [ln.strip() for ln in body.splitlines() if ln.strip() and not ln.strip().startswith("#")]
     at = next(i for i, ln in enumerate(code) if "review_server.py" in ln)
     before, after = code[:at], code[at:]
+    loop = max(i for i, ln in enumerate(before) if ln.startswith("while"))
 
-    assert before[-1].startswith("while"), "the launch sits inside a restart loop, not a bare call"
-    assert before[-2] == "(", "and that loop is inside a subshell"
-    assert ") &" in after, "which is backgrounded, so a hang cannot block the exec below"
-    assert any(ln.startswith("sleep") for ln in after[:4]), "with a delay, or a crash-loop spins the CPU"
-    assert "||" in code[at], "a non-zero exit is logged and retried rather than propagating"
+    assert before[loop - 1] == "(", "the restart loop is inside a subshell"
+    assert ") &" in after, "which is backgrounded, so a hang cannot block the supervisor"
+    assert any(ln.startswith("sleep") for ln in after[:8]), "with a delay, or a crash-loop spins the CPU"
+    assert any("||" in ln and ln.startswith("wait") for ln in after[:6]), "a non-zero exit is logged and retried"
 
 
 def test_container_run_is_valid_posix_shell():

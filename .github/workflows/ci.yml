@@ -1,10 +1,13 @@
 name: CI
-on: [push, pull_request]
+on: [push, pull_request, workflow_call]
 
 # Stacked pushes to the same ref waste runners on commits nobody will ship.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   # Both Python versions are load-bearing, not a duplicate of each other: 3.11 is the floor

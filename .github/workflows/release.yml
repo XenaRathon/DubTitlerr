@@ -15,7 +15,11 @@ permissions:
   packages: write
 
 jobs:
+  ci-gate:
+    uses: ./.github/workflows/ci.yml
+
   image:
+    needs: ci-gate
     runs-on: ubuntu-latest
     # The build downloads a CUDA base plus a whisper model. 40 minutes is generous; it is
     # here so a stalled pull cannot hold a runner for GitHub's six-hour default.
