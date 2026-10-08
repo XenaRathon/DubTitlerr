@@ -24,6 +24,7 @@ from common import atomic_write
 
 START = "<!-- shows-table:start -->"
 END = "<!-- shows-table:end -->"
+_DATE = re.compile(r"^Last updated \S+: ")
 _TVDB = re.compile(r"\s*\{tvdb-\d+\}\s*$")
 
 
@@ -64,15 +65,19 @@ def _block(shows, today):
     review = "all unreviewed" if reviewed == 0 else f"{reviewed} of {total} reviewed"
     rows = sorted(shows, key=lambda s: (-len(s[1]), s[0]))
     lines = [
-        f"As of {today}: **{total} episodes across {len(shows)} shows**, {review}. "
-        "New episodes and shows are added automatically as DubTitlerr finishes them, so this table is a snapshot; "
-        "`manifest/` is the authoritative list.",
+        f"Last updated {today}: **{total} episodes across {len(shows)} shows**, {review}. "
+        "Episodes and shows are added automatically as DubTitlerr finishes them, and this table is rebuilt from "
+        "`manifest/` with each update. `manifest/` has the full per-episode list.",
         "",
         "| Show | Episodes |",
         "| --- | ---: |",
         *(f"| {name.replace('|', chr(92) + '|')} | {len(es)} |" for name, es in rows),
     ]
     return "\n".join(lines) + "\n"
+
+
+def _undated(block):
+    return _DATE.sub("Last updated : ", block, count=1)
 
 
 def render(manifest_dir, readme_path, today):
@@ -91,11 +96,12 @@ def render(manifest_dir, readme_path, today):
         _warn(f"no manifest loaded from {manifest_dir}; README left unchanged")
         return False
     block = _block(shows, today)
-    # The first line carries the date, which changes daily: compare everything BELOW it, and
+    # The lead line carries a date that changes daily: compare with the date blanked out, and
     # when only the date differs keep the old file (and old date) so publishing does not
-    # commit a noise change every day.
+    # commit a noise change every day. A legacy "As of" lead line never matches, so it is
+    # rewritten once.
     old_block = "".join(lines[starts[0] + 1 : ends[0]])
-    if old_block.partition("\n")[2] == block.partition("\n")[2] and old_block.startswith("As of "):
+    if old_block.startswith("Last updated ") and _undated(old_block) == _undated(block):
         return False
     new = "".join(lines[: starts[0] + 1]) + block + "".join(lines[ends[0] :])
     if new == text:
