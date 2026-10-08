@@ -11,7 +11,7 @@ default differs between modules, that is stated rather than smoothed over.
 
 **Image:** `ghcr.io/xenarathon/dubtitlerr`
 
-**Tags:** the git tag of a release (`v0.1.0-beta`), plus `latest` pointing at the most recent
+**Tags:** the git tag of a release (for example `v0.2.2`), plus `latest` pointing at the most recent
 release. `latest` never tracks `main`.
 
 **Entrypoint:** `container_run.sh`, which starts three loops in one container:
@@ -28,6 +28,20 @@ release. `latest` never tracks `main`.
 **Stage order within `merge_pass.sh`:** `repair.py` → `dub_signs_merge.py` → `mux.py` →
 `plex_refresh.py`
 
+A failed repair or signs stage skips mux for that episode. The episode is retried on the next
+pass. See [Stage outcomes](#stage-outcomes).
+
+**Stopping:** the entrypoint traps SIGTERM and SIGINT and does not forward them to the work. It
+creates the stop flag file (`STOP_FLAG`, default `/tmp/dubtitlerr.stop`) and prints
+`soft stop requested`. While the flag exists, no loop starts a new show, episode, glossary step
+or mux. The unit already running finishes, then the container prints `soft stop complete` and
+exits 0. The flag is deleted at startup, so a stopped container that you start again runs
+normally. `docker stop` sends SIGKILL once its `-t` grace period is over (10 seconds by
+default), so set `-t` above your longest single unit of work. Inside the glossary steps,
+`mine_glossary.py`, `glossary_acquire.py` and `glossary_verify.py` also check the flag between
+episodes, terms and escalation pairs. Releases up to 0.2.2 check it only before a glossary step
+starts, so an acquire step runs to its end or to `ACQUIRE_TIMEOUT`.
+
 The container runs as **root**, so `generate.py` can chown into the media tree.
 
 ---
@@ -43,7 +57,10 @@ All are written beside the video, sharing its basename.
 | `.dubtitles.conf.json`           | `generate.py`, `repair.py`                    | `repair.py`, `glossary_acquire.py`, `mux.py` | Per-cue `avg_logprob` and `no_speech_prob`                                    |
 | `.dubtitles.words.json`          | `generate.py`                                 | `generate.py`                                | Per-word confidences and audio duration; lets a text-tier re-run skip the GPU |
 | `.dubtitles.done`                | `common.py`, `mux.py`                         | `generate.py`, `mux.py`                      | Completion stamp: muxed size, mtime, tier versions                            |
-| `.dubtitles.fail`                | `generate.py`                                 | `generate.py`                                | Poison marker after a hard crash. Delete it to retry                          |
+| `.dubtitles.fail`                | `generate.py`                                 | `generate.py`                                | Poison marker after a hard crash. Delete it to retry. Stopping the container no longer leaves one (0.2.2 and later) |
+| `.dubtitles.stages.json`         | `repair.py`, `dub_signs_merge.py`, `mux.py`, `merge_pass.sh` | `merge_pass.sh`, `mux.py`     | One outcome per stage (repair, signs, mux). See [Stage outcomes](#stage-outcomes) |
+| `.dubtitles.mux-recovery`        | `mux.py`                                      | `mux.py`, the `deploy/` close unit           | Written when a failed cross-device copy may have damaged the episode. While it exists, mux refuses that episode |
+| `.muxtmp.mkv.recovered`          | `mux.py`                                      | you                                          | The complete muxed file that failed copy kept. The marker names its path      |
 | `.dubtitles.crash.json`          | `generate.py`                                 | —                                            | Exception type, message and time from that crash                              |
 | `.dubtitles.qc.json`             | `generate.py`                                 | `mux.py`                                     | Counters, cps quantiles, layout violations                                    |
 | `.dubtitles.repair.csv`          | `repair.py`                                   | —                                            | Audit trail: original, repaired, reference, latency                           |
@@ -56,6 +73,33 @@ A `.stale` suffix is appended to prior-version output during a version upgrade, 
 
 Per **show** rather than per episode: `.lastrun.json` and the glossary's
 `.acquire-cache.json`.
+
+---
+
+## Stage outcomes
+
+`<stem>.dubtitles.stages.json` holds one record per stage (`repair`, `signs`, `mux`). Each
+record has an `outcome` and a `detail`. For example, an episode that mux refused because of a
+recovery marker has this mux record (the other stages are left out):
+
+```json
+{"mux": {"outcome": "crashed", "detail": "recovery-pending"}}
+```
+
+A stage writes its record when it returns. `merge_pass.sh` clears a stage's record before it
+runs that stage again, so an old failure never stands in for a new result. A run that dies
+mid-stage leaves a `crashed` record.
+
+| Outcome                                                                                                                     | Counts as | Meaning                                                                                                              |
+| --------------------------------------------------------------------------------------------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------- |
+| `ok`                                                                                                                        | passed    | The stage finished                                                                                                   |
+| `no-video`                                                                                                                  | passed    | There is no media file for the stem                                                                                  |
+| `no-reference`                                                                                                              | passed    | Older records only. Nothing writes it any more                                                                       |
+| `refused`                                                                                                                   | failed    | Repair declined to overwrite repairs that already shipped. The `.srt` on disk is raw speech recognition              |
+| `crashed`, `timeout`, `unwritable`, `llm-empty`, `backend-unreachable`, `extract-error`, `build-error` | failed    | The stage failed for the reason in its name                                                                          |
+
+A failed outcome blocks mux for that episode. The merge pass prints a `skip mux:` line for each
+episode it holds back and reports `MERGE PASS INCOMPLETE` at the end.
 
 ---
 
@@ -192,6 +236,7 @@ guessed — so name your folders `Title (YYYY) {tvdb-N}` and the id settles it.
 | ------------------------------------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `MERGE_INTERVAL`                           | `600`              | Seconds between merge passes                                                                                                                    |
 | `MERGE_WINDOW`                             | _(empty — always)_ | Hours a merge sweep may run, `HH:MM-HH:MM`. May cross midnight. The end is exclusive. Set it when the repair backend is only up part of the day |
+| `STOP_FLAG`                                | `/tmp/dubtitlerr.stop` | File the entrypoint creates on SIGTERM or SIGINT. While it exists, loops stop starting work. Deleted at startup. Unset (manual runs), nothing ever stops |
 | `RESCAN_INTERVAL`                          | `21600`            | Idle seconds after a full generate sweep                                                                                                        |
 | `ACQUIRE_TIMEOUT`                          | `1800`             | Seconds                                                                                                                                         |
 | `VERIFY_TIMEOUT`                           | `1200`             | Seconds                                                                                                                                         |
