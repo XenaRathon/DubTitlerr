@@ -1587,7 +1587,8 @@ def _cap_gloss():
 
 
 def test_the_default_prompt_variant_is_production_byte_for_byte():
-    """GUARD: passes on the old code (the flag does not exist yet, so the default is today's prompt)."""
+    """The default selector hands back repair.build_prompt itself. (Not a guard on the old code:
+    build_prompt_for did not exist there; the old-vs-new byte comparison covers that.)"""
     g = _cap_gloss()
     args = ("zolo drew his blade", "Zoro drew his blade.", g, "prev text", "next text", None, None)
     assert bo.build_prompt_for("production")(*args) == _prod.build_prompt(*args)
@@ -1669,3 +1670,29 @@ def test_refs_run_uses_the_capable_builder_with_each_targets_context(tmp_path, m
     assert prompts and all(p.startswith(_CAP_HEAD) for p in prompts) and "prompt=capable" in out
     assert "<official_subtitle_reference>ref A</official_subtitle_reference>" in prompts[0]
     assert 'Previous line (for context): "A perfectly clear line."' in prompts[0]
+
+
+def test_json_rows_record_the_prompt_variant_only_when_it_is_not_production(tmp_path, monkeypatch):
+    conf = _three_targets(tmp_path)
+    monkeypatch.setattr(bo, "ask", lambda *a, **k: ("x", 0.1))
+    capable = tmp_path / "cap.json"
+    _run_main(monkeypatch, "--conf", conf, "--models", "m", "--prompt-variant", "capable", "--json", str(capable))
+    rows = json.loads(capable.read_text())["m"]
+    assert rows and all(r["prompt_variant"] == "capable" for r in rows)
+    default = tmp_path / "default.json"
+    _run_main(monkeypatch, "--conf", conf, "--models", "m", "--json", str(default))
+    explicit = tmp_path / "explicit.json"
+    _run_main(monkeypatch, "--conf", conf, "--models", "m", "--prompt-variant", "production", "--json", str(explicit))
+    assert all("prompt_variant" not in r for r in json.loads(default.read_text())["m"])
+    assert default.read_bytes() == explicit.read_bytes()  # production --json is unchanged, flag or no flag
+
+
+def test_refs_run_without_the_flag_sends_exactly_repair_build_prompt(tmp_path, monkeypatch, capsys):
+    """GUARD: passes on the old code. The --refs branch default was untested."""
+    prompts, _ = _run_refs(tmp_path, monkeypatch, capsys)
+    g = _glossary.load(str(tmp_path / "g0.json"))
+    expected = [
+        _prod.build_prompt("grbled one", "ref A", g, "A perfectly clear line.", "grbled two", None, None),
+        _prod.build_prompt("grbled four", "ref B", g, "grbled three", "", None, None),
+    ]
+    assert prompts == expected

@@ -1091,6 +1091,8 @@ def main():
                 row = {"orig": c["text"], "out": out, "admitted": admitted}
                 if i < len(usages[m]) and usages[m][i]:
                     row.update(usages[m][i])  # prompt_tokens / completion_tokens / cached_tokens
+                if a.prompt_variant != "production":
+                    row["prompt_variant"] = a.prompt_variant  # so two result files can be told apart
                 if a.refs:
                     row["ref"] = c["_ref"]
                 rows.append(row)
