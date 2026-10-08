@@ -31,7 +31,14 @@ that shipped since.
   `--refs OUT.json` then runs the models with those references and neighbouring lines, scores each
   target against its own reference, skips targets with no reference (as production does, unless
   `--include-unanchored` or the glossary sets `unanchored_repair`), and adds a `borrow` column for
-  outputs that copy words from the fansub. Without either flag the glossary-only run is unchanged.
+  outputs that copy words from the fansub. The dump uses the raw conf text exactly as
+  `repair.process` does (no glossary pass) and records the episode key and arc, so `--refs` prompts
+  are identical to production's (a differential test runs the real `process` to prove it); `--refs`
+  needs `--glossary` and exits on a refs file that is for another conf, has a different card count,
+  a retimed card, a duplicate or bad `idx`, or changed text (`--allow-conf-mismatch` for a renamed
+  conf). Model replies are now passed through `glossary.correct` before the ship gate, as
+  production does, so glossary-only scores change slightly with this fix (a reply that only needed
+  a glossary fix is no longer penalised).
 - **mux verification measures the video track itself.** When the video stream carries neither a
   duration nor a DURATION tag, `video_duration()` now takes the end of the last video packet
   (scanning the final minute) instead of the container duration, which in Matroska is the longest

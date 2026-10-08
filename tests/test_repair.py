@@ -3052,13 +3052,17 @@ def test_llm_openai_redacts_a_key_echoed_in_the_http_error_body(monkeypatch, cap
 def test_a_bad_repair_extra_body_does_not_crash_import(monkeypatch):
     import importlib
 
+    names = ("REPAIR_BACKEND", "MODEL", "LLAMACPP_URL", "OPENAI_URL", "OPENAI_KEY_ENV", "OPENAI_MAX_TOKENS", "MODEL_SECONDARY")
+    before = {n: getattr(repair, n) for n in names}
     monkeypatch.setenv("REPAIR_EXTRA_BODY", "{bad")
     monkeypatch.delenv("REPAIR_BACKEND", raising=False)
     try:
         importlib.reload(repair)  # must not raise
     finally:
+        # Undo BEFORE the final reload: a fixture finalizer would run with the poisoned env still set.
         monkeypatch.undo()
         importlib.reload(repair)
+    assert {n: getattr(repair, n) for n in names} == before, "the reload leaked module state into later tests"
 
 
 def test_llm_openai_with_a_bad_extra_body_is_unreachable_and_logs_only_the_name(monkeypatch, capsys):

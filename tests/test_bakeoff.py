@@ -890,6 +890,9 @@ def test_dump_refs_cli_requires_conf_and_video(tmp_path, monkeypatch):
 
 
 def _run_refs(tmp_path, monkeypatch, capsys, *extra, gloss_path=""):
+    if not gloss_path:
+        gloss_path = str(tmp_path / "g0.json")
+        (tmp_path / "g0.json").write_text(json.dumps({"names": []}))
     doc, _, conf = _dump(tmp_path, monkeypatch)
     refs = tmp_path / "refs.json"
     refs.write_text(json.dumps(doc))
@@ -931,7 +934,7 @@ def test_refs_that_do_not_match_the_conf_fail_loudly(tmp_path, monkeypatch):
     refs = tmp_path / "refs.json"
     refs.write_text(json.dumps(doc))
     with pytest.raises(SystemExit) as e:
-        bo.load_refs(str(refs), cards)
+        bo.load_refs(str(refs), cards, conf)
     msg = str(e.value)
     assert "idx 2" in msg and "something else entirely" in msg and "grbled two" in msg
 
@@ -942,7 +945,7 @@ def test_refs_idx_out_of_range_fails_loudly(tmp_path, monkeypatch):
     refs = tmp_path / "refs.json"
     refs.write_text(json.dumps(doc))
     with pytest.raises(SystemExit):
-        bo.load_refs(str(refs), bo.load_cards(None, conf))
+        bo.load_refs(str(refs), bo.load_cards(None, conf), conf)
 
 
 def test_score_model_hands_each_targets_own_ref_to_accept_repair(monkeypatch):
@@ -1206,3 +1209,173 @@ def test_openai_latency_excludes_the_retry_after_sleep(monkeypatch):
     monkeypatch.setattr(bo, "time", fake_time)
     _, dt = bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")
     assert dt == 2.0  # not 34.0
+
+
+# --- anchored mode review fixes: raw conf text, output correction, validation, differential --------
+
+import repair as _prod  # noqa: E402
+
+
+def _gfile(tmp_path, data=None, name="g.json"):
+    p = tmp_path / name
+    p.write_text(json.dumps(data if data is not None else {"names": []}))
+    return str(p)
+
+
+def _doc_and_cards(tmp_path, monkeypatch):
+    doc, _, conf = _dump(tmp_path, monkeypatch)
+    return doc, bo.load_cards(None, conf), conf
+
+
+def _expect_exit(tmp_path, doc, cards, conf, *needles, **kw):
+    refs = tmp_path / "refs2.json"
+    refs.write_text(json.dumps(doc))
+    with pytest.raises(SystemExit) as e:
+        bo.load_refs(str(refs), cards, conf, **kw)
+    for n in needles:
+        assert n in str(e.value), (n, str(e.value))
+
+
+def test_dump_refs_without_conf_exits(tmp_path, monkeypatch):
+    monkeypatch.setattr(bo.sys, "argv", ["bakeoff", "--dump-refs", str(tmp_path / "r.json"), "--video", "v", "--glossary", "g"])
+    with pytest.raises(SystemExit) as e:
+        bo.main()
+    assert "--conf" in str(e.value)
+
+
+def test_refs_without_glossary_exits(tmp_path, monkeypatch):
+    doc, _, conf = _doc_and_cards(tmp_path, monkeypatch)
+    (tmp_path / "refs.json").write_text(json.dumps(doc))
+    monkeypatch.setattr(bo.sys, "argv", ["bakeoff", "--conf", conf, "--refs", str(tmp_path / "refs.json"), "--models", "m"])
+    with pytest.raises(SystemExit) as e:
+        bo.main()
+    assert "--glossary" in str(e.value)
+
+
+def test_duplicate_idx_in_a_refs_file_exits(tmp_path, monkeypatch):
+    doc, cards, conf = _doc_and_cards(tmp_path, monkeypatch)
+    doc["targets"].append(dict(doc["targets"][0]))
+    _expect_exit(tmp_path, doc, cards, conf, "duplicate", "idx 1")
+
+
+@pytest.mark.parametrize("bad", [True, "1", 1.0, None, -1])
+def test_a_non_integer_or_negative_idx_exits(tmp_path, monkeypatch, bad):
+    doc, cards, conf = _doc_and_cards(tmp_path, monkeypatch)
+    doc["targets"][0]["idx"] = bad
+    _expect_exit(tmp_path, doc, cards, conf, "idx")
+
+
+def test_a_target_without_text_exits_cleanly(tmp_path, monkeypatch):
+    doc, cards, conf = _doc_and_cards(tmp_path, monkeypatch)
+    del doc["targets"][0]["text"]
+    _expect_exit(tmp_path, doc, cards, conf, "text")
+
+
+def test_a_refs_file_cut_from_a_different_conf_exits_unless_allowed(tmp_path, monkeypatch):
+    doc, cards, conf = _doc_and_cards(tmp_path, monkeypatch)
+    doc["conf"] = "other.dubtitles.conf.json"
+    _expect_exit(tmp_path, doc, cards, conf, "other.dubtitles.conf.json", "--allow-conf-mismatch")
+    (tmp_path / "ok.json").write_text(json.dumps(doc))
+    assert bo.load_refs(str(tmp_path / "ok.json"), cards, conf, allow_conf_mismatch=True)
+
+
+def test_a_conf_with_extra_cards_since_the_dump_exits(tmp_path, monkeypatch):
+    doc, cards, conf = _doc_and_cards(tmp_path, monkeypatch)
+    doc["cards"] = len(cards) - 1
+    _expect_exit(tmp_path, doc, cards, conf, "cards")
+
+
+def test_a_retimed_card_since_the_dump_exits(tmp_path, monkeypatch):
+    doc, cards, conf = _doc_and_cards(tmp_path, monkeypatch)
+    cards[1]["start"] += 0.5
+    _expect_exit(tmp_path, doc, cards, conf, "idx 1", "retimed")
+
+
+def test_dump_takes_text_from_the_raw_conf_rows_not_the_glossary_corrected_ones(tmp_path, monkeypatch):
+    """repair.process never re-runs glossary.correct on conf text, so neither may the dump."""
+    _fake_media(monkeypatch)
+    rows = [_row("Zorro drew his blade", -1.4, 0.0, 2.0)]
+    conf = _write(tmp_path, rows)
+    g = _glossary.load_dict({"names": ["Zoro"], "hard_fixes": {"Zorro": "Zoro"}})
+    assert _glossary.correct("Zorro drew his blade", g)[0] != "Zorro drew his blade", "fixture must change the line"
+    doc = bo.dump_refs(conf, bo.load_cards(None, conf), g, "/v.mkv", 0, "spread")
+    assert doc["targets"][0]["text"] == "Zorro drew his blade"
+
+
+def test_score_model_applies_the_glossary_to_the_output_before_the_gate(monkeypatch):
+    """repair.py runs glossary.correct on the model's reply before accept_repair."""
+    g = _glossary.load_dict({"names": ["Zoro"], "hard_fixes": {"Zorro": "Zoro"}})
+    seen = []
+    monkeypatch.setattr(_repair, "accept_repair", lambda o, n, ref, d, gl: seen.append(n) or True)
+    bo.score_model("m", [{"text": "Zoro drew his sword", "start": 0, "end": 3}], ["Zorro drew his blade"], 1.0, g)
+    assert seen == ["Zoro drew his blade"]
+
+
+def test_json_rows_gate_the_corrected_output_too(tmp_path, monkeypatch):
+    conf = _write(tmp_path, [_row("grbled nnsense here", -1.4, 0.0, 3.0)])
+    g = _gfile(tmp_path, {"names": ["Zoro"], "hard_fixes": {"Zorro": "Zoro"}})
+    seen = []
+    monkeypatch.setattr(_repair, "accept_repair", lambda o, n, ref, d, gl: seen.append(n) or True)
+    monkeypatch.setattr(bo, "ask", lambda *a, **k: ("Zorro drew his blade", 0.1))
+    out_json = tmp_path / "rows.json"
+    monkeypatch.setattr(bo.sys, "argv", ["bakeoff", "--conf", conf, "--glossary", g, "--models", "m", "--json", str(out_json)])
+    bo.main()
+    assert seen and set(seen) == {"Zoro drew his blade"}
+
+
+def _differential(tmp_path, monkeypatch, capsys, arc=None):
+    """Run the REAL repair.process and the bake-off over the same conf; return both prompt lists."""
+    stem = str(tmp_path / "Show S01E02")
+    conf_path = stem + _prod.CONF_SUFFIX
+    rows = [
+        _row("A perfectly clear line.", -0.1, 0.0, 2.0),
+        _row("Zorro drew his blade", -1.4, 0.0, 2.0),  # raw conf text predates the glossary fix
+        _row("grbled two", -1.4, 2.5, 3.5),  # no fansub line -> production skips it
+        _row("he saw spondum there", -1.4, 4.0, 6.0, source_start=4.0, source_end=5.5),
+    ]
+    open(stem + _prod.SRT_SUFFIX, "w").close()
+    open(conf_path, "w").write(json.dumps(rows))
+    gdata = {
+        "names": ["Zoro", "Spandam"],
+        "hard_fixes": {"Zorro": "Zoro"},
+        "episode_tags": {"spandam": ["S01E02"]},  # reorders the prompt's term list for THIS episode
+        "arc_tags": {"zoro": ["Other"]},
+    }
+    gpath = _gfile(tmp_path, gdata)
+    gloss = _glossary.load(gpath)
+    video = stem + ".mkv"
+    ivals = [(0.0, 2.0, "Zoro drew his blade."), (4.0, 6.0, "He saw Spandam there.")]
+    monkeypatch.setattr(_prod, "find_video", lambda s: video)
+    monkeypatch.setattr(_prod, "glossary_for", lambda v: gloss)
+    monkeypatch.setattr(_prod, "dialogue_intervals", lambda v: ivals)
+    monkeypatch.setattr(_common, "dialogue_intervals", lambda v: ivals)
+    monkeypatch.setattr(_glossary, "arc_for", lambda v: arc)
+    prod_prompts = []
+    monkeypatch.setattr(_prod, "llm", lambda prompt, model=None: prod_prompts.append(prompt) or "")
+    _prod.process(conf_path)
+    capsys.readouterr()
+
+    refs = tmp_path / "refs.json"
+    argv = ["bakeoff", "--conf", conf_path, "--glossary", gpath, "--dump-refs", str(refs), "--video", video, "--limit", "0"]
+    monkeypatch.setattr(bo.sys, "argv", argv)
+    bo.main()
+    bake_prompts = []
+    monkeypatch.setattr(bo, "ask", lambda o, m, p, *a, **k: bake_prompts.append(p) or ("x", 0.1))
+    argv = ["bakeoff", "--conf", conf_path, "--glossary", gpath, "--refs", str(refs), "--models", "m"]
+    monkeypatch.setattr(bo.sys, "argv", argv)
+    bo.main()
+    return prod_prompts, bake_prompts
+
+
+def test_differential_bakeoff_prompts_equal_the_prompts_repair_process_builds(tmp_path, monkeypatch, capsys):
+    prod, bake = _differential(tmp_path, monkeypatch, capsys)
+    assert len(prod) == 2  # the clear line is not a target; "grbled two" has no ref and is skipped
+    assert any("ASR line: Zorro drew his blade" in p for p in prod), "the raw conf text is what production sends"
+    assert bake == prod
+    assert "Spandam, Zoro" in prod[0], "the episode tier must be live, or this test cannot see a dropped episode"
+
+
+def test_differential_with_an_arc_matches_too(tmp_path, monkeypatch, capsys):
+    """Arc and episode weighting reorder the glossary terms in the prompt."""
+    prod, bake = _differential(tmp_path, monkeypatch, capsys, arc="Dressrosa")
+    assert prod and bake == prod

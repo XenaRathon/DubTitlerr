@@ -58,6 +58,7 @@ sys.path.insert(0, ".")
 import common  # noqa: E402
 import glossary  # noqa: E402
 import hallucination  # noqa: E402
+import ordering  # noqa: E402
 import qc  # noqa: E402
 import reflow  # noqa: E402
 import repair  # noqa: E402
@@ -101,10 +102,12 @@ def dump_refs(conf_path, cards, gloss, video, limit, sample):
     """Anchored step 1: the fansub reference for each target, exactly as repair.process
     selects it, as a JSON-able dict. Needs the video; makes no model calls.
 
-    ``cards`` are the conf rows AFTER glossary.correct (what main() does), so the targets are
-    the ones the bake-off would pick; ``idx`` is the row's position in the conf list, which is
-    what --refs keys on. ``limit`` 0 means every target. prev/next are the neighbouring rows'
-    text (post-correct, since the cards were corrected in place)."""
+    ``cards`` must be the RAW conf rows -- process() uses the conf as generate.py wrote it and
+    never re-runs glossary.correct on it, so is_target, bad_source_window, the dumped text and
+    the prev/next lines all see that same raw text. (main() therefore skips its correction
+    pass in the anchored modes.) ``idx`` is the row's position in the conf list, which --refs
+    keys on; ``start``/``end`` let --refs notice a conf that was retimed since. ``limit`` 0
+    means every target. ``episode``/``arc`` are what process() passes to build_prompt."""
     ivals = common.dialogue_intervals(video)
     rec = qc.Recorder()
     picked = [(i, c) for i, c in enumerate(cards) if repair.is_target(c, gloss)]
@@ -123,28 +126,65 @@ def dump_refs(conf_path, cards, gloss, video, limit, sample):
                 "ref": ref,
                 "prev": cards[i - 1]["text"] if i > 0 else "",
                 "next": cards[i + 1]["text"] if i + 1 < len(cards) else "",
+                "start": c.get("start"),
+                "end": c.get("end"),
             }
         )
-    return {"conf": os.path.basename(conf_path), "cards": len(cards), "targets": out}
+    return {
+        "conf": os.path.basename(conf_path),
+        "cards": len(cards),
+        "episode": ordering.episode_key(video),
+        "arc": glossary.arc_for(video),
+        "targets": out,
+    }
 
 
-def load_refs(refs_path, cards):
+def load_refs(refs_path, cards, conf_path, allow_conf_mismatch=False):
     """Anchored step 2: targets from a --dump-refs file, as card dicts carrying their own
-    ``_ref`` / ``_prev`` / ``_next``. ``cards`` must be the conf rows after glossary.correct;
-    a row whose text differs from the dump's (wrong conf, or the glossary changed since) is a
-    different bake-off than the one the refs were cut for, so it fails naming the first one."""
+    ``_ref`` / ``_prev`` / ``_next`` / ``_arc`` / ``_episode``. ``cards`` are the RAW conf rows.
+
+    Every way the file can disagree with the conf is a different bake-off than the one the refs
+    were cut for, so each exits with a message naming the problem: another conf, a different
+    card count, a duplicate or non-integer idx, a target with no text, a card retimed since, or
+    text that differs from the conf's."""
     doc = json.load(open(refs_path))
-    out = []
-    for t in doc.get("targets", []):
-        i = t.get("idx")
-        if not isinstance(i, int) or not 0 <= i < len(cards):
+    if not isinstance(doc, dict) or not isinstance(doc.get("targets"), list):
+        sys.exit(f"{refs_path}: not a --dump-refs file (expected an object with a 'targets' list)")
+    if doc.get("conf") != os.path.basename(conf_path) and not allow_conf_mismatch:
+        sys.exit(
+            f"{refs_path}: cut from {doc.get('conf')!r}, but --conf is {os.path.basename(conf_path)!r} "
+            "(--allow-conf-mismatch if it is a renamed copy)"
+        )
+    if doc.get("cards") != len(cards):
+        sys.exit(f"{refs_path}: cut from a conf with {doc.get('cards')} cards, this one has {len(cards)}")
+    out, seen = [], set()
+    for t in doc["targets"]:
+        i = t.get("idx") if isinstance(t, dict) else None
+        if type(i) is not int or not 0 <= i < len(cards):
             sys.exit(f"{refs_path}: idx {i!r} is not a card in this conf ({len(cards)} cards)")
+        if i in seen:
+            sys.exit(f"{refs_path}: duplicate idx {i}")
+        seen.add(i)
+        if not isinstance(t.get("text"), str):
+            sys.exit(f"{refs_path}: idx {i} has no 'text'")
         if cards[i]["text"] != t["text"]:
             sys.exit(
                 f"{refs_path}: idx {i} does not match this conf: refs file has {t['text']!r}, "
-                f"conf card is {cards[i]['text']!r} (wrong --conf, or the glossary changed?)"
+                f"conf card is {cards[i]['text']!r} (wrong --conf?)"
             )
-        out.append({**cards[i], "_ref": t["ref"], "_prev": t["prev"], "_next": t["next"]})
+        for k in ("start", "end"):
+            if k in t and t[k] != cards[i].get(k):
+                sys.exit(f"{refs_path}: idx {i} was retimed since the dump ({k} {t[k]!r} -> {cards[i].get(k)!r})")
+        out.append(
+            {
+                **cards[i],
+                "_ref": t.get("ref", ""),
+                "_prev": t.get("prev", ""),
+                "_next": t.get("next", ""),
+                "_arc": doc.get("arc"),
+                "_episode": doc.get("episode"),
+            }
+        )
     return out
 
 
@@ -466,13 +506,15 @@ def score_model(model, targets, outs, total_s, gloss, ref=""):
         if out.startswith("<EMPTY"):
             empties += 1
             continue
-        if _norm(out) == _norm(orig):
+        # Production ships glossary.correct(reply) (repair.py), so that is what is judged.
+        new = glossary.correct(out, gloss)[0]
+        if _norm(new) == _norm(orig):
             inert += 1
             continue
         changed += 1
-        if changed_a_name(orig, out):
+        if changed_a_name(orig, new):
             name_edits += 1
-        if repair.borrowed_from_ref(orig, out, t_ref):
+        if repair.borrowed_from_ref(orig, new, t_ref):
             ref_borrow += 1
         dur = _card_duration(targets[i]) if i < len(targets) else None
         if dur is None:
@@ -480,7 +522,7 @@ def score_model(model, targets, outs, total_s, gloss, ref=""):
             continue
         # THE production gate itself, not a re-implemented bar: what this counts is what
         # would actually ship if this model were REPAIR_MODEL.
-        if repair.accept_repair(orig, out, t_ref, dur, gloss):
+        if repair.accept_repair(orig, new, t_ref, dur, gloss):
             admitted += 1
 
     def rate(k):
@@ -808,6 +850,11 @@ def main():
         help="with --refs: also judge targets that have no fansub reference (production skips "
         "them unless the glossary sets unanchored_repair)",
     )
+    ap.add_argument(
+        "--allow-conf-mismatch",
+        action="store_true",
+        help="with --refs: accept a refs file cut from a conf with a different file name (a renamed copy)",
+    )
     a = ap.parse_args()
 
     if a.dump_refs and a.refs:
@@ -816,6 +863,8 @@ def main():
         sys.exit("--dump-refs / --refs work from a production --conf")
     if a.dump_refs and not a.video:
         sys.exit("--dump-refs needs --video (the file whose embedded English subtitles are the reference)")
+    if a.refs and not a.glossary:
+        sys.exit("--refs needs --glossary (the prompt's reference spellings and the output correction come from it)")
     if a.dump_refs and not a.glossary:
         # is_target consults glossary.name_suspect: a dump cut without the glossary silently drops those targets.
         sys.exit("--dump-refs needs --glossary (it decides which lines are targets)")
@@ -843,8 +892,11 @@ def main():
     llamacpp_chat = parse_llamacpp_specs(a.llamacpp_chat)
     gloss = glossary.load(a.glossary)
     cards = load_cards(a.raw, a.conf)
-    for c in cards:  # deterministic layer first (as in prod)
-        c["text"] = glossary.correct(c["text"], gloss)[0]
+    if not (a.dump_refs or a.refs):
+        # Glossary-only mode: deterministic layer first. The anchored modes keep the RAW conf text
+        # instead, because that is what repair.process sees (it never re-corrects the conf).
+        for c in cards:
+            c["text"] = glossary.correct(c["text"], gloss)[0]
     if a.dump_refs:
         doc = dump_refs(a.conf, cards, gloss, a.video, a.limit, a.sample)
         with open(a.dump_refs, "w") as f:
@@ -855,7 +907,7 @@ def main():
         return
     extra_bounds = []
     if a.refs:
-        entries = load_refs(a.refs, cards)
+        entries = load_refs(a.refs, cards, a.conf, a.allow_conf_mismatch)
         targets = [t for t in entries if a.include_unanchored or not repair.skips_unanchored(t["_ref"], gloss)]
         all_targets = targets  # --limit does not apply here; the dump already chose
         if len(targets) < len(entries):
@@ -863,9 +915,9 @@ def main():
                 f"{len(entries) - len(targets)} target(s) skipped: no fansub reference, and production skips those "
                 "(--include-unanchored, or unanchored_repair in the glossary, judges them)"
             )
-        # arc/episode are omitted: repair.process passes them from the library layout, which a
-        # standalone bake-off does not have, so the glossary tiering is the unweighted order.
-        prompts = [repair.build_prompt(t["text"], t["_ref"], gloss, t["_prev"], t["_next"]) for t in targets]
+        prompts = [
+            repair.build_prompt(t["text"], t["_ref"], gloss, t["_prev"], t["_next"], t["_arc"], t["_episode"]) for t in targets
+        ]
         print(
             f"cards={len(cards)} targets={len(targets)} of {len(entries)} in {a.refs} "
             f"({len(entries) - len(targets)} skipped for no ref)  models={a.models}\n"
@@ -906,7 +958,8 @@ def main():
                 dur = (c.get("end") or 0) - (c.get("start") or 0)
                 ref = c.get("_ref", "")  # anchored targets carry their own; glossary-only runs score with none
                 live = dur > 0 and not out.startswith(("<ERROR", "<EMPTY"))
-                admitted = bool(live and repair.accept_repair(c["text"], out, ref, dur, gloss))
+                shipped = glossary.correct(out, gloss)[0] if live else out  # as production ships it
+                admitted = bool(live and repair.accept_repair(c["text"], shipped, ref, dur, gloss))
                 row = {"orig": c["text"], "out": out, "admitted": admitted}
                 if i < len(usages[m]) and usages[m][i]:
                     row.update(usages[m][i])  # prompt_tokens / completion_tokens / cached_tokens
