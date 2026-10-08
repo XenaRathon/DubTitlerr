@@ -422,3 +422,14 @@ def test_a_stop_after_the_last_stem_still_reports_stopped(tmp_path):
     flag = tmp_path / "stop.flag"
     res, calls = _gated_run(tmp_path, root, extra_env={"STOP_FLAG": str(flag)}, stop_after="signs")
     assert "MERGE PASS STOPPED (soft stop)" in res.stdout, res.stdout
+
+
+def test_a_stopped_repair_holds_the_stem_back_and_the_next_pass_retries_it(tmp_path):
+    """Soft stop: repair records `stopped` (a failed outcome), so signs and mux are skipped and,
+    with no .ass written, the next pass runs repair again."""
+    root, stem = _episode(tmp_path)
+    res, calls = _gated_run(tmp_path, root, repair="stopped")
+    assert calls == ["repair ep01"], (calls, res.stdout, res.stderr)
+    assert "skip mux: repair failed (stopped)" in res.stdout
+    res2, calls2 = _gated_run(tmp_path, root, repair="stopped")
+    assert calls2 == ["repair ep01", "repair ep01"], calls2

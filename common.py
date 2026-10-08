@@ -470,8 +470,10 @@ def stamp_valid(stamp: dict | None, video: str) -> bool:
 # are non-failures. Everything else (llm-empty, backend-unreachable, extract-error,
 # build-error, timeout, crashed, unwritable, refused) is a genuine failure that blocks mux.
 # "refused" is repair declining to overwrite already-shipped repairs: the srt on disk is raw
-# ASR, so it must never be muxed. Records are never reset on their own; merge_pass.sh calls
-# clear_stage() before it re-runs a stage so a stale record cannot stand in for a new one.
+# ASR, so it must never be muxed. "stopped" is repair honouring a soft stop mid-episode: the srt
+# was left unrewritten, so the episode is held back (no assemble, no mux) and retried next pass.
+# Records are never reset on their own; merge_pass.sh calls clear_stage() before it re-runs a stage
+# so a stale record cannot stand in for a new one.
 STAGES_SUFFIX = ".dubtitles.stages.json"
 STAGE_ORDER = ("repair", "signs", "mux")
 
@@ -487,6 +489,7 @@ STAGE_OUTCOMES = (
     "crashed",
     "unwritable",
     "refused",
+    "stopped",
 )
 
 # "no-reference" is LEGACY: nothing writes it any more (repair's refusal is "refused"), but

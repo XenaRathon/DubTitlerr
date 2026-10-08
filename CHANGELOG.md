@@ -46,6 +46,9 @@ that shipped since.
   kept, instead of being rebuilt from raw ASR. A stray bad line (a few percent) still ships. A run
   of consecutive failures stops the loop early. `REPAIR_RETRY_SLEEP_BUDGET` (default 600 s) caps the
   total retry sleep per episode; once it is spent each remaining target gets one attempt.
+- **Repair honours the soft stop.** Between targets it checks the stop flag; when set it leaves the
+  srt untouched, records the new failed stage outcome `stopped`, and exits 0. The failed outcome keeps
+  `merge_pass.sh` from assembling or muxing the episode, and the next pass re-runs repair.
 - **The openai backend retries HTTP 429 and 5xx** up to `REPAIR_OPENAI_RETRIES` times (default 2),
   waiting a finite `Retry-After` (at most 30 s) or 2 s then 4 s, then reports the backend
   unreachable. Other 4xx errors do not retry.

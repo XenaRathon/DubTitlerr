@@ -94,7 +94,18 @@ import ordering
 import qc
 import reflow
 import unresolved
-from common import MEDIA_GID, MEDIA_UID, atomic_write, dialogue_intervals, find_video, out_for, read_words, ts_srt, write_stage
+from common import (
+    MEDIA_GID,
+    MEDIA_UID,
+    atomic_write,
+    dialogue_intervals,
+    find_video,
+    out_for,
+    read_words,
+    stop_requested,
+    ts_srt,
+    write_stage,
+)
 
 _LOGGED_ONCE = set()
 
@@ -1001,6 +1012,13 @@ def _process_episode(conf_path):
     verdict_stale = 0  # the human approved OTHER wording for this line; the model moved on
     repaired_lines = []  # A10: per-line detail for the summary
     for i, c in targets:
+        if stop_requested():
+            # Soft stop (container_run.sh got SIGTERM): checked between targets, never inside one. The srt
+            # is NOT rebuilt -- a half-repaired rebuild would ship raw ASR over shipped repairs -- and the
+            # failed `stopped` record makes merge_pass.sh hold the episode back and re-run repair next pass.
+            log("  soft stop requested: repair stopped before the srt rewrite, the episode is retried on the next pass")
+            write_stage(stem, "repair", "stopped")
+            return "stopped"
         # C6: select the reference on the SOURCE window -- where the audio actually was --
         # not the display window, which the timing layer may have stolen forward onto the
         # NEIGHBOUR's cue. The .get fallback keeps every pre-C6 sidecar working unchanged.
@@ -1403,6 +1421,8 @@ def main():
         res = process(cp)
         counts[res] = counts.get(res, 0) + 1
         log(f"{res}: {os.path.basename(cp)}")
+        if res == "stopped":
+            break  # soft stop: start no further episode
     log("SUMMARY", counts)
 
 

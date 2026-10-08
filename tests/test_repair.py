@@ -3548,3 +3548,70 @@ def test_a_refused_redirect_is_a_clean_http_status_not_a_parse_error(monkeypatch
     text = _all_text(capsys)
     assert "HTTP 302" in text and "KeyError" not in text and "JSONDecode" not in text
     assert len(_FakeConn.instances) == 1  # nothing followed it
+
+
+# --- soft stop: a stopped repair is a failed stage the next pass retries ------------------
+
+
+def _stop_episode(tmp_path, monkeypatch, n, llm_fn):
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, n, n, llm_fn)
+    flag = tmp_path / "STOP"
+    monkeypatch.setenv("STOP_FLAG", str(flag))
+    return stem, conf_path, flag
+
+
+def test_a_stop_requested_mid_loop_leaves_the_srt_untouched_and_records_stopped(tmp_path, monkeypatch, capsys):
+    calls = []
+    flag_holder = []
+
+    def llm_fn(prompt, model=None):
+        calls.append(1)
+        if len(calls) == 3:
+            flag_holder[0].write_text("")  # SIGTERM arrives while target 3 is being repaired
+        return "a garbled line"
+
+    stem, conf_path, flag = _stop_episode(tmp_path, monkeypatch, 10, llm_fn)
+    flag_holder.append(flag)
+    shipped = open(stem + repair.SRT_SUFFIX, "rb").read()
+    assert repair.process(conf_path) == "stopped"
+    assert len(calls) == 3  # checked between targets: the 4th was never started
+    assert open(stem + repair.SRT_SUFFIX, "rb").read() == shipped
+    assert common.read_stages(stem)["repair"]["outcome"] == "stopped"
+    assert not os.path.exists(stem + ".dubtitles.repair-summary.json")
+    out = capsys.readouterr().out
+    assert "soft stop requested: repair stopped before the srt rewrite, the episode is retried on the next pass" in out
+
+
+def test_a_stop_requested_before_the_loop_behaves_the_same(tmp_path, monkeypatch):
+    stem, conf_path, flag = _stop_episode(tmp_path, monkeypatch, 4, lambda p, model=None: pytest.fail("no target may start"))
+    flag.write_text("")
+    shipped = open(stem + repair.SRT_SUFFIX, "rb").read()
+    assert repair.process(conf_path) == "stopped"
+    assert open(stem + repair.SRT_SUFFIX, "rb").read() == shipped
+    assert common.read_stages(stem)["repair"]["outcome"] == "stopped"
+
+
+def test_stopped_is_a_failed_outcome_so_the_gate_holds_mux_back(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    stem = str(tmp_path / "ep01")
+    assert "stopped" in common.STAGE_OUTCOMES
+    common.write_stage(stem, "repair", "stopped")
+    assert common.failed_stage(stem, only=("repair",)) == "repair"  # the helper merge_pass.sh's stage_failure uses
+
+
+def test_without_a_stop_flag_the_loop_is_unchanged(tmp_path, monkeypatch):
+    """GUARD: passes on the old code. STOP_FLAG unset, or set to a file that does not exist."""
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, 5, 5, lambda p, model=None: "a garbled line")
+    monkeypatch.delenv("STOP_FLAG", raising=False)
+    assert repair.process(conf_path) == "repaired"
+    monkeypatch.setenv("STOP_FLAG", str(tmp_path / "never-created"))
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, 5, 5, lambda p, model=None: "a garbled line")
+    assert repair.process(conf_path) == "repaired"
+
+
+def test_main_stops_walking_episodes_after_a_soft_stop_and_exits_cleanly(monkeypatch, capsys):
+    seen = []
+    monkeypatch.setattr(repair, "process", lambda cp: seen.append(cp) or "stopped")
+    monkeypatch.setattr(repair.sys, "argv", ["repair.py", "b.conf.json", "a.conf.json", "c.conf.json"])
+    repair.main()  # returns normally: exit code 0
+    assert seen == ["a.conf.json"]  # the rest would only each write another `stopped` record
