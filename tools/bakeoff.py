@@ -32,8 +32,10 @@ No GPU needed locally — the models run on the Ollama host. Built with help of 
 
 import argparse
 import json
+import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 sys.path.insert(0, ".")
@@ -91,8 +93,23 @@ def parse_llamacpp_specs(specs):
     return out
 
 
-def _post_json(url, body, timeout=180):
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+def parse_extra_body(raw):
+    """``--extra-body`` JSON object -> dict (exit on anything else, like the other arg parsers)."""
+    if not raw:
+        return {}
+    try:
+        extra = json.loads(raw)
+    except ValueError as e:
+        sys.exit(f"--extra-body is not valid JSON: {e}")
+    if not isinstance(extra, dict):
+        sys.exit("--extra-body must be a JSON object")
+    return extra
+
+
+def _post_json(url, body, timeout=180, headers=None):
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json", **(headers or {})}
+    )
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
@@ -153,13 +170,80 @@ def ask_llamacpp_chat(url, prompt):
     return out, time.monotonic() - t0
 
 
-def ask(ollama, model, prompt, llamacpp=None, llamacpp_chat=None):
+def _retry_after(err):
+    """Seconds to wait after a 429: the Retry-After header (seconds form), capped at 60."""
+    try:
+        wait = float(err.headers.get("Retry-After"))
+    except (TypeError, ValueError, AttributeError):
+        wait = 5.0
+    return min(max(wait, 0.0), 60.0)
+
+
+def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None):
+    """Any OpenAI-compatible chat API; mirrors repair.llm_openai (same body and headers).
+
+    The key is read from the env var NAMED ``key_env`` and never printed. HTTP 429 is the
+    provider throttling us, not the model saying nothing, so it is retried once (honouring
+    Retry-After, capped at 60 s) and, if it persists, reported as ``<ERROR rate-limited ...>``
+    -- a dead call in the score, never an <EMPTY> and never "left the line alone".
+
+    ``usage_sink`` (a list) gets exactly one entry per call: the token counts from
+    ``usage`` (``cached_tokens`` when the provider reports it) or None."""
+    t0 = time.monotonic()
+    usage = None
+    key = os.environ.get(key_env, "")
+    if not key:
+        out = f"<ERROR env var {key_env} is not set>"
+    else:
+        body = {
+            "temperature": 0,
+            "max_tokens": 1024,
+            **(extra_body or {}),
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        headers = {"Authorization": f"Bearer {key}", "User-Agent": "DubTitlerr/repair"}
+        out = None
+        for attempt in (0, 1):
+            try:
+                resp = _post_json(url, body, headers=headers)
+                msg = resp["choices"][0]["message"]
+                out = _first_line((msg.get("content") or "").strip())
+                if not out:
+                    out = "<EMPTY no content>"
+                u = resp.get("usage")
+                if u:
+                    usage = {"prompt_tokens": u.get("prompt_tokens"), "completion_tokens": u.get("completion_tokens")}
+                    cached = (u.get("prompt_tokens_details") or {}).get("cached_tokens")
+                    if cached is not None:
+                        usage["cached_tokens"] = cached
+                break
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    if attempt == 0:
+                        time.sleep(_retry_after(e))
+                        continue
+                    out = "<ERROR rate-limited (HTTP 429)>"
+                else:
+                    out = f"<ERROR {e}>"
+                break
+            except Exception as e:
+                out = f"<ERROR {e}>"
+                break
+    if usage_sink is not None:
+        usage_sink.append(usage)
+    return out, time.monotonic() - t0
+
+
+def ask(ollama, model, prompt, llamacpp=None, llamacpp_chat=None, openai=None, usage_sink=None):
     raw = (llamacpp or {}).get(model)
     if raw:
         return ask_llamacpp(raw, prompt)
     chat = (llamacpp_chat or {}).get(model)
     if chat:
         return ask_llamacpp_chat(chat, prompt)
+    if openai:
+        return ask_openai(openai["url"], model, prompt, openai["key_env"], openai.get("extra_body"), usage_sink)
     return ask_ollama(ollama, model, prompt)
 
 
@@ -544,8 +628,23 @@ def main():
         "is applied and thinking is disabled (needed by templated instruct "
         "models; repair.py's raw /completion path cannot drive them)",
     )
+    ap.add_argument(
+        "--openai-url",
+        default="",
+        help="send every --models name (as the request's \"model\") to this OpenAI-compatible "
+        "chat/completions URL instead of Ollama (OpenRouter, Kilo, CommandCode, NVIDIA, ...)",
+    )
+    ap.add_argument("--key-env", default="", metavar="NAME", help="NAME of the env var holding the API key (with --openai-url)")
+    ap.add_argument(
+        "--extra-body", default="", metavar="JSON", help="JSON object merged into the body, e.g. '{\"enable_thinking\": false}'"
+    )
     a = ap.parse_args()
 
+    openai = None
+    if a.openai_url:
+        if not a.key_env:
+            sys.exit("--openai-url needs --key-env NAME")
+        openai = {"url": a.openai_url, "key_env": a.key_env, "extra_body": parse_extra_body(a.extra_body)}
     llamacpp = parse_llamacpp_specs(a.llamacpp)
     llamacpp_chat = parse_llamacpp_specs(a.llamacpp_chat)
     gloss = glossary.load(a.glossary)
@@ -564,10 +663,11 @@ def main():
     # SCORE line lands with that block for the same reason.
     outs = {m: [] for m in a.models}
     totals = dict.fromkeys(a.models, 0.0)
+    usages = {m: [] for m in a.models}
     scores = []
     for m in a.models:
         for n, p in enumerate(prompts, 1):
-            out, dt = ask(a.ollama, m, p, llamacpp, llamacpp_chat)
+            out, dt = ask(a.ollama, m, p, llamacpp, llamacpp_chat, openai, usages[m])
             outs[m].append(out)
             totals[m] += dt
             print(f"    [{m} {n}/{len(prompts)}] {dt:5.1f}s  {out[:70]}", flush=True)
@@ -582,12 +682,15 @@ def main():
             # than only aggregated, because "is this change an improvement" is judged line by
             # line and a rate cannot be read back into one.
             rows = []
-            for c, out in zip(targets, outs[m]):
+            for i, (c, out) in enumerate(zip(targets, outs[m])):
                 dur = (c.get("end") or 0) - (c.get("start") or 0)
                 admitted = bool(
                     dur > 0 and not out.startswith(("<ERROR", "<EMPTY")) and repair.accept_repair(c["text"], out, "", dur, gloss)
                 )
-                rows.append({"orig": c["text"], "out": out, "admitted": admitted})
+                row = {"orig": c["text"], "out": out, "admitted": admitted}
+                if i < len(usages[m]) and usages[m][i]:
+                    row.update(usages[m][i])  # prompt_tokens / completion_tokens / cached_tokens
+                rows.append(row)
             with open(a.json, "w") as f:
                 json.dump({m: rows}, f, indent=2)
 

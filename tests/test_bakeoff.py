@@ -624,3 +624,175 @@ def test_comparison_marks_which_answers_would_ship():
     beta_line = [ln for ln in out.splitlines() if "beta" in ln][0]
     assert alpha_line != beta_line
     assert "ship" in out.lower() or "✓" in out
+
+
+# --- openai-compatible mode ----------------------------------------------------
+#
+# Mirrors repair.llm_openai: same body, same Bearer + User-Agent headers, the key read by
+# env-var NAME. A 429 is the provider throttling us, which says nothing about the model, so
+# it must not be scored as an empty reply (<EMPTY>) -- it gets its own visible marker.
+
+import urllib.error  # noqa: E402
+
+_KEY = "sk-bakeoff-SECRET-456"
+
+
+def _http_error(code, retry_after=None):
+    hdrs = {"Retry-After": retry_after} if retry_after is not None else {}
+    return urllib.error.HTTPError("http://x", code, "err", hdrs, None)
+
+
+def _ok(content="Zoro drew his blade.", **extra):
+    return {"choices": [{"message": {"content": content, **extra}}]}
+
+
+def test_openai_request_shape(monkeypatch):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    seen = {}
+
+    def fake_post(url, body, timeout=180, headers=None):
+        seen.update(url=url, body=body, headers=headers)
+        return _ok(' "Zoro drew his blade."\nnoise')
+
+    monkeypatch.setattr(bo, "_post_json", fake_post)
+    out, _ = bo.ask_openai("https://api.x/v1/chat/completions", "vendor/m", "PROMPT", "TEST_BAKE_KEY", {"enable_thinking": False})
+    assert out == "Zoro drew his blade."
+    assert seen["url"] == "https://api.x/v1/chat/completions"
+    assert seen["headers"]["Authorization"] == f"Bearer {_KEY}"
+    assert seen["headers"]["User-Agent"] == "DubTitlerr/repair"
+    b = seen["body"]
+    assert b["model"] == "vendor/m" and b["messages"] == [{"role": "user", "content": "PROMPT"}]
+    assert b["temperature"] == 0 and b["max_tokens"] == 1024
+    assert "chat_template_kwargs" not in b and b["enable_thinking"] is False
+
+
+def test_openai_ignores_reasoning_content_and_flags_empty(monkeypatch):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    monkeypatch.setattr(bo, "_post_json", lambda u, b, timeout=180, headers=None: _ok("Answer.", reasoning_content="think"))
+    assert bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")[0] == "Answer."
+    monkeypatch.setattr(bo, "_post_json", lambda u, b, timeout=180, headers=None: _ok("", reasoning_content="think"))
+    assert bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")[0].startswith("<EMPTY")
+
+
+def test_openai_missing_key_is_an_error_and_never_posts(monkeypatch):
+    monkeypatch.delenv("TEST_BAKE_KEY", raising=False)
+    monkeypatch.setattr(bo, "_post_json", lambda *a, **k: pytest.fail("must not post"))
+    out, _ = bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")
+    assert out.startswith("<ERROR") and "TEST_BAKE_KEY" in out
+
+
+def test_openai_error_text_never_contains_the_key(monkeypatch):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+
+    def boom(u, b, timeout=180, headers=None):
+        raise _http_error(500)
+
+    monkeypatch.setattr(bo, "_post_json", boom)
+    out, _ = bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")
+    assert out.startswith("<ERROR") and _KEY not in out
+
+
+def test_openai_429_retries_once_honouring_retry_after_then_succeeds(monkeypatch):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    calls, slept = [], []
+
+    def fake_post(u, b, timeout=180, headers=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise _http_error(429, "7")
+        return _ok("Fixed.")
+
+    monkeypatch.setattr(bo, "_post_json", fake_post)
+    monkeypatch.setattr(bo.time, "sleep", slept.append)
+    assert bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")[0] == "Fixed."
+    assert len(calls) == 2 and slept == [7.0]
+
+
+def test_openai_429_retry_after_is_capped_at_60s(monkeypatch):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    slept = []
+
+    def fake_post(u, b, timeout=180, headers=None):
+        raise _http_error(429, "3600")
+
+    monkeypatch.setattr(bo, "_post_json", fake_post)
+    monkeypatch.setattr(bo.time, "sleep", slept.append)
+    bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")
+    assert slept == [60.0]
+
+
+def test_openai_persistent_429_is_reported_rate_limited_not_empty(monkeypatch):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    calls = []
+
+    def fake_post(u, b, timeout=180, headers=None):
+        calls.append(1)
+        raise _http_error(429)
+
+    monkeypatch.setattr(bo, "_post_json", fake_post)
+    monkeypatch.setattr(bo.time, "sleep", lambda s: None)
+    out, _ = bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")
+    assert len(calls) == 2  # exactly one retry
+    assert "rate-limited" in out and "429" in out
+    assert not out.startswith("<EMPTY")
+    # and it scores as a dead call, never as the model leaving the line alone
+    s = bo.score_model("m", [{"text": "x", "start": 0, "end": 2}], [out], 1.0, _glossary.load(""))
+    assert s["errors"] == 1 and s["inert"] == 0
+
+
+def test_openai_records_usage_including_cached_tokens(monkeypatch):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    usage = {"prompt_tokens": 100, "completion_tokens": 9, "prompt_tokens_details": {"cached_tokens": 64}}
+    monkeypatch.setattr(bo, "_post_json", lambda u, b, timeout=180, headers=None: {**_ok("x"), "usage": usage})
+    sink = []
+    bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY", usage_sink=sink)
+    assert sink == [{"prompt_tokens": 100, "completion_tokens": 9, "cached_tokens": 64}]
+    monkeypatch.setattr(bo, "_post_json", lambda u, b, timeout=180, headers=None: _ok("x"))
+    bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY", usage_sink=sink)
+    assert sink[1] is None  # one entry per call, so the sink stays aligned with outs
+
+
+def test_ask_routes_openai_models(monkeypatch):
+    seen = []
+    monkeypatch.setattr(bo, "ask_openai", lambda *a, **k: seen.append((a, k)) or ("o", 0.1))
+    cfg = {"url": "https://api.x/v1/chat/completions", "key_env": "K", "extra_body": {"a": 1}}
+    assert bo.ask("http://o", "m", "p", openai=cfg)[0] == "o"
+    assert seen[0][0][:5] == ("https://api.x/v1/chat/completions", "m", "p", "K", {"a": 1})
+
+
+def test_parse_extra_body_arg():
+    assert bo.parse_extra_body("") == {}
+    assert bo.parse_extra_body('{"a": 1}') == {"a": 1}
+    with pytest.raises(SystemExit):
+        bo.parse_extra_body("{bad")
+    with pytest.raises(SystemExit):
+        bo.parse_extra_body("[1]")
+
+
+def test_main_openai_mode_writes_token_usage_into_the_json_rows(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    conf = _write(tmp_path, [_conf_row("grbled nnsense here", lp=-1.4, nsp=0.02)])
+    out_json = tmp_path / "res.json"
+    seen = {}
+
+    def fake_post(url, body, timeout=180, headers=None):
+        seen.update(url=url, model=body["model"])
+        usage = {"prompt_tokens": 50, "completion_tokens": 4, "prompt_tokens_details": {"cached_tokens": 32}}
+        return {**_ok("garbled nonsense here"), "usage": usage}
+
+    monkeypatch.setattr(bo, "_post_json", fake_post)
+    argv = ["bakeoff", "--conf", conf, "--models", "vendor/m", "--openai-url", "https://api.x/v1/chat/completions"]
+    argv += ["--key-env", "TEST_BAKE_KEY", "--json", str(out_json)]
+    monkeypatch.setattr(bo.sys, "argv", argv)
+    bo.main()
+    assert seen == {"url": "https://api.x/v1/chat/completions", "model": "vendor/m"}
+    row = json.loads(out_json.read_text())["vendor/m"][0]
+    assert (row["prompt_tokens"], row["completion_tokens"], row["cached_tokens"]) == (50, 4, 32)
+    assert _KEY not in out_json.read_text()
+
+
+def test_main_rejects_openai_url_without_key_env(tmp_path, monkeypatch):
+    conf = _write(tmp_path, [_conf_row()])
+    monkeypatch.setattr(bo.sys, "argv", ["bakeoff", "--conf", conf, "--openai-url", "https://x/v1/chat/completions"])
+    with pytest.raises(SystemExit):
+        bo.main()

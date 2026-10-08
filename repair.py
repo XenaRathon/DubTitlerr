@@ -27,8 +27,14 @@ Env:
   OLLAMA_URL           default http://127.0.0.1:11434/api/generate
   REPAIR_MODEL         default qwen3-4b-instruct   (see the note at MODEL: a live
                          2026-09-01 anchored bake-off against real production data)
-  REPAIR_BACKEND         ollama | llamacpp  (default llamacpp; see the note at
+  REPAIR_BACKEND         ollama | llamacpp | openai  (default llamacpp; see the note at
                          REPAIR_BACKEND — V2 A1 added the dispatch, the default moved later)
+  REPAIR_OPENAI_URL      openai backend: full chat/completions URL of any OpenAI-compatible API
+  REPAIR_OPENAI_KEY_ENV  openai backend: the NAME of the env var holding the API key (read at
+                         call time; the value is never logged)
+  REPAIR_MAX_TOKENS      openai backend: max_tokens, default 1024
+  REPAIR_EXTRA_BODY      openai backend: optional JSON object merged into the request body,
+                         e.g. {"enable_thinking": false} (cannot replace model/messages)
   REPAIR_LLAMACPP_URL    default http://127.0.0.1:8090/v1/chat/completions
                          (chat endpoint: the raw /completion path applies no chat
                          template and yields empty output from instruct models)
@@ -109,6 +115,9 @@ REPAIR_BACKEND = os.environ.get("REPAIR_BACKEND", "llamacpp")
 # passing this explicitly and had no reason to notice.
 LLAMACPP_URL = os.environ.get("REPAIR_LLAMACPP_URL", "http://127.0.0.1:8090/v1/chat/completions")
 MODEL_SECONDARY = os.environ.get("REPAIR_MODEL_SECONDARY", MODEL)
+OPENAI_URL = os.environ.get("REPAIR_OPENAI_URL", "")
+OPENAI_KEY_ENV = os.environ.get("REPAIR_OPENAI_KEY_ENV", "")
+OPENAI_MAX_TOKENS = int(os.environ.get("REPAIR_MAX_TOKENS", "1024"))
 TIMEOUT_CONNECT = float(os.environ.get("REPAIR_TIMEOUT_CONNECT", "10"))
 TIMEOUT_READ = float(os.environ.get("REPAIR_TIMEOUT_READ", "120"))
 LOGPROB_MIN = float(os.environ.get("LOGPROB_MIN", "-0.4"))  # mid-confidence-and-lower (C1)
@@ -121,6 +130,23 @@ SRT_SUFFIX = ".eng.dubtitles.srt"
 
 def log(*a):
     print(*a, flush=True)
+
+
+def _parse_extra_body(raw):
+    """REPAIR_EXTRA_BODY -> dict. Fails loudly (at import) on bad JSON: a typo here would
+    otherwise silently send requests without the provider flag the operator meant."""
+    if not raw.strip():
+        return {}
+    try:
+        extra = json.loads(raw)
+    except ValueError as e:
+        raise ValueError(f"REPAIR_EXTRA_BODY is not valid JSON: {e}") from e
+    if not isinstance(extra, dict):
+        raise ValueError("REPAIR_EXTRA_BODY must be a JSON object")
+    return extra
+
+
+OPENAI_EXTRA_BODY = _parse_extra_body(os.environ.get("REPAIR_EXTRA_BODY", ""))
 
 
 def glossary_for(path, gloss_dir=GLOSSARY_DIR):
@@ -309,12 +335,13 @@ def overlap_ref(ivals, a, b):
     return " ".join(hits)[:300]
 
 
-def _post_json(url, body):
+def _post_json(url, body, headers=None):
     """POST body (dict) as JSON to url with separate connect (TIMEOUT_CONNECT) and read
     (TIMEOUT_READ) timeouts (V2 A2). stdlib's urllib.request.urlopen only exposes a single
     timeout for the whole call (connect + every read), so we go one layer lower via
     http.client: the connect timeout is set on the connection itself (used for connect()),
-    then the read timeout is set on the underlying socket right after connecting."""
+    then the read timeout is set on the underlying socket right after connecting.
+    ``headers`` are added to the default Content-Type (used by the openai backend)."""
     parsed = urllib.parse.urlsplit(url)
     conn_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
     conn = conn_cls(parsed.hostname, parsed.port, timeout=TIMEOUT_CONNECT)
@@ -324,7 +351,8 @@ def _post_json(url, body):
         path = parsed.path or "/"
         if parsed.query:
             path += "?" + parsed.query
-        conn.request("POST", path, body=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        hdrs = {"Content-Type": "application/json", **(headers or {})}
+        conn.request("POST", path, body=json.dumps(body).encode(), headers=hdrs)
         resp = conn.getresponse()
         data = resp.read()
         if resp.status >= 400:
@@ -623,12 +651,44 @@ def llm_llamacpp(prompt, model):
         return LLM_UNREACHABLE
 
 
+def llm_openai(prompt, model):
+    """Any OpenAI-compatible chat API (OpenRouter, Kilo, CommandCode, NVIDIA, Cerebras, ...).
+
+    Only choices[0].message.content is read; reasoning_content is ignored on purpose (some
+    models put their monologue there and the answer in content). Empty content means "no
+    repair". The key is looked up by NAME at call time and only the name is ever logged.
+    The explicit User-Agent matters: CommandCode's Cloudflare 403s Python's default one.
+    No chat_template_kwargs -- that is llama.cpp-only; use REPAIR_EXTRA_BODY for provider flags."""
+    key = os.environ.get(OPENAI_KEY_ENV, "") if OPENAI_KEY_ENV else ""
+    if not OPENAI_URL or not key:
+        log(f"  llm fail: REPAIR_OPENAI_URL or the key env var {OPENAI_KEY_ENV or 'REPAIR_OPENAI_KEY_ENV'} is not set")
+        return LLM_UNREACHABLE
+    body = {
+        "temperature": 0,
+        "max_tokens": OPENAI_MAX_TOKENS,
+        **OPENAI_EXTRA_BODY,
+        "model": model or MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    headers = {"Authorization": f"Bearer {key}", "User-Agent": "DubTitlerr/repair"}
+    try:
+        msg = _post_json(OPENAI_URL, body, headers=headers)["choices"][0]["message"]
+        out = (msg.get("content") or "").strip()
+        return out.splitlines()[0].strip().strip('"').strip() if out else ""
+    except Exception as e:
+        # _post_json puts the response body in its error; a provider may echo the key there.
+        log("  llm fail:", str(e).replace(key, "***"))
+        return LLM_UNREACHABLE
+
+
 def llm(prompt, model=None):
-    """Dispatch to the backend configured by REPAIR_BACKEND (ollama|llamacpp, default
-    ollama — matches pre-A1 behavior exactly). model=None uses the backend's default
+    """Dispatch to the backend configured by REPAIR_BACKEND (ollama|llamacpp|openai, default
+    llamacpp). model=None uses the backend's default
     (REPAIR_MODEL); pass it explicitly for the two-pass secondary-model re-check (A3)."""
     if REPAIR_BACKEND == "llamacpp":
         return llm_llamacpp(prompt, model or MODEL)
+    if REPAIR_BACKEND == "openai":
+        return llm_openai(prompt, model)
     return llm_ollama(prompt, model)
 
 

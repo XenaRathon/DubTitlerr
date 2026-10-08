@@ -8,6 +8,14 @@ that shipped since.
 
 ## [Unreleased]
 
+- **Repair and the bake-off can call any OpenAI-compatible chat API.** `REPAIR_BACKEND=openai`
+  (with `REPAIR_OPENAI_URL`, `REPAIR_OPENAI_KEY_ENV` naming the env var that holds the key,
+  `REPAIR_MAX_TOKENS`, optional `REPAIR_EXTRA_BODY` JSON) works against OpenRouter, Kilo,
+  CommandCode, NVIDIA, Cerebras and the like. Only `message.content` is read, never
+  `reasoning_content`; a missing key or a transport failure counts as unreachable and the key
+  value is never logged. `tools/bakeoff.py` gains `--openai-url`, `--key-env` and `--extra-body`,
+  reports HTTP 429 as rate-limited (one retry, `Retry-After` capped at 60 s) instead of an empty
+  reply, and writes token counts to `--json`. The default llamacpp/ollama paths are unchanged.
 - **mux verification measures the video track itself.** When the video stream carries neither a
   duration nor a DURATION tag, `video_duration()` now takes the end of the last video packet
   (scanning the final minute) instead of the container duration, which in Matroska is the longest

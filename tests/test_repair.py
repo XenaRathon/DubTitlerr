@@ -9,6 +9,8 @@ import csv
 import json
 import os
 
+import pytest
+
 import common
 import decisions
 import glossary
@@ -2880,3 +2882,168 @@ def test_backend_unreachable_and_llm_empty_are_never_the_same_stage_outcome(tmp_
     outcome = common.read_stages(stem)["repair"]["outcome"]
     assert outcome == "backend-unreachable"
     assert outcome != "llm-empty"
+
+
+# --- openai backend: any OpenAI-compatible chat API -----------------------------
+#
+# REPAIR_BACKEND=openai talks to hosted providers (OpenRouter, CommandCode, NVIDIA, ...).
+# The key is never configured directly: REPAIR_OPENAI_KEY_ENV names the env var that holds
+# it, so no key value ever sits in a compose file, a log line, or a test fixture.
+
+_SECRET = "sk-test-SECRET-VALUE-123"
+
+
+def _openai_env(monkeypatch, **over):
+    monkeypatch.setattr(repair, "OPENAI_URL", over.get("url", "https://api.example.test/v1/chat/completions"))
+    monkeypatch.setattr(repair, "OPENAI_KEY_ENV", over.get("key_env", "TEST_REPAIR_KEY"))
+    monkeypatch.setattr(repair, "OPENAI_MAX_TOKENS", over.get("max_tokens", 1024))
+    monkeypatch.setattr(repair, "OPENAI_EXTRA_BODY", over.get("extra", {}))
+    monkeypatch.setattr(repair, "MODEL", "default-model")
+    if over.get("key", _SECRET) is not None:
+        monkeypatch.setenv("TEST_REPAIR_KEY", over.get("key", _SECRET))
+    else:
+        monkeypatch.delenv("TEST_REPAIR_KEY", raising=False)
+
+
+def test_llm_openai_request_shape(monkeypatch):
+    _openai_env(monkeypatch, extra={"enable_thinking": False})
+    seen = {}
+
+    def fake_post(url, body, timeout=180, headers=None):
+        seen.update(url=url, body=body, headers=headers)
+        return {"choices": [{"message": {"content": ' "Zoro drew his blade."\nnoise'}}]}
+
+    monkeypatch.setattr(repair, "_post_json", fake_post)
+    out = repair.llm_openai("PROMPT", "vendor/model-x")
+    assert out == "Zoro drew his blade."
+    assert seen["url"] == "https://api.example.test/v1/chat/completions"
+    assert seen["headers"]["Authorization"] == f"Bearer {_SECRET}"
+    assert seen["headers"]["User-Agent"] == "DubTitlerr/repair"
+    b = seen["body"]
+    assert b["model"] == "vendor/model-x"
+    assert b["messages"] == [{"role": "user", "content": "PROMPT"}]
+    assert b["temperature"] == 0 and b["max_tokens"] == 1024
+    assert "chat_template_kwargs" not in b
+    assert b["enable_thinking"] is False  # REPAIR_EXTRA_BODY merged
+
+
+def test_llm_openai_extra_body_cannot_replace_model_or_messages(monkeypatch):
+    _openai_env(monkeypatch, extra={"model": "evil", "messages": [], "max_tokens": 7})
+    seen = {}
+    monkeypatch.setattr(
+        repair,
+        "_post_json",
+        lambda u, b, timeout=180, headers=None: seen.update(b) or {"choices": [{"message": {"content": "x"}}]},
+    )
+    repair.llm_openai("P", "real")
+    assert seen["model"] == "real" and seen["messages"] == [{"role": "user", "content": "P"}]
+    assert seen["max_tokens"] == 7  # other defaults may be overridden
+
+
+def test_llm_openai_ignores_reasoning_content(monkeypatch):
+    _openai_env(monkeypatch)
+    msg = {"content": "The answer.", "reasoning_content": "let me think about it"}
+    monkeypatch.setattr(repair, "_post_json", lambda u, b, timeout=180, headers=None: {"choices": [{"message": msg}]})
+    assert repair.llm_openai("P", None) == "The answer."
+
+
+def test_llm_openai_empty_content_is_no_repair_not_reasoning(monkeypatch):
+    _openai_env(monkeypatch)
+    msg = {"content": None, "reasoning_content": "monologue"}
+    monkeypatch.setattr(repair, "_post_json", lambda u, b, timeout=180, headers=None: {"choices": [{"message": msg}]})
+    assert repair.llm_openai("P", None) == ""
+
+
+def test_llm_openai_uses_default_model_when_none(monkeypatch):
+    _openai_env(monkeypatch)
+    seen = {}
+    monkeypatch.setattr(
+        repair,
+        "_post_json",
+        lambda u, b, timeout=180, headers=None: seen.update(b) or {"choices": [{"message": {"content": "x"}}]},
+    )
+    repair.llm_openai("P", None)
+    assert seen["model"] == "default-model"
+
+
+def test_llm_openai_transport_failure_is_unreachable(monkeypatch):
+    _openai_env(monkeypatch)
+
+    def boom(url, body, timeout=180, headers=None):
+        raise RuntimeError("HTTP 403: boom")
+
+    monkeypatch.setattr(repair, "_post_json", boom)
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+
+
+def test_llm_openai_missing_key_is_unreachable_and_logs_only_the_name(monkeypatch, capsys):
+    _openai_env(monkeypatch, key=None)
+    called = []
+    monkeypatch.setattr(repair, "_post_json", lambda *a, **k: called.append(1))
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+    assert not called  # no request goes out without a key
+    assert "TEST_REPAIR_KEY" in capsys.readouterr().out
+
+
+def test_llm_openai_empty_key_is_unreachable(monkeypatch):
+    _openai_env(monkeypatch, key="")
+    monkeypatch.setattr(repair, "_post_json", lambda *a, **k: pytest.fail("must not post"))
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+
+
+def test_llm_openai_never_logs_the_key_value(monkeypatch, capsys):
+    _openai_env(monkeypatch)
+
+    def boom(url, body, timeout=180, headers=None):
+        raise RuntimeError("HTTP 401: bad key")
+
+    monkeypatch.setattr(repair, "_post_json", boom)
+    repair.llm_openai("P", None)
+    out = capsys.readouterr()
+    assert _SECRET not in out.out and _SECRET not in out.err
+
+
+def test_llm_dispatch_routes_to_openai_and_passes_the_secondary_model(monkeypatch):
+    calls = []
+    monkeypatch.setattr(repair, "REPAIR_BACKEND", "openai")
+    monkeypatch.setattr(repair, "llm_openai", lambda prompt, model: calls.append(model) or "ok")
+    repair.llm("p")
+    repair.llm("p", model="second/model")
+    assert calls == [None, "second/model"]
+
+
+def test_parse_extra_body():
+    assert repair._parse_extra_body("") == {}
+    assert repair._parse_extra_body('{"enable_thinking": false}') == {"enable_thinking": False}
+    for bad in ("{nope", "[1]", '"s"'):
+        with pytest.raises(ValueError, match="REPAIR_EXTRA_BODY"):
+            repair._parse_extra_body(bad)
+
+
+def test_post_json_extra_headers_are_added_and_default_is_unchanged(monkeypatch):
+    _FakeConn.instances.clear()
+    monkeypatch.setattr(repair.http.client, "HTTPConnection", _FakeConn)
+    repair._post_json("http://example.local/x", {})
+    assert _FakeConn.instances[0].requested[3] == {"Content-Type": "application/json"}
+    repair._post_json("http://example.local/x", {}, headers={"Authorization": "Bearer t", "User-Agent": "u"})
+    assert _FakeConn.instances[1].requested[3] == {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer t",
+        "User-Agent": "u",
+    }
+
+
+def test_llm_openai_redacts_a_key_echoed_in_the_http_error_body(monkeypatch, capsys):
+    """_post_json puts the response body in its RuntimeError; a provider that echoes the
+    submitted key in a 401 would otherwise land it in the repair log."""
+    _openai_env(monkeypatch)
+
+    class EchoConn(_FakeConn):
+        def getresponse(self):
+            return _FakeResponse({"error": f"Incorrect API key provided: {_SECRET}"}, status=401)
+
+    monkeypatch.setattr(repair.http.client, "HTTPSConnection", EchoConn)
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+    out = capsys.readouterr()
+    assert _SECRET not in out.out and _SECRET not in out.err
+    assert "401" in out.out
