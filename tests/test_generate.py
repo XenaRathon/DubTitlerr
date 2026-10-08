@@ -280,7 +280,11 @@ def test_extract_wav_appends_audio_filter_by_default(monkeypatch, tmp_path):
     """The default WHISPER_AUDIO_FILTER (highpass+compand) is appended as -af to the
     ffmpeg command, right before the output path."""
     calls = []
-    monkeypatch.setattr(generate.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or generate.subprocess.CompletedProcess(cmd, 0))
+    monkeypatch.setattr(
+        generate.subprocess,
+        "run",
+        lambda cmd, **kw: calls.append(cmd) or generate.subprocess.CompletedProcess(cmd, 0),
+    )
     wav = tmp_path / "a.wav"
     wav.write_bytes(b"x" * 2000)  # extract_wav's success check is stat-only; run() is faked
     assert generate.extract_wav("ep.mkv", 1, str(wav)) is True
@@ -353,7 +357,11 @@ def test_extract_wav_no_filter_when_empty(monkeypatch, tmp_path):
     reproducing the exact pre-A8 ffmpeg command."""
     calls = []
     monkeypatch.setattr(generate, "AUDIO_FILTER", "")
-    monkeypatch.setattr(generate.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or generate.subprocess.CompletedProcess(cmd, 0))
+    monkeypatch.setattr(
+        generate.subprocess,
+        "run",
+        lambda cmd, **kw: calls.append(cmd) or generate.subprocess.CompletedProcess(cmd, 0),
+    )
     wav = tmp_path / "a.wav"
     wav.write_bytes(b"x" * 2000)
     generate.extract_wav("ep.mkv", 1, str(wav))
