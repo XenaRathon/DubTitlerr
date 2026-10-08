@@ -82,7 +82,9 @@ import json
 import math
 import os
 import re
+import socket
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -194,6 +196,7 @@ def _take_reject():
     return status
 
 
+_episode_deadline_at = None  # time.monotonic() value after which this episode is out of time; None = no limit
 _retry_budget_left = None  # seconds of retry sleep this episode may still spend; None = unlimited (no episode)
 _retry_slept = 0.0  # total seconds spent in retry sleeps; lets callers time the attempts alone
 
@@ -437,6 +440,12 @@ def overlap_ref(ivals, a, b):
     return " ".join(hits)[:300]
 
 
+def _request_deadline():
+    """REPAIR_REQUEST_DEADLINE: wall-clock seconds one HTTP request may take in total (default 300, min 10).
+    REPAIR_TIMEOUT_READ is per socket read, so a server that trickles a byte every few seconds never trips it."""
+    return env_int("REPAIR_REQUEST_DEADLINE", 300, lo=10)
+
+
 class _HttpError(RuntimeError):
     """HTTP >= 400 from _post_json. Same text as before; ``status`` lets a caller log the code
     alone and ``retry_after`` is the raw Retry-After header (or None) for a caller that retries."""
@@ -457,9 +466,24 @@ def _post_json(url, body, headers=None):
     parsed = urllib.parse.urlsplit(url)
     conn_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
     conn = conn_cls(parsed.hostname, parsed.port, timeout=TIMEOUT_CONNECT)
+    deadline = _request_deadline()
+    expired = threading.Event()
+    sock = []  # the connected socket; conn.sock is reset to None as soon as a will-close response arrives
+
+    def _expire():  # shuts the socket down under whatever read is blocked on it
+        expired.set()
+        try:
+            sock[0].shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+
+    watchdog = threading.Timer(deadline, _expire)
+    watchdog.daemon = True
     try:
         conn.connect()
         conn.sock.settimeout(TIMEOUT_READ)
+        sock.append(conn.sock)
+        watchdog.start()
         path = parsed.path or "/"
         if parsed.query:
             path += "?" + parsed.query
@@ -472,7 +496,12 @@ def _post_json(url, body, headers=None):
             retry_after = getheader("Retry-After") if getheader else None
             raise _HttpError(resp.status, f"HTTP {resp.status}: {data[:200]!r}", retry_after)
         return json.loads(data)
+    except Exception:
+        if expired.is_set():
+            raise TimeoutError(f"request deadline of {deadline}s exceeded") from None
+        raise
     finally:
+        watchdog.cancel()
         conn.close()
 
 
@@ -799,6 +828,8 @@ def llm_openai(prompt, model):
     headers = {"Authorization": f"Bearer {key}", "User-Agent": "DubTitlerr/repair"}
     retries = _openai_retries()
     for attempt in range(retries + 1):
+        if attempt and stop_requested():
+            return LLM_UNREACHABLE  # soft stop during the backoff: the between-target check ends the episode
         try:
             choice = _post_json(OPENAI_URL, body, headers=headers)["choices"][0]
             out = (choice["message"].get("content") or "").strip()
@@ -816,6 +847,9 @@ def llm_openai(prompt, model):
                 return ""
             # Rate limits and server errors are worth another try; other 4xx (bad key, bad model) are not.
             if (e.status == 429 or e.status >= 500) and attempt < retries:
+                if stop_requested() or (_episode_deadline_at is not None and time.monotonic() >= _episode_deadline_at):
+                    log(f"  llm fail: HTTP {e.status} (retry skipped: soft stop or episode deadline)")
+                    return LLM_UNREACHABLE
                 wait = _retry_wait(e.retry_after, attempt)
                 if _retry_budget_left is None or wait <= _retry_budget_left:
                     log(f"  llm retry {attempt + 1}/{retries} after HTTP {e.status}")
@@ -925,12 +959,15 @@ def prior_repairs(stem):
 def process(conf_path):
     """Repair one episode. Wraps the work so the per-episode retry-sleep budget (REPAIR_RETRY_SLEEP_BUDGET
     seconds, default 600) starts full for this episode and is lifted again afterwards."""
-    global _retry_budget_left
+    global _retry_budget_left, _episode_deadline_at
     _retry_budget_left = float(env_int("REPAIR_RETRY_SLEEP_BUDGET", 600, lo=0))
+    limit = env_int("REPAIR_EPISODE_DEADLINE", 3600, lo=0)  # 0 disables
+    _episode_deadline_at = time.monotonic() + limit if limit else None
     try:
         return _process_episode(conf_path)
     finally:
         _retry_budget_left = None
+        _episode_deadline_at = None
 
 
 def _process_episode(conf_path):
@@ -1014,6 +1051,7 @@ def _process_episode(conf_path):
     refuse_pct = env_int("REPAIR_UNREACHABLE_REFUSE_PCT", 10, lo=1, hi=100)
     max_streak = env_int("REPAIR_MAX_CONSECUTIVE_UNREACHABLE", 5, lo=1)
     streak = 0  # unreachable targets in a row; any answer (even an empty one) resets it
+    deadline_hit = False
     refuse_why = None  # set when the episode must be refused: what to say in the log
     rejected_4xx = 0  # request-scoped client errors (llm_openai): no repair for that line, not an outage
     rejected_secondary = 0  # C5: second-pass output refused by the gate
@@ -1032,6 +1070,9 @@ def _process_episode(conf_path):
     verdict_stale = 0  # the human approved OTHER wording for this line; the model moved on
     repaired_lines = []  # A10: per-line detail for the summary
     for i, c in targets:
+        if _episode_deadline_at is not None and time.monotonic() >= _episode_deadline_at:
+            deadline_hit = True
+            break
         if stop_requested():
             # Soft stop (container_run.sh got SIGTERM): checked between targets, never inside one. The srt
             # is NOT rebuilt -- a half-repaired rebuild would ship raw ASR over shipped repairs -- and the
@@ -1324,9 +1365,11 @@ def _process_episode(conf_path):
     # when it failed REPAIR_MAX_CONSECUTIVE_UNREACHABLE targets in a row. Repairs live only in the srt,
     # so a rebuild after a partial outage would overwrite shipped repairs with raw ASR. A single
     # poison-pill line (a few percent) still ships.
-    if refuse_why is None and llm_calls and unreachable * 100 >= refuse_pct * llm_calls:
+    if refuse_why is None and not deadline_hit and llm_calls and unreachable * 100 >= refuse_pct * llm_calls:
         refuse_why = f"{unreachable} of {llm_calls} targets that reached it (threshold {refuse_pct}%)"
-    if refuse_why is not None:
+    if deadline_hit:
+        problem = "episode deadline exceeded (REPAIR_EPISODE_DEADLINE); the repair run took too long"
+    elif refuse_why is not None:
         problem = f"the repair backend was unreachable for {refuse_why}"
     elif llm_calls >= 3 and rejected_4xx == llm_calls:
         # Every request that reached the model came back a client error: that is a wrong model id or URL,

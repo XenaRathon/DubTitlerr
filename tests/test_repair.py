@@ -3696,3 +3696,128 @@ def test_the_loop_stops_as_soon_as_the_refusal_is_certain(tmp_path, monkeypatch)
     assert repair.process(conf_path) == "refused"
     assert len(calls) == 29  # the 15th failure is the 29th call
     assert open(stem + repair.SRT_SUFFIX, "rb").read() == shipped
+
+
+# --- round 3: time bounds ------------------------------------------------------------
+
+
+def test_a_trickling_server_is_cut_off_by_the_total_request_deadline(monkeypatch):
+    """REPAIR_TIMEOUT_READ is per socket read, so a server sending a byte every 0.5 s defeats it."""
+    import http.server
+    import threading
+    import time as real_time
+
+    class Trickle(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(200)
+            self.send_header("Content-Length", "12")
+            self.end_headers()
+            try:
+                for _ in range(12):
+                    self.wfile.write(b" ")
+                    self.wfile.flush()
+                    real_time.sleep(0.5)
+            except OSError:
+                pass  # the client gave up
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Trickle)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    monkeypatch.setattr(repair, "_request_deadline", lambda: 2)
+    t0 = real_time.monotonic()
+    try:
+        with pytest.raises(OSError, match="deadline"):
+            repair._post_json(f"http://127.0.0.1:{srv.server_port}/x", {})
+    finally:
+        srv.shutdown()
+    assert real_time.monotonic() - t0 < 4.5
+
+
+@pytest.mark.parametrize("raw,want", [(None, 300), ("abc", 300), ("3", 10), ("900", 900)])
+def test_request_deadline_env_is_safe_and_has_a_floor_of_ten(monkeypatch, raw, want):
+    monkeypatch.setattr(repair, "_LOGGED_ONCE", set())
+    if raw is None:
+        monkeypatch.delenv("REPAIR_REQUEST_DEADLINE", raising=False)
+    else:
+        monkeypatch.setenv("REPAIR_REQUEST_DEADLINE", raw)
+    assert repair._request_deadline() == want
+
+
+def test_a_normal_fast_response_is_unchanged_by_the_deadline_machinery(monkeypatch):
+    """GUARD: passes on the old code."""
+    _FakeConn.instances.clear()
+    monkeypatch.setattr(repair.http.client, "HTTPConnection", _FakeConn)
+    assert repair._post_json("http://example.local:1234/x", {"a": 1}) == {"response": "ok"}
+
+
+def _clocked_episode(tmp_path, monkeypatch, n, step, calls):
+    """n targets; every llm() call advances a fake clock by `step` seconds."""
+    import types
+
+    clock = [1000.0]
+    monkeypatch.setattr(repair, "time", types.SimpleNamespace(monotonic=lambda: clock[0]))
+
+    def llm_fn(prompt, model=None):
+        calls.append(1)
+        clock[0] += step
+        return "a garbled line"
+
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, n, n, llm_fn)
+    return stem, conf_path, clock
+
+
+def test_the_episode_deadline_refuses_like_an_outage(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("REPAIR_EPISODE_DEADLINE", "250")
+    calls = []
+    stem, conf_path, _ = _clocked_episode(tmp_path, monkeypatch, 10, 100.0, calls)
+    shipped = open(stem + repair.SRT_SUFFIX, "rb").read()
+    assert repair.process(conf_path) == "refused"
+    assert len(calls) == 3  # 300 s elapsed after the third target: the fourth is never sent
+    assert open(stem + repair.SRT_SUFFIX, "rb").read() == shipped
+    assert common.read_stages(stem)["repair"]["outcome"] == "backend-unreachable"
+    assert "episode deadline exceeded" in capsys.readouterr().out
+
+
+def test_an_episode_deadline_of_zero_disables_it_and_garbage_falls_back(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPAIR_EPISODE_DEADLINE", "0")
+    calls = []
+    stem, conf_path, _ = _clocked_episode(tmp_path, monkeypatch, 6, 1000.0, calls)
+    assert repair.process(conf_path) == "repaired" and len(calls) == 6
+    monkeypatch.setenv("REPAIR_EPISODE_DEADLINE", "soon")  # -> 3600
+    calls.clear()
+    stem, conf_path, _ = _clocked_episode(tmp_path, monkeypatch, 6, 1000.0, calls)
+    assert repair.process(conf_path) == "refused" and len(calls) == 4
+
+
+def test_the_episode_deadline_also_stops_a_retry_sleep(monkeypatch):
+    import types
+
+    monkeypatch.setattr(repair, "time", types.SimpleNamespace(monotonic=lambda: 100.0))
+    sleeps = []
+    calls = _scripted_openai(monkeypatch, [(503, {})], sleeps)
+    monkeypatch.setattr(repair, "_episode_deadline_at", 50.0)  # already past
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+    assert sleeps == [] and len(calls) == 1
+
+
+def test_a_stop_flag_ends_the_retries_before_any_sleep_or_second_request(monkeypatch, tmp_path):
+    flag = tmp_path / "STOP"
+    flag.write_text("")
+    monkeypatch.setenv("STOP_FLAG", str(flag))
+    sleeps = []
+    calls = _scripted_openai(monkeypatch, [(503, {})], sleeps)
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+    assert sleeps == [] and len(calls) == 1
+
+
+def test_a_stop_flag_set_during_the_backoff_sleep_sends_no_second_request(monkeypatch, tmp_path):
+    flag = tmp_path / "STOP"
+    monkeypatch.setenv("STOP_FLAG", str(flag))
+    slept = []
+    calls = _scripted_openai(monkeypatch, [(503, {})], slept)
+    monkeypatch.setattr(repair, "_sleep", lambda s: slept.append(s) or flag.write_text(""))
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+    assert slept == [2.0] and len(calls) == 1
