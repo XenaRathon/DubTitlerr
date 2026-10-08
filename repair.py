@@ -133,8 +133,9 @@ def log(*a):
 
 
 def _parse_extra_body(raw):
-    """REPAIR_EXTRA_BODY -> dict. Fails loudly (at import) on bad JSON: a typo here would
-    otherwise silently send requests without the provider flag the operator meant."""
+    """REPAIR_EXTRA_BODY -> dict, ValueError on bad JSON. Parsed per call by llm_openai, not
+    at import: a typo must not take down every importer, and must not silently send requests
+    without the provider flag the operator meant."""
     if not raw.strip():
         return {}
     try:
@@ -144,9 +145,6 @@ def _parse_extra_body(raw):
     if not isinstance(extra, dict):
         raise ValueError("REPAIR_EXTRA_BODY must be a JSON object")
     return extra
-
-
-OPENAI_EXTRA_BODY = _parse_extra_body(os.environ.get("REPAIR_EXTRA_BODY", ""))
 
 
 def glossary_for(path, gloss_dir=GLOSSARY_DIR):
@@ -663,10 +661,15 @@ def llm_openai(prompt, model):
     if not OPENAI_URL or not key:
         log(f"  llm fail: REPAIR_OPENAI_URL or the key env var {OPENAI_KEY_ENV or 'REPAIR_OPENAI_KEY_ENV'} is not set")
         return LLM_UNREACHABLE
+    try:
+        extra = _parse_extra_body(os.environ.get("REPAIR_EXTRA_BODY", ""))
+    except ValueError:
+        log("  llm fail: REPAIR_EXTRA_BODY is not a valid JSON object")  # name only, never the content
+        return LLM_UNREACHABLE
     body = {
         "temperature": 0,
         "max_tokens": OPENAI_MAX_TOKENS,
-        **OPENAI_EXTRA_BODY,
+        **extra,
         "model": model or MODEL,
         "messages": [{"role": "user", "content": prompt}],
     }

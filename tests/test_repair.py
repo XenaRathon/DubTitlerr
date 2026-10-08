@@ -2897,7 +2897,7 @@ def _openai_env(monkeypatch, **over):
     monkeypatch.setattr(repair, "OPENAI_URL", over.get("url", "https://api.example.test/v1/chat/completions"))
     monkeypatch.setattr(repair, "OPENAI_KEY_ENV", over.get("key_env", "TEST_REPAIR_KEY"))
     monkeypatch.setattr(repair, "OPENAI_MAX_TOKENS", over.get("max_tokens", 1024))
-    monkeypatch.setattr(repair, "OPENAI_EXTRA_BODY", over.get("extra", {}))
+    monkeypatch.setenv("REPAIR_EXTRA_BODY", json.dumps(over["extra"]) if "extra" in over else "")
     monkeypatch.setattr(repair, "MODEL", "default-model")
     if over.get("key", _SECRET) is not None:
         monkeypatch.setenv("TEST_REPAIR_KEY", over.get("key", _SECRET))
@@ -3047,3 +3047,39 @@ def test_llm_openai_redacts_a_key_echoed_in_the_http_error_body(monkeypatch, cap
     out = capsys.readouterr()
     assert _SECRET not in out.out and _SECRET not in out.err
     assert "401" in out.out
+
+
+def test_a_bad_repair_extra_body_does_not_crash_import(monkeypatch):
+    import importlib
+
+    monkeypatch.setenv("REPAIR_EXTRA_BODY", "{bad")
+    monkeypatch.delenv("REPAIR_BACKEND", raising=False)
+    try:
+        importlib.reload(repair)  # must not raise
+    finally:
+        monkeypatch.undo()
+        importlib.reload(repair)
+
+
+def test_llm_openai_with_a_bad_extra_body_is_unreachable_and_logs_only_the_name(monkeypatch, capsys):
+    _openai_env(monkeypatch)
+    monkeypatch.setenv("REPAIR_EXTRA_BODY", '{"leak": nope')
+    monkeypatch.setattr(repair, "_post_json", lambda *a, **k: pytest.fail("must not post"))
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+    out = capsys.readouterr().out
+    assert "REPAIR_EXTRA_BODY" in out
+    assert _SECRET not in out and "leak" not in out and len(out.strip().splitlines()) == 1
+
+
+def test_llm_openai_reads_the_extra_body_on_each_call(monkeypatch):
+    _openai_env(monkeypatch, extra={"a": 1})
+    seen = []
+    monkeypatch.setattr(
+        repair,
+        "_post_json",
+        lambda u, b, timeout=180, headers=None: seen.append(b) or {"choices": [{"message": {"content": "x"}}]},
+    )
+    repair.llm_openai("P", None)
+    monkeypatch.setenv("REPAIR_EXTRA_BODY", '{"b": 2}')
+    repair.llm_openai("P", None)
+    assert seen[0]["a"] == 1 and "a" not in seen[1] and seen[1]["b"] == 2

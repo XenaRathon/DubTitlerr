@@ -16,6 +16,8 @@ that shipped since.
   value is never logged. `tools/bakeoff.py` gains `--openai-url`, `--key-env` and `--extra-body`,
   reports HTTP 429 as rate-limited (one retry, `Retry-After` capped at 60 s) instead of an empty
   reply, and writes token counts to `--json`. The default llamacpp/ollama paths are unchanged.
+  A malformed `REPAIR_EXTRA_BODY` is checked on each call, not at import: the stage logs the
+  variable name and reports the backend unreachable, so nothing ships and the run is retried.
 - **mux verification measures the video track itself.** When the video stream carries neither a
   duration nor a DURATION tag, `video_duration()` now takes the end of the last video packet
   (scanning the final minute) instead of the container duration, which in Matroska is the longest
