@@ -3196,3 +3196,147 @@ def test_an_unreachable_secondary_pass_is_counted_separately_and_never_gated(tmp
     summary = json.load(open(stem + ".dubtitles.repair-summary.json"))
     assert summary["repaired"] == 1 and summary["rejected_secondary"] == 0
     assert summary["unreachable_secondary"] == 1 and summary["unreachable"] == 0
+
+
+# --- production behaviour: narrow refuse guard, openai retries ------------------------
+
+
+def _many_target_episode(tmp_path, monkeypatch, n, with_ref, llm_fn):
+    """n target cards; the first `with_ref` sit inside a fansub line, the rest have none."""
+    stem = str(tmp_path / "ep_many")
+    rows = [
+        {"start": i * 3.0, "end": i * 3.0 + 2.0, "text": f"garbled line {i}", "avg_logprob": -0.9, "no_speech_prob": 0.1}
+        for i in range(n)
+    ]
+    conf_path = stem + repair.CONF_SUFFIX
+    _write_conf(conf_path, stem + repair.SRT_SUFFIX, rows)
+    monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_many.mkv"))
+    monkeypatch.setattr(repair, "glossary_for", lambda v: gl())
+    monkeypatch.setattr(repair, "dialogue_intervals", lambda v: [(0.0, with_ref * 3.0, "the official sub")])
+    monkeypatch.setattr(repair, "llm", llm_fn)
+    return stem, conf_path
+
+
+def test_skipped_for_no_ref_cards_do_not_hide_a_dead_backend(tmp_path, monkeypatch):
+    """100 targets, 10 skipped for want of a fansub line, the other 90 reach a dead backend.
+    `unreachable == len(targets)` was 90 != 100, so the srt was rebuilt from raw ASR."""
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, 100, 90, lambda p, model=None: repair.LLM_UNREACHABLE)
+    shipped = open(stem + repair.SRT_SUFFIX, encoding="utf-8").read()
+    assert repair.process(conf_path) == "refused"
+    assert open(stem + repair.SRT_SUFFIX, encoding="utf-8").read() == shipped
+    assert common.read_stages(stem)["repair"]["outcome"] == "backend-unreachable"
+
+
+def test_a_partly_reachable_backend_with_skipped_cards_never_refuses(tmp_path, monkeypatch):
+    """GUARD: passes on the old code. Some skipped, some repaired, some unreachable: a normal episode."""
+
+    def flaky(prompt, model=None):
+        dead = "ASR line: garbled line 1\n" in prompt
+        return repair.LLM_UNREACHABLE if dead else "a garbled line"
+
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, 6, 4, flaky)
+    assert repair.process(conf_path) == "repaired"
+
+
+def test_an_episode_where_every_card_is_skipped_for_no_ref_does_not_trip_the_unreachable_guard(tmp_path, monkeypatch):
+    """GUARD: zero llm() calls is not 'every call failed'."""
+    stem, conf_path = _many_target_episode(tmp_path, monkeypatch, 3, 0, lambda p, model=None: pytest.fail("no ref -> no call"))
+    assert repair.process(conf_path) == "repaired"
+    assert common.read_stages(stem)["repair"]["outcome"] != "backend-unreachable"
+
+
+class _HdrResponse(_FakeResponse):
+    def __init__(self, payload, status=200, headers=None):
+        super().__init__(payload, status)
+        self._headers = headers or {}
+
+    def getheader(self, name, default=None):
+        return self._headers.get(name, default)
+
+
+def _scripted_openai(monkeypatch, script, sleeps):
+    """Serve `script` (a list of (status, headers) or an ok marker) through the real _post_json."""
+    _openai_env(monkeypatch)
+    monkeypatch.delenv("REPAIR_OPENAI_RETRIES", raising=False)
+    monkeypatch.setattr(repair, "_sleep", sleeps.append)
+    calls = []
+
+    class ScriptConn(_FakeConn):
+        def getresponse(self):
+            calls.append(1)
+            status, headers = script[min(len(calls), len(script)) - 1]
+            payload = {"choices": [{"message": {"content": "fixed"}}]} if status == 200 else {"error": "x"}
+            return _HdrResponse(payload, status, headers)
+
+    monkeypatch.setattr(repair.http.client, "HTTPSConnection", ScriptConn)
+    return calls
+
+
+def test_openai_retries_429_with_a_growing_default_wait_then_succeeds(monkeypatch):
+    sleeps = []
+    calls = _scripted_openai(monkeypatch, [(429, {}), (429, {}), (200, {})], sleeps)
+    assert repair.llm_openai("P", None) == "fixed"
+    assert len(calls) == 3 and sleeps == [2.0, 4.0]
+
+
+def test_openai_gives_up_after_three_attempts_on_5xx(monkeypatch, capsys):
+    sleeps = []
+    calls = _scripted_openai(monkeypatch, [(503, {})], sleeps)
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+    assert len(calls) == 3 and sleeps == [2.0, 4.0]
+    assert "HTTP 503" in _all_text(capsys)
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
+def test_openai_does_not_retry_other_4xx(monkeypatch, status):
+    """GUARD: passes on the old code (it never retried anything)."""
+    sleeps = []
+    calls = _scripted_openai(monkeypatch, [(status, {})], sleeps)
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+    assert len(calls) == 1 and sleeps == []
+
+
+@pytest.mark.parametrize(
+    "header,expected",
+    [
+        ("7", 7.0),
+        ("0", 0.0),
+        ("999", 30.0),
+        ("nan", 2.0),
+        ("inf", 2.0),
+        ("-5", 2.0),
+        ("soon", 2.0),
+        ("Wed, 21 Oct 2026 07:28:00 GMT", 2.0),
+    ],
+)
+def test_openai_honours_a_finite_retry_after_capped_at_30s(monkeypatch, header, expected):
+    sleeps = []
+    _scripted_openai(monkeypatch, [(429, {"Retry-After": header}), (200, {})], sleeps)
+    assert repair.llm_openai("P", None) == "fixed"
+    assert sleeps == [expected]
+
+
+def test_repair_openai_retries_env_sets_the_retry_count(monkeypatch):
+    sleeps = []
+    calls = _scripted_openai(monkeypatch, [(500, {})], sleeps)
+    monkeypatch.setenv("REPAIR_OPENAI_RETRIES", "0")
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE and len(calls) == 1
+    calls.clear()
+    monkeypatch.setenv("REPAIR_OPENAI_RETRIES", "1")
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE and len(calls) == 2
+    calls.clear()
+    monkeypatch.setenv("REPAIR_OPENAI_RETRIES", "lots")  # garbage -> the default of 2
+    repair.llm_openai("P", None)
+    assert len(calls) == 3
+
+
+def test_post_json_error_carries_status_and_retry_after_without_changing_its_text(monkeypatch):
+    class ErrConn(_FakeConn):
+        def getresponse(self):
+            return _HdrResponse({"error": "slow down"}, 429, {"Retry-After": "9"})
+
+    monkeypatch.setattr(repair.http.client, "HTTPConnection", ErrConn)
+    with pytest.raises(RuntimeError) as e:
+        repair._post_json("http://example.local/x", {})
+    assert e.value.status == 429 and e.value.retry_after == "9"
+    assert str(e.value).startswith("HTTP 429: b'") and "slow down" in str(e.value)

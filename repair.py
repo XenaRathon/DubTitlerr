@@ -33,6 +33,8 @@ Env:
   REPAIR_OPENAI_KEY_ENV  openai backend: the NAME of the env var holding the API key (read at
                          call time; the value is never logged)
   REPAIR_MAX_TOKENS      openai backend: max_tokens, default 1024
+  REPAIR_OPENAI_RETRIES  openai backend: retries after HTTP 429 / 5xx, default 2 (so 3 attempts);
+                         waits a finite Retry-After capped at 30 s, else 2 s then 4 s
   REPAIR_EXTRA_BODY      openai backend: optional JSON object merged into the request body,
                          e.g. {"enable_thinking": false} (cannot replace model/messages)
   REPAIR_LLAMACPP_URL    default http://127.0.0.1:8090/v1/chat/completions
@@ -73,6 +75,7 @@ Requires ffmpeg/ffprobe + pysubs2.  Built with help of Claude (Anthropic).
 import csv
 import http.client
 import json
+import math
 import os
 import re
 import sys
@@ -133,6 +136,28 @@ def log(*a):
 
 
 _LOGGED_ONCE = set()
+_sleep = time.sleep  # indirection so tests can run the retry loop without sleeping
+
+
+def _openai_retries():
+    """REPAIR_OPENAI_RETRIES (default 2, clamped to 0..5; garbage -> 2), read per call."""
+    try:
+        return min(max(int(os.environ.get("REPAIR_OPENAI_RETRIES", "2")), 0), 5)
+    except ValueError:
+        return 2
+
+
+def _retry_wait(retry_after, attempt):
+    """Seconds to wait before retry number ``attempt`` (0-based): a finite Retry-After of
+    0 or more, capped at 30 s; anything else (absent, nan, inf, negative, an HTTP-date) backs
+    off 2 s then 4 s."""
+    try:
+        wait = float(retry_after)
+        if math.isfinite(wait) and wait >= 0:
+            return min(wait, 30.0)
+    except (TypeError, ValueError):
+        pass
+    return 2.0 * 2**attempt
 
 
 def _log_once(tag, *a):
@@ -354,11 +379,13 @@ def overlap_ref(ivals, a, b):
 
 
 class _HttpError(RuntimeError):
-    """HTTP >= 400 from _post_json. Same text as before; ``status`` lets a caller log the code alone."""
+    """HTTP >= 400 from _post_json. Same text as before; ``status`` lets a caller log the code
+    alone and ``retry_after`` is the raw Retry-After header (or None) for a caller that retries."""
 
-    def __init__(self, status, message):
+    def __init__(self, status, message, retry_after=None):
         super().__init__(message)
         self.status = status
+        self.retry_after = retry_after
 
 
 def _post_json(url, body, headers=None):
@@ -382,7 +409,9 @@ def _post_json(url, body, headers=None):
         resp = conn.getresponse()
         data = resp.read()
         if resp.status >= 400:
-            raise _HttpError(resp.status, f"HTTP {resp.status}: {data[:200]!r}")
+            getheader = getattr(resp, "getheader", None)
+            retry_after = getheader("Retry-After") if getheader else None
+            raise _HttpError(resp.status, f"HTTP {resp.status}: {data[:200]!r}", retry_after)
         return json.loads(data)
     finally:
         conn.close()
@@ -707,24 +736,31 @@ def llm_openai(prompt, model):
         "messages": [{"role": "user", "content": prompt}],
     }
     headers = {"Authorization": f"Bearer {key}", "User-Agent": "DubTitlerr/repair"}
-    try:
-        choice = _post_json(OPENAI_URL, body, headers=headers)["choices"][0]
-        out = (choice["message"].get("content") or "").strip()
-        if not out and choice.get("finish_reason") == "length":
-            log(
-                "  llm fail: truncated (finish_reason=length): raise REPAIR_MAX_TOKENS"
-                " or disable reasoning via REPAIR_EXTRA_BODY"
-            )
+    retries = _openai_retries()
+    for attempt in range(retries + 1):
+        try:
+            choice = _post_json(OPENAI_URL, body, headers=headers)["choices"][0]
+            out = (choice["message"].get("content") or "").strip()
+            if not out and choice.get("finish_reason") == "length":
+                log(
+                    "  llm fail: truncated (finish_reason=length): raise REPAIR_MAX_TOKENS"
+                    " or disable reasoning via REPAIR_EXTRA_BODY"
+                )
+                return LLM_UNREACHABLE
+            return out.splitlines()[0].strip().strip('"').strip() if out else ""
+        except _HttpError as e:
+            # Rate limits and server errors are worth another try; other 4xx (bad key, bad model) are not.
+            if (e.status == 429 or e.status >= 500) and attempt < retries:
+                _sleep(_retry_wait(e.retry_after, attempt))
+                continue
+            # Never log str(e): it carries the response body, and a provider may echo the key there.
+            log(f"  llm fail: HTTP {e.status}")
             return LLM_UNREACHABLE
-        return out.splitlines()[0].strip().strip('"').strip() if out else ""
-    except _HttpError as e:
-        # Never log str(e): it carries the response body, and a provider may echo the key there.
-        log(f"  llm fail: HTTP {e.status}")
-        return LLM_UNREACHABLE
-    except Exception as e:
-        # Nor here: http.client quotes the header value (the key) in its ValueError. Class name only.
-        log(f"  llm fail: {type(e).__name__}")
-        return LLM_UNREACHABLE
+        except Exception as e:
+            # Nor here: http.client quotes the header value (the key) in its ValueError. Class name only.
+            log(f"  llm fail: {type(e).__name__}")
+            return LLM_UNREACHABLE
+    return LLM_UNREACHABLE  # unreachable: the last attempt always returns above
 
 
 def llm(prompt, model=None):
@@ -893,6 +929,7 @@ def process(conf_path):
     rec = qc.Recorder()  # S-6 liveness counters, merged into the summary below
     llm_empty = 0
     unreachable = 0
+    llm_calls = 0  # targets that actually reached llm(): the denominator of the unreachable guard
     rejected_secondary = 0  # C5: second-pass output refused by the gate
     unreachable_secondary = 0  # the second-pass backend call itself failed (first pass stands)
     # The model returned the line verbatim -- the single most common outcome of this stage
@@ -953,6 +990,7 @@ def process(conf_path):
         next_text = conf[i + 1]["text"] if i + 1 < len(conf) else ""
         prompt = build_prompt(c["text"], ref, gloss, prev_text, next_text, arc, episode)
         t0 = time.monotonic()  # V2 A2: per-call latency
+        llm_calls += 1
         new = llm(prompt)
         latency_ms = round((time.monotonic() - t0) * 1000)
         if new:
@@ -1173,10 +1211,12 @@ def process(conf_path):
     # Refusing is deliberately narrow: it fires only when EVERY target was skipped for want of
     # a reference AND the last run shipped repairs. An episode that genuinely has nothing to
     # fix still rewrites normally, and the first run of a new episode has no prior summary.
-    if targets and unreachable == len(targets):
+    # Compared with the targets that reached llm(), not len(targets): cards skipped for want of a
+    # fansub line never asked the backend anything, so they cannot make a dead one look alive.
+    if llm_calls and unreachable == llm_calls:
         log(
             f"  REFUSED {os.path.basename(stem)}: the repair backend was unreachable for all"
-            f" {len(targets)} targets. Rebuilding the srt would overwrite the shipped text with"
+            f" {llm_calls} targets that reached it. Rebuilding the srt would overwrite the shipped text with"
             " raw ASR, and a dead endpoint is not a review item, so nothing was queued."
             " Check REPAIR_LLAMACPP_URL / REPAIR_BACKEND and re-run."
         )
