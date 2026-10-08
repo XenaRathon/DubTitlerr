@@ -49,6 +49,24 @@ that shipped since.
 - **Repair honours the soft stop.** Between targets it checks the stop flag; when set it leaves the
   srt untouched, records the new failed stage outcome `stopped`, and exits 0. The failed outcome keeps
   `merge_pass.sh` from assembling or muxing the episode, and the next pass re-runs repair.
+- **Failure handling applies to every backend, the default llamacpp/ollama ones included.** The
+  failure-rate refusal, the consecutive-failure cut-off and the narrowed (reached-the-backend-only)
+  refusal replace the old "every target unreachable" test for all of them. An episode whose backend
+  failed 10% or more of its targets (or 5 in a row) is refused with `backend-unreachable` and the
+  shipped srt is kept; the loop stops as soon as the refusal is certain. A stray bad line still ships.
+  HTTP 400/404/409/413/422 from the openai backend are per-line (no repair for that line, counted as
+  `rejected_4xx`, queued as `llm_empty`); if 3 or more requests are all rejected that way the episode is
+  refused as a wrong model id or URL. `REPAIR_REQUEST_DEADLINE` bounds one HTTP request in total
+  (a trickling server no longer holds it open) and `REPAIR_EPISODE_DEADLINE` bounds an episode. The
+  3600 s default is measured: across 1631 production episodes the median repair took 52 s, p99 256 s,
+  max 897 s, so it is about 4x the slowest real episode. A soft stop also ends retries at once.
+- **New stage outcome `stopped`** (a failed outcome): repair honoured the soft stop, left the srt alone,
+  and `merge_pass.sh` holds the episode back until the next pass re-runs repair.
+- **Environment variables added (defaults):** `REPAIR_OPENAI_URL`, `REPAIR_OPENAI_KEY_ENV`,
+  `REPAIR_EXTRA_BODY` (none); `REPAIR_MAX_TOKENS` 1024; `REPAIR_OPENAI_RETRIES` 2;
+  `REPAIR_UNREACHABLE_REFUSE_PCT` 10; `REPAIR_MAX_CONSECUTIVE_UNREACHABLE` 5;
+  `REPAIR_RETRY_SLEEP_BUDGET` 600 (s); `REPAIR_REQUEST_DEADLINE` 300 (s, min 10);
+  `REPAIR_EPISODE_DEADLINE` 3600 (s, 0 disables). All are documented in the header of `repair.py`.
 - **The openai backend retries HTTP 429 and 5xx** up to `REPAIR_OPENAI_RETRIES` times (default 2),
   waiting a finite `Retry-After` (at most 30 s) or 2 s then 4 s, then reports the backend
   unreachable. Other 4xx errors do not retry.

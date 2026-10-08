@@ -8,6 +8,7 @@ involved) and drive the real script end-to-end via subprocess, stubbing only the
 binary-presence checks (`mkvmerge`, which is not installed on this dev box) so the
 script reaches its own logic instead of exiting at the FATAL guard."""
 
+import json
 import os
 import shlex
 import stat
@@ -424,12 +425,52 @@ def test_a_stop_after_the_last_stem_still_reports_stopped(tmp_path):
     assert "MERGE PASS STOPPED (soft stop)" in res.stdout, res.stdout
 
 
+_REAL_REPAIR = """
+import os, sys
+sys.path.insert(0, {repo!r})
+import glossary
+import repair
+
+with open(os.environ["CALLLOG"], "a") as f:
+    f.write("repair " + os.path.basename(sys.argv[1]).split(".")[0] + "\\n")
+g = glossary.load_dict({{"names": [], "hard_fixes": {{}}, "show": "T"}})
+repair.glossary_for = lambda video: g
+repair.dialogue_intervals = lambda video: [(0.0, 30.0, "the official sub")]
+
+
+def llm(prompt, model=None):
+    if os.environ.get("STOP_AFTER_FIRST_CALL"):  # SIGTERM arrives while the first target is repaired
+        open(os.environ["STOP_FLAG"], "w").close()
+    return "a garbled line here"
+
+
+repair.llm = llm
+repair.main()
+"""
+
+
 def test_a_stopped_repair_holds_the_stem_back_and_the_next_pass_retries_it(tmp_path):
-    """Soft stop: repair records `stopped` (a failed outcome), so signs and mux are skipped and,
-    with no .ass written, the next pass runs repair again."""
+    """The REAL repair.py over two real merge_pass.sh passes (signs and mux are the usual stubs).
+    Pass 1 gets the soft stop mid-episode: repair records `stopped` and leaves the srt alone, so no
+    signs and no mux. Pass 2 re-runs repair for real, then signs, then mux."""
     root, stem = _episode(tmp_path)
-    res, calls = _gated_run(tmp_path, root, repair="stopped")
+    app = _stub_app(tmp_path)
+    (app / "repair.py").write_text(_REAL_REPAIR.format(repo=_REPO))
+    row = {"text": "garbled line here", "avg_logprob": -0.9, "no_speech_prob": 0.1}
+    rows = [{**row, "start": k * 3.0, "end": k * 3.0 + 2.0} for k in range(3)]
+    (root / "Show" / "ep01.dubtitles.conf.json").write_text(json.dumps(rows))
+    srt = root / "Show" / "ep01.eng.dubtitles.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nSHIPPED\n\n")
+    shipped = srt.read_bytes()
+
+    flag = tmp_path / "stop.flag"
+    res, calls = _gated_run(tmp_path, root, extra_env={"STOP_FLAG": str(flag), "STOP_AFTER_FIRST_CALL": "1"})
     assert calls == ["repair ep01"], (calls, res.stdout, res.stderr)
     assert "skip mux: repair failed (stopped)" in res.stdout
-    res2, calls2 = _gated_run(tmp_path, root, repair="stopped")
-    assert calls2 == ["repair ep01", "repair ep01"], calls2
+    assert srt.read_bytes() == shipped
+    assert not (root / "Show" / "ep01.eng.dubtitles.ass").exists()
+
+    flag.unlink()  # the next window: no stop flag
+    res2, calls2 = _gated_run(tmp_path, root)
+    assert calls2 == ["repair ep01", "repair ep01", "signs ep01", "mux ep01"], (calls2, res2.stdout, res2.stderr)
+    assert "MERGE PASS COMPLETE" in res2.stdout

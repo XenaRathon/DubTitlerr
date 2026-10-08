@@ -29,18 +29,32 @@ Env:
                          2026-09-01 anchored bake-off against real production data)
   REPAIR_BACKEND         ollama | llamacpp | openai  (default llamacpp; see the note at
                          REPAIR_BACKEND — V2 A1 added the dispatch, the default moved later)
-  REPAIR_OPENAI_URL      openai backend: full chat/completions URL of any OpenAI-compatible API
-  REPAIR_OPENAI_KEY_ENV  openai backend: the NAME of the env var holding the API key (read at
-                         call time; the value is never logged)
-  REPAIR_MAX_TOKENS      openai backend: max_tokens, default 1024
-  REPAIR_UNREACHABLE_REFUSE_PCT  default 10 (1..100): refuse the episode (keep the shipped srt) when the
-                         backend failed this percent or more of the targets that reached it
+  openai backend (REPAIR_BACKEND=openai; any OpenAI-compatible chat API):
+  REPAIR_OPENAI_URL      full chat/completions URL
+  REPAIR_OPENAI_KEY_ENV  the NAME of the env var holding the API key (read at call time; trailing
+                         CR/LF is stripped; the value is never logged)
+  REPAIR_MAX_TOKENS      max_tokens, default 1024 (a bad value warns and uses the default)
+  REPAIR_EXTRA_BODY      optional JSON object merged into the request body, e.g.
+                         {"enable_thinking": false} (cannot replace model/messages; checked per call)
+  REPAIR_OPENAI_RETRIES  retries after HTTP 429 / 5xx, default 2 (so 3 attempts); waits a finite
+                         Retry-After capped at 30 s, else 2 s then 4 s. HTTP 400/404/409/413/422 mean
+                         "this request was rejected": the line gets no repair, no retry. 401/403/408 and
+                         transport errors count as the backend being unreachable.
+  Failure handling (all backends, including the default llamacpp/ollama):
+  REPAIR_UNREACHABLE_REFUSE_PCT  default 10 (1..100): refuse the episode (keep the shipped srt, stage
+                         backend-unreachable) when the backend failed this percent or more of the
+                         targets; the loop stops as soon as that is certain
   REPAIR_MAX_CONSECUTIVE_UNREACHABLE  default 5: that many failures in a row = outage, stop and refuse
-  REPAIR_RETRY_SLEEP_BUDGET  default 600 s: total retry sleep per episode; once spent, targets get one attempt
-  REPAIR_OPENAI_RETRIES  openai backend: retries after HTTP 429 / 5xx, default 2 (so 3 attempts);
-                         waits a finite Retry-After capped at 30 s, else 2 s then 4 s
-  REPAIR_EXTRA_BODY      openai backend: optional JSON object merged into the request body,
-                         e.g. {"enable_thinking": false} (cannot replace model/messages)
+  REPAIR_RETRY_SLEEP_BUDGET  default 600 s: total retry sleep per episode; once spent, each remaining
+                         target gets a single attempt
+  REPAIR_REQUEST_DEADLINE  default 300 s (min 10): total wall time of ONE HTTP request (connect +
+                         response); REPAIR_TIMEOUT_READ alone is per socket read and a trickling
+                         server defeats it
+  REPAIR_EPISODE_DEADLINE  default 3600 s (0 = off): wall time per episode, checked between targets and
+                         before each retry sleep; exceeded = refuse like an outage
+  STOP_FLAG              soft stop (set by container_run.sh): checked between targets and before any
+                         retry; repair stops without rewriting the srt and records the failed stage
+                         `stopped`, so the next pass re-runs it
   REPAIR_LLAMACPP_URL    default http://127.0.0.1:8090/v1/chat/completions
                          (chat endpoint: the raw /completion path applies no chat
                          template and yields empty output from instruct models)
