@@ -132,6 +132,103 @@ delete the marker:
 rm "Show - S01E05".dubtitles.fail
 ```
 
+From 0.2.2, stopping the container with `docker stop` no longer leaves this marker, so one now
+means a real crash. A SIGKILL or a power cut during transcription can still leave one. See
+[Stop the container without losing work](#stop-the-container-without-losing-work).
+
+---
+
+## Stop the container without losing work
+
+**Problem:** you stop the container on a schedule or by hand, and an episode that was being
+transcribed is skipped from then on.
+
+Before 0.2.2 the entrypoint ignored SIGTERM. `docker stop` waited out its grace period while the
+loops kept starting new episodes, then sent SIGKILL. The episode killed mid-transcription kept
+its `.dubtitles.fail` marker, so every later sweep skipped it. From 0.2.2 the container stops
+softly: it starts no new work, lets the unit already running finish, and exits 0.
+
+1. Set the grace period above your longest single unit of work. That is one episode's
+   transcription, or one mux including a cross-device copy. Start with 900 seconds and tune it
+   from your logs, using the time between episode start lines and the mux timestamps.
+
+   ```sh
+   docker stop -t 900 dubtitle-builder
+   ```
+
+2. Check how it ended. The exit code is 0 after a soft stop and 137 if the grace ran out and
+   SIGKILL landed. The container log ends with `soft stop complete`.
+
+   ```sh
+   docker inspect -f '{{.State.ExitCode}}' dubtitle-builder
+   ```
+
+If you run a nightly window, `deploy/` has the systemd units for it. `dubtitlerr-window-open`
+runs `docker start` at 00:00 and `dubtitlerr-window-close` runs `docker stop -t 900` at 10:00
+(America/New_York), each from its own timer. The close unit logs the exit code, prints a warning
+when it is not 0, and deletes orphan `*.muxtmp.mkv` files. It skips any episode that has a
+`.dubtitles.mux-recovery` marker. The units use the author's container name and library path, so
+edit those and the times before you install them.
+
+Releases up to 0.2.2 check the stop flag only before a glossary step starts, so an acquire step
+that is already running ends at its own end or at `ACQUIRE_TIMEOUT`. Set the grace period
+accordingly or stop between steps.
+
+---
+
+## Resolve a mux recovery marker
+
+**Problem:** the merge pass reports `recovery pending` for an episode and will not touch it.
+
+For an `.mkv` source, the muxed file replaces the original. When the rename crosses
+filesystems, mux falls back to a copy that overwrites the episode in place. If that copy fails
+partway, the episode file may be damaged and the temp file may be the only complete copy. Mux
+then keeps the temp file as `<episode>.muxtmp.mkv.recovered`, writes
+`<episode>.dubtitles.mux-recovery`, and skips that episode on every pass until you resolve it.
+Each pass reports `MERGE PASS INCOMPLETE` while the marker exists.
+
+1. Read the marker. The `kept` field is the path of the complete copy.
+
+   ```sh
+   cat "Show - S01E05".dubtitles.mux-recovery
+   ```
+
+2. Check that the kept file plays and has the tracks you expect.
+
+   ```sh
+   ffprobe "<the path from kept>"
+   ```
+
+3. Move the kept file over the episode's `.mkv`, then delete the marker.
+
+   ```sh
+   mv "<the path from kept>" "Show - S01E05.mkv"
+   rm "Show - S01E05".dubtitles.mux-recovery
+   ```
+
+If the kept file does not play either, restore the episode from your own copy of the release and
+delete the marker. The next pass treats the episode like any other.
+
+---
+
+## See why an episode was not muxed
+
+**Problem:** an episode has an `.srt` but never gets muxed.
+
+Each stage records its outcome beside the video:
+
+```sh
+cat "Show - S01E05".dubtitles.stages.json
+```
+
+Read the stages in order (`repair`, `signs`, `mux`). The first one with a failed outcome is the
+reason mux was skipped. [Stage outcomes](Reference.md#stage-outcomes) lists which outcomes count as
+failures. The merge pass log has a matching `skip mux:` line, for example
+`skip mux: repair failed (...)`.
+
+Fix the cause. You do not need to delete anything: the merge pass clears a stage's record before
+it runs that stage again, and a failed episode is retried on every pass.
+
 ---
 
 ## Hold a show until you have reviewed it

@@ -107,9 +107,14 @@ docker run --rm -u 0 --gpus all -v "/path/to/your/media:/media" -v "/path/to/con
   -e ANIME_ROOT="/media/Anime Library" ghcr.io/xenarathon/dubtitlerr:latest
 ```
 
-**Beta status:** pin a release tag (e.g. `ghcr.io/xenarathon/dubtitlerr:v0.1.0-beta`
-— see [Releases](https://github.com/xenarathon/DubTitlerr/releases)) instead of
-`:latest` if you want reproducible version stamps — see the callout above.
+**Beta status:** pin a release tag (for example `ghcr.io/xenarathon/dubtitlerr:v0.2.2`; the
+tags are listed under [Releases](https://github.com/xenarathon/DubTitlerr/releases)) instead of
+`:latest` if you want reproducible version stamps. See the callout above.
+
+If you stop the container on a schedule, read
+[Stop the container without losing work](https://github.com/xenarathon/DubTitlerr/wiki/How-To-Guides#stop-the-container-without-losing-work)
+first. From 0.2.2, `docker stop` lets the work in flight finish and exits cleanly, but only if
+the grace period is long enough.
 
 `Dockerfile` (signs+dub merge only, no transcribe/repair) is deprecated — see the comment
 at its top. It builds a plain image whose only content is `dub_signs_merge.py`, which walks
