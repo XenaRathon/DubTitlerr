@@ -38,6 +38,9 @@ Usage:
   python3 tools/bakeoff.py --conf "Ep.dubtitles.conf.json" --glossary "glossaries/One Pace.json" \\
       --refs refs.json --models qwen3:8b qwen2.5:7b
 
+  # experiment: a plainer prompt for a strong hosted model (production repair.py is unchanged)
+  python3 tools/bakeoff.py --conf ... --models vendor/model-x --openai-url ... --key-env NAME --prompt-variant capable
+
   # a rate-limited free tier (~40 requests a minute): pace the calls, 429s then stay out of the score
   python3 tools/bakeoff.py --conf ... --models vendor/model-x --openai-url ... --key-env NAME --delay 1.5
 
@@ -207,6 +210,59 @@ def load_refs(refs_path, cards, conf_path, allow_conf_mismatch=False, glossary_p
             }
         )
     return out
+
+
+def build_prompt_capable(asr, sub, gloss, prev_text="", next_text="", arc=None, episode=None):
+    """EXPERIMENT ONLY (--prompt-variant capable): a plainer prompt for a strong hosted model.
+
+    repair.build_prompt was tuned on small local models and is prohibition-heavy; this variant states the
+    task and the limits in plain sentences and asks for the line back unchanged when it is already right.
+    The text is frozen on purpose -- it is run once and must not be tuned on the lines being judged.
+    Same signature and name list as repair.build_prompt, which is untouched. The first segments (head, names,
+    reference intro, rules) are identical for every line of an episode, so a provider's prompt cache keeps
+    hitting; the per-line context and the ASR line come last, with nothing after "Corrected line:"."""
+    names = repair._glossary_terms(gloss, arc, episode)
+    head = (
+        "You correct speech-recognition errors in one line of English-dub subtitles. The line was transcribed "
+        "from the dub audio, so after correction it should say what the dub actor said.\n"
+    )
+    name_line = (
+        (
+            "Reference spellings (use them to confirm names the line already contains - "
+            f"this is NOT a list of names to insert): {names}.\n"
+        )
+        if names
+        else ""
+    )
+    ref_intro = (
+        (
+            "A DIFFERENT translation of this moment, made from the Japanese, is quoted below. Use it only to work "
+            "out garbled words and to confirm names. The dub wording usually differs, so never copy its wording.\n"
+        )
+        if sub
+        else ""
+    )
+    rules = (
+        "Fix: misheard or garbled words; misspelled names when the reference spellings, the neighbouring lines or "
+        "the quoted translation confirm the right one; missing sentence punctuation; run-together sentences; "
+        "capitalisation.\n"
+        "Keep: the speaker's wording, meaning and length. Do not add, drop or paraphrase words, and do not insert "
+        "a name the line does not already contain.\n"
+        "If the line is already correct, return it unchanged.\n"
+        "Return ONLY the corrected line - no quotes, notes or explanations.\n\n"
+    )
+    prev_line = f'Previous line (for context): "{prev_text}"\n' if prev_text else ""
+    next_line = f'Next line (for context): "{next_text}"\n' if next_text else ""
+    ref_line = f"<official_subtitle_reference>{sub}</official_subtitle_reference>\n" if sub else ""
+    return f"{head}{name_line}{ref_intro}{rules}{prev_line}{next_line}{ref_line}ASR line: {asr}\nCorrected line:"
+
+
+PROMPT_VARIANTS = ("production", "capable")
+
+
+def build_prompt_for(variant):
+    """The prompt builder for --prompt-variant: production is repair.build_prompt itself."""
+    return build_prompt_capable if variant == "capable" else repair.build_prompt
 
 
 def parse_llamacpp_specs(specs):
@@ -859,6 +915,13 @@ def main():
         "names also listed in --llamacpp / --llamacpp-chat go there instead. Needs --models and --key-env",
     )
     ap.add_argument(
+        "--prompt-variant",
+        choices=PROMPT_VARIANTS,
+        default="production",
+        help="production: repair.build_prompt (default, unchanged). capable: an experiment-only plainer "
+        "prompt for strong hosted models (build_prompt_capable); the run header then says prompt=capable",
+    )
+    ap.add_argument(
         "--delay",
         type=_delay_seconds,
         default=0.0,
@@ -963,6 +1026,9 @@ def main():
         print(f"targets={n} with_ref={with_ref} without_ref={n - with_ref} -> {a.dump_refs}")
         return
     extra_bounds = []
+    build_prompt = build_prompt_for(a.prompt_variant)
+    # Only the experiment names itself: the production header stays byte-identical to what it always was.
+    variant_note = f"  prompt={a.prompt_variant}" if a.prompt_variant != "production" else ""
     if a.refs:
         entries = load_refs(a.refs, cards, a.conf, a.allow_conf_mismatch, a.glossary, a.allow_glossary_mismatch)
         targets = [t for t in entries if a.include_unanchored or not repair.skips_unanchored(t["_ref"], gloss)]
@@ -973,17 +1039,20 @@ def main():
                 "(--include-unanchored, or unanchored_repair in the glossary, judges them)"
             )
         prompts = [
-            repair.build_prompt(t["text"], t["_ref"], gloss, t["_prev"], t["_next"], t["_arc"], t["_episode"]) for t in targets
+            build_prompt(t["text"], t["_ref"], gloss, t["_prev"], t["_next"], t["_arc"], t["_episode"]) for t in targets
         ]
         print(
             f"cards={len(cards)} targets={len(targets)} of {len(entries)} in {a.refs} "
-            f"({len(entries) - len(targets)} skipped for no ref)  models={a.models}\n"
+            f"({len(entries) - len(targets)} skipped for no ref)  models={a.models}{variant_note}\n"
         )
     else:
         all_targets = [c for c in cards if repair.is_target(c, gloss)]
         targets = sample_targets(all_targets, a.limit, a.sample)
-        prompts = [repair.build_prompt(c["text"], "", gloss) for c in targets]  # glossary-only (mp4)
-        print(f"cards={len(cards)} targets={len(targets)} of {len(all_targets)} (--limit {a.limit})  models={a.models}\n")
+        prompts = [build_prompt(c["text"], "", gloss) for c in targets]  # glossary-only (mp4)
+        print(
+            f"cards={len(cards)} targets={len(targets)} of {len(all_targets)} (--limit {a.limit})"
+            f"  models={a.models}{variant_note}\n"
+        )
 
     # model-OUTER so each model loads once (avoids reload thrash on the 8GB GPU).
     # Each model's block is printed AS SOON AS that model finishes: these runs can take

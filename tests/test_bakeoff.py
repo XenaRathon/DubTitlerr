@@ -1553,3 +1553,119 @@ def test_the_429_retry_uses_delay_as_the_floor_when_there_is_no_usable_retry_aft
     monkeypatch.setattr(bo.time, "sleep", slept.append)
     bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY", delay=delay)
     assert slept == [expected]
+
+
+# --- --prompt-variant capable: an experiment-only plainer prompt --------------------------
+
+_CAP_HEAD = (
+    "You correct speech-recognition errors in one line of English-dub subtitles. The line was transcribed "
+    "from the dub audio, so after correction it should say what the dub actor said.\n"
+)
+_CAP_REF_INTRO = (
+    "A DIFFERENT translation of this moment, made from the Japanese, is quoted below. Use it only to work out "
+    "garbled words and to confirm names. The dub wording usually differs, so never copy its wording.\n"
+)
+_CAP_RULES = (
+    "Fix: misheard or garbled words; misspelled names when the reference spellings, the neighbouring lines or the "
+    "quoted translation confirm the right one; missing sentence punctuation; run-together sentences; capitalisation.\n"
+    "Keep: the speaker's wording, meaning and length. Do not add, drop or paraphrase words, and do not insert a name "
+    "the line does not already contain.\n"
+    "If the line is already correct, return it unchanged.\n"
+    "Return ONLY the corrected line - no quotes, notes or explanations.\n\n"
+)
+
+
+def _cap_name_line(names):
+    return (
+        "Reference spellings (use them to confirm names the line already contains - "
+        f"this is NOT a list of names to insert): {names}.\n"
+    )
+
+
+def _cap_gloss():
+    return _glossary.load_dict({"names": ["Zoro", "Spandam"]})
+
+
+def test_the_default_prompt_variant_is_production_byte_for_byte():
+    """GUARD: passes on the old code (the flag does not exist yet, so the default is today's prompt)."""
+    g = _cap_gloss()
+    args = ("zolo drew his blade", "Zoro drew his blade.", g, "prev text", "next text", None, None)
+    assert bo.build_prompt_for("production")(*args) == _prod.build_prompt(*args)
+
+
+def test_capable_prompt_has_the_frozen_text_in_the_frozen_order():
+    g = _cap_gloss()
+    names = _prod._glossary_terms(g, None, None)
+    p = bo.build_prompt_capable("zolo drew his blade", "Zoro drew his blade.", g, "the prev", "the next")
+    expected = (
+        _CAP_HEAD
+        + _cap_name_line(names)
+        + _CAP_REF_INTRO
+        + _CAP_RULES
+        + 'Previous line (for context): "the prev"\n'
+        + 'Next line (for context): "the next"\n'
+        + "<official_subtitle_reference>Zoro drew his blade.</official_subtitle_reference>\n"
+        + "ASR line: zolo drew his blade\nCorrected line:"
+    )
+    assert p == expected
+    assert p.endswith("Corrected line:")
+    assert p.index("Previous line") < p.index("Next line") < p.index("<official_subtitle_reference>") < p.index("ASR line:")
+
+
+def test_capable_prompt_without_a_reference_has_no_intro_and_no_tag():
+    p = bo.build_prompt_capable("zolo drew his blade", "", _cap_gloss())
+    assert "A DIFFERENT translation" not in p and "<official_subtitle_reference>" not in p
+    assert _CAP_RULES in p and p.endswith("ASR line: zolo drew his blade\nCorrected line:")
+
+
+def test_capable_prompt_without_glossary_names_has_no_name_line():
+    p = bo.build_prompt_capable("some line", "ref", _glossary.load_dict({"names": []}))
+    assert "Reference spellings" not in p and p.startswith(_CAP_HEAD + _CAP_REF_INTRO + _CAP_RULES)
+
+
+def test_capable_prompt_has_no_shouting_prohibitions():
+    p = bo.build_prompt_capable("zolo drew his blade", "Zoro drew his blade.", _cap_gloss(), "a", "b")
+    for word in ("MUST", "MUST NOT", "Never"):
+        assert word not in p
+
+
+def test_two_lines_of_one_episode_share_the_cacheable_prefix():
+    g = _cap_gloss()
+    a = bo.build_prompt_capable("first line here", "ref one", g, "p1", "n1")
+    b = bo.build_prompt_capable("another one", "ref two", g, "p2", "n2")
+    names = _prod._glossary_terms(g, None, None)
+    prefix = _CAP_HEAD + _cap_name_line(names) + _CAP_REF_INTRO + _CAP_RULES
+    assert a.startswith(prefix) and b.startswith(prefix)
+    assert a[len(prefix) :] != b[len(prefix) :]  # only the per-line context differs after it
+
+
+def test_an_unknown_prompt_variant_is_rejected(tmp_path, monkeypatch, capsys):
+    with pytest.raises(SystemExit) as e:
+        _run_main(monkeypatch, "--conf", _three_targets(tmp_path), "--prompt-variant", "fancy")
+    assert e.value.code == 2 and "--prompt-variant" in capsys.readouterr().err
+
+
+def _prompts_of(monkeypatch, *argv):
+    prompts = []
+    monkeypatch.setattr(bo, "ask", lambda o, m, p, *a, **k: prompts.append(p) or ("x", 0.1))
+    _run_main(monkeypatch, *argv)
+    return prompts
+
+
+def test_glossary_only_run_uses_the_capable_builder_when_asked(tmp_path, monkeypatch, capsys):
+    conf = _three_targets(tmp_path)
+    cap = _prompts_of(monkeypatch, "--conf", conf, "--models", "m", "--prompt-variant", "capable")
+    out = capsys.readouterr().out
+    assert len(cap) == 3 and all(p.startswith(_CAP_HEAD) for p in cap) and "prompt=capable" in out
+    prod = _prompts_of(monkeypatch, "--conf", conf, "--models", "m")
+    out = capsys.readouterr().out
+    assert all(p.startswith("You fix speech-recognition errors") for p in prod) and "prompt=" not in out
+    explicit = _prompts_of(monkeypatch, "--conf", conf, "--models", "m", "--prompt-variant", "production")
+    assert explicit == prod
+
+
+def test_refs_run_uses_the_capable_builder_with_each_targets_context(tmp_path, monkeypatch, capsys):
+    prompts, out = _run_refs(tmp_path, monkeypatch, capsys, "--prompt-variant", "capable")
+    assert prompts and all(p.startswith(_CAP_HEAD) for p in prompts) and "prompt=capable" in out
+    assert "<official_subtitle_reference>ref A</official_subtitle_reference>" in prompts[0]
+    assert 'Previous line (for context): "A perfectly clear line."' in prompts[0]
