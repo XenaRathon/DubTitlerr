@@ -8,12 +8,17 @@ that shipped since.
 
 ## [Unreleased]
 
+## 0.2.2 - 2026-10-08
+
+Hardening pass from a whole-repository review of `main`: no failed stage is muxed and stamped as done any
+more, no failure path deletes the only copy of an episode, and the nightly `docker stop` no longer kills the
+container mid-transcription. 0.2.1 was prepared (its entry is below) but never tagged or published; everything
+in it ships in this release. Every change below was written test first and has run in production.
+
 ### Fixed
 
 - The container now exits softly on SIGTERM. `container_run.sh` stays as a supervisor instead of handing PID 1 to a bare `sh`, which ignored the signal: on `docker stop` it only raises a stop flag, the generate, merge and review loops start no new episode, the one in flight finishes, and the container exits 0. Before, the container kept starting new episodes for the whole stop grace period and was then killed mid-transcription.
 - That nightly kill used to poison episodes: a transcription killed part-way leaves a permanent `.dubtitles.fail` marker and the episode is skipped forever (seven were affected). The stop flag is only ever read between episodes, so no marker is written by a stop. A stop also skips the per-show MINE, ACQUIRE and VERIFY steps that have not started yet, and a merge pass cut short by a stop now says `MERGE PASS STOPPED` instead of `COMPLETE`.
-- Still to do outside this change: the host's `docker stop -t` has to be raised above the longest episode, and the host unit has to be updated and copied over; neither is part of this change.
-
 - `mux.py`: a failed stamp write on an `.mkv` episode deleted the only copy of the episode
   (the rollback removed the freshly replaced file, which was also the original). The stamp
   is now written from the temp file before it replaces the episode, so a stamp failure
@@ -69,6 +74,17 @@ that shipped since.
   `<stage> crashed (no record)`. A crash after a stage already recorded `ok` does not block it.
 - A stale `<episode>.eng.dubtitles.ass.part` (left if the pipeline was killed while installing
   the signs file) is now removed when the episode is muxed.
+
+### Added
+
+- `deploy/dubtitlerr-window-{open,close}.{service,timer}`: the nightly window units, until now only on the
+  host, with `tests/test_deploy_units.py`, which parses them, unescapes the `ExecStart` lines the way systemd
+  does and runs the muxtmp sweep against a fake library. The close unit stops the container with
+  `docker stop -t 900` (the soft exit needs the grace period to cover the longest single episode or mux),
+  logs the container's exit code (0 is a soft exit, 137 is a SIGKILL) and its sweep skips any stem that has a
+  `.dubtitles.mux-recovery` marker. Copy the units to `/etc/systemd/system/` and run `systemctl daemon-reload`;
+  raise the stop grace only together with this release's image, because an older image ignores SIGTERM and
+  would simply keep working for the longer grace.
 
 ## 0.2.1 - 2026-09-24
 
