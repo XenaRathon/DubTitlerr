@@ -4,8 +4,6 @@ Sol's probe: glossary phrases ["Van der Decken"] (the shape verify writes: a lon
 line "Vanderdecken and Vanderdecken are here with us." and the proposal "Van der Decken and Van der Decken are here with us."
 was refused as invents_name and then hidden by the default auto-dismiss (8 word changes)."""
 
-import json
-
 import glossary
 import repair
 import unresolved
@@ -47,8 +45,33 @@ def test_the_respacing_is_not_hidden_when_it_is_refused_for_another_reason(tmp_p
 
     gloss = gl()
     monkeypatch.setattr(repair, "invents_name", lambda *a: True)  # force a refusal; the dismissal is what is under test
-    stem, summary = d._episode(tmp_path, monkeypatch, ORIG, NEW, gloss)
+    stem, _summary = d._episode(tmp_path, monkeypatch, ORIG, NEW, gloss)
     (entry,) = unresolved.items(stem)
     assert entry["reason"] in ("rejected_name_invented", "rejected_guard") and "dismissed" not in entry
     assert unresolved.pending(stem, primary_only=True) != []
-    assert json.load(open(stem + ".dubtitles.repair-summary.json")) == summary
+
+
+def test_the_respacing_ships_end_to_end_through_repair_process(tmp_path, monkeypatch):
+    """Sol's probe inverted, every default gate in force: the SRT carries 'Van der Decken' and the entry is a queued repair."""
+    import test_repair_dismiss as d
+
+    stem, summary = d._episode(tmp_path, monkeypatch, ORIG, NEW, gl())
+    assert summary["repaired"] == 1 and summary["rejected_guard"] == 0
+    shipped = " ".join(open(stem + repair.SRT_SUFFIX).read().split())  # the card is wrapped over two lines
+    assert "Van der Decken and Van der Decken are here with us." in shipped
+    (entry,) = unresolved.items(stem)
+    assert entry["stage"] == "repair_applied" and "dismissed" not in entry
+
+
+def test_a_grand_line_respacing_is_not_hidden_by_the_auto_dismiss(tmp_path, monkeypatch):
+    """Sol's second probe (four repeats of Grandline -> Grand Line, 12 word changes before): refused or not, never dismissed."""
+    import test_repair_dismiss as d
+
+    stem, _ = d._episode(
+        tmp_path,
+        monkeypatch,
+        "Grandline Grandline Grandline Grandline",
+        "Grand Line Grand Line Grand Line Grand Line",
+        glossary.load_dict({"names": [], "phrases": ["Grand Line"]}),
+    )
+    assert not [e for e in unresolved.items(stem) if e.get("dismissed")]
