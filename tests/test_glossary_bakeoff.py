@@ -694,17 +694,70 @@ def test_an_exact_match_is_gold_kind_exact(tmp_path):
 
 
 def test_two_qualifying_candidates_mean_no_gold_and_no_tie_break(tmp_path):
-    gloss = {"_curated": True, "names": ["Ace", "Aces", "Acey"], "phrases": []}
-    ace = _by_term(_items_for(tmp_path, gloss, ["Aces", "Acey"]), "Ace")
-    assert len(ace["candidates"]) == 2
-    assert ace["gold"] is None and ace["gold_ambiguous"] is True and "gold_kind" not in ace and "gold_source" not in ace
+    gloss = {"_curated": True, "names": ["Nanami", "Kento Nanami", "Nana Nanami"], "phrases": []}
+    nanami = _by_term(_items_for(tmp_path, gloss, ["Kento Nanami", "Nana Nanami"]), "Nanami")
+    assert len(nanami["candidates"]) == 2
+    assert (
+        nanami["gold"] is None and nanami["gold_ambiguous"] is True and "gold_kind" not in nanami and "gold_accept" not in nanami
+    )
 
 
-def test_an_exact_title_plus_a_curated_expansion_is_ambiguous(tmp_path):
-    gloss = {"_curated": True, "names": ["Zoro", "Zoros"], "phrases": []}
-    zoro = _by_term(_items_for(tmp_path, gloss, ["Zoro", "Zoros"]), "Zoro")
-    assert len(zoro["candidates"]) == 2
-    assert zoro["gold"] is None and zoro["gold_ambiguous"] is True
+def test_an_exact_title_plus_a_whole_word_expansion_gives_gold_with_an_accept_set(tmp_path):
+    """These used to be null-ambiguous although BOTH answers are right (production would add the expansion)."""
+    gloss = {"_curated": True, "names": ["Nanami", "Kento Nanami"], "phrases": []}
+    nanami = _by_term(_items_for(tmp_path, gloss, ["Nanami", "Kento Nanami"]), "Nanami")
+    assert nanami["gold"] == "Nanami" and nanami["gold_kind"] == "exact" and "gold_ambiguous" not in nanami
+    assert nanami["gold_accept"] == ["Nanami", "Kento Nanami"]
+
+
+def test_gold_accept_is_the_exact_title_plus_whole_word_expansions_only(tmp_path):
+    gloss = {"_curated": True, "names": ["Luffy"], "phrases": []}  # the expansion need not be curated for the accept set
+    luffy = _by_term(_items_for(tmp_path, gloss, ["Luffy", "Lord Luffy", "Luffyx"]), "Luffy")
+    assert luffy["gold"] == "Luffy" and luffy["gold_accept"] == ["Luffy", "Lord Luffy"]  # "Luffyx" is mid-word
+
+
+def test_an_expansion_gold_accepts_just_itself(tmp_path):
+    gloss = {"_curated": True, "names": ["Doflamingo", "Donquixote Doflamingo"], "phrases": []}
+    d = _by_term(_items_for(tmp_path, gloss, ["Donquixote Doflamingo"]), "Doflamingo")
+    assert (
+        d["gold"] == "Donquixote Doflamingo" and d["gold_kind"] == "expansion" and d["gold_accept"] == ["Donquixote Doflamingo"]
+    )
+
+
+def test_a_surname_shared_with_another_wiki_title_is_ambiguous_not_gold(tmp_path):
+    """The reviewer's family case: the curated member is only one of several people who carry the surname."""
+    gloss = {"_curated": True, "names": ["Nanami", "Kento Nanami"], "phrases": []}
+    titles = ["Kento Nanami", "Nanako Nanami", "Unrelated Page"]  # the protagonist's sister is on the wiki too
+    items = _items_for(tmp_path, gloss, titles)
+    nanami = _by_term(items, "Nanami")
+    assert "Kento Nanami" in [c["title"] for c in nanami["candidates"]]
+    assert nanami["gold"] is None and nanami["gold_ambiguous"] is True
+
+
+def test_a_title_outside_the_candidates_still_counts_for_the_family_check(tmp_path):
+    """The whole wiki list is checked, not just the six candidates."""
+    gloss = {"_curated": True, "names": ["Nanami", "Kento Nanami"], "phrases": []}
+    titles = ["Kento Nanami", "Nanami Is My Cousin And Also A Very Long Page Title Indeed"]
+    nanami = _by_term(_items_for(tmp_path, gloss, titles), "Nanami")
+    assert [c["title"] for c in nanami["candidates"]] == ["Kento Nanami"] and nanami["gold"] is None and nanami["gold_ambiguous"]
+
+
+def test_a_mid_word_or_ratio_only_expansion_is_not_gold(tmp_path, monkeypatch):
+    gloss = {"_curated": True, "names": ["Nami", "Namie"], "phrases": []}
+    nami = _by_term(_items_for(tmp_path, gloss, ["Namie"]), "Nami")
+    assert [c["title"] for c in nami["candidates"]] == ["Namie"] and nami["gold"] is None  # substring, not a whole word
+    monkeypatch.setattr(gb.glossary_acquire, "is_expansion", lambda a, b: True)  # a ratio-only pass: the term is not in the title
+    assert gb._gold("Nami", ["Lonely Harbour"], {"_curated": True, "names": ["Nami", "Lonely Harbour"]}, ["Lonely Harbour"]) == (
+        None, None, False, [],
+    )  # fmt: skip
+
+
+def test_a_whole_word_suffix_and_prefix_are_accepted(tmp_path):
+    suffix = {"_curated": True, "names": ["Doflamingo", "Donquixote Doflamingo"], "phrases": []}
+    assert _by_term(_items_for(tmp_path, suffix, ["Donquixote Doflamingo"]), "Doflamingo")["gold_kind"] == "expansion"
+    (tmp_path / "p").mkdir()
+    prefix = {"_curated": True, "names": ["Kento", "Kento San"], "phrases": []}
+    assert _by_term(_items_for(tmp_path / "p", prefix, ["Kento San"]), "Kento")["gold"] == "Kento San"
 
 
 def test_hard_fixes_targets_are_not_a_gold_source(tmp_path):

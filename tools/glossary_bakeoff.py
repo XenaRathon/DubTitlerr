@@ -133,22 +133,49 @@ def _glossary_files(gloss_dir):
     return sorted(f for f in names if os.path.isfile(os.path.join(gloss_dir, f)))
 
 
-def _gold(term, cand_titles, gloss):
-    """(gold title, kind, ambiguous) for a curated glossary, else (None, None, False). See the module docstring."""
+def _words(text):
+    return re.findall(r"[\w']+", text.casefold())
+
+
+def _has_words(title, term):
+    """The term's words occur in the title as a whole-word run (anywhere)."""
+    t, w = _words(title), _words(term)
+    return bool(w) and any(t[k : k + len(w)] == w for k in range(len(t) - len(w) + 1))
+
+
+def _is_affix(title, term):
+    """The term is a whole-word PREFIX or SUFFIX of a longer title."""
+    t, w = _words(title), _words(term)
+    return bool(w) and len(t) > len(w) and (t[: len(w)] == w or t[-len(w) :] == w)
+
+
+def _gold(term, cand_titles, gloss, all_titles=()):
+    """(gold title, kind, ambiguous, gold_accept) for a curated glossary, else (None, None, False, []).
+
+    exact: a candidate whose title equals the term. expansion: no exact title, and exactly one candidate is a curated
+    name/phrase that production's is_expansion accepts AND carries the term as a whole-word prefix or suffix, AND no
+    OTHER title in the show's FULL wiki list contains the term as a whole word (otherwise a surname family or a generic
+    word would be resolved to whichever member happens to be curated: ambiguous, no gold).
+    gold_accept is every answer that is right: the exact title plus each candidate that is a whole-word expansion of the
+    term (production's apply_results would ADD such an expansion, which is a good outcome)."""
     if not gloss.get("_curated"):
-        return None, None, False
+        return None, None, False, []
+    term_cf = term.casefold()
     members = {x.casefold() for x in [*gloss.get("names", []), *gloss.get("phrases", [])] if isinstance(x, str)}
-    qualifying = []
-    for title in cand_titles:
-        if title.casefold() == term.casefold():
-            qualifying.append((title, "exact"))
-        elif title.casefold() in members and glossary_acquire.is_expansion(term, title):
-            qualifying.append((title, "expansion"))
+    exact = next((t for t in cand_titles if t.casefold() == term_cf), None)
+    wide = [t for t in cand_titles if t.casefold() != term_cf and _has_words(t, term) and glossary_acquire.is_expansion(term, t)]
+    if exact is not None:
+        return exact, "exact", False, [exact, *wide]
+    qualifying = [t for t in wide if t.casefold() in members and _is_affix(t, term)]
     if not qualifying:
-        return None, None, False
+        return None, None, False, []
     if len(qualifying) > 1:
-        return None, None, True
-    return qualifying[0][0], qualifying[0][1], False
+        return None, None, True, []
+    gold = qualifying[0]
+    others = [t for t in all_titles if t.casefold() not in (gold.casefold(), term_cf) and _has_words(t, term)]
+    if others:
+        return None, None, True, []
+    return gold, "expansion", False, [gold, *[t for t in wide if t != gold]]
 
 
 def _wiki_mismatch(gloss, titles):
@@ -197,7 +224,7 @@ def verify_items(gloss, show, titles, stale=False):
     # pending_terms with nothing verified == names then phrases, deduplicated: what `verify --force` sends.
     for term in glossary_verify.pending_terms({"names": names, "phrases": phrases}):
         cand_titles = glossary_verify.candidates(term, titles)
-        gold, kind, ambiguous = _gold(term, cand_titles, gloss)
+        gold, kind, ambiguous, accept = _gold(term, cand_titles, gloss, titles)
         item = {
             "id": f"verify:{show}:{term}",
             "stage": "verify",
@@ -216,6 +243,7 @@ def verify_items(gloss, show, titles, stale=False):
         if gold is not None:
             item["gold_source"] = "curated"
             item["gold_kind"] = kind
+            item["gold_accept"] = accept
             item["incumbent_derived"] = kind == "expansion" and term in verified
         elif ambiguous:
             item["gold_ambiguous"] = True
