@@ -375,7 +375,9 @@ def arc_universe(gloss: dict):
     # An arc whose season is gone is marked stale by tag_arcs and left out; a stored arc with no record at all was tagged by an
     # older version.
     stale = {a for a, c in (coverage or {}).items() if isinstance(c, dict) and c.get("stale")}
-    titles = {t.casefold() for a, ts in stored.items() if a not in stale for t in ts}
+    # A whole-wiki scope holds every page verify could propose, so as evidence it would pass everything: kept out of the universe.
+    whole = {a for a, c in (coverage or {}).items() if isinstance(c, dict) and c.get("rung") == "whole_wiki"}
+    titles = {t.casefold() for a, ts in stored.items() if a not in stale and a not in whole for t in ts}
     coverage_ok = isinstance(coverage, dict) and all(a in coverage for a in stored)
     if titles and not coverage_ok:
         # Tagged by an older version (phase 8 recorded no coverage; its titles may come from a partial or raw-link fetch).
@@ -397,6 +399,7 @@ def arc_universe(gloss: dict):
         if isinstance(c, dict)
         and not c.get("waived")
         and not c.get("stale")
+        and c.get("rung") != "whole_wiki"
         and isinstance(c.get("titles"), int)
         and c["titles"] < floor
     )
@@ -417,10 +420,16 @@ def arc_universe(gloss: dict):
     if not titles:
         if not _gate_noop_logged:
             _gate_noop_logged = True
-            log(
-                "VERIFY_ARC_GATE is on but this glossary has no arc titles "
-                "(run glossary_verify --tag-arcs): the gate does nothing"
-            )
+            if whole & set(stored):
+                log(
+                    "VERIFY_ARC_GATE is on but this glossary has only a whole-wiki scope "
+                    "(it would pass everything): the gate does nothing"
+                )
+            else:
+                log(
+                    "VERIFY_ARC_GATE is on but this glossary has no arc titles "
+                    "(run glossary_verify --tag-arcs): the gate does nothing"
+                )
         return None
     return titles
 
@@ -1023,6 +1032,83 @@ def fetch_arc_titles_cached(wiki_api: str, show_key: str, arc: str) -> tuple[set
     return titles, "fetched", redirects_ok
 
 
+def scopes_in_show(cfg: dict, show_dir: str) -> list[dict]:
+    """The wiki scopes a show with a wiki_scope config needs: [{key, season, episodes, video}].
+
+    whole_wiki is ONE scope, key 'scope:whole_wiki:all'. arc_index / season_page are one per library season, key
+    'scope:<rung>:<season>', with the season's episode numbers; both come from the SxxExx tag in the video file names (the same
+    way arcs_in_show finds seasons from season.nfo). Keys are namespaced so they can never collide with an arc name.
+
+    debt: a library whose files carry no SxxExx tag (absolute numbering in plain names, or no tag at all) cannot be mapped to
+    seasons or episodes, so arc_index / season_page get NO scopes for it; whole_wiki still works. Revisit if such a show needs
+    an arc index (e.g. read an absolute number from the name, or from the .nfo 'Covers anime episode(s)' line)."""
+    import common
+    import ordering
+
+    rung = cfg.get("rung")
+    if rung == "whole_wiki":
+        return [{"key": "scope:whole_wiki:all", "season": None, "episodes": None, "video": None}]
+    seasons: dict[int, dict] = {}
+    for root, _dirs, files in os.walk(show_dir):
+        for name in sorted(files):
+            if not name.lower().endswith(common.VIDEO_EXTS):
+                continue
+            s, e = ordering.season_ep(name)
+            if s == ordering.NO_SEASON:
+                continue
+            entry = seasons.setdefault(s, {"episodes": set(), "video": os.path.join(root, name)})
+            entry["episodes"].add(e)
+    return [
+        {"key": f"scope:{rung}:{s}", "season": s, "episodes": sorted(v["episodes"]), "video": v["video"]}
+        for s, v in sorted(seasons.items())
+    ]
+
+
+def _scope_cache_key(cfg: dict, scope: dict) -> str:
+    import hashlib
+
+    digest = hashlib.sha1(json.dumps([cfg, scope["episodes"]], sort_keys=True, default=str).encode()).hexdigest()[:10]
+    return f"{scope['key']}|{digest}"
+
+
+def fetch_scope_cached(cfg: dict, scope: dict, show_key: str) -> tuple[set[str], str]:
+    """(titles, 'cached' | 'fetched' | 'incomplete') for one wiki_scope scope.
+
+    Same cache document and rules as the arcs (version 2, WIKI_TTL, only COMPLETE non-empty results cached); the entry key
+    includes a digest of the scope config and the episode list, so changing either refetches. resolve_scope's own redirect step
+    is part of 'complete'. Never raises. Every request goes through this module's _http_json, looked up at call time and
+    passed as the function itself (wiki_scope._resolve_redirects temporarily swaps that global for the function it is given,
+    so a wrapper lambda would call itself)."""
+    import wiki_scope
+
+    path = _arc_cache_path(show_key)
+    wiki = (cfg.get("wiki") or "").rstrip("/")
+    try:
+        doc = json.load(open(path))
+    except (OSError, ValueError):
+        doc = {}
+    arcs = doc.get("arcs", {}) if doc.get("api") == wiki and doc.get("v") == ARC_CACHE_VERSION else {}
+    ck = _scope_cache_key(cfg, scope)
+    entry = arcs.get(ck)
+    if entry and (time.time() - entry.get("fetched_at", 0)) < WIKI_TTL:
+        return set(entry["titles"]), "cached"
+    try:
+        res = wiki_scope.resolve_scope(cfg, scope["season"], scope["episodes"], http=_http_json)
+    except Exception as e:  # noqa: BLE001 -- the sweep must never fail on a wiki
+        log(f"arc tags: scope {scope['key']}: {type(e).__name__}")
+        return set(), "incomplete"
+    if not res.complete or not res.titles:
+        log(f"arc tags: scope {scope['key']} incomplete: {'; '.join(res.notes[:3]) or 'no titles'}")
+        return set(), "incomplete"
+    arcs[ck] = {"fetched_at": time.time(), "titles": sorted(res.titles)}
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        json.dump({"v": ARC_CACHE_VERSION, "api": wiki, "arcs": arcs}, open(path, "w"))
+    except OSError:
+        pass
+    return res.titles, "fetched"
+
+
 def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dict:
     """Tag the glossary's names with the arcs of the show's seasons and store each arc's titles beside the tags.
 
@@ -1053,14 +1139,19 @@ def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dic
     }  # fmt: skip
     arcs = arcs_in_show(show_dir)
     rep["arcs"] = len(arcs)
-    if not arcs:
+    cfg = _config(gloss, "wiki_scope", dict)  # shows without arc names: see wiki_scope's docstring for the shape
+    scopes = scopes_in_show(cfg, show_dir) if cfg else []
+    if cfg:
+        rep.update(scopes=len(scopes), scope_fetched=0, scope_cached=0, scope_incomplete=0)
+    if not arcs and not scopes:
         return {**rep, "note": "no arcs"}
-    api = resolve_wiki(show, override or gloss.get("wiki"))
-    if not api:
-        return {**rep, "note": "wiki unresolved (set a 'wiki' override)"}
-    before = json.dumps(gloss, sort_keys=True)
     aliases = _config(gloss, "arc_aliases", dict)
     waived = {a for a in _config(gloss, "arc_waived", list) if isinstance(a, str)}
+    to_fetch = [a for a in arcs if a not in waived]  # waived arcs need no wiki
+    api = resolve_wiki(show, override or gloss.get("wiki")) if to_fetch else None
+    if to_fetch and not api:
+        return {**rep, "note": "wiki unresolved (set a 'wiki' override)"}
+    before = json.dumps(gloss, sort_keys=True)
     stopped = False
     for arc in arcs:
         if stop_requested():
@@ -1084,6 +1175,26 @@ def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dic
         stored = gloss.setdefault("arc_titles", {})
         stored[arc] = sorted(set(stored.get(arc, [])) | titles)
         gloss.setdefault("arc_coverage", {})[arc] = {"titles": len(stored[arc]), "redirects": redirects_ok}
+    for sc in scopes:
+        if stopped or stop_requested():
+            stopped = True
+            break
+        titles, how = fetch_scope_cached(cfg, sc, show)
+        if how == "incomplete":
+            rep["scope_incomplete"] += 1
+            continue  # nothing stored for a scope that did not come back whole
+        rep[f"scope_{how}"] += 1
+        gloss.setdefault("arc_titles", {})[sc["key"]] = sorted(titles)  # replaced, not unioned: the config decides the scope
+        gloss.setdefault("arc_coverage", {})[sc["key"]] = {
+            "titles": len(titles), "kind": "scope", "rung": cfg.get("rung"), "complete": True, "redirects": True,
+        }  # fmt: skip
+        if cfg.get("rung") != "whole_wiki":
+            # Only what the existing helper tags: under the arc name glossary.arc_for gives this season's videos (that is the
+            # name repair weights by). A season with no season.nfo has none, so its names stay untagged; a whole-wiki scope
+            # tags nothing (every name would get a tag that matches no episode).
+            season_arc = glossary.arc_for(sc["video"]) if sc.get("video") else None
+            if season_arc:
+                glossary.tag_names_by_arc(gloss, season_arc, titles)
     rep["names_tagged"] = len(gloss.get("arc_tags") or {})
     if stopped:
         log("stop requested: leaving arc tagging; nothing written")
@@ -1092,16 +1203,18 @@ def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dic
     coverage_now = gloss.setdefault("arc_coverage", {})
     for a in sorted(waived & set(arcs)):
         coverage_now[a] = {"titles": len(stored_now.get(a, [])), "waived": True}
-    for a in sorted(set(stored_now) - set(arcs)):
+    expected = set(arcs) | {sc["key"] for sc in scopes}
+    for a in sorted(set(stored_now) - expected):
         coverage_now[a] = {"titles": len(stored_now[a]), "stale": True}  # its season is gone: kept, but not in the universe
     if not coverage_now:
         gloss.pop("arc_coverage")
     floor = arc_min_titles()
-    tiny = sorted(a for a in arcs if a not in waived and a in stored_now and len(stored_now[a]) < floor)
+    whole_keys = {sc["key"] for sc in scopes if cfg.get("rung") == "whole_wiki"}
+    tiny = sorted(a for a in expected - whole_keys if a not in waived and a in stored_now and len(stored_now[a]) < floor)
     rep["tiny"] = len(tiny)
     for a in tiny:
         log(f"arc tags: arc {a!r} has only {len(stored_now[a])} titles (ARC_MIN_TITLES={floor}): counted as missing")
-    missing = sorted({a for a in arcs if a not in waived and a not in stored_now} | set(tiny))
+    missing = sorted({a for a in expected if a not in waived and a not in stored_now} | set(tiny))
     if missing:
         gloss["arc_titles_missing"] = missing
     else:

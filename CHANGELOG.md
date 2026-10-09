@@ -8,6 +8,14 @@ that shipped since.
 
 ## [Unreleased]
 
+- **Shows without arc names get a wiki scope (opt-in).** A glossary with a `wiki_scope` block (see `wiki_scope.py` for the shape
+  and the Naruto / Pokemon / whole-wiki examples) makes `--tag-arcs` (`GLOSSARY_ARC_TAGS=1`) resolve one scope per library season,
+  or one for the whole wiki, and store the titles beside the arc titles under `scope:<rung>:<season or all>`, only when the
+  result is complete. The verify gate's universe is the union of the arc and scope titles, still a logged no-op unless every
+  expected scope is covered; a whole-wiki scope is left out of it (it would contain every page verify can propose) and tags no
+  names. `arc_index` reads the index page per part (`part` / `season_parts`; each part numbers its own episodes from 1) and
+  needs an SxxExx tag in the video file names. No new environment variable.
+
 - **The arc gate only turns on when its evidence is whole.** `VERIFY_ARC_GATE=1` is a logged no-op unless every stored arc has a
   coverage record (a glossary tagged by an older version needs `--tag-arcs` again), no arc's redirect step is unfinished and no
   arc is missing. An arc with fewer than `ARC_MIN_TITLES` (default 10) titles counts as missing. The arc cache is versioned
