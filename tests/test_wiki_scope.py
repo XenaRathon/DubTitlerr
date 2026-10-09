@@ -1,4 +1,4 @@
-"""Unit tests for wiki_scope.py pure core (all HTTP mocked via injected http function)."""
+import urllib.parse
 
 import wiki_scope
 
@@ -67,6 +67,8 @@ def test_empty_or_missing_cfg_returns_rung_none_and_not_complete():
 
 def test_arc_index_naruto_shape():
     def fake_http(url):
+        if "action=query" in url and "redirects=1" in url:
+            return {"query": {"redirects": []}}
         if "Plot" in url:
             return {"parse": {"wikitext": {"*": NARUTO_INDEX_WIKITEXT}}}
         if "Prologue" in url:
@@ -90,15 +92,19 @@ def test_arc_index_naruto_shape():
 
 
 def test_arc_index_unparseable_row_reported_in_notes():
-    index_with_bad_row = NARUTO_INDEX_WIKITEXT + """
-|-
+    index_with_bad_row = NARUTO_INDEX_WIKITEXT.replace(
+        "|}",
+        """|-
 | [[Unparseable Arc]]
 | invalid_chapters
 | not_an_episode_number
 | Some text
-"""
+|}""",
+    )
 
     def fake_http(url):
+        if "action=query" in url and "redirects=1" in url:
+            return {"query": {"redirects": []}}
         if "Plot" in url:
             return {"parse": {"wikitext": {"*": index_with_bad_row}}}
         return {"parse": {"wikitext": {"*": LAND_OF_WAVES_WIKITEXT}}}
@@ -120,6 +126,8 @@ def test_arc_index_overlapping_two_seasons():
 
     def fake_http(url):
         calls.append(url)
+        if "action=query" in url and "redirects=1" in url:
+            return {"query": {"redirects": []}}
         if "Plot" in url:
             return {"parse": {"wikitext": {"*": NARUTO_INDEX_WIKITEXT}}}
         if "Ch%C5%ABnin" in url or "Chunin" in url:
@@ -147,6 +155,8 @@ def test_arc_index_overlapping_two_seasons():
 def test_arc_index_season_offsets_mapping():
     """season_offsets maps season-relative episodes to absolute episode numbers."""
     def fake_http(url):
+        if "action=query" in url and "redirects=1" in url:
+            return {"query": {"redirects": []}}
         if "Plot" in url:
             return {"parse": {"wikitext": {"*": NARUTO_INDEX_WIKITEXT}}}
         if "Ch%C5%ABnin" in url or "Chunin" in url:
@@ -173,6 +183,8 @@ def test_arc_index_season_offsets_mapping():
 
 def test_season_page_pokemon_shape():
     def fake_http(url):
+        if "action=query" in url and "redirects=1" in url:
+            return {"query": {"redirects": []}}
         assert "page=S01" in url
         return {"parse": {"links": POKEMON_S01_LINKS}}
 
@@ -195,6 +207,8 @@ def test_season_page_pokemon_shape():
 
 def test_season_page_custom_deny_regex():
     def fake_http(url):
+        if "action=query" in url and "redirects=1" in url:
+            return {"query": {"redirects": []}}
         return {"parse": {"links": POKEMON_S01_LINKS}}
 
     cfg = {
@@ -309,6 +323,8 @@ def test_arc_index_multiple_comma_separated_ranges():
 |}
 """
     def fake_http(url):
+        if "action=query" in url and "redirects=1" in url:
+            return {"query": {"redirects": []}}
         if "Plot" in url:
             return {"parse": {"wikitext": {"*": wt}}}
         return {"parse": {"wikitext": {"*": "== Plot ==\n[[Itachi Uchiha]] appears."}}}
@@ -343,6 +359,8 @@ def test_arc_index_drops_smw_double_colon_properties():
 [[Anime::Naruto: Shippūden]]
 """
     def fake_http(url):
+        if "action=query" in url and "redirects=1" in url:
+            return {"query": {"redirects": []}}
         if "Plot" in url:
             return {"parse": {"wikitext": {"*": NARUTO_INDEX_WIKITEXT}}}
         return {"parse": {"wikitext": {"*": smw_wt}}}
@@ -368,6 +386,8 @@ def test_season_page_drops_smw_double_colon_properties():
         {"ns": 0, "*": "Arc number::1"},
     ]
     def fake_http(url):
+        if "action=query" in url and "redirects=1" in url:
+            return {"query": {"redirects": []}}
         return {"parse": {"links": links}}
 
     cfg = {
@@ -391,6 +411,8 @@ def test_season_page_drops_titles_ending_with_ep_code():
         {"ns": 0, "*": "A.J. (EP009)"},
     ]
     def fake_http(url):
+        if "action=query" in url and "redirects=1" in url:
+            return {"query": {"redirects": []}}
         return {"parse": {"links": links}}
 
     cfg = {
@@ -424,6 +446,8 @@ def test_season_page_drops_titles_from_episode_table_cells():
         {"ns": 0, "*": "Pikachu (Pokémon)"},
     ]
     def fake_http(url):
+        if "action=query" in url and "redirects=1" in url:
+            return {"query": {"redirects": []}}
         return {"parse": {"links": links, "wikitext": {"*": table_wt}}}
 
     cfg = {
@@ -455,6 +479,8 @@ def test_season_page_with_explicit_episode_list_page_cfg():
         {"ns": 0, "*": "Sidekick"},
     ]
     def fake_http(url):
+        if "action=query" in url and "redirects=1" in url:
+            return {"query": {"redirects": []}}
         if "Episode_List_S01" in url:
             return {"parse": {"wikitext": {"*": ep_wt}}}
         return {"parse": {"links": season_links}}
@@ -469,4 +495,371 @@ def test_season_page_with_explicit_episode_list_page_cfg():
     assert "Main Hero" in res.titles
     assert "Sidekick" in res.titles
     assert "The First Adventure" not in res.titles
+
+
+# ---- Tests for task 5: items 1-6 --------------------------------------------
+
+PLOT_WITH_CHAPTERS_FIRST = """{| class="wikitable"
+! Manga chapters !! Arc !! Anime episodes !! Volumes
+|-
+| [[Chapter 1]]–8 || [[Prologue — Land of Waves|Land of Waves]] || 1–19 || 1–3
+|-
+| [[Chapter 34|34]]–115 || [[Chūnin Exam Arc|Chūnin Exams]] || 20–67 || 4–13
+|-
+| 116–138 || [[Konoha Crush]] || 68–80 || 13–15
+|}
+== Characters ==
+{| class="wikitable"
+! Character !! Debut !! Episodes
+|-
+| [[Naruto Uzumaki]] || 1 || 1–220
+|}
+"""
+
+ARC_PAGES_FIXTURE = {
+    "Prologue — Land of Waves": (
+        "[[Zabuza Momochi]] fought [[Kakashi_Hatake#Abilities|Kakashi]] and [[haku]]; "
+        "see [[Template:Infobox]] [[User:Admin]] [[Category:Arcs]]"
+    ),
+    "Chūnin Exam Arc": "[[Orochimaru]] [[Gaara]]",
+    "Konoha Crush": "[[Hiruzen Sarutobi]]",
+    "Naruto Uzumaki": "[[Every Character Ever]] [[Hinata Hyūga]]",
+    "Chapter 1": "[[Manga Only Person]]",
+}
+
+
+def test_arc_index_empty_or_partial_evidence_complete_false():
+    cfg = {
+        "rung": "arc_index",
+        "wiki": "https://naruto.fandom.com/api.php",
+        "index_page": "Plot of Naruto",
+    }
+    # 1. Prose only (no parseable arc rows)
+    res_prose = wiki_scope.resolve_scope(
+        cfg, None, [1], lambda url: {"parse": {"wikitext": {"*": "Naruto is a story about ninjas."}}}
+    )
+    assert res_prose.complete is False
+    assert res_prose.titles == set()
+
+    # 2. Episodes beyond table (500-520)
+    def fake_plot(url):
+        if "Plot" in url:
+            return {"parse": {"wikitext": {"*": PLOT_WITH_CHAPTERS_FIRST}}}
+        return {"parse": {"wikitext": {"*": ""}}}
+
+    res_beyond = wiki_scope.resolve_scope(cfg, None, range(500, 521), fake_plot)
+    assert res_beyond.complete is False
+    assert res_beyond.titles == set()
+
+    # 3. Partially uncovered episodes (e.g. 1-19 and 500)
+    res_uncovered = wiki_scope.resolve_scope(cfg, None, [1, 500], fake_plot)
+    assert res_uncovered.complete is False
+
+
+def test_season_page_episode_list_page_failure_or_error_complete_false():
+    cfg = {
+        "rung": "season_page",
+        "wiki": "https://bulbapedia.bulbagarden.net/w/api.php",
+        "season_page": "S{season:02d}",
+        "episode_list_page": "List of episodes S{season:02d}",
+    }
+    # Failure (exception)
+    def fake_fail(url):
+        if "List%20of%20episodes" in url or "List_of_episodes" in url:
+            raise OSError("network boom")
+        return {"parse": {"links": [{"ns": 0, "*": "Ash Ketchum"}]}}
+
+    res_fail = wiki_scope.resolve_scope(cfg, 1, None, fake_fail)
+    assert res_fail.complete is False
+
+    # Error response
+    def fake_err(url):
+        if "List%20of%20episodes" in url or "List_of_episodes" in url:
+            return {"error": {"code": "missingtitle"}}
+        return {"parse": {"links": [{"ns": 0, "*": "Ash Ketchum"}]}}
+
+    res_err = wiki_scope.resolve_scope(cfg, 1, None, fake_err)
+    assert res_err.complete is False
+
+
+def test_arc_page_failure_or_error_keeps_complete_false():
+    cfg = {
+        "rung": "arc_index",
+        "wiki": "https://naruto.fandom.com/api.php",
+        "index_page": "Plot of Naruto",
+    }
+    # Arc page fetch raises exception
+    def fake_fail(url):
+        if "Plot" in url:
+            return {"parse": {"wikitext": {"*": PLOT_WITH_CHAPTERS_FIRST}}}
+        if "Prologue" in url:
+            raise OSError("arc fetch failed")
+        return {"parse": {"wikitext": {"*": ""}}}
+
+    res_fail = wiki_scope.resolve_scope(cfg, None, [5], fake_fail)
+    assert res_fail.complete is False
+
+    # Arc page returns error response
+    def fake_err(url):
+        if "Plot" in url:
+            return {"parse": {"wikitext": {"*": PLOT_WITH_CHAPTERS_FIRST}}}
+        if "Prologue" in url:
+            return {"error": {"code": "missingtitle"}}
+        return {"parse": {"wikitext": {"*": ""}}}
+
+    res_err = wiki_scope.resolve_scope(cfg, None, [5], fake_err)
+    assert res_err.complete is False
+
+
+def test_whole_wiki_page_cap_sets_complete_false():
+    def fake_allpages(url):
+        return {
+            "query": {"allpages": [{"title": "Page"}]},
+            "continue": {"apcontinue": "TOKEN"},
+        }
+    cfg = {"rung": "whole_wiki", "wiki": "https://naruto.fandom.com/api.php"}
+    res = wiki_scope.resolve_scope(cfg, None, None, fake_allpages)
+    assert res.complete is False
+    assert any("exceeded 10-page limit" in n for n in res.notes)
+
+
+def test_arc_index_parser_chapter_column_first_and_skips_character_tables():
+    def fake_http(url):
+        if "Plot" in url:
+            return {"parse": {"wikitext": {"*": PLOT_WITH_CHAPTERS_FIRST}}}
+        for name, wt in ARC_PAGES_FIXTURE.items():
+            if urllib.parse.quote(name) in url or name in url:
+                return {"parse": {"wikitext": {"*": wt}}}
+        return {"error": {"code": "missingtitle"}}
+
+    cfg = {
+        "rung": "arc_index",
+        "wiki": "https://naruto.fandom.com/api.php",
+        "index_page": "Plot of Naruto",
+    }
+    res = wiki_scope.resolve_scope(cfg, None, range(1, 20), fake_http)
+    assert res.complete is True
+    # Must pick Land of Waves, not Chapter 1
+    assert "Manga Only Person" not in res.titles
+    assert "Zabuza Momochi" in res.titles
+    # Character table must be skipped
+    assert "Every Character Ever" not in res.titles
+    assert "Hinata Hyūga" not in res.titles
+
+
+def test_bad_config_or_input_returns_result_without_raising():
+    cfg = {
+        "rung": "arc_index",
+        "wiki": "https://naruto.fandom.com/api.php",
+        "index_page": "Plot of Naruto",
+    }
+    # season_offsets bad values
+    res1 = wiki_scope.resolve_scope({**cfg, "season_offsets": {"2": "nineteen"}}, 2, [1], lambda u: {})
+    assert res1.complete is False
+    assert res1.rung == "arc_index"
+    assert len(res1.notes) >= 1
+
+    res2 = wiki_scope.resolve_scope({**cfg, "season_offsets": {"2": None}}, 2, [1], lambda u: {})
+    assert res2.complete is False
+    assert res2.rung == "arc_index"
+
+    # episode_numbers bad values
+    res3 = wiki_scope.resolve_scope(cfg, None, ["x"], lambda u: {})
+    assert res3.complete is False
+    assert res3.rung == "arc_index"
+
+
+def test_arc_page_normalised_links_and_non_ns0_dropped():
+    def fake_http(url):
+        if "Plot" in url:
+            return {"parse": {"wikitext": {"*": PLOT_WITH_CHAPTERS_FIRST}}}
+        if "Prologue" in url:
+            return {"parse": {"wikitext": {"*": ARC_PAGES_FIXTURE["Prologue — Land of Waves"]}}}
+        return {"error": {"code": "missingtitle"}}
+
+    cfg = {
+        "rung": "arc_index",
+        "wiki": "https://naruto.fandom.com/api.php",
+        "index_page": "Plot of Naruto",
+    }
+    res = wiki_scope.resolve_scope(cfg, None, range(1, 20), fake_http)
+    assert res.complete is True
+    # Normalized links
+    assert "Kakashi Hatake" in res.titles
+    assert "Haku" in res.titles
+    # Non-ns0 namespaces dropped
+    assert "Template:Infobox" not in res.titles
+    assert "User:Admin" not in res.titles
+    assert "Category:Arcs" not in res.titles
+
+
+def test_redirect_resolution_for_arc_and_season_rungs():
+    # Arc rung redirect resolution
+    def fake_arc(url):
+        if "Plot" in url:
+            return {"parse": {"wikitext": {"*": PLOT_WITH_CHAPTERS_FIRST}}}
+        if "Prologue" in url:
+            return {"parse": {"wikitext": {"*": "[[Zabuza]] fought [[Kakashi Hatake]]"}}}
+        if "action=query" in url and "redirects=1" in url:
+            return {
+                "query": {
+                    "redirects": [{"from": "Zabuza", "to": "Zabuza Momochi"}]
+                }
+            }
+        return {"error": {"code": "missingtitle"}}
+
+    cfg = {
+        "rung": "arc_index",
+        "wiki": "https://naruto.fandom.com/api.php",
+        "index_page": "Plot of Naruto",
+    }
+    res = wiki_scope.resolve_scope(cfg, None, [1], fake_arc)
+    assert "Zabuza Momochi" in res.titles
+
+    # Season rung redirect resolution
+    def fake_season(url):
+        if "page=S01" in url:
+            return {"parse": {"links": [{"ns": 0, "*": "Ash"}, {"ns": 0, "*": "Pikachu"}]}}
+        if "action=query" in url and "redirects=1" in url:
+            return {
+                "query": {
+                    "redirects": [{"from": "Ash", "to": "Ash Ketchum"}]
+                }
+            }
+        return {"error": {"code": "missingtitle"}}
+
+    scfg = {
+        "rung": "season_page",
+        "wiki": "https://bulbapedia.bulbagarden.net/w/api.php",
+        "season_page": "S{season:02d}",
+    }
+    sres = wiki_scope.resolve_scope(scfg, 1, None, fake_season)
+    assert "Ash Ketchum" in sres.titles
+
+
+def test_redirect_resolution_failure_sets_complete_false():
+    def fake_fail_redir(url):
+        if "Plot" in url:
+            return {"parse": {"wikitext": {"*": PLOT_WITH_CHAPTERS_FIRST}}}
+        if "Prologue" in url:
+            return {"parse": {"wikitext": {"*": "[[Zabuza Momochi]]"}}}
+        if "action=query" in url and "redirects=1" in url:
+            raise OSError("redirects network error")
+        return {"error": {"code": "missingtitle"}}
+
+    cfg = {
+        "rung": "arc_index",
+        "wiki": "https://naruto.fandom.com/api.php",
+        "index_page": "Plot of Naruto",
+    }
+    res = wiki_scope.resolve_scope(cfg, None, [1], fake_fail_redir)
+    assert res.complete is False
+
+
+def test_host_safety_rejects_insecure_or_disallowed_hosts(monkeypatch):
+    # Insecure scheme http://
+    res_http = wiki_scope.resolve_scope(
+        {"rung": "arc_index", "wiki": "http://naruto.fandom.com/api.php"}, 1, [1], lambda u: {}
+    )
+    assert res_http.rung == "none"
+    assert res_http.complete is False
+
+    # Disallowed host
+    res_bad = wiki_scope.resolve_scope(
+        {"rung": "arc_index", "wiki": "https://169.254.169.254/latest"}, 1, [1], lambda u: {}
+    )
+    assert res_bad.rung == "none"
+    assert res_bad.complete is False
+
+    # Allowed via WIKI_HOST_ALLOW
+    monkeypatch.setenv("WIKI_HOST_ALLOW", "custom.wiki.org,another.org")
+    calls = []
+    def fake_custom(url):
+        calls.append(url)
+        return {"error": {"code": "missingtitle"}}
+    res_allow = wiki_scope.resolve_scope(
+        {"rung": "arc_index", "wiki": "https://custom.wiki.org/api.php", "index_page": "Index"}, 1, [1], fake_custom
+    )
+    assert res_allow.rung == "arc_index"
+
+
+def test_season_page_plain_replace_instead_of_str_format():
+    calls = []
+    def fake(url):
+        calls.append(url)
+        return {"parse": {"links": []}}
+
+    scfg = {
+        "rung": "season_page",
+        "wiki": "https://bulbapedia.bulbagarden.net/w/api.php",
+        "season_page": "{season.__class__.__mro__}",
+    }
+    # Should not raise AttributeError/KeyError from str.format evaluating __class__
+    wiki_scope.resolve_scope(scfg, 1, None, fake)
+    assert len(calls) == 1
+    assert urllib.parse.quote("{season.__class__.__mro__}") in calls[0]
+
+
+def test_default_deny_list_additions():
+    links = [
+        {"ns": 0, "*": "Ash Ketchum"},
+        {"ns": 0, "*": "List of Pokémon episodes"},
+        {"ns": 0, "*": "Sakura (disambiguation)"},
+        {"ns": 0, "*": "Season 1"},
+        {"ns": 0, "*": "Series 2"},
+    ]
+    def fake(url):
+        return {"parse": {"links": links}}
+
+    cfg = {
+        "rung": "season_page",
+        "wiki": "https://bulbapedia.bulbagarden.net/w/api.php",
+        "season_page": "S{season:02d}",
+    }
+    res = wiki_scope.resolve_scope(cfg, 1, None, fake)
+    assert "Ash Ketchum" in res.titles
+    assert "List of Pokémon episodes" not in res.titles
+    assert "Sakura (disambiguation)" not in res.titles
+    assert "Season 1" not in res.titles
+    assert "Series 2" not in res.titles
+
+
+def test_season_page_drops_non_ns0_links():
+    links = [
+        {"ns": 0, "*": "Ash Ketchum"},
+        {"ns": 10, "*": "Template:Season"},
+        {"ns": 14, "*": "Category:Anime"},
+    ]
+    def fake(url):
+        return {"parse": {"links": links}}
+
+    cfg = {
+        "rung": "season_page",
+        "wiki": "https://bulbapedia.bulbagarden.net/w/api.php",
+        "season_page": "S{season:02d}",
+    }
+    res = wiki_scope.resolve_scope(cfg, 1, None, fake)
+    assert "Ash Ketchum" in res.titles
+    assert "Template:Season" not in res.titles
+    assert "Category:Anime" not in res.titles
+
+
+def test_range_last_episode_included():
+    def fake_http(url):
+        if "Plot" in url:
+            return {"parse": {"wikitext": {"*": PLOT_WITH_CHAPTERS_FIRST}}}
+        if "Prologue" in url:
+            return {"parse": {"wikitext": {"*": "[[Zabuza Momochi]]"}}}
+        return {"error": {"code": "missingtitle"}}
+
+    cfg = {
+        "rung": "arc_index",
+        "wiki": "https://naruto.fandom.com/api.php",
+        "index_page": "Plot of Naruto",
+    }
+    # Episode 19 is the LAST episode of Land of Waves (1-19)
+    res = wiki_scope.resolve_scope(cfg, None, [19], fake_http)
+    assert res.complete is True
+    assert "Zabuza Momochi" in res.titles
+
 

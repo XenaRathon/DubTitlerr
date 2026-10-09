@@ -6,11 +6,13 @@ has no arc names in its metadata (e.g. Naruto, Pokemon, single-season shows).
 
 from __future__ import annotations
 
+import os
 import re
 import urllib.parse
 from typing import Callable, NamedTuple
 
-from glossary_verify import _extract_links, _http_json
+import glossary_verify
+from glossary_verify import _extract_links, _http_json, redirect_targets
 
 
 class ScopeResult(NamedTuple):
@@ -22,6 +24,9 @@ class ScopeResult(NamedTuple):
 
 DEFAULT_GLOBAL_DENY = [
     r"::",
+    r"^List of\b",
+    r"\(disambiguation\)$",
+    r"^(Season|Series)\s+\d+",
 ]
 
 DEFAULT_SEASON_DENY = [
@@ -39,6 +44,52 @@ DEFAULT_STRUCTURAL_DENY = [
     r"^Main\s+Page$",
     r".*\s+Wiki$",
 ]
+
+
+def _validate_wiki_url(wiki: str) -> tuple[bool, str]:
+    """Validate wiki URL scheme (https) and host against allowed suffixes."""
+    parsed = urllib.parse.urlsplit(wiki)
+    if parsed.scheme != "https":
+        return False, f"wiki url must use https scheme: {wiki!r}"
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False, f"missing host in wiki url: {wiki!r}"
+
+    allowed = [".fandom.com", "fandom.com", "bulbapedia.bulbagarden.net"]
+    env_allow = os.environ.get("WIKI_HOST_ALLOW", "")
+    if env_allow:
+        for extra in env_allow.split(","):
+            extra = extra.strip().lower()
+            if extra:
+                allowed.append(extra)
+
+    for a in allowed:
+        if host == a or host.endswith(a if a.startswith(".") else "." + a):
+            return True, ""
+    return False, f"disallowed wiki host {host!r} (not in allowed hosts)"
+
+
+def _resolve_redirects(
+    wiki: str,
+    titles: set[str],
+    fetch_json: Callable[[str], dict],
+) -> tuple[set[str], bool]:
+    """Resolve redirect titles using glossary_verify.redirect_targets helper."""
+    if not titles:
+        return set(), True
+
+    orig_http = glossary_verify._http_json
+    try:
+        glossary_verify._http_json = fetch_json
+        targets, redirs_ok = redirect_targets(wiki, titles)
+    except Exception:
+        return titles, False
+    finally:
+        glossary_verify._http_json = orig_http
+
+    resolved = set(titles) | set(targets.values())
+    return resolved, redirs_ok
+
 
 
 def normalize_title(title: str) -> str:
@@ -60,60 +111,90 @@ def _is_denied(title: str, patterns: list[str]) -> bool:
     return False
 
 
-def _parse_arc_rows(wt: str) -> tuple[list[tuple[str, set[int]]], list[str]]:
-    """Parse wikitext table rows into (arc_title, episode_set) tuples and unparseable notes."""
+def _parse_arc_rows(wt: str, arc_column: str | None = None) -> tuple[list[tuple[str, set[int]]], list[str]]:
+    """Parse wikitext tables into (arc_title, episode_set) tuples and unparseable notes."""
     arcs: list[tuple[str, set[int]]] = []
     notes: list[str] = []
-    rows = re.split(r"\n\|-", wt)
-    for raw_row in rows:
-        lines = [line.strip() for line in raw_row.splitlines() if line.strip()]
-        if not lines or any(ln.startswith("!") for ln in lines):
-            continue
-        cells: list[str] = []
-        for ln in lines:
-            if ln.startswith("|") and not ln.startswith("|-") and not ln.startswith("|}"):
-                parts = re.split(r"\|\|", ln[1:])
-                for p in parts:
-                    cells.append(p.strip())
-        if not cells:
-            continue
+    if not wt:
+        return arcs, notes
 
-        arc_title = None
-        for c in cells[:2]:
-            m = re.search(r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]", c)
-            if m:
-                arc_title = m.group(1).strip()
-                break
-        if not arc_title:
-            continue
+    tables = re.findall(r"(\{\|.*?\|\})", wt, re.DOTALL)
+    for tbl in tables:
+        rows = re.split(r"\n\|-", tbl)
+        arc_col_idx = None
+        ep_col_idx = None
 
-        ep_cell = ""
-        if len(cells) >= 4:
-            ep_cell = cells[2]
-        elif len(cells) == 3:
-            ep_cell = cells[2] if re.search(r"\d+", cells[2]) else cells[1]
-        elif len(cells) == 2:
-            ep_cell = cells[1]
+        for raw_row in rows:
+            lines = [line.strip() for line in raw_row.splitlines() if line.strip()]
+            if not lines:
+                continue
 
-        if ep_cell in ("—", "-", "–", "N/A", "n/a", ""):
-            continue
+            # Header row check
+            if any(ln.startswith("!") for ln in lines):
+                header_cells: list[str] = []
+                for ln in lines:
+                    if ln.startswith("!"):
+                        parts = re.split(r"!!", ln[1:])
+                        for p in parts:
+                            if "|" in p:
+                                p = p.split("|")[-1]
+                            header_cells.append(p.strip())
+                for idx, h in enumerate(header_cells):
+                    if arc_column and arc_column.lower() in h.lower():
+                        arc_col_idx = idx
+                    elif arc_col_idx is None and re.search(r"Arc", h, re.IGNORECASE):
+                        arc_col_idx = idx
+                    if re.search(r"Episode|Anime", h, re.IGNORECASE):
+                        ep_col_idx = idx
+                continue
 
-        episodes: set[int] = set()
-        parts = [p.strip() for p in ep_cell.split(",") if p.strip()]
-        for p in parts:
-            m_range = re.match(r"^(\d+)\s*[-–—]\s*(\d+)$", p)
-            m_single = re.match(r"^(\d+)$", p)
-            if m_range:
-                start, end = int(m_range.group(1)), int(m_range.group(2))
-                if start <= end:
-                    episodes.update(range(start, end + 1))
-            elif m_single:
-                episodes.add(int(m_single.group(1)))
+            # Skip table if it has neither arc_col_idx nor ep_col_idx
+            if arc_col_idx is None or ep_col_idx is None:
+                continue
 
-        if episodes:
-            arcs.append((arc_title, episodes))
-        else:
-            notes.append(f"unparseable arc row: {arc_title} ({ep_cell})")
+            # Data row
+            cells: list[str] = []
+            for ln in lines:
+                if ln.startswith("|") and not ln.startswith("|-") and not ln.startswith("|}"):
+                    parts = re.split(r"\|\|", ln[1:])
+                    for p in parts:
+                        cells.append(p.strip())
+            if not cells or len(cells) <= max(arc_col_idx, ep_col_idx):
+                continue
+
+            # Extract arc title from arc column
+            arc_cell = cells[arc_col_idx]
+            arc_title = None
+            for m in re.finditer(r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]", arc_cell):
+                target = m.group(1).strip()
+                if not re.search(r"^(Chapter|Volume|Episode)\s+\d+", target, re.IGNORECASE):
+                    arc_title = target
+                    break
+
+            if not arc_title:
+                continue
+
+            # Extract episodes from episode column
+            ep_cell = cells[ep_col_idx]
+            if ep_cell in ("—", "-", "–", "N/A", "n/a", ""):
+                continue
+
+            episodes: set[int] = set()
+            parts = [p.strip() for p in ep_cell.split(",") if p.strip()]
+            for p in parts:
+                m_range = re.match(r"^(\d+)\s*[-–—]\s*(\d+)$", p)
+                m_single = re.match(r"^(\d+)$", p)
+                if m_range:
+                    start, end = int(m_range.group(1)), int(m_range.group(2))
+                    if start <= end:
+                        episodes.update(range(start, end + 1))
+                elif m_single:
+                    episodes.add(int(m_single.group(1)))
+
+            if episodes:
+                arcs.append((arc_title, episodes))
+            else:
+                notes.append(f"unparseable arc row: {arc_title} ({ep_cell})")
 
     return arcs, notes
 
@@ -214,6 +295,10 @@ def resolve_scope(
     if not wiki:
         return ScopeResult(titles=set(), complete=False, rung=rung, notes=["missing wiki api url in config"])
 
+    valid_host, host_err = _validate_wiki_url(wiki)
+    if not valid_host:
+        return ScopeResult(titles=set(), complete=False, rung="none", notes=[host_err])
+
     fetch_json = http or _http_json
     notes: list[str] = []
     custom_deny = list(cfg.get("deny") or [])
@@ -222,10 +307,27 @@ def resolve_scope(
     offsets = cfg.get("season_offsets") or {}
     offset = 0
     if season is not None:
-        offset = int(offsets.get(str(season), offsets.get(season, 0)))
+        raw_offset = offsets.get(str(season), offsets.get(season, 0))
+        try:
+            offset = int(raw_offset)
+        except (ValueError, TypeError) as e:
+            return ScopeResult(
+                titles=set(),
+                complete=False,
+                rung=rung,
+                notes=[f"invalid season_offsets value for season {season!r}: {raw_offset!r} ({e})"],
+            )
 
     if episode_numbers is not None:
-        req_eps = {int(e) + offset for e in episode_numbers}
+        try:
+            req_eps = {int(e) + offset for e in episode_numbers}
+        except (ValueError, TypeError) as e:
+            return ScopeResult(
+                titles=set(),
+                complete=False,
+                rung=rung,
+                notes=[f"invalid episode number in episode_numbers: {e}"],
+            )
     else:
         req_eps = set()
 
@@ -246,14 +348,35 @@ def resolve_scope(
             return ScopeResult(titles=set(), complete=False, rung=rung, notes=[f"error in index page response: {err}"])
 
         wt = resp.get("parse", {}).get("wikitext", {}).get("*", "")
-        arcs, parse_notes = _parse_arc_rows(wt)
+        arcs, parse_notes = _parse_arc_rows(wt, arc_column=cfg.get("arc_column"))
         notes.extend(parse_notes)
 
-        # Match arcs overlapping the requested absolute episode numbers
+        if not arcs:
+            return ScopeResult(
+                titles=set(),
+                complete=False,
+                rung=rung,
+                notes=notes + ["no parseable arc rows found in index page"],
+            )
+
         matching_arcs = [arc_title for arc_title, arc_eps in arcs if not req_eps or bool(arc_eps & req_eps)]
+        if not matching_arcs:
+            return ScopeResult(
+                titles=set(),
+                complete=False,
+                rung=rung,
+                notes=notes + ["no matching arcs found for requested episodes"],
+            )
+
+        complete = True
+        if req_eps:
+            all_arc_eps = set().union(*(arc_eps for _, arc_eps in arcs))
+            uncovered = req_eps - all_arc_eps
+            if uncovered:
+                complete = False
+                notes.append(f"requested episodes not covered by any arc: {sorted(uncovered)}")
 
         all_titles: set[str] = set()
-        complete = True
 
         for arc_title in matching_arcs:
             arc_url = f"{wiki}?action=parse&page={urllib.parse.quote(arc_title)}&prop=wikitext&format=json"
@@ -270,8 +393,14 @@ def resolve_scope(
                 continue
 
             arc_wt = arc_resp.get("parse", {}).get("wikitext", {}).get("*", "")
-            links = _extract_links(arc_wt)
+            links = _extract_links(arc_wt, normalise=True)
             all_titles.update(links)
+
+        # Resolve redirects
+        all_titles, redirs_ok = _resolve_redirects(wiki, all_titles, fetch_json)
+        if not redirs_ok:
+            complete = False
+            notes.append("redirect resolution incomplete or failed")
 
         deny_patterns = DEFAULT_GLOBAL_DENY + custom_deny
         filtered = {
@@ -290,9 +419,11 @@ def resolve_scope(
             return ScopeResult(titles=set(), complete=False, rung=rung, notes=["season number required for season_page rung"])
 
         try:
-            page_title = season_fmt.format(season=int(season))
-        except Exception as e:
-            return ScopeResult(titles=set(), complete=False, rung=rung, notes=[f"failed to format season_page: {e}"])
+            s_int = int(season)
+        except (ValueError, TypeError) as e:
+            return ScopeResult(titles=set(), complete=False, rung=rung, notes=[f"invalid season number: {season!r} ({e})"])
+
+        page_title = season_fmt.replace("{season:02d}", f"{s_int:02d}").replace("{season}", str(s_int))
 
         url = f"{wiki}?action=parse&page={urllib.parse.quote(page_title)}&prop=links|wikitext&format=json"
         try:
@@ -310,17 +441,19 @@ def resolve_scope(
         if "links" in parse_obj:
             raw_titles = {item["*"] for item in parse_obj["links"] if item.get("ns") in (0, None)}
         elif "wikitext" in parse_obj:
-            raw_titles = _extract_links(parse_obj["wikitext"].get("*", ""))
+            raw_titles = _extract_links(parse_obj["wikitext"].get("*", ""), normalise=True)
 
         season_wt = parse_obj.get("wikitext", {}).get("*", "")
         table_episodes: set[str] = set()
+        complete = True
 
         ep_list_page_cfg = cfg.get("episode_list_page")
         if ep_list_page_cfg:
-            try:
-                ep_list_page = ep_list_page_cfg.format(season=int(season))
-            except Exception:
-                ep_list_page = str(ep_list_page_cfg)
+            ep_list_page = (
+                str(ep_list_page_cfg)
+                .replace("{season:02d}", f"{s_int:02d}")
+                .replace("{season}", str(s_int))
+            )
             ep_url = f"{wiki}?action=parse&page={urllib.parse.quote(ep_list_page)}&prop=wikitext&format=json"
             try:
                 ep_resp = fetch_json(ep_url)
@@ -328,12 +461,20 @@ def resolve_scope(
                     ep_wt = ep_resp.get("parse", {}).get("wikitext", {}).get("*", "")
                     table_episodes.update(_extract_table_episode_titles(ep_wt))
                 else:
+                    complete = False
                     err_msg = ep_resp.get("error") if ep_resp else "empty"
-                    notes.append(f"warning: error fetching episode_list_page {ep_list_page}: {err_msg}")
+                    notes.append(f"error fetching episode_list_page {ep_list_page}: {err_msg}")
             except Exception as e:
-                notes.append(f"warning: http error fetching episode_list_page {ep_list_page}: {e}")
+                complete = False
+                notes.append(f"http error fetching episode_list_page {ep_list_page}: {e}")
         elif season_wt:
             table_episodes.update(_extract_table_episode_titles(season_wt))
+
+        # Resolve redirects
+        raw_titles, redirs_ok = _resolve_redirects(wiki, raw_titles, fetch_json)
+        if not redirs_ok:
+            complete = False
+            notes.append("redirect resolution incomplete or failed")
 
         deny_patterns = DEFAULT_GLOBAL_DENY + DEFAULT_SEASON_DENY + custom_deny
         normalized_table_episodes = {normalize_title(t) for t in table_episodes if normalize_title(t)}
@@ -345,7 +486,7 @@ def resolve_scope(
             and not _is_denied(t, deny_patterns)
             and normalize_title(t) not in normalized_table_episodes
         }
-        return ScopeResult(titles=filtered, complete=True, rung=rung, notes=notes)
+        return ScopeResult(titles=filtered, complete=complete, rung=rung, notes=notes)
 
     # -------------------------------------------------------------------------
     # Rung 3: whole_wiki
