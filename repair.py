@@ -1384,13 +1384,13 @@ def queue_proposal(stem, queued, original, proposed, **fields):
         return (decisions.key(e.get("original_text", "")), decisions.key(e.get("proposed_text", "")))
 
     mine = [i for i, e in enumerate(queued) if e.get("stage") == "repair_applied" and pair_of(e) == pair]
-    superseded = [i for i in mine if queued[i].get("resolved") and str(queued[i].get("note", "")).startswith(SUPERSEDED_NOTE)]
+    superseded = [i for i in mine if queued[i].get("resolved") and queued[i].get("superseded") is True]
     if any(queued[i].get("resolved") and i not in superseded for i in mine):
         return "settled"
     for i, e in enumerate(queued):
         if e.get("stage") == "repair_applied" and not e.get("resolved") and pair_of(e)[0] == pair[0] and pair_of(e)[1] != pair[1]:
-            unresolved.resolve(stem, i, accept=False, note=f"{SUPERSEDED_NOTE}: {proposed}")
-            e["resolved"], e["note"] = True, f"{SUPERSEDED_NOTE}: {proposed}"
+            unresolved.resolve(stem, i, accept=False, note=f"{SUPERSEDED_NOTE}: {proposed}", superseded=True)
+            e["resolved"], e["superseded"] = True, True
     if any(not queued[i].get("resolved") for i in mine):
         return "open"
     if superseded:

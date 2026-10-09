@@ -87,3 +87,20 @@ def test_a_record_written_mid_run_does_not_shift_which_entry_is_retired(tmp_path
     monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["S"])
     monkeypatch.setattr(mux, "show_for", lambda _: "S")
     assert mux.held_for_review(stem) is True
+
+
+def test_a_human_note_that_looks_like_a_supersession_note_does_not_reopen_a_settled_pair(tmp_path, monkeypatch):
+    """Supersession is recorded in its own `superseded` field; the free-text note a person types is never matched."""
+    stem = _run(tmp_path, monkeypatch, [X])
+    unresolved.resolve(stem, 0, accept=False, note=f"{repair.SUPERSEDED_NOTE}: typed by a person")
+    it = iter([X])
+    monkeypatch.setattr(repair, "llm", lambda prompt, model=None: next(it))
+    repair.process(stem + repair.CONF_SUFFIX)
+    (entry,) = _applied(stem)
+    assert entry["resolved"] is True and "superseded" not in entry
+
+
+def test_a_real_supersession_carries_the_dedicated_field(tmp_path, monkeypatch):
+    stem = _run(tmp_path, monkeypatch, [X, Y])
+    x = next(e for e in _applied(stem) if e["proposed_text"] == X)
+    assert x["resolved"] is True and x["superseded"] is True

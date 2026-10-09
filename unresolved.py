@@ -413,7 +413,7 @@ def record(stem: str, stage: str, reason: str, **fields) -> bool:
         return False
 
 
-def resolve(stem: str, index: int, accept: bool, note: str = "") -> bool:
+def resolve(stem: str, index: int, accept: bool, note: str = "", superseded: bool = False) -> bool:
     """Mark one entry reviewed. The entry KEEPS its evidence: this file is the audit trail,
     not a worklist that shrinks. Mirrors glossary_acquire.record_decision, where a human
     rejection is itself durable information (it stops the next sweep re-proposing it)."""
@@ -424,6 +424,8 @@ def resolve(stem: str, index: int, accept: bool, note: str = "") -> bool:
     doc[index]["accepted"] = bool(accept)
     if note:
         doc[index]["note"] = note
+    if superseded:
+        doc[index]["superseded"] = True  # the queue retired it for a newer proposal; never inferred from the free-text note
     return _rewrite(stem, doc)
 
 
@@ -437,6 +439,7 @@ def reopen(stem: str, index: int) -> bool:
     e["resolved"] = False
     e.pop("accepted", None)
     e.pop("note", None)
+    e.pop("superseded", None)
     e["reopened"] = int(e.get("reopened") or 0) + 1
     return _rewrite(stem, doc)
 
