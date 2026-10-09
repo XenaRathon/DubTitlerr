@@ -8,6 +8,17 @@ that shipped since.
 
 ## [Unreleased]
 
+- **`REPAIR_ACCEPT_PUNCT_CASE_ONLY` now covers punctuation ADDITIONS only.** A word-identical proposal gets the relaxed layout check
+  only when the punctuation between its words differs from the original's by added `.` and `,` (the old marks all survive, in order;
+  nothing removed, replaced or reordered, hyphens, brackets, quotes, `?`, `!` and musical notes included; an added `...` or `…` is not
+  an addition). Anything else meets the ordinary guards. Case changes: a glossary spelling is lenient only for a single-word entry
+  that is not an ordinary word (`luffy` -> `Luffy`, not `law` -> `Law`) or when the changed words complete a whole multi-word entry in
+  sequence (`devil fruit` -> `Devil Fruit`, not a lone `line` -> `Line`); the card's first word counts as a sentence start only when
+  the previous card ended in `.`, `!` or `?` (or there is none), and `...`/`…` never end a sentence.
+  **Known limit of the ordinary guards (flag off, today):** a critic's list of 60 meaning-changing punctuation and case edits had 33
+  that the guards admit (`Let's eat, Grandma.` -> `Let's eat Grandma.`, `.` -> `?`, removed hyphens, possessive apostrophes, brackets,
+  quotes, ellipses). Whether the gate should refuse removed or substituted punctuation for everyone is a decision for the maintainer.
+
 - **Glossary review answers survive a busy glossary; wiki redirects are guarded.** `glossary_acquire --review --apply`, `--revert` and
   `--prune-no-match` wait up to `GLOSSARY_LOCK_WAIT_INTERACTIVE` seconds (default 600) for the glossary, printing `waiting for
   <stage> to finish...`. If it stays busy, your `--review` answers are saved atomically to `<glossary>.json.review-pending` and

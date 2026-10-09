@@ -811,7 +811,7 @@ def changes_name_parts(orig, new, gloss):
     return broken(n, inserted, kept_new) or broken(o, deleted, kept_old)
 
 
-def accept_repair(orig, new, ref, dur, gloss):
+def accept_repair(orig, new, ref, dur, gloss, prev_text=None):
     """Whether to write ``new`` over ``orig`` on a card lasting ``dur`` seconds.
 
     A dubtitle must carry what the DUB AUDIO says. The reference is a different translation
@@ -849,7 +849,7 @@ def accept_repair(orig, new, ref, dur, gloss):
     (``invents_name``, below) needs to know what the show's names ARE to tell a real
     correction from a fabricated one, so a caller that cannot say what those names are
     must not be allowed to silently skip the check by omitting the argument."""
-    return rejecting_guard(orig, new, ref, dur, gloss) is None
+    return rejecting_guard(orig, new, ref, dur, gloss, prev_text=prev_text) is None
 
 
 def _accept_punct_case_only() -> bool:
@@ -858,12 +858,51 @@ def _accept_punct_case_only() -> bool:
 
 
 _SENTENCE_END = re.compile(r"[.!?]")
+_ELLIPSIS = re.compile(r"\.{2,}|\u2026")
+_CLOSERS = "\"')]}\u201d\u2019"
 
 
-def _lenient_case_change(old, new, sentence_start, forms):
+def _ends_sentence(text):
+    """Whether ``text`` (the end of a card, or the gap between two words) finishes a sentence: it holds a '.', '!' or '?' that is
+    not part of an ellipsis ('...', '\u2026'). Closing quotes and brackets after the mark do not matter."""
+    return bool(_SENTENCE_END.search(_ELLIPSIS.sub("", (text or "").rstrip(_CLOSERS + " \n"))))
+
+
+def _card_starts_sentence(prev_text):
+    """The card's first word starts a sentence only when the previous card finished one (or there is no previous card, ``""``).
+    ``None`` is 'no information': a lower-case start usually CONTINUES the previous card, so there is no card-initial leniency."""
+    if prev_text is None:
+        return False
+    end = prev_text.rstrip(_CLOSERS + " \n")
+    if not end:
+        return True
+    return end[-1] in ".!?" and not end.endswith(("..", "\u2026"))
+
+
+def _gap_signature(gap):
+    return (sorted(len(m) for m in re.findall(r"\.{2,}", gap)), gap.count("\u2026"))
+
+
+def _punct_only_added(old_gap, new_gap):
+    """``new_gap`` (the non-word, non-space characters between two words) is ``old_gap`` plus added '.' and ',' only: the old
+    characters survive in order, every extra is '.' or ',', and no ellipsis appears or grows."""
+    if old_gap == new_gap:
+        return True
+    i = 0
+    for ch in new_gap:
+        if i < len(old_gap) and ch == old_gap[i]:
+            i += 1
+        elif ch not in ".,":
+            return False
+    return i == len(old_gap) and _gap_signature(old_gap) == _gap_signature(new_gap)
+
+
+def _lenient_case_change(old, new, sentence_start, single_names, entry_covered):
     """Whether turning the word ``old`` into ``new`` (equal ignoring case) is a case edit that cannot change meaning: the first
-    letter of a sentence or card, the pronoun i -> I, ok -> OK, or the spelling a glossary entry carries. Anything else (us -> US,
-    march -> March, turkey -> Turkey) can turn a common word into a name or a country, so it counts as a word change."""
+    letter of a sentence, the pronoun i -> I, ok -> OK, a single-word glossary entry that is not an ordinary word (luffy -> Luffy,
+    not law -> Law), or a word that completes a whole multi-word glossary entry in sequence (devil fruit -> Devil Fruit, not a
+    lone line -> Line). Anything else (us -> US, march -> March, turkey -> Turkey) can turn a common word into a name or a
+    country, so it counts as a word change."""
     if old == new:
         return True
     if sentence_start and old[:1].islower() and new == old[:1].upper() + old[1:]:
@@ -872,29 +911,46 @@ def _lenient_case_change(old, new, sentence_start, forms):
         return True
     if old.lower() == "ok" and new == "OK":
         return True
-    return new in forms
+    if entry_covered:
+        return True
+    return new in single_names and not glossary.is_ordinary_word(new)
 
 
-def is_punct_case_only(orig, new, gloss=None) -> bool:
-    """``new`` differs from ``orig`` (exactly) but changes no word: only punctuation and the case changes that cannot change
-    meaning (see _lenient_case_change; ``gloss`` supplies the glossary spellings). The words are compared as a SEQUENCE, so a
-    reorder ('The dog bit the man.' -> 'The man bit the dog.') is a change, unlike unresolved.word_changes, which stays a multiset
-    count for the dismissal rule. Punctuation is never judged for meaning ('Let's eat, Grandma' -> 'Let's eat Grandma' passes)."""
+def is_punct_case_only(orig, new, gloss=None, prev_text=None) -> bool:
+    """``new`` differs from ``orig`` (exactly) but changes no word and only ADDS punctuation: the words are the same SEQUENCE
+    (a reorder is a change), the punctuation between them differs only by added '.' and ',' (nothing removed, replaced or
+    reordered: hyphens, apostrophes outside a word, brackets, quotes, '?', '!', musical notes and ellipses all count; an added
+    ellipsis is not allowed), and each case change is on the lenient list (see _lenient_case_change; ``gloss`` supplies the
+    glossary entries, ``prev_text`` the previous card for the card-initial capital). Anything else is not punctuation-only and
+    meets the ordinary guards. unresolved.word_changes stays a multiset count for the dismissal rule."""
     if not new or new == (orig or ""):
         return False
     fold = lambda t: (t or "").replace("\u2019", "'")  # noqa: E731
-    old_words = [m.group() for m in unresolved._WORD.finditer(fold(orig))]
-    new_text = fold(new)
+    old_text, new_text = fold(orig), fold(new)
+    old_words = list(unresolved._WORD.finditer(old_text))
     new_words = list(unresolved._WORD.finditer(new_text))
-    if len(old_words) != len(new_words) or [w.lower() for w in old_words] != [m.group().lower() for m in new_words]:
+    if len(old_words) != len(new_words) or [m.group().lower() for m in old_words] != [m.group().lower() for m in new_words]:
         return False
-    forms = set()
-    for entry in list((gloss or {}).get("names") or []) + list((gloss or {}).get("phrases") or []):
-        forms.update(unresolved._WORD.findall(fold(str(entry))))
+
+    def gaps(text, words):
+        edges = [0, *[x for m in words for x in (m.start(), m.end())], len(text)]
+        return ["".join(text[edges[k] : edges[k + 1]].split()) for k in range(0, len(edges), 2)]
+
+    if not all(_punct_only_added(o, n) for o, n in zip(gaps(old_text, old_words), gaps(new_text, new_words))):
+        return False
+    entries = [str(e) for e in list((gloss or {}).get("names") or []) + list((gloss or {}).get("phrases") or [])]
+    single_names = {t[0] for e in entries if len(t := unresolved._WORD.findall(fold(e))) == 1}
+    tokens = [m.group() for m in new_words]
+    covered = set()
+    for e in entries:
+        parts = unresolved._WORD.findall(fold(e))
+        for at in range(len(tokens) - len(parts) + 1):
+            if len(parts) > 1 and tokens[at : at + len(parts)] == parts:
+                covered.update(range(at, at + len(parts)))
     prev_end = None
-    for old, m in zip(old_words, new_words):
-        start = prev_end is None or bool(_SENTENCE_END.search(new_text[prev_end : m.start()]))
-        if not _lenient_case_change(old, m.group(), start, forms):
+    for k, (old, m) in enumerate(zip(old_words, new_words)):
+        start = _card_starts_sentence(prev_text) if prev_end is None else _ends_sentence(new_text[prev_end : m.start()])
+        if not _lenient_case_change(old.group(), m.group(), start, single_names, k in covered):
             return False
         prev_end = m.end()
     return True
@@ -920,7 +976,7 @@ def _no_new_layout_fault(new, dur, orig):
     return all(a <= b + s + reflow.EPS for a, b, s in zip(after, before, slack))
 
 
-def rejecting_guard(orig, new, ref, dur, gloss, punct_case_ok=None):
+def rejecting_guard(orig, new, ref, dur, gloss, punct_case_ok=None, prev_text=None):
     """The name of the FIRST guard that refuses ``new`` for ``orig``, or None when accept_repair admits it. accept_repair is
     exactly ``rejecting_guard(...) is None``; the name is what the review queue records (key 'guard') so a human, and later
     measurements, can tell why a proposal was refused:
@@ -930,7 +986,8 @@ def rejecting_guard(orig, new, ref, dur, gloss, punct_case_ok=None):
     ``punct_case_ok`` (default: REPAIR_ACCEPT_PUNCT_CASE_ONLY=1) gives a proposal that changes only case and punctuation two
     allowances: it is not "unchanged" when the case differs (only for case changes that cannot change meaning: a sentence start,
     i -> I, ok -> OK, a glossary spelling), and fits_card is replaced by "no NEW kind of layout fault and at most +2 characters".
-    NOTE the gate never judges punctuation for MEANING: 'Let's eat, Grandma' -> 'Let's eat Grandma', a moved comma or '?' -> '.'
+    The relaxed path is for punctuation ADDITIONS only ('.' and ',' added, see is_punct_case_only). NOTE the ordinary gate never
+    judges punctuation for MEANING: 'Let's eat, Grandma' -> 'Let's eat Grandma', a moved comma or '?' -> '.'
     all pass, with the flag off as well as on; that is why the flag stays off unless a human audits a sample. Measured
     on a real queue, 7 of 100 rejected proposals changed no word, and fits_card refuses an edit that makes an already over-cps
     card worse in ANY dimension, so one added period on a dense card was refused. Every other guard still applies."""
@@ -938,7 +995,7 @@ def rejecting_guard(orig, new, ref, dur, gloss, punct_case_ok=None):
         return "empty"
     if punct_case_ok is None:
         punct_case_ok = _accept_punct_case_only()
-    special = punct_case_ok and is_punct_case_only(orig, new, gloss)
+    special = punct_case_ok and is_punct_case_only(orig, new, gloss, prev_text)
     if new.lower() == (orig or "").lower() and not special:
         return "unchanged"  # nothing changed
     if invents_name(orig, new, gloss):
@@ -1550,12 +1607,12 @@ def _process_episode(conf_path):
         # Every applying verdict is admitted here, so `not admitted` below can only be
         # reached with no ruling at all -- which is why that branch needs no ruling guard of
         # its own to avoid re-queueing a settled line.
-        admitted = ruling in APPLYING or accept_repair(c["text"], new, ref, dur, gloss)
+        admitted = ruling in APPLYING or accept_repair(c["text"], new, ref, dur, gloss, prev_text)
         if (
             admitted
             and ruling not in APPLYING
             and _accept_punct_case_only()
-            and is_punct_case_only(c["text"], new, gloss)
+            and is_punct_case_only(c["text"], new, gloss, prev_text)
             and rejecting_guard(c["text"], new, ref, dur, gloss, punct_case_ok=False) is not None
         ):
             accepted_punct_case_only += 1  # admitted only because of REPAIR_ACCEPT_PUNCT_CASE_ONLY
@@ -1581,7 +1638,7 @@ def _process_episode(conf_path):
                     proposed_text=new,
                     reference=ref[:120],
                     avg_logprob=c.get("avg_logprob"),
-                    guard=rejecting_guard(c["text"], new, ref, dur, gloss),
+                    guard=rejecting_guard(c["text"], new, ref, dur, gloss, prev_text=prev_text),
                     **dismissed_fields,
                 )
             else:
@@ -1616,7 +1673,7 @@ def _process_episode(conf_path):
                     # the first pass with no validation at all -- same gate, same card. When
                     # it fails, the already-accepted first-pass repair stands rather than the
                     # card being left garbled.
-                    if new2 and accept_repair(c["text"], new2, ref, dur, gloss):
+                    if new2 and accept_repair(c["text"], new2, ref, dur, gloss, prev_text):
                         new = new2
                     elif new2 and new2.lower() != new.lower():
                         rejected_secondary += 1

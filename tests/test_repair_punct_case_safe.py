@@ -26,7 +26,7 @@ def test_a_reorder_is_not_punctuation_only():
 
 
 def test_punctuation_alone_still_qualifies():
-    assert repair.is_punct_case_only("we have to go", "We have to go.", GL)
+    assert repair.is_punct_case_only("we have to go", "We have to go.", GL, prev_text="")
     assert repair.is_punct_case_only("Let's eat Grandma", "Let's eat, Grandma", GL)  # documented limit: meaning is not judged
 
 
@@ -37,7 +37,7 @@ def test_an_already_bad_card_may_not_get_much_worse():
     """The reviewer's probe: a 70+ character card over cps becomes ~12 characters longer with '... !!! ...'."""
     probe_orig = "here and take everything we have been given by now so it goes on and on and on"
     assert len(probe_orig) > 70
-    probe_new = "here!!! and take everything... we have been given by now... so it goes on and on and on!!!"
+    probe_new = "here, and take everything, we have been given by now, so it goes on, and on, and on."
     assert repair.is_punct_case_only(probe_orig, probe_new, GL)
     assert repair.rejecting_guard(probe_orig, probe_new, "", 2.0, GL) == "fits_card"
 
@@ -45,8 +45,9 @@ def test_an_already_bad_card_may_not_get_much_worse():
 def test_up_to_two_added_characters_on_a_card_that_was_already_over_cps_pass():
     dense = "Let's see what the cards say"
     assert repair.rejecting_guard(dense, dense + ".", "", 1.5, GL) is None  # +1
-    assert repair.rejecting_guard(dense, dense + "!?", "", 1.5, GL) is None  # +2
-    assert repair.rejecting_guard(dense, dense + "!?.", "", 1.5, GL) == "fits_card"  # +3
+    assert repair.rejecting_guard(dense, dense.replace("see", "see,") + ".", "", 1.5, GL) is None  # +2
+    plus3 = dense.replace("see", "see,").replace("cards", "cards,") + "."
+    assert repair.rejecting_guard(dense, plus3, "", 1.5, GL) == "fits_card"  # +3
 
 
 # ---- 3. which case changes are lenient ----------------------------- ----
@@ -67,8 +68,8 @@ def test_up_to_two_added_characters_on_a_card_that_was_already_over_cps_pass():
     ],
 )
 def test_lenient_case_changes(orig, new):
-    assert repair.is_punct_case_only(orig, new, GL)
-    assert repair.rejecting_guard(orig, new, "", 6.0, GL) is None
+    assert repair.is_punct_case_only(orig, new, GL, prev_text="")
+    assert repair.rejecting_guard(orig, new, "", 6.0, GL, prev_text="") is None
 
 
 @pytest.mark.parametrize(
@@ -85,13 +86,13 @@ def test_lenient_case_changes(orig, new):
     ],
 )
 def test_other_case_changes_get_no_leniency(orig, new):
-    assert not repair.is_punct_case_only(orig, new, GL)
-    assert repair.rejecting_guard(orig, new, "", 6.0, GL) == "unchanged"
+    assert not repair.is_punct_case_only(orig, new, GL, prev_text="")
+    assert repair.rejecting_guard(orig, new, "", 6.0, GL, prev_text="") == "unchanged"
 
 
 def test_a_case_change_with_other_punctuation_is_judged_per_token():
-    assert not repair.is_punct_case_only("we are in the us. ok", "We are in the US. ok", GL)
-    assert repair.is_punct_case_only("we are in the us. ok", "We are in the us, ok.", GL)
+    assert not repair.is_punct_case_only("we are in the us. ok", "We are in the US. ok", GL, prev_text="")
+    assert repair.is_punct_case_only("we are in the us ok", "We are in the us, ok.", GL, prev_text="")
 
 
 # ---- 4. the threshold is not silently off -------------------------- ----

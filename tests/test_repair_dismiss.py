@@ -255,7 +255,7 @@ def test_with_the_flag_a_proposal_that_creates_a_new_fault_is_still_rejected(mon
 
 def test_with_the_flag_a_case_only_proposal_is_accepted(monkeypatch):
     monkeypatch.setenv("REPAIR_ACCEPT_PUNCT_CASE_ONLY", "1")
-    assert repair.rejecting_guard("kaido's business", "Kaido's business", "", 6.0, GL) is None
+    assert repair.rejecting_guard("kaido's business", "Kaido's business", "", 6.0, GL, prev_text="") is None
     assert repair.rejecting_guard("same line", "same line", "", 6.0, GL) == "unchanged"  # identical is still nothing
 
 
