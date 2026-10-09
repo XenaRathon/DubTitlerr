@@ -66,3 +66,24 @@ def test_a_settled_pair_is_not_reopened(tmp_path, monkeypatch):
     repair.process(stem + repair.CONF_SUFFIX)
     (entry,) = _applied(stem)
     assert entry["resolved"] is True
+
+
+def test_a_record_written_mid_run_does_not_shift_which_entry_is_retired(tmp_path, monkeypatch):
+    """The reviewer's drift probe: other records (rejected_guard, llm_empty, verdict_*) are appended to the file during a run but
+    not to the run-start snapshot, so the snapshot's indices fell behind the file and the WRONG entry was marked superseded: line
+    P's unreviewed proposal was retired when a duplicate-text card A got a second proposal."""
+    import json
+
+    stem = str(tmp_path / "ep")
+    with open(stem + unresolved.CONF_SUFFIX, "w") as f:
+        json.dump([{"text": "P line"}, {"text": "A line"}, {"text": "A line"}], f)
+    snapshot = unresolved.items(stem)  # taken at the start of the run
+    unresolved.record(stem, "repair", "rejected_guard", original_text="X line", proposed_text="x")  # card 0, not in the snapshot
+    repair.queue_proposal(stem, snapshot, "P line", "P fixed")
+    repair.queue_proposal(stem, snapshot, "A line", "A one")
+    repair.queue_proposal(stem, snapshot, "A line", "A two")
+    state = {e["proposed_text"]: e.get("resolved") for e in unresolved.items(stem) if e["stage"] == "repair_applied"}
+    assert state == {"P fixed": False, "A one": True, "A two": False}
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["S"])
+    monkeypatch.setattr(mux, "show_for", lambda _: "S")
+    assert mux.held_for_review(stem) is True

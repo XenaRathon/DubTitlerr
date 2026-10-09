@@ -1367,7 +1367,9 @@ SUPERSEDED_NOTE = "superseded by a newer proposal"
 
 def queue_proposal(stem, queued, original, proposed, **fields):
     """Make (original -> proposed) the ONE open review question for this line. ``queued`` is this run's snapshot of the episode's
-    entries and is kept in step with the file, so a second card with the same text sees the first one's effect.
+    entries at the start of the run. It is NOT trusted: other records (rejected_guard, llm_empty, verdict_*) are appended to the
+    file during a run, so the snapshot's indices drift behind the file and ``unresolved.resolve(stem, i)`` would retire the wrong
+    entry. The file is re-read here (one read per accepted card), and the argument is only refreshed in place for the caller.
 
     * the pair is already PENDING, or a human resolved it (not merely superseded it): nothing to ask, nothing new;
     * any other open proposal for the same original is retired (marked resolved with a note, never deleted: the queue is the
@@ -1376,6 +1378,7 @@ def queue_proposal(stem, queued, original, proposed, **fields):
       proposal that is in the SRT is the question the reviewer sees.
     Returns "settled", "open", "reopened" or "queued"."""
     pair = (decisions.key(original), decisions.key(proposed))
+    queued[:] = unresolved.items(stem)  # the file is the truth: indices must be the ones resolve()/reopen() will use
 
     def pair_of(e):
         return (decisions.key(e.get("original_text", "")), decisions.key(e.get("proposed_text", "")))
