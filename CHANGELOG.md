@@ -8,6 +8,18 @@ that shipped since.
 
 ## [Unreleased]
 
+- **`REPAIR_ACCEPT_PUNCT_CASE_ONLY` is safer, still off by default.** "Only case and punctuation changed" now compares the words as a
+  sequence (a reorder is a change); the relaxed layout check lets an already-bad card grow by at most 2 characters (and the matching
+  cps), so a 70-character over-cps card cannot become 82; and only case changes that cannot change meaning count: a sentence or card
+  start, `i` -> `I`, `ok` -> `OK`, and a spelling the glossary carries. `us` -> `US`, `march` -> `March` and `turkey` -> `Turkey` count
+  as word changes. An unusable `REPAIR_AUTO_DISMISS_WORDS` (`abc`, `4.0`, `-1`) is logged once instead of silently turning the rule
+  off, and only the three rejection reasons can be dismissed from the queue.
+
+  **Limit of the repair gate, flag on or off:** it does not guard punctuation that changes MEANING. `Let's eat, Grandma` ->
+  `Let's eat Grandma`, a moved comma, or `?` -> `.` all pass. Keep `REPAIR_ACCEPT_PUNCT_CASE_ONLY` off unless a human audits a sample
+  first: take the episodes' `accepted_punct_case_only` repairs (the summary counts them), read about 50 old/new pairs side by side, and
+  turn the flag on only if none of them changes who is doing what to whom.
+
 - **Fewer glossary flags, and a repair transport retry (both opt-in).** `VERIFY_QUEUE_BLOCKED_EXPANSIONS=0` (default `1`) leaves an
   expansion that a write guard blocked (common-word, not-in-arc-pages, or the whole-word guard: `Usop` -> `Usopp`, `Burn` ->
   `Coburn`) out of `flagged`: it is still verified and counted (`blocked_expansions`, `blocked_expansions_by_reason`). A real

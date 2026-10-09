@@ -167,10 +167,20 @@ def word_changes(original: str, proposed: str) -> int:
     return sum((b - a).values()) + sum((a - b).values())
 
 
+_WARNED_THRESHOLDS: set = set()
+
+
 def auto_dismiss_threshold():
-    """REPAIR_AUTO_DISMISS_WORDS as an int, or None (off, the default). Anything that is not a whole number >= 0 is off."""
+    """REPAIR_AUTO_DISMISS_WORDS as an int, or None (off, the default). Anything that is not a whole number >= 0 is off, and a
+    value that is set but unusable ('abc', '4.0', '-1') is logged once so it is not mistaken for 'on'. 0 means any word change
+    dismisses."""
     raw = (os.environ.get("REPAIR_AUTO_DISMISS_WORDS") or "").strip()
-    return int(raw) if raw.isdecimal() else None
+    if raw.isdecimal():
+        return int(raw)
+    if raw and raw not in _WARNED_THRESHOLDS:
+        _WARNED_THRESHOLDS.add(raw)
+        print(f"  REPAIR_AUTO_DISMISS_WORDS={raw!r} is not a whole number >= 0: auto-dismiss is OFF", flush=True)
+    return None
 
 
 def dismissal(original: str, proposed: str) -> dict:
@@ -183,6 +193,15 @@ def dismissal(original: str, proposed: str) -> dict:
     return {"dismissed": "large_change", "changes": n} if n > limit else {}
 
 
+DISMISSIBLE = ("rejected_guard", "rejected_name_invented", "rejected_name_part")
+
+
+def _is_dismissed(entry: dict) -> bool:
+    """Only a rejected proposal can be dismissed as a large change: a decision the human owes (decision_unfittable, a stale
+    verdict) stays visible whatever fields it carries."""
+    return bool(entry.get("dismissed")) and entry.get("reason") in DISMISSIBLE
+
+
 def pending(stem: str, primary_only: bool = False) -> list:
     """Unresolved entries; with ``primary_only``, only those worth a human's attention (and not dismissed as a large change).
 
@@ -190,7 +209,7 @@ def pending(stem: str, primary_only: bool = False) -> list:
     disagree about what "the queue" means -- the same reason REASONS is a module constant."""
     out = [e for e in items(stem) if not e.get("resolved")]
     if primary_only:
-        out = [e for e in out if (e.get("stage"), e.get("reason")) in PRIMARY and not e.get("dismissed")]
+        out = [e for e in out if (e.get("stage"), e.get("reason")) in PRIMARY and not _is_dismissed(e)]
     return out
 
 

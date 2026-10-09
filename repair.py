@@ -854,17 +854,67 @@ def _accept_punct_case_only() -> bool:
     return os.environ.get("REPAIR_ACCEPT_PUNCT_CASE_ONLY") == "1"
 
 
-def is_punct_case_only(orig, new) -> bool:
-    """``new`` differs from ``orig`` (exactly) but changes no word: only case and/or punctuation."""
-    return bool(new) and new != (orig or "") and unresolved.word_changes(orig, new) == 0
+_SENTENCE_END = re.compile(r"[.!?]")
+
+
+def _lenient_case_change(old, new, sentence_start, forms):
+    """Whether turning the word ``old`` into ``new`` (equal ignoring case) is a case edit that cannot change meaning: the first
+    letter of a sentence or card, the pronoun i -> I, ok -> OK, or the spelling a glossary entry carries. Anything else (us -> US,
+    march -> March, turkey -> Turkey) can turn a common word into a name or a country, so it counts as a word change."""
+    if old == new:
+        return True
+    if sentence_start and old[:1].islower() and new == old[:1].upper() + old[1:]:
+        return True
+    if old == "i" and new == "I":
+        return True
+    if old.lower() == "ok" and new == "OK":
+        return True
+    return new in forms
+
+
+def is_punct_case_only(orig, new, gloss=None) -> bool:
+    """``new`` differs from ``orig`` (exactly) but changes no word: only punctuation and the case changes that cannot change
+    meaning (see _lenient_case_change; ``gloss`` supplies the glossary spellings). The words are compared as a SEQUENCE, so a
+    reorder ('The dog bit the man.' -> 'The man bit the dog.') is a change, unlike unresolved.word_changes, which stays a multiset
+    count for the dismissal rule. Punctuation is never judged for meaning ('Let's eat, Grandma' -> 'Let's eat Grandma' passes)."""
+    if not new or new == (orig or ""):
+        return False
+    fold = lambda t: (t or "").replace("\u2019", "'")  # noqa: E731
+    old_words = [m.group() for m in unresolved._WORD.finditer(fold(orig))]
+    new_text = fold(new)
+    new_words = list(unresolved._WORD.finditer(new_text))
+    if len(old_words) != len(new_words) or [w.lower() for w in old_words] != [m.group().lower() for m in new_words]:
+        return False
+    forms = set()
+    for entry in list((gloss or {}).get("names") or []) + list((gloss or {}).get("phrases") or []):
+        forms.update(unresolved._WORD.findall(fold(str(entry))))
+    prev_end = None
+    for old, m in zip(old_words, new_words):
+        start = prev_end is None or bool(_SENTENCE_END.search(new_text[prev_end : m.start()]))
+        if not _lenient_case_change(old, m.group(), start, forms):
+            return False
+        prev_end = m.end()
+    return True
+
+
+LAYOUT_SLACK_CHARS = 2  # what an edit that only adds punctuation may add to a card that already breaks the profile
 
 
 def _no_new_layout_fault(new, dur, orig):
-    """``new`` breaks no display-profile rule that ``orig`` did not already break (a rule it already broke may stay broken, even a
-    character worse): the check for an edit that adds or removes only case and punctuation."""
-    before = set(reflow.layout_faults(reflow.wrap_balance((orig or "").replace("\n", " ")), dur))
-    after = set(reflow.layout_faults(reflow.wrap_balance((new or "").replace("\n", " ")), dur))
-    return after <= before
+    """``new`` can be shown wherever it breaks no profile rule, or, on a card ``orig`` already broke, breaks no kind of rule that
+    ``orig`` did not and grows no dimension (lines, longest line, characters, cps) by more than LAYOUT_SLACK_CHARS characters (and
+    the matching cps). fits_card's per-dimension comparison with a small allowance for added punctuation, so an already-bad card
+    cannot get much worse."""
+    wrapped = reflow.wrap_balance((new or "").replace("\n", " "))
+    after_faults = set(reflow.layout_faults(wrapped, dur))
+    if not after_faults:
+        return True
+    original = reflow.wrap_balance((orig or "").replace("\n", " "))
+    if not after_faults <= set(reflow.layout_faults(original, dur)):
+        return False
+    before, after = reflow.layout_metrics(original, dur), reflow.layout_metrics(wrapped, dur)
+    slack = (0, LAYOUT_SLACK_CHARS, LAYOUT_SLACK_CHARS, LAYOUT_SLACK_CHARS / max(dur, reflow.EPS))
+    return all(a <= b + s + reflow.EPS for a, b, s in zip(after, before, slack))
 
 
 def rejecting_guard(orig, new, ref, dur, gloss, punct_case_ok=None):
@@ -875,14 +925,17 @@ def rejecting_guard(orig, new, ref, dur, gloss, punct_case_ok=None):
         empty, unchanged, invents_name, name_part, vouched_name, length_ratio, fits_card, ref_borrow
 
     ``punct_case_ok`` (default: REPAIR_ACCEPT_PUNCT_CASE_ONLY=1) gives a proposal that changes only case and punctuation two
-    allowances: it is not "unchanged" when the case differs, and fits_card is replaced by "no NEW kind of layout fault". Measured
+    allowances: it is not "unchanged" when the case differs (only for case changes that cannot change meaning: a sentence start,
+    i -> I, ok -> OK, a glossary spelling), and fits_card is replaced by "no NEW kind of layout fault and at most +2 characters".
+    NOTE the gate never judges punctuation for MEANING: 'Let's eat, Grandma' -> 'Let's eat Grandma', a moved comma or '?' -> '.'
+    all pass, with the flag off as well as on; that is why the flag stays off unless a human audits a sample. Measured
     on a real queue, 7 of 100 rejected proposals changed no word, and fits_card refuses an edit that makes an already over-cps
     card worse in ANY dimension, so one added period on a dense card was refused. Every other guard still applies."""
     if not new:
         return "empty"
     if punct_case_ok is None:
         punct_case_ok = _accept_punct_case_only()
-    special = punct_case_ok and is_punct_case_only(orig, new)
+    special = punct_case_ok and is_punct_case_only(orig, new, gloss)
     if new.lower() == (orig or "").lower() and not special:
         return "unchanged"  # nothing changed
     if invents_name(orig, new, gloss):
@@ -1475,7 +1528,7 @@ def _process_episode(conf_path):
             admitted
             and ruling not in APPLYING
             and _accept_punct_case_only()
-            and is_punct_case_only(c["text"], new)
+            and is_punct_case_only(c["text"], new, gloss)
             and rejecting_guard(c["text"], new, ref, dur, gloss, punct_case_ok=False) is not None
         ):
             accepted_punct_case_only += 1  # admitted only because of REPAIR_ACCEPT_PUNCT_CASE_ONLY
