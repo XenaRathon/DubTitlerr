@@ -419,6 +419,20 @@ def resolve(stem: str, index: int, accept: bool, note: str = "") -> bool:
     return _rewrite(stem, doc)
 
 
+def reopen(stem: str, index: int) -> bool:
+    """Make a resolved entry pending again (the model proposed the same pair once more after it was superseded). The evidence
+    stays; the old resolution is dropped and counted in `reopened`, so the audit trail shows it happened."""
+    doc = items(stem)
+    if not (0 <= index < len(doc)):
+        return False
+    e = doc[index]
+    e["resolved"] = False
+    e.pop("accepted", None)
+    e.pop("note", None)
+    e["reopened"] = int(e.get("reopened") or 0) + 1
+    return _rewrite(stem, doc)
+
+
 def resolve_many(stem: str, updates: list) -> bool:
     """Mark several entries reviewed in ONE rewrite. `updates` is [(index, accept, note)].
 

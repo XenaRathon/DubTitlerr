@@ -1363,6 +1363,43 @@ def process(conf_path):
         _episode_deadline_at = None
 
 
+SUPERSEDED_NOTE = "superseded by a newer proposal"
+
+
+def queue_proposal(stem, queued, original, proposed, **fields):
+    """Make (original -> proposed) the ONE open review question for this line. ``queued`` is this run's snapshot of the episode's
+    entries and is kept in step with the file, so a second card with the same text sees the first one's effect.
+
+    * the pair is already PENDING, or a human resolved it (not merely superseded it): nothing to ask, nothing new;
+    * any other open proposal for the same original is retired (marked resolved with a note, never deleted: the queue is the
+      audit trail), because a card ships one answer and a verdict on the stale one must not release a gated episode;
+    * the pair was superseded earlier (A -> B -> A): that entry is REOPENED rather than duplicated or left resolved, so the
+      proposal that is in the SRT is the question the reviewer sees.
+    Returns "settled", "open", "reopened" or "queued"."""
+    pair = (decisions.key(original), decisions.key(proposed))
+
+    def pair_of(e):
+        return (decisions.key(e.get("original_text", "")), decisions.key(e.get("proposed_text", "")))
+
+    mine = [i for i, e in enumerate(queued) if e.get("stage") == "repair_applied" and pair_of(e) == pair]
+    superseded = [i for i in mine if queued[i].get("resolved") and str(queued[i].get("note", "")).startswith(SUPERSEDED_NOTE)]
+    if any(queued[i].get("resolved") and i not in superseded for i in mine):
+        return "settled"
+    for i, e in enumerate(queued):
+        if e.get("stage") == "repair_applied" and not e.get("resolved") and pair_of(e)[0] == pair[0] and pair_of(e)[1] != pair[1]:
+            unresolved.resolve(stem, i, accept=False, note=f"{SUPERSEDED_NOTE}: {proposed}")
+            e["resolved"], e["note"] = True, f"{SUPERSEDED_NOTE}: {proposed}"
+    if any(not queued[i].get("resolved") for i in mine):
+        return "open"
+    if superseded:
+        unresolved.reopen(stem, superseded[-1])
+        queued[superseded[-1]]["resolved"] = False
+        return "reopened"
+    queued.append({"stage": "repair_applied", "original_text": original, "proposed_text": proposed, "resolved": False})
+    unresolved.record(stem, "repair_applied", "accepted", original_text=original, proposed_text=proposed, **fields)
+    return "queued"
+
+
 def _process_episode(conf_path):
     stem = conf_path[: -len(CONF_SUFFIX)]
     srt = stem + SRT_SUFFIX
@@ -1415,23 +1452,8 @@ def _process_episode(conf_path):
     # the moment a human resolved one through the --review CLI, which is the same deadlock
     # inverted.
     _queued = unresolved.items(stem)
-    queued_pairs = {
-        (decisions.key(e.get("original_text", "")), decisions.key(e.get("proposed_text", "")))
-        for e in _queued
-        if e.get("stage") == "repair_applied"
-    }
-    # [F-2] Pending entries by ORIGINAL line, so a changed proposal can supersede the one it
-    # replaces instead of queueing beside it. The pair is right as the DECISION key -- keying
-    # a verdict on `orig` alone would let one rejection suppress the proposal that fixes the
-    # line -- but the reviewer's PENDING set is a different question: two live proposals for
-    # one card are two questions about a card that will only ever ship one answer, and a
-    # verdict on either leaves a gated episode held on the other.
-    pending_by_orig: dict = {}
-    for i, e in enumerate(_queued):
-        if e.get("stage") == "repair_applied" and not e.get("resolved"):
-            pending_by_orig.setdefault(decisions.key(e.get("original_text", "")), []).append(
-                (i, decisions.key(e.get("proposed_text", "")))
-            )
+    # [F-2, F8] The queue's history is consulted by STATE, not by presence (see queue_proposal): a pair settles a line only when a
+    # human resolved it or it is still pending. A pair the queue merely superseded is reopened if the model proposes it again.
     targets = [(i, c) for i, c in enumerate(conf) if is_target(c, gloss)]
     if not targets:
         return "clean"  # nothing to repair (e.g. S15E01)
@@ -1751,26 +1773,12 @@ def _process_episode(conf_path):
             # amplification the spec records under Edge cases, and the pair being the
             # store's key is what lets it be suppressed here rather than deduplicated in
             # unresolved.record(), whose O(1) append is deliberate.
-            pair = (decisions.key(c["text"]), decisions.key(new))
-            if not ruling and pair not in queued_pairs:
-                # Retire any live entry for this same line whose proposal has changed. Marked
-                # RESOLVED, never deleted: the queue is the audit trail, and what the model
-                # proposed before is the evidence for whether the gate is drifting.
-                # No "is it different?" check: an IDENTICAL pair never reaches here, because
-                # `pair not in queued_pairs` above already skipped it, and queued_pairs is
-                # built from every entry including the pending ones. Any live entry for this
-                # original therefore carries a different proposal by construction.
-                for idx_old, _ in pending_by_orig.get(pair[0], []):
-                    unresolved.resolve(stem, idx_old, accept=False, note=f"superseded by a newer proposal: {new}")
-                pending_by_orig[pair[0]] = [(len(_queued), pair[1])]
-                _queued.append({})  # keep index accounting honest for a second supersession
-                queued_pairs.add(pair)
-                unresolved.record(
+            if not ruling:
+                queue_proposal(
                     stem,
-                    "repair_applied",
-                    "accepted",
-                    original_text=c["text"],
-                    proposed_text=new,
+                    _queued,
+                    c["text"],
+                    new,
                     reference=ref[:120] or None,
                     avg_logprob=c.get("avg_logprob"),
                 )
