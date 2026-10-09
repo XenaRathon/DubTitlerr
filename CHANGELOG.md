@@ -8,6 +8,59 @@ that shipped since.
 
 ## [Unreleased]
 
+### Optional flags (the one list; every default read from the code)
+
+Nothing here is on by default, and with all of them unset behaviour is unchanged. Variables are read per call unless noted.
+
+| Name                              | Default                                                                                  | What it does                                                                                                               | Recommended                         | Caution                                                                                                                                                                                         |
+| --------------------------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VERIFY_BACKEND`                  | unset: follows `REPAIR_BACKEND`                                                          | Backend of the glossary stages: `llamacpp`, `ollama`, `openai` or `decision`                                               | `decision` for a rebuild            | Unset, it inherits only `llamacpp`/`ollama` (and `ollama` when `REPAIR_BACKEND` is unset); with `REPAIR_BACKEND=openai` (or any other value) the stage is REFUSED until `VERIFY_BACKEND` is set |
+| `VERIFY_DECISION_MODEL`           | `inception/mercury-decide:free`                                                          | Decision model for verify and acquire                                                                                      | default                             | Span models are refused                                                                                                                                                                         |
+| `VERIFY_DECISION_URL`             | the provider's endpoint                                                                  | Override the decision endpoint                                                                                             | unset                               | https on the provider's host; loopback is also accepted                                                                                                                                         |
+| `VERIFY_DECISION_KEY_ENV`         | `OPENROUTER_JEV_API_KEY` (OpenRouter models), `COMMANDCODE_API_KEY` (CommandCode models) | NAME of the env var that holds the key                                                                                     | default names                       | A name, never the key itself                                                                                                                                                                    |
+| `VERIFY_DECISION_TAU`             | `0.5` (0 to 1)                                                                           | Confidence at or above which a pick is `high` and may be written                                                           | default                             | Lower writes more                                                                                                                                                                               |
+| `ACQUIRE_DECISION_TAU`            | `0.8` (0.5 to 1)                                                                         | Same, for acquire's same-entity question                                                                                   | default                             |                                                                                                                                                                                                 |
+| `VERIFY_DECISION_FALLBACK`        | `none`                                                                                   | `none`: a failed call leaves the term pending; `local`: the local model decides                                            | `none`                              | `local` sends terms to the local model after a provider outage                                                                                                                                  |
+| `VERIFY_DECISION_LOCAL_BACKEND`   | `REPAIR_BACKEND` if `llamacpp`/`ollama`, else `ollama`                                   | Local backend for the fallback                                                                                             |                                     | Only `llamacpp` or `ollama`                                                                                                                                                                     |
+| `VERIFY_DECISION_BREAKER`         | `5` (0 to 1000)                                                                          | Consecutive failed terms after which the provider is not called again this run (0 = off)                                   | default                             |                                                                                                                                                                                                 |
+| `VERIFY_DECISION_WORKERS`         | `1` (1 to 16)                                                                            | Concurrent adjudications with the decision backend                                                                         | default                             | The provider's rate limit applies                                                                                                                                                               |
+| `VERIFY_DECISION_RETRIES`         | `0` (0 to 5)                                                                             | Retries after a 429 or 5xx within one call                                                                                 | 0                                   | The next sweep retries anyway                                                                                                                                                                   |
+| `VERIFY_OPENAI_URL`               | unset                                                                                    | Chat-completions endpoint for `VERIFY_BACKEND=openai`                                                                      |                                     | Required with that backend; checked at start                                                                                                                                                    |
+| `VERIFY_OPENAI_KEY_ENV`           | unset (no default name)                                                                  | NAME of the env var that holds its key                                                                                     |                                     | Required with that backend; also needs `VERIFY_MODEL`                                                                                                                                           |
+| `VERIFY_OPENAI_EXTRA_BODY`        | unset                                                                                    | JSON object merged into the request body                                                                                   |                                     | Must be a JSON object                                                                                                                                                                           |
+| `WIKI_HOST_ALLOW`                 | unset                                                                                    | Comma-separated extra hosts `wiki_scope` may fetch (built in: `fandom.com`, `bulbapedia.bulbagarden.net`)                  |                                     | A wider list widens what a glossary can make the container fetch                                                                                                                                |
+| `WIKI_ALLOW_HTTP`                 | unset                                                                                    | `1` lets `glossary_verify` fetch `http://` wikis                                                                           | tests only                          | `wiki_scope` is always https and ignores it (stricter, harmless)                                                                                                                                |
+| `GLOSSARY_ARC_TAGS`               | `0` (read by `gen_loop.sh`)                                                              | Run `glossary_verify --tag-arcs` for each show                                                                             | per show                            | Fetches wiki pages; cached for `WIKI_CACHE_TTL` (30 days by default)                                                                                                                            |
+| `ARC_TAGS_TIMEOUT`                | `600` s (`gen_loop.sh`)                                                                  | Time limit of one `--tag-arcs` run                                                                                         | default                             |                                                                                                                                                                                                 |
+| `ARC_MIN_TITLES`                  | `10`                                                                                     | An arc with fewer wiki titles counts as missing                                                                            | default                             | Takes effect at the next `--tag-arcs`                                                                                                                                                           |
+| `VERIFY_ARC_GATE`                 | off                                                                                      | Flag a would-be write whose canonical is on no arc page (`not-in-arc-pages`)                                               | only when the arc evidence is whole | A logged no-op until every stored arc has titles                                                                                                                                                |
+| `VERIFY_COMMON_WORD_ARC_RESCUE`   | off                                                                                      | A common-word block is lifted when the canonical is on an arc page                                                         | off                                 | Needs `VERIFY_ARC_GATE=1`; measured to let back 58 of 99 wrong writes                                                                                                                           |
+| `VERIFY_WRITE_WHOLE_WORD`         | off                                                                                      | An expansion must contain the term as a whole word to be auto-written                                                      | `1`                                 | Other canonicals are flagged for review                                                                                                                                                         |
+| `VERIFY_SKIP_COMMON_WORDS`        | off                                                                                      | An ordinary one-word term is flagged `common-word` instead of written                                                      | `1`                                 | Needs the `wamerican` word list; without it the guard weakens and the report says so                                                                                                            |
+| `VERIFY_QUEUE_NO_MATCH`           | `1`                                                                                      | `0`: a term with no candidate is verified and counted (`no_match`) but not queued                                          | `0`                                 |                                                                                                                                                                                                 |
+| `VERIFY_QUEUE_BLOCKED_EXPANSIONS` | `1`                                                                                      | `0`: a blocked expansion with MORE tokens than the term is verified and counted, not queued                                | `0`                                 | Same-token-count fixes and respellings are always queued                                                                                                                                        |
+| `VERIFY_REFUSE_EXIT`              | off                                                                                      | `1`: a refused run (`--tag-arcs`, verify, acquire) exits 2 instead of 0                                                    |                                     | `gen_loop.sh` treats any non-zero code except 124 as `verify failed (continuing)`, so in the loop it is informational                                                                           |
+| `REPAIR_KEEP_NAME_PARTS`          | `0`                                                                                      | A name said alone stays alone and a full name stays full                                                                   | per show                            |                                                                                                                                                                                                 |
+| `REPAIR_AUTO_DISMISS_WORDS`       | unset                                                                                    | A rejected proposal with more than N word changes is recorded but kept out of the primary review queue                     | `6`                                 | Below 4 it hides acceptable fixes; an unusable value is logged once and means off                                                                                                               |
+| `REPAIR_ACCEPT_PUNCT_CASE_ONLY`   | off                                                                                      | Punctuation ADDITIONS (`.` `,`) and meaning-safe case changes get a relaxed layout check                                   | off                                 | Added commas can change meaning; audit about 50 pairs first                                                                                                                                     |
+| `REPAIR_GUARD_TERMINAL_PUNCT`     | off                                                                                      | Refuse a repair that adds or removes a terminal `?`, swaps `!` and `?`, or converts a trailing ellipsis to or from `.`/`!` | off until audited                   | Refused 21 of 320 accepted repairs on the 451 real Wano pairs                                                                                                                                   |
+| `REPAIR_TRANSPORT_RETRIES`        | `0` (0 to 5)                                                                             | Retry the openai repair backend after a failure before the request was sent                                                | `2`                                 | Never retries a read timeout; draws on the `REPAIR_OPENAI_RETRIES` allowance                                                                                                                    |
+| `REPAIR_OPENAI_RETRIES`           | `2` (0 to 5)                                                                             | Retries after HTTP 429 or 5xx (and transport retries) per line                                                             | default                             | `0` also disables transport retries                                                                                                                                                             |
+| `GLOSSARY_LOCK_WAIT`              | `5` s                                                                                    | How long an unattended stage waits for a busy glossary before skipping it (`glossary busy: <stage> skipped`, exit 0)       | default                             |                                                                                                                                                                                                 |
+| `GLOSSARY_LOCK_WAIT_INTERACTIVE`  | `600` s                                                                                  | How long a human's `--review`, `--revert` or `--prune-no-match` waits for the final write                                  | default                             | `--review` answers are saved to `<glossary>.json.review-pending` on timeout                                                                                                                     |
+
+Combinations to avoid:
+
+- `VERIFY_ARC_GATE=1` with `VERIFY_QUEUE_BLOCKED_EXPANSIONS=0` hides names that miss an arc page from every human: they are neither
+  written nor queued.
+- `REPAIR_AUTO_DISMISS_WORDS` below 4 hides acceptable fixes from the primary queue (they stay in the sidecar and under `--all`).
+- `VERIFY_QUEUE_NO_MATCH=0` together with `VERIFY_QUEUE_BLOCKED_EXPANSIONS=0` means the glossary queue only ever shows real
+  decisions: a candidate to accept or reject, or a respelling. That is the point, but nothing else is ever surfaced.
+
+**Deploy note.** `compose.yaml` passes an explicit environment allowlist, so none of the variables above reaches the container
+until they are added to its `environment:` block (and to the second half of the nightly window, the cron host, if it runs these
+stages).
+
 - **A saved review answer applies only to the proposal you saw.** Pending answers now carry the canonical (and the reason) of the
   flag you answered; on replay one whose flag now proposes a different canonical (after `--revert` and a new verify) is skipped and
   logged (`the proposal changed since you answered`), as is an entry from an older pending file that has no canonical to check.
@@ -39,7 +92,7 @@ that shipped since.
 
 - **Glossary review answers survive a busy glossary; wiki redirects are guarded.** `glossary_acquire --review --apply`, `--revert` and
   `--prune-no-match` wait up to `GLOSSARY_LOCK_WAIT_INTERACTIVE` seconds (default 600) for the glossary, printing `waiting for
-  <stage> to finish...`. If it stays busy, your `--review` answers are saved atomically to `<glossary>.json.review-pending` and
+<stage> to finish...`. If it stays busy, your `--review` answers are saved atomically to `<glossary>.json.review-pending` and
   applied at the start of the next `--review`; the summary's `pending` is read from the file on disk, plus `saved` when answers
   are waiting. The lock now names its holder, is documented as not reentrant, and an unwritable glossary directory logs once that the
   stage runs unlocked. A wiki redirect to a scheme that is not allowed (https to http or ftp) is refused before the request is made.
@@ -55,7 +108,7 @@ that shipped since.
 - **`REPAIR_ACCEPT_PUNCT_CASE_ONLY` is safer, still off by default.** "Only case and punctuation changed" now compares the words as a
   sequence (a reorder is a change); the relaxed layout check lets an already-bad card grow by at most 2 characters (and the matching
   cps), so a 70-character over-cps card cannot become 82; and only case changes that cannot change meaning count: a sentence or card
-  start, `i` -> `I`, `ok` -> `OK`, and a spelling the glossary carries. `us` -> `US`, `march` -> `March` and `turkey` -> `Turkey` count
+  start, `i` -> `I`, `ok` -> `OK`, and a glossary spelling (narrowed again by the additions-only entry above). `us` -> `US`, `march` -> `March` and `turkey` -> `Turkey` count
   as word changes. An unusable `REPAIR_AUTO_DISMISS_WORDS` (`abc`, `4.0`, `-1`) is logged once instead of silently turning the rule
   off, and only the three rejection reasons can be dismissed from the queue.
 
@@ -65,12 +118,14 @@ that shipped since.
   turn the flag on only if none of them changes who is doing what to whom.
 
 - **Fewer glossary flags, and a repair transport retry (both opt-in).** `VERIFY_QUEUE_BLOCKED_EXPANSIONS=0` (default `1`) leaves an
-  expansion that a write guard blocked (common-word, not-in-arc-pages, or the whole-word guard: `Usop` -> `Usopp`, `Burn` ->
-  `Coburn`) out of `flagged`: it is still verified and counted (`blocked_expansions`, `blocked_expansions_by_reason`). A real
-  respelling (`Raftel` -> `Ratel`) is always queued. Expansions are additive (the short form stays), and on the audited writes about
-  75% of what the guards send to review was wrong. `REPAIR_TRANSPORT_RETRIES=N` (default `0`, at most 5; **recommended 2**) retries
-  the openai repair backend after a transport error before any response (a reset, a refused connection, a connect or read
-  timeout) with a 0.5 s, 1 s, ... backoff; HTTP answers keep their own retry rules, and the summary counts `transport_retries`.
+  expansion that a write guard blocked (common-word, not-in-arc-pages, or the whole-word guard) out of `flagged` when its canonical
+  has MORE tokens than the term (`D` -> `Monkey D. Luffy`, `Castle` -> `Hancock Castle`): it is still verified and counted
+  (`blocked_expansions`, `blocked_expansions_by_reason`). Every same-token-count fix (`Usop` -> `Usopp`, `Burn` -> `Coburn`) and every
+  real respelling (`Raftel` -> `Ratel`) is always queued. Expansions are additive (the short form stays), and on the audited writes
+  about 75% of what the guards send to review was wrong. `REPAIR_TRANSPORT_RETRIES=N` (default `0`, at most 5; **recommended 2**)
+  retries the openai repair backend only after a failure BEFORE the request was sent (a refused connection, DNS, a connect timeout, a
+  reset while connecting or sending), with a 0.5 s, 1 s, ... backoff; a read timeout, RemoteDisconnected or IncompleteRead is never
+  retried, and HTTP answers keep their own retry rules (see the later entry). The summary counts `transport_retries`.
   A tool fix: the scorer no longer calls rule (d) "within noise" for an arm far below a perfect floor.
 
   **Recommended write profile** (nothing here is on by default): `VERIFY_BACKEND=decision`, `VERIFY_WRITE_WHOLE_WORD=1`,
@@ -80,12 +135,12 @@ that shipped since.
 - **Glossary hardening.** Wiki fetches speak https only (`WIKI_ALLOW_HTTP=1` allows http, for tests): a glossary's `wiki` value or an
   override such as `file:///...` or `ftp://...` is refused instead of reaching `urlopen`, and `normalize_api` returns None for it.
   Every stage that rewrites a glossary (verify, `--tag-arcs`, `acquire --apply`, `mine_glossary`, `--review --apply`, `--revert
-  --apply`) takes one advisory lock, `<glossary>.json.lock`; a stage that finds it busy (waits `GLOSSARY_LOCK_WAIT`, default 5 s)
+--apply`) takes one advisory lock, `<glossary>.json.lock`; a stage that finds it busy (waits `GLOSSARY_LOCK_WAIT`, default 5 s)
   logs `glossary busy: <stage> skipped` and exits 0, so a manual run during the nightly pass no longer loses one side's updates.
   `--review --apply` applies your decisions to the freshly re-read file. A malformed adjudication (a list, a non-string canonical)
   is a counted no-match (`malformed` in the verify report); the common-word guard ignores punctuation around a term. A
   `no-match` flag that carries a candidate is no longer collapsed in `--review`, and `glossary_acquire --review --prune-no-match
-  [--apply]` removes the stored candidate-less no-match flags of verified terms.
+[--apply]` removes the stored candidate-less no-match flags of verified terms.
 
 - **A smaller repair review queue (both opt-in).** `REPAIR_AUTO_DISMISS_WORDS=N` (unset = off) marks a rejected repair whose
   proposal changed more than N words (added plus dropped, case and punctuation ignored) as `dismissed: large_change`. It is still
@@ -242,7 +297,7 @@ that shipped since.
 - **Glossary steps stop between units on a soft stop.** `mine_glossary.py` (between episodes),
   `glossary_verify.py` (between terms) and `glossary_acquire.py` (between escalation pairs, tier-B
   terms and admission episodes) check the stop flag, log `stop requested: leaving <step> after <n>
-  <unit>s` and exit 0 instead of running past the docker stop grace into a SIGKILL. Verify writes
+<unit>s` and exit 0 instead of running past the docker stop grace into a SIGKILL. Verify writes
   its completed terms atomically; acquire keeps finished escalation pairs in its cache; mine and
   acquire write nothing on a stop.
 
@@ -292,7 +347,7 @@ in it ships in this release. Every change below was written test first and has r
   English subtitle stream fails to extract, signs is now `build-error` / `extract-failed`
   instead of "no signs".
 - A broken failed-stage scan at the end of `merge_pass.sh` no longer prints `MERGE PASS
-  COMPLETE`. It prints `MERGE PASS INCOMPLETE: failed-stage scan error`. Counts from several
+COMPLETE`. It prints `MERGE PASS INCOMPLETE: failed-stage scan error`. Counts from several
   scan batches are now added up instead of breaking the comparison.
 - `common.failed_stage` reads stages in pipeline order (repair, signs, mux) as its docstring
   says, not in file order, and takes an optional `only=` list of stages.

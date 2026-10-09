@@ -3,8 +3,10 @@
 # This is the Compose equivalent of the README's `docker pull` + `docker run`
 # Quick start, and mirrors the tested example in the wiki's "Your first show"
 # tutorial (docs/wiki/Your-First-Show.md — read that for the full walkthrough,
-# including serving the repair model). Every environment variable is listed
-# in docs/wiki/Reference.md.
+# including serving the repair model). Only the variables set below reach the
+# container: this file is an explicit allowlist, not a pass-through. The
+# optional flags (docs/wiki/Reference.md and CHANGELOG.md, "Optional flags")
+# take effect only after you add them to the `environment:` block.
 #
 #   docker compose pull && docker compose up -d   # use the published image
 #   docker compose up -d --build                  # or build from source instead
@@ -32,7 +34,7 @@ services:
       dockerfile: Dockerfile.builder
     restart: unless-stopped
     ports:
-      - "8842:8842"   # repair-review web UI
+      - "8842:8842" # repair-review web UI
     environment:
       # --- where things are ---
       # ANIME_ROOT and MERGE_ROOTS have different built-in defaults; set all
