@@ -475,6 +475,30 @@ def write_decision(term: str, canon: str, universe) -> str:
     return "write"
 
 
+BLOCKED_EXPANSION_KINDS = ("common-word", "not-in-arc-pages", "expansion-guarded")
+
+
+def queue_blocked_expansions() -> bool:
+    """VERIFY_QUEUE_BLOCKED_EXPANSIONS (default '1', the legacy behaviour): whether an EXPANSION that a write guard
+    blocked is put in the review queue. '0' leaves it out: it is still recorded in `verified` and counted in the report
+    (`blocked_expansions`, by reason), because expansions are additive (the short form always stays), so skipping a
+    correct one costs almost nothing, and measured on audited writes ~75% of what the guards send to review is wrong. A
+    real RESPELLING (a canonical that is not an expansion of the term, the kind that can corrupt a name) is always
+    queued. Read per call."""
+    return os.environ.get("VERIFY_QUEUE_BLOCKED_EXPANSIONS", "1") != "0"
+
+
+def blocked_kind(term: str, canon: str, decision: str) -> str:
+    """What a non-write decision is: 'common-word', 'not-in-arc-pages', 'expansion-guarded' (is_expansion says yes but the
+    whole-word guard refused: 'Usop' -> 'Usopp', 'Burn' -> 'Coburn'; flagged under the legacy reason respelling-needs-review while
+    the queue is on) or 'respelling' (not an expansion at all). Only 'respelling' is always queued."""
+    if decision == "respelling":
+        from glossary_acquire import is_expansion
+
+        return "expansion-guarded" if is_expansion(term, canon) else "respelling"
+    return decision
+
+
 def queue_no_match() -> bool:
     """VERIFY_QUEUE_NO_MATCH (default '1', the legacy behaviour): whether a term the model found NO candidate for is put in the
     review queue (`flagged`). '0' leaves it out: it is still recorded in `verified` and counted in the report (`no_match`), but a
@@ -488,6 +512,19 @@ def is_no_match(adj) -> bool:
     adj, _bad = clean_adjudication(adj)
     conf, canon = adj["confidence"], adj["canonical"]
     return (conf != "high" or not canon) and not (conf == "low" and canon)
+
+
+def _blocked_report(changed, results, universe) -> dict:
+    """The report's blocked_expansions fields: only while VERIFY_QUEUE_BLOCKED_EXPANSIONS=0 (the default report is unchanged)."""
+    if queue_blocked_expansions():
+        return {}
+    kinds = [
+        blocked_kind(t, results[t]["canonical"], d)
+        for t in changed
+        if (d := write_decision(t, results[t]["canonical"], universe)) != "write"
+    ]
+    by_reason = {k: kinds.count(k) for k in BLOCKED_EXPANSION_KINDS if kinds.count(k)}
+    return {"blocked_expansions": sum(by_reason.values()), "blocked_expansions_by_reason": by_reason}
 
 
 def clean_adjudication(adj) -> tuple[dict, bool]:
@@ -566,6 +603,8 @@ def apply_results(gloss: dict, results: dict) -> dict:
                 dest = _shape_list(names, phrases, canon)
                 if canon not in dest:
                     dest.append(canon)  # ADD -- the term itself is left in place
+            elif blocked_kind(term, canon, decision) in BLOCKED_EXPANSION_KINDS and not queue_blocked_expansions():
+                pass  # VERIFY_QUEUE_BLOCKED_EXPANSIONS=0: verified and counted, not queued (the short form stays either way)
             else:
                 flagged[term] = {
                     "reason": "respelling-needs-review" if decision == "respelling" else decision,
@@ -1454,6 +1493,7 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
         "escalated": len(changed) - applied,
         **({"arc_gate": {"blocked": blocked, "universe": len(universe)}} if universe is not None else {}),
         **({"no_match": sum(1 for a in results.values() if is_no_match(a))} if not queue_no_match() else {}),
+        **_blocked_report(changed, results, universe),
         **({"common_word": _common_word_block(common_word_blocked)} if cw_on else {}),
         "flagged": len(new.get("flagged", {})),
         **({"pending": pending} if pending else {}),

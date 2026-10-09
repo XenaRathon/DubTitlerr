@@ -840,6 +840,7 @@ REVIEW_PRIORITY = (
     "respelling-needs-review",
     "common-word",
     "not-in-arc-pages",
+    "expansion-guarded",
     "low-confidence",
     "possessive_floor_crossing",
 )
@@ -860,7 +861,7 @@ def review_groups(gloss: dict) -> tuple[list, list]:
 
 
 # Flags that glossary_verify raises on an EXPANSION it would otherwise have written: accepting one in review writes it.
-WRITE_BLOCKED_REASONS = frozenset({"common-word", "not-in-arc-pages", "respelling-needs-review"})
+WRITE_BLOCKED_REASONS = frozenset({"common-word", "not-in-arc-pages", "respelling-needs-review", "expansion-guarded"})
 
 
 def record_decision(gloss: dict, term: str, accept: bool) -> dict:

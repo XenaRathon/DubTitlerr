@@ -8,6 +8,19 @@ that shipped since.
 
 ## [Unreleased]
 
+- **Fewer glossary flags, and a repair transport retry (both opt-in).** `VERIFY_QUEUE_BLOCKED_EXPANSIONS=0` (default `1`) leaves an
+  expansion that a write guard blocked (common-word, not-in-arc-pages, or the whole-word guard: `Usop` -> `Usopp`, `Burn` ->
+  `Coburn`) out of `flagged`: it is still verified and counted (`blocked_expansions`, `blocked_expansions_by_reason`). A real
+  respelling (`Raftel` -> `Ratel`) is always queued. Expansions are additive (the short form stays), and on the audited writes about
+  75% of what the guards send to review was wrong. `REPAIR_TRANSPORT_RETRIES=N` (default `0`, at most 5; **recommended 2**) retries
+  the openai repair backend after a transport error before any response (a reset, a refused connection, a connect or read
+  timeout) with a 0.5 s, 1 s, ... backoff; HTTP answers keep their own retry rules, and the summary counts `transport_retries`.
+  A tool fix: the scorer no longer calls rule (d) "within noise" for an arm far below a perfect floor.
+
+  **Recommended write profile** (nothing here is on by default): `VERIFY_BACKEND=decision`, `VERIFY_WRITE_WHOLE_WORD=1`,
+  `VERIFY_SKIP_COMMON_WORDS=1`, `VERIFY_QUEUE_NO_MATCH=0`, `VERIFY_QUEUE_BLOCKED_EXPANSIONS=0`, and `REPAIR_TRANSPORT_RETRIES=2` for
+  the repair stage.
+
 - **Glossary hardening.** Wiki fetches speak https only (`WIKI_ALLOW_HTTP=1` allows http, for tests): a glossary's `wiki` value or an
   override such as `file:///...` or `ftp://...` is refused instead of reaching `urlopen`, and `normalize_api` returns None for it.
   Every stage that rewrites a glossary (verify, `--tag-arcs`, `acquire --apply`, `mine_glossary`, `--review --apply`, `--revert

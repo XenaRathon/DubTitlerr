@@ -1099,3 +1099,46 @@ def test_review_load_counts_respelling_flags_only_and_the_other_flags_are_record
     assert t["review"]["exact"] == {"n": 4, "flagged": 1, "recorded": 2, "per_100": 25.0}
     assert t["review"]["negative"] == {"n": 2, "flagged": 0, "recorded": 2, "per_100": 0.0}
     assert t["harmful_flags"] == 1
+
+
+# ---- rule (d) against a perfect floor: "cannot be beaten" only for a ----
+
+
+def _d_against_a_perfect_heuristic(tmp_path, picker):
+    items = _big_items_n(20, 15, 50)  # the string rule is perfect on every expansion here
+    rows = _both_orders(items, "qwen-local", _mediocre) + _both_orders(items, "t", picker)
+    return _report_for(tmp_path, items, rows)["verdicts"]["t"]["rules"]["d"]
+
+
+def test_an_arm_far_below_a_perfect_floor_is_a_real_fail_not_within_noise(tmp_path):
+    d = _d_against_a_perfect_heuristic(tmp_path, lambda it: "")  # answers none on every expansion: 0% against 100%
+    assert d["ok"] is False and d["within_noise"] is False
+    assert "cannot be beaten" not in d.get("note", "")
+
+
+def test_an_arm_slightly_below_a_perfect_floor_is_within_noise_by_interval_overlap(tmp_path):
+    items = _big_items_n(20, 15, 50)
+    wrong_on_one = {items[20]["id"]}  # one expansion answered wrongly, the rest like the string rule
+
+    def picker(it):
+        if it["id"] in wrong_on_one:
+            return "" if not it.get("negative") else ""
+        return gs.heuristic_pick(it).title
+
+    rows = _both_orders(items, "qwen-local", _mediocre) + _both_orders(items, "t", picker)
+    d = _report_for(tmp_path, items, rows)["verdicts"]["t"]["rules"]["d"]
+    assert d["ok"] is False and d["within_noise"] is True  # 29/30 against 30/30: the intervals overlap
+    assert "cannot be beaten" not in d.get("note", "")
+
+
+def test_an_arm_equal_to_a_perfect_floor_keeps_the_cannot_be_beaten_note(tmp_path):
+    d = _d_against_a_perfect_heuristic(tmp_path, lambda it: gs.heuristic_pick(it).title)
+    assert d["ok"] is True and d["within_noise"] is True and "cannot be beaten" in d["note"]
+
+
+def test_the_cell_for_a_decisive_d_fail_does_not_read_within_noise(tmp_path):
+    items = _big_items_n(20, 15, 50)
+    rows = _both_orders(items, "qwen-local", _mediocre) + _both_orders(items, "t", lambda it: "")
+    md = gs.render_markdown(_report_for(tmp_path, items, rows))
+    row = [ln for ln in md.split("## Rule verdicts")[1].splitlines() if ln.startswith("| t ")][0]
+    assert "FAIL (within noise)" not in row.split("|")[5]  # the (d) cell

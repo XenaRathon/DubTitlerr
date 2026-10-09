@@ -735,7 +735,9 @@ def _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, presen
         # A perfect floor cannot be beaten.
         d["ok"] = d["arm"] >= d["floor"]
         d["within_noise"] = _overlap(arm_acc["wilson"], floor_acc["wilson"])
-        if d["floor"] == 1.0:
+        if d["floor"] == 1.0 and d["ok"]:
+            # An arm that matches a perfect floor cannot do better than tie it, so it is never "demonstrated". An arm BELOW a
+            # perfect floor is judged by plain interval overlap, like any other: far below it is a real fail, not noise.
             d["within_noise"] = True
             d["note"] = f"the floor ({floor_name}) is already perfect on the expansion items, so it cannot be beaten"
     rules["d"] = d

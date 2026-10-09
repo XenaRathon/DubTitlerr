@@ -959,6 +959,46 @@ def llm_llamacpp(prompt, model):
         return LLM_UNREACHABLE
 
 
+_TRANSPORT_RETRIES_TOTAL = 0  # retries made by _post_with_transport_retries over the life of the process
+
+
+def transport_retries_total():
+    return _TRANSPORT_RETRIES_TOTAL
+
+
+def _transport_retries():
+    """REPAIR_TRANSPORT_RETRIES (default 0 = the legacy single attempt, clamped 0..5; garbage -> 0), read per call.
+    Recommended 2: one transient OSError cost a Wano episode a line."""
+    return env_int("REPAIR_TRANSPORT_RETRIES", 0, lo=0, hi=5)
+
+
+def _is_transport_error(e):
+    """A failure BEFORE any response: a socket/connection error or a connect/read timeout. Not an HTTP answer (_HttpError), not
+    the request-deadline watchdog (which can fire mid-response), not a body that parsed badly."""
+    if isinstance(e, _HttpError):
+        return False
+    if isinstance(e, TimeoutError) and str(e).startswith("request deadline"):
+        return False
+    return isinstance(e, (OSError, http.client.HTTPException))
+
+
+def _post_with_transport_retries(url, body, headers):
+    """_post_json, retried on a transport error up to REPAIR_TRANSPORT_RETRIES times with a short backoff (0.5 s, 1 s, ...).
+    An HTTP answer (4xx/5xx, including 429) is raised at once: llm_openai's own status retry owns those."""
+    global _TRANSPORT_RETRIES_TOTAL
+    tries = _transport_retries()
+    for k in range(tries + 1):
+        try:
+            return _post_json(url, body, headers=headers)
+        except Exception as e:  # noqa: BLE001 -- classified below, re-raised unchanged when not ours
+            if k < tries and _is_transport_error(e) and not stop_requested() and not _deadline_passed():
+                _TRANSPORT_RETRIES_TOTAL += 1
+                log(f"  llm retry {k + 1}/{tries} after {type(e).__name__} (no response)")
+                _sleep(0.5 * 2**k)
+                continue
+            raise
+
+
 def llm_openai(prompt, model):
     """Any OpenAI-compatible chat API (OpenRouter, Kilo, CommandCode, NVIDIA, Cerebras, ...).
 
@@ -996,7 +1036,7 @@ def llm_openai(prompt, model):
         if attempt and stop_requested():
             return LLM_UNREACHABLE  # soft stop during the backoff: the between-target check ends the episode
         try:
-            choice = _post_json(OPENAI_URL, body, headers=headers)["choices"][0]
+            choice = _post_with_transport_retries(OPENAI_URL, body, headers)["choices"][0]
             out = (choice["message"].get("content") or "").strip()
             if not out and choice.get("finish_reason") == "length":
                 log(
@@ -1221,6 +1261,7 @@ def _process_episode(conf_path):
     rejected_4xx = 0  # request-scoped client errors (llm_openai): no repair for that line, not an outage
     rejected_secondary = 0  # C5: second-pass output refused by the gate
     rejected_name_part = 0  # subset of rejected: the repair added or removed a part of a name
+    transport_retries_at_start = transport_retries_total()
     dismissed_large_change = 0  # subset of rejected: recorded but kept out of the queue (REPAIR_AUTO_DISMISS_WORDS)
     accepted_punct_case_only = 0  # repairs admitted only by REPAIR_ACCEPT_PUNCT_CASE_ONLY
     unreachable_secondary = 0  # the second-pass backend call itself failed (first pass stands)
@@ -1628,6 +1669,7 @@ def _process_episode(conf_path):
         "rejected_name_part": rejected_name_part,  # subset of rejected_guard: it added/removed a name part
         **({"dismissed_large_change": dismissed_large_change} if unresolved.auto_dismiss_threshold() is not None else {}),
         **({"accepted_punct_case_only": accepted_punct_case_only} if _accept_punct_case_only() else {}),
+        **({"transport_retries": transport_retries_total() - transport_retries_at_start} if _transport_retries() else {}),
         "unreachable_secondary": unreachable_secondary,
         "rejected_secondary": rejected_secondary,  # C5: second pass refused, first pass kept
         "unchanged": unchanged,  # model echoed the line back; nothing proposed, nothing shipped
