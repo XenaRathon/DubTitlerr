@@ -283,6 +283,7 @@ def _no_sleep(monkeypatch):
     monkeypatch.setenv("LONGCATAI_API_KEY", KEY)
     monkeypatch.setenv("NVIDIA_API_KEY", KEY)
     monkeypatch.setenv("OPENROUTER_JEV_API_KEY", KEY)
+    monkeypatch.setenv("COMMANDCODE_API_KEY", KEY)
 
 
 def _fake_local(monkeypatch, reply):
@@ -306,8 +307,8 @@ def test_the_registry_names_every_arm_with_its_endpoint_and_key():
     assert r["longcat-2.0"].key_env == "LONGCATAI_API_KEY" and r["longcat-2.0"].extra_body == {"thinking": {"type": "disabled"}}
     assert r["nemotron-super"].key_env == "NVIDIA_API_KEY"
     assert r["nemotron-super"].extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
-    assert {r[n].key_env for n in r if r[n].kind == "decision"} == {"OPENROUTER_JEV_API_KEY"}
-    assert all(r[n].model in dc.ALLOWED_MODELS for n in r if r[n].kind == "decision")
+    assert {r[n].key_env for n in r if r[n].kind == "decision" and n != "jev"} == {"OPENROUTER_JEV_API_KEY"}
+    assert all(r[n].model in dc.ALLOWED_MODELS for n in r if r[n].kind == "decision" and n != "jev")
     assert r["qwen-local"].third_party is False and all(r[n].third_party for n in r if n != "qwen-local")
 
 
@@ -615,10 +616,12 @@ def test_the_startup_line_mentions_quotes_when_acquire_can_send_them(tmp_path, i
 
 
 def test_a_third_party_arm_without_its_key_exits_naming_only_the_variable(tmp_path, items_file, monkeypatch, capsys):
-    monkeypatch.delenv("OPENROUTER_JEV_API_KEY")
+    monkeypatch.delenv("COMMANDCODE_API_KEY")
     with pytest.raises(SystemExit) as e:
         _run(tmp_path, items_file, "jev")
-    assert e.value.code == 2 and "OPENROUTER_JEV_API_KEY" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert e.value.code == 2 and "COMMANDCODE_API_KEY" in err
+    assert "OPENROUTER" not in err  # no OpenRouter fallback for jev
 
 
 def test_bad_arguments_exit_2(tmp_path, items_file):
@@ -1037,3 +1040,100 @@ def test_decision_rows_record_the_served_model_id(tmp_path, items_file, monkeypa
     )
     _, rows, _ = _run(tmp_path, items_file, "jev", "--stage", "verify", "--only", "gold")
     assert rows[0]["served_model"] == "typesafe/jev-1.13-20260917"
+
+
+# --- jev now runs on CommandCode's Provider API --------------------------------------------------------------
+
+import http.server  # noqa: E402
+import threading  # noqa: E402
+
+
+class _FakeCCForRun:
+    def __init__(self, status=200, body=None):
+        outer = self
+        self.requests = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                outer.requests.append(
+                    {"path": self.path, "auth": self.headers.get("Authorization"), "body": json.loads(self.rfile.read(length))}
+                )
+                ok = {
+                    "model": "typesafe/jev",
+                    "answers": _decision_answer_with(),
+                    "usage": {"input_tokens": 3, "output_tokens": 1},
+                }
+                payload = json.dumps(body if body is not None else ok).encode()
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.srv.server_port}/provider/v1/systemone"
+
+    def close(self):
+        self.srv.shutdown()
+
+
+def test_the_jev_arm_is_commandcode_with_no_openrouter_fallback():
+    jev = gb.ARMS["jev"]
+    assert jev.url == "https://api.commandcode.ai/provider/v1/systemone" and jev.model == "typesafe/jev"
+    assert jev.key_env == "COMMANDCODE_API_KEY" and jev.provider == "commandcode" and jev.kind == "decision"
+    assert all(gb.ARMS[n].provider == "openrouter" for n in gb.ARMS if gb.ARMS[n].kind == "decision" and n != "jev")
+    assert jev.model in dc.COMMANDCODE_MODELS and jev.model not in dc.ALLOWED_MODELS
+
+
+def test_jev_passes_its_provider_and_key_env_to_the_client(tmp_path, items_file, monkeypatch):
+    seen = []
+
+    def fake(model, state, questions, key_env, **kw):
+        seen.append({"model": model, "key_env": key_env, **kw})
+        return dc.DecisionResult(answers=_decision_answer_with(), usage={}, latency_s=0.1, model="typesafe/jev")
+
+    monkeypatch.setattr(dc, "decide", fake)
+    _run(tmp_path, items_file, "jev", "--stage", "verify", "--only", "gold")
+    assert seen[0]["model"] == "typesafe/jev" and seen[0]["key_env"] == "COMMANDCODE_API_KEY"
+    assert seen[0]["provider"] == "commandcode" and seen[0]["url"] == "https://api.commandcode.ai/provider/v1/systemone"
+    seen.clear()
+    _run(tmp_path, items_file, "mercury-decide", "--stage", "verify", "--only", "gold", out="m.jsonl")
+    assert seen[0]["provider"] == "openrouter" and seen[0]["key_env"] == "OPENROUTER_JEV_API_KEY"
+
+
+def test_the_startup_line_names_the_commandcode_host_for_jev(tmp_path, items_file, monkeypatch, capsys):
+    _fake_decide(monkeypatch, _decision_answer_with())
+    _run(tmp_path, items_file, "jev", "--stage", "verify")
+    first = capsys.readouterr().out.splitlines()[0]
+    assert "sends to api.commandcode.ai" in first and "openrouter" not in first
+
+
+def test_jev_end_to_end_against_a_fake_commandcode_server(tmp_path, items_file, monkeypatch):
+    cc = _FakeCCForRun()
+    monkeypatch.setenv("GLOSSARY_BAKEOFF_JEV_URL", cc.url)
+    try:
+        _, rows, outp = _run(tmp_path, items_file, "jev", "--stage", "verify", "--only", "gold")
+    finally:
+        cc.close()
+    r = cc.requests[0]
+    assert r["path"] == "/provider/v1/systemone" and r["auth"] == f"Bearer {KEY}" and r["body"]["model"] == "typesafe/jev"
+    assert rows[0]["parsed"]["choice"] == "c1" and rows[0]["served_model"] == "typesafe/jev"
+    assert KEY not in outp.read_text(encoding="utf-8")
+
+
+def test_a_commandcode_quota_429_trips_the_same_breaker_without_leaking_the_key(tmp_path, items_file, monkeypatch, capsys):
+    cc = _FakeCCForRun(status=429, body={"error": f"daily request cap reached ({KEY})"})
+    monkeypatch.setenv("GLOSSARY_BAKEOFF_JEV_URL", cc.url)
+    monkeypatch.setattr(dc.time, "sleep", lambda s: None)
+    try:
+        code, rows, outp = _run(tmp_path, _many(tmp_path, 20), "jev")
+    finally:
+        cc.close()
+    err = capsys.readouterr()
+    assert code == 3 and len(rows) == 5 and "rate limited, resume later with --retry-errors" in err.err
+    assert all(r["error"] == "HTTP 429" for r in rows)
+    assert KEY not in outp.read_text(encoding="utf-8") + err.out + err.err

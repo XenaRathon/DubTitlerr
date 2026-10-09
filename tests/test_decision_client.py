@@ -313,3 +313,121 @@ def test_the_user_agent_is_the_honest_constant():
     seen = []
     dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", post=_post_returning(_ok(), seen))
     assert seen[0][2]["User-Agent"] == "DubTitlerr-glossary-bakeoff/1.0"
+
+
+# --- CommandCode's Provider API (the `jev` arm) -------------------------------------------------------------
+
+import http.server  # noqa: E402
+import threading  # noqa: E402
+
+CC_MODEL = "typesafe/jev"
+
+
+def _cc_ok(model=CC_MODEL):
+    return {
+        "model": model,
+        "answers": {
+            "pick": {"type": "choice", "choice": "c1", "probabilities": {"c1": 0.9, "c2": 0.05, "none": 0.05}, "confidence": 0.9}
+        },
+        "usage": {"input_tokens": 10, "output_tokens": 2},
+    }  # no id / provider / usage.cost: that is what CommandCode's 200 lacks
+
+
+def test_commandcode_endpoint_constant_is_the_verified_one():
+    assert dc.COMMANDCODE_URL == "https://api.commandcode.ai/provider/v1/systemone"  # .../v1/v1/systemone is a 404
+    assert dc.COMMANDCODE_MODELS == frozenset({"typesafe/jev"})
+
+
+def test_the_commandcode_provider_defaults_url_and_accepts_jev(monkeypatch):
+    monkeypatch.setenv("TEST_CC_KEY", KEY)
+    seen = []
+    res = dc.decide(CC_MODEL, {}, CHOICE_Q, "TEST_CC_KEY", provider="commandcode", post=_post_returning(_cc_ok(), seen))
+    assert seen[0][0] == "https://api.commandcode.ai/provider/v1/systemone" and res.model == CC_MODEL
+    assert seen[0][2]["User-Agent"] == "DubTitlerr-glossary-bakeoff/1.0" and seen[0][2]["Authorization"] == f"Bearer {KEY}"
+
+
+def test_the_two_providers_have_disjoint_model_ids():
+    post = lambda *a, **k: pytest.fail("no request")  # noqa: E731
+    with pytest.raises(dc.DecisionError, match="allowlist"):
+        dc.decide(CC_MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", post=post)  # typesafe/jev is CommandCode-only
+    with pytest.raises(dc.DecisionError, match="allowlist"):
+        dc.decide("typesafe/jev-1.13", {}, CHOICE_Q, "TEST_DECISION_KEY", provider="commandcode", post=post)  # OpenRouter-only
+    with pytest.raises(dc.DecisionError, match="allowlist"):
+        dc.decide("upstage/solar-decide-flash", {}, CHOICE_Q, "TEST_DECISION_KEY", provider="commandcode", post=post)
+    with pytest.raises(dc.DecisionError, match="provider"):
+        dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", provider="elsewhere", post=post)
+
+
+def test_openrouter_is_still_the_default_provider_and_url():
+    """GUARD: passes on the old code (every existing arm stays byte-identical)."""
+    seen = []
+    dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", post=_post_returning(_ok(), seen))
+    assert seen[0][0] == "https://openrouter.ai/api/alpha/decisions"
+
+
+class _FakeCC:
+    """A 127.0.0.1 server standing in for CommandCode: records what it receives."""
+
+    def __init__(self, status=200, body=None, retry_after=None):
+        outer = self
+        self.requests = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                outer.requests.append(
+                    {
+                        "path": self.path,
+                        "auth": self.headers.get("Authorization"),
+                        "ua": self.headers.get("User-Agent"),
+                        "body": json.loads(self.rfile.read(length)),
+                    }  # fmt: skip
+                )
+                payload = json.dumps(body if body is not None else _cc_ok()).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                if retry_after is not None:
+                    self.send_header("Retry-After", str(retry_after))
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.srv.server_port}/provider/v1/systemone"
+
+    def close(self):
+        self.srv.shutdown()
+
+
+def test_a_fake_commandcode_server_sees_the_right_path_bearer_agent_and_body(monkeypatch):
+    monkeypatch.setenv("COMMANDCODE_API_KEY", KEY)
+    cc = _FakeCC()
+    try:
+        res = dc.decide(CC_MODEL, {"show": "S"}, CHOICE_Q, "COMMANDCODE_API_KEY", provider="commandcode", url=cc.url)
+    finally:
+        cc.close()
+    r = cc.requests[0]
+    assert r["path"] == "/provider/v1/systemone" and r["auth"] == f"Bearer {KEY}" and r["ua"] == "DubTitlerr-glossary-bakeoff/1.0"
+    assert r["body"] == {"model": CC_MODEL, "state": {"show": "S"}, "questions": CHOICE_Q}
+    assert (
+        res.answers["pick"]["choice"] == "c1" and res.usage == {"input_tokens": 10, "output_tokens": 2} and res.model == CC_MODEL
+    )
+
+
+def test_a_commandcode_429_with_a_quota_message_is_a_status_only_error_and_never_leaks_the_key(monkeypatch):
+    monkeypatch.setenv("COMMANDCODE_API_KEY", KEY)
+    slept = []
+    cc = _FakeCC(
+        status=429, body={"error": f"daily request cap reached for key {KEY}", "plan": "credits exhausted"}, retry_after=1
+    )
+    try:
+        with pytest.raises(dc.DecisionHTTPError) as e:
+            dc.decide(CC_MODEL, {}, CHOICE_Q, "COMMANDCODE_API_KEY", provider="commandcode", url=cc.url, sleep=slept.append)
+    finally:
+        cc.close()
+    assert str(e.value) == "HTTP 429" and KEY not in repr(e.value) and "cap" not in str(e.value)
+    assert len(cc.requests) == 3 and slept == [1.0, 1.0]  # retried twice like any 429, then gave up

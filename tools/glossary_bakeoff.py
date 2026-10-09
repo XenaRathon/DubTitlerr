@@ -57,6 +57,8 @@ id, arm, order ("fwd" | "rev"), raw, parsed, latency_s, usage, error (+ local: t
     unless --retry-errors (the retry appends a new row; the latest row for a key wins at score time);
   * no-call controls (zero candidates) are answered locally by the production rule and sent nowhere;
   * the confidence threshold of the decision arms is NOT applied here: tau is swept at score time.
+The `jev` decision arm runs on CommandCode's Provider API (COMMANDCODE_API_KEY); the other decision arms use
+OpenRouter's decisions API (OPENROUTER_JEV_API_KEY). There is no OpenRouter fallback for jev.
 PRIVACY: a third-party arm receives, for verify items, only the show title, the mined term and the wiki candidate
 titles; for acquire items it receives the two spellings and the transcript quotes, so acquire items without
 quotes are not sent to third-party arms. The first line printed says exactly this."""
@@ -397,6 +399,7 @@ class Arm:
     key_env: str = ""
     extra_body: dict = field(default_factory=dict)
     third_party: bool = True
+    provider: str = "openrouter"  # decision arms: which decisions API (see decision_client.PROVIDERS)
     delay: float = 0.0  # default pause between calls (seconds); --delay overrides, including with 0
 
 
@@ -436,7 +439,8 @@ ARMS = {
         Arm("solar-decide-flash", "decision", "upstage/solar-decide-flash", _DECISIONS, _JEV_KEY),
         Arm("pplx-decider", "decision", "perplexity/pplx-decider-v1.1-27b", _DECISIONS, _JEV_KEY),
         Arm("gpt-6-luna-decisions", "decision", "openai/gpt-6-luna-decisions", _DECISIONS, _JEV_KEY),
-        Arm("jev", "decision", "typesafe/jev-1.13", _DECISIONS, _JEV_KEY),
+        # jev runs on CommandCode's Provider API (user instruction), with its own key and no OpenRouter fallback.
+        Arm("jev", "decision", "typesafe/jev", decision_client.COMMANDCODE_URL, "COMMANDCODE_API_KEY", provider="commandcode"),
     )
 }
 NONE_OPTION = "no candidate is the same named entity"
@@ -535,7 +539,9 @@ def _acquire_text(arm, item):
 
 
 def _decide(arm, state, questions):
-    return decision_client.decide(_arm_setting(arm, "model"), state, questions, arm.key_env, url=_arm_setting(arm, "url"))
+    return decision_client.decide(
+        _arm_setting(arm, "model"), state, questions, arm.key_env, provider=arm.provider, url=_arm_setting(arm, "url")
+    )
 
 
 def _verify_decision(arm, item, titles):

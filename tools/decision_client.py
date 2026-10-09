@@ -16,6 +16,10 @@ Rules this client keeps, because the callers are experiments that must never tur
   * the model id must be in ALLOWED_MODELS, checked before any request.
   * the transport is ``repair._post_json``, which already carries the per-request wall-clock deadline.
 
+Two providers share this request/answer shape: OpenRouter (default, DECISIONS_URL, its model ids in ALLOWED_MODELS) and
+CommandCode's Provider API (provider="commandcode", COMMANDCODE_URL, model typesafe/jev). Each id is valid only for its
+own provider; the URL and the key variable are chosen per call. The `jev` arm of the glossary bake-off uses CommandCode.
+
 Span-01 Lite is the odd one: its state must be {"input": [{role, content}...], "output": {role, content}} and it
 accepts only `noul` questions with plain-string instructions and {"true": str, "false": str} criteria."""
 
@@ -44,6 +48,12 @@ ALLOWED_MODELS = frozenset(
         "typesafe/jev-1.13",
     }
 )
+# CommandCode's Provider API serves the same request/answer shape at its own endpoint, under its own model ids. The two
+# id sets are disjoint on purpose: an id is valid only for the provider it belongs to (typesafe/jev-1.13 is OpenRouter's,
+# typesafe/jev is CommandCode's), so a stray arm cannot send a model to the wrong place or key.
+COMMANDCODE_URL = "https://api.commandcode.ai/provider/v1/systemone"  # not .../v1/v1/systemone: that is a 404
+COMMANDCODE_MODELS = frozenset({"typesafe/jev"})
+PROVIDERS = {"openrouter": (DECISIONS_URL, ALLOWED_MODELS), "commandcode": (COMMANDCODE_URL, COMMANDCODE_MODELS)}
 SPAN_MODELS = frozenset({"respan/span-01-lite", "respan/span-01-lite:free"})
 QUESTION_TYPES = ("choice", "noul", "score")
 MAX_RETRIES = 2
@@ -188,15 +198,21 @@ def decide(
     questions,
     key_env,
     *,
-    url=DECISIONS_URL,
+    provider="openrouter",
+    url=None,
     post=None,
     sleep=None,
     retries=MAX_RETRIES,
     sleep_budget=SLEEP_BUDGET_S,
 ):
-    """Ask the decisions API. Raises DecisionError (never returns a guessed answer)."""
-    if model not in ALLOWED_MODELS:
-        raise DecisionError(f"model {model!r} is not in the allowlist")
+    """Ask the decisions API of ``provider`` ("openrouter" by default, or "commandcode"); ``url`` defaults to that
+    provider's endpoint. Raises DecisionError (never returns a guessed answer)."""
+    if provider not in PROVIDERS:
+        raise DecisionError(f"unknown provider {provider!r}")
+    default_url, allowed = PROVIDERS[provider]
+    url = url or default_url
+    if model not in allowed:
+        raise DecisionError(f"model {model!r} is not in the {provider} allowlist")
     if not isinstance(questions, dict) or not questions:
         raise DecisionError("questions must be a non-empty object keyed by question id")
     for qid, q in questions.items():
