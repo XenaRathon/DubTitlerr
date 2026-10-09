@@ -396,8 +396,16 @@ def record(stem: str, stage: str, reason: str, **fields) -> bool:
         # O(1) append. The array version re-read and re-wrote the whole file per card --
         # O(n^2) I/O, and one CIFS round-trip each, on a path that fires ~86x per episode.
         exists = os.path.exists(path)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        line = (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
+        with open(path, "a+b") as f:
+            # A crash mid-append leaves an unterminated tail. Writing straight after it would join this record to the broken
+            # bytes on one line and lose BOTH; start on a fresh line instead and keep the damaged bytes (items() skips them).
+            # One write() call, so the newline and the record go out together.
+            if f.seek(0, os.SEEK_END):
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b"\n":
+                    line = b"\n" + line
+            f.write(line)
         if not exists:
             os.chmod(path, SIDECAR_MODE)  # only the creator sets the mode
         return True
