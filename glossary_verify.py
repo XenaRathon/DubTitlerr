@@ -489,14 +489,18 @@ def queue_blocked_expansions() -> bool:
 
 
 def blocked_kind(term: str, canon: str, decision: str) -> str:
-    """What a non-write decision is: 'common-word', 'not-in-arc-pages', 'expansion-guarded' (is_expansion says yes but the
-    whole-word guard refused: 'Usop' -> 'Usopp', 'Burn' -> 'Coburn'; flagged under the legacy reason respelling-needs-review while
-    the queue is on) or 'respelling' (not an expansion at all). Only 'respelling' is always queued."""
+    """What a non-write decision is, for VERIFY_QUEUE_BLOCKED_EXPANSIONS=0: 'common-word', 'not-in-arc-pages' or
+    'expansion-guarded' (is_expansion says yes but the whole-word guard refused: 'D' -> 'Monkey D. Luffy'; flagged under the
+    legacy reason respelling-needs-review while the queue is on) are DROPPABLE only when the canonical has MORE tokens than the
+    term, i.e. a name part was added and the short form stays. A canonical with the same number of tokens ('Usop' -> 'Usopp',
+    'Burn' -> 'Coburn') is a spelling fix whatever is_expansion says: it is 'respelling' and always queued, because dropping it
+    means the correct spelling is never offered. Only the droppable kinds are returned as themselves."""
+    longer = len(canon.split()) > len(term.split())
     if decision == "respelling":
         from glossary_acquire import is_expansion
 
-        return "expansion-guarded" if is_expansion(term, canon) else "respelling"
-    return decision
+        return "expansion-guarded" if longer and is_expansion(term, canon) else "respelling"
+    return decision if longer else "respelling"
 
 
 def queue_no_match() -> bool:
@@ -683,6 +687,23 @@ def _wiki_schemes() -> tuple:
     return ("https", "http") if os.environ.get("WIKI_ALLOW_HTTP") == "1" else ("https",)
 
 
+class _GuardedRedirect(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect only to a URL that _wiki_url_problem accepts, so an https -> http / ftp redirect never leaves the
+    machine (urllib would follow it and only the final geturl() check would refuse the already-made request). Raises ValueError,
+    which callers of _http_json already swallow."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        problem = _wiki_url_problem(newurl, _wiki_schemes())
+        if problem:
+            raise ValueError(f"refused wiki url: redirect to {problem}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _urlopen(req, timeout=None):
+    """urlopen with the guarded redirect handler (one seam for tests)."""
+    return urllib.request.build_opener(_GuardedRedirect).open(req, timeout=timeout)
+
+
 def _http_json(url: str) -> dict:
     """GET ``url`` as JSON. https only (http with WIKI_ALLOW_HTTP=1, for tests): a wiki value from a glossary or an override
     must not reach urlopen as file:// or ftp://. Raises ValueError for a refused URL (callers already swallow any exception),
@@ -691,7 +712,7 @@ def _http_json(url: str) -> dict:
     if problem:
         raise ValueError(f"refused wiki url: {problem}")
     req = urllib.request.Request(url, headers={"User-Agent": "DubTitlerr-glossary-verify"})
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+    with _urlopen(req, timeout=HTTP_TIMEOUT) as r:
         final = r.geturl() if hasattr(r, "geturl") else url
         if _wiki_url_problem(final, _wiki_schemes()):
             raise ValueError("refused wiki url: redirected to a scheme that is not allowed")

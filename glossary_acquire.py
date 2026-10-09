@@ -20,6 +20,7 @@ Built with help of Claude (Anthropic).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import math
@@ -1258,6 +1259,52 @@ def prune_no_match(gloss: dict) -> tuple[dict, int]:
     return g, len(drop)
 
 
+def _pending_path(gloss_path: str) -> str:
+    return gloss_path + ".review-pending"
+
+
+def _read_pending(gloss_path: str) -> list:
+    """The answers a busy glossary kept from an earlier --review: [[term, accept], ...]. A file that cannot be read is set aside
+    as '.bad' (never trusted, never deleted) and counts as empty."""
+    path = _pending_path(gloss_path)
+    if not os.path.exists(path):
+        return []
+    try:
+        doc = json.load(open(path, encoding="utf-8"))
+        return [[str(t), bool(acc)] for t, acc in doc["answers"]]
+    except (OSError, ValueError, KeyError, TypeError):
+        log(f"the saved review answers in {path} are unreadable; set aside as {path}.bad")
+        with contextlib.suppress(OSError):
+            os.replace(path, path + ".bad")
+        return []
+
+
+def _commit_answers(gloss_path: str, answers: list, stage: str = "review") -> bool:
+    """Apply a human's answers (after any saved by an earlier busy run) to the FRESH glossary, under the lock, waiting up to
+    GLOSSARY_LOCK_WAIT_INTERACTIVE for it. True when written. When the glossary stays busy the answers are NOT discarded: they
+    are appended to '<glossary>.review-pending' (atomic, one JSON document) and the next --review applies them first."""
+    import glossary_lock
+
+    with glossary_lock.locked(gloss_path, stage, wait=glossary_lock.interactive_wait_seconds(), announce=True) as ok:
+        if not ok:
+            if answers:
+                _write_json(_pending_path(gloss_path), {"answers": _read_pending(gloss_path) + [list(a) for a in answers]})
+                log(
+                    f"glossary busy: your answers were saved to {_pending_path(gloss_path)} and the next --review will apply them"
+                )
+            return False
+        todo = _read_pending(gloss_path) + [list(a) for a in answers]
+        if not todo:
+            return True
+        g = json.load(open(gloss_path, encoding="utf-8"))
+        for term, accept in todo:
+            g = record_decision(g, term, accept=accept)
+        _write_json(gloss_path, g)
+        with contextlib.suppress(OSError):
+            os.remove(_pending_path(gloss_path))
+        return True
+
+
 def _prune_cli(a) -> None:
     import glossary_lock
 
@@ -1266,7 +1313,7 @@ def _prune_cli(a) -> None:
     if not a.apply:
         log(json.dumps({"pruned": n, "written": False, "note": "dry run: add --apply to write"}))
         return
-    with glossary_lock.locked(a.glossary, "prune") as ok:
+    with glossary_lock.locked(a.glossary, "prune", wait=glossary_lock.interactive_wait_seconds(), announce=True) as ok:
         if not ok:
             log(json.dumps({"pruned": 0, "written": False}))
             return
@@ -1297,8 +1344,10 @@ def main():
         _prune_cli(a)
         return
     if a.review:
-        import glossary_lock
-
+        n_saved = len(_read_pending(a.glossary))
+        if n_saved:
+            log(f"{n_saved} answers from an earlier --review were saved while the glossary was busy: applying them first")
+            _commit_answers(a.glossary, [])
         g = json.load(open(a.glossary, encoding="utf-8"))
         answers = []  # (term, accept) in order; applied to the FRESH file at the end, not to this stale copy
         decisions, no_match = review_groups(g)
@@ -1326,20 +1375,17 @@ def main():
                     g = record_decision(g, item["term"], accept=False)
                     answers.append((item["term"], False))
                 # 'n' (or anything else): leave it pending in flagged, untouched
-        written = False
+        summary = {"reviewed": True, "written": False}
         if a.apply:
-            # The walk can take minutes: another stage may have rewritten the glossary meanwhile. Re-read it under the lock and
-            # apply the decisions to THAT, so neither side's changes are lost.
-            with glossary_lock.locked(a.glossary, "review") as ok:
-                if ok:
-                    g = json.load(open(a.glossary, encoding="utf-8"))
-                    for term, accept in answers:
-                        g = record_decision(g, term, accept=accept)
-                    _write_json(a.glossary, g)
-                    written = True
-                else:
-                    log("glossary busy: your decisions were not written; run --review again")
-        log(json.dumps({"reviewed": True, "written": written, "pending": len(g.get("flagged", {}))}))
+            # The walk can take minutes: another stage may have rewritten the glossary meanwhile. The decisions are applied to the
+            # file as it is NOW, under the lock; a busy glossary is waited for, and the answers are kept if it stays busy.
+            summary["written"] = _commit_answers(a.glossary, answers)
+            with contextlib.suppress(OSError, ValueError):
+                g = json.load(open(a.glossary, encoding="utf-8"))  # report what is ON DISK
+            if saved := _read_pending(a.glossary):
+                summary["saved"] = len(saved)
+        summary["pending"] = len(g.get("flagged", {}))
+        log(json.dumps(summary))
         return
     if a.revert:
         try:
@@ -1352,7 +1398,7 @@ def main():
         if a.apply:
             import glossary_lock
 
-            with glossary_lock.locked(a.glossary, "revert") as ok:
+            with glossary_lock.locked(a.glossary, "revert", wait=glossary_lock.interactive_wait_seconds(), announce=True) as ok:
                 if ok:
                     g = json.load(open(a.glossary, encoding="utf-8"))  # fresh, under the lock
                     out = revert(g)

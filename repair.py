@@ -527,6 +527,7 @@ def _post_json(url, body, headers=None):
 
     watchdog = threading.Timer(deadline, _expire)
     watchdog.daemon = True
+    request_out = False  # conn.request() has completed: from here the server HAS the request (and may bill it)
     try:
         conn.connect()
         conn.sock.settimeout(TIMEOUT_READ)
@@ -537,6 +538,7 @@ def _post_json(url, body, headers=None):
             path += "?" + parsed.query
         hdrs = {"Content-Type": "application/json", **(headers or {})}
         conn.request("POST", path, body=json.dumps(body).encode(), headers=hdrs)
+        request_out = True
         resp = conn.getresponse()
         data = resp.read()
         if resp.status >= 300:  # http.client never follows redirects; a 3xx body is not a JSON answer
@@ -544,9 +546,10 @@ def _post_json(url, body, headers=None):
             retry_after = getheader("Retry-After") if getheader else None
             raise _HttpError(resp.status, f"HTTP {resp.status}: {data[:200]!r}", retry_after)
         return json.loads(data)
-    except Exception:
+    except Exception as e:
         if expired.is_set():
             raise TimeoutError(f"request deadline of {deadline}s exceeded") from None
+        e.not_sent = not request_out  # read by _is_transport_error: only a failure before the request was out may be re-sent
         raise
     finally:
         watchdog.cancel()
@@ -1026,30 +1029,49 @@ def _transport_retries():
 
 
 def _is_transport_error(e):
-    """A failure BEFORE any response: a socket/connection error or a connect/read timeout. Not an HTTP answer (_HttpError), not
-    the request-deadline watchdog (which can fire mid-response), not a body that parsed badly."""
-    if isinstance(e, _HttpError):
+    """A failure BEFORE the server had the request: connection refused, DNS, a connect timeout, a reset while connecting or
+    sending (``_post_json`` sets ``e.not_sent``). A read timeout, RemoteDisconnected or IncompleteRead comes after the request
+    went out, and a provider is usually still generating (and billing) it, so re-sending would pay twice. Not an HTTP answer
+    (_HttpError), not the request-deadline watchdog, not a body that parsed badly."""
+    if isinstance(e, _HttpError) or not getattr(e, "not_sent", False):
         return False
     if isinstance(e, TimeoutError) and str(e).startswith("request deadline"):
         return False
     return isinstance(e, (OSError, http.client.HTTPException))
 
 
-def _post_with_transport_retries(url, body, headers):
-    """_post_json, retried on a transport error up to REPAIR_TRANSPORT_RETRIES times with a short backoff (0.5 s, 1 s, ...).
-    An HTTP answer (4xx/5xx, including 429) is raised at once: llm_openai's own status retry owns those."""
-    global _TRANSPORT_RETRIES_TOTAL
+def _post_with_transport_retries(url, body, headers, posts_left=None):
+    """_post_json, retried on a transport error (see _is_transport_error) up to REPAIR_TRANSPORT_RETRIES times with a short
+    backoff (0.5 s, 1 s, ...), the backoff spent from REPAIR_RETRY_SLEEP_BUDGET like the status retries. ``posts_left`` caps the
+    POSTs of this call (llm_openai passes what its REPAIR_OPENAI_RETRIES allowance has left, so the two layers never multiply).
+    An HTTP answer (4xx/5xx, including 429) is raised at once: llm_openai's own status retry owns those. The POSTs made are
+    left in ``_last_posts`` (also when it raises)."""
+    global _TRANSPORT_RETRIES_TOTAL, _last_posts
     tries = _transport_retries()
+    if posts_left is not None:
+        tries = min(tries, max(0, posts_left - 1))
+    _last_posts = 0
     for k in range(tries + 1):
+        _last_posts += 1
         try:
             return _post_json(url, body, headers=headers)
         except Exception as e:  # noqa: BLE001 -- classified below, re-raised unchanged when not ours
-            if k < tries and _is_transport_error(e) and not stop_requested() and not _deadline_passed():
+            wait = 0.5 * 2**k
+            if (
+                k < tries
+                and _is_transport_error(e)
+                and not stop_requested()
+                and not _deadline_passed()
+                and (_retry_budget_left is None or wait <= _retry_budget_left)
+            ):
                 _TRANSPORT_RETRIES_TOTAL += 1
-                log(f"  llm retry {k + 1}/{tries} after {type(e).__name__} (no response)")
-                _sleep(0.5 * 2**k)
+                log(f"  llm retry {k + 1}/{tries} after {type(e).__name__} (request not sent)")
+                _retry_sleep(wait)
                 continue
             raise
+
+
+_last_posts = 0  # POSTs made by the last _post_with_transport_retries call
 
 
 def llm_openai(prompt, model):
@@ -1085,11 +1107,16 @@ def llm_openai(prompt, model):
     }
     headers = {"Authorization": f"Bearer {key}", "User-Agent": "DubTitlerr/repair"}
     retries = _openai_retries()
+    posts = 0  # POSTs sent for this line, transport retries included: never more than retries + 1
     for attempt in range(retries + 1):
         if attempt and stop_requested():
             return LLM_UNREACHABLE  # soft stop during the backoff: the between-target check ends the episode
         try:
-            choice = _post_with_transport_retries(OPENAI_URL, body, headers)["choices"][0]
+            try:
+                answer = _post_with_transport_retries(OPENAI_URL, body, headers, retries + 1 - posts)
+            finally:
+                posts += _last_posts
+            choice = answer["choices"][0]
             out = (choice["message"].get("content") or "").strip()
             if not out and choice.get("finish_reason") == "length":
                 log(
@@ -1102,7 +1129,7 @@ def llm_openai(prompt, model):
             if _client_rejection(e):
                 return ""
             # Rate limits and server errors are worth another try; other 4xx (bad key, bad model) are not.
-            if (e.status == 429 or e.status >= 500) and attempt < retries:
+            if (e.status == 429 or e.status >= 500) and attempt < retries and posts < retries + 1:
                 if stop_requested() or _deadline_passed():
                     log(f"  llm fail: HTTP {e.status} (retry skipped: soft stop or episode deadline)")
                     return LLM_UNREACHABLE

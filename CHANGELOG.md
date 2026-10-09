@@ -8,6 +8,21 @@ that shipped since.
 
 ## [Unreleased]
 
+- **Glossary review answers survive a busy glossary; wiki redirects are guarded.** `glossary_acquire --review --apply`, `--revert` and
+  `--prune-no-match` wait up to `GLOSSARY_LOCK_WAIT_INTERACTIVE` seconds (default 600) for the glossary, printing `waiting for
+  <stage> to finish...`. If it stays busy, your `--review` answers are saved atomically to `<glossary>.json.review-pending` and
+  applied at the start of the next `--review`; the summary's `pending` is read from the file on disk, plus `saved` when answers
+  are waiting. The lock now names its holder, is documented as not reentrant, and an unwritable glossary directory logs once that the
+  stage runs unlocked. A wiki redirect to a scheme that is not allowed (https to http or ftp) is refused before the request is made.
+- **`REPAIR_TRANSPORT_RETRIES` no longer re-sends a request the server already has.** Only failures before the request is out
+  (connection refused, DNS, a connect timeout, a reset while connecting or sending) are retried; a read timeout, RemoteDisconnected
+  or IncompleteRead is not, since the provider is usually still generating (and billing) it. The backoff is spent from
+  `REPAIR_RETRY_SLEEP_BUDGET`, the retries stop at the episode deadline, and transport retries share the `REPAIR_OPENAI_RETRIES`
+  allowance (at most that many plus one POSTs per line).
+- **`VERIFY_QUEUE_BLOCKED_EXPANSIONS=0` only drops real expansions.** A blocked canonical with more tokens than the term (`D` ->
+  `Monkey D. Luffy`, `Castle` -> `Hancock Castle`) is verified and counted but not queued; a canonical with the same number of tokens
+  (`Usop` -> `Usopp`, `Burn` -> `Coburn`) is a spelling fix and is always queued under its legacy reason.
+
 - **`REPAIR_ACCEPT_PUNCT_CASE_ONLY` is safer, still off by default.** "Only case and punctuation changed" now compares the words as a
   sequence (a reorder is a change); the relaxed layout check lets an already-bad card grow by at most 2 characters (and the matching
   cps), so a 70-character over-cps card cannot become 82; and only case changes that cannot change meaning count: a sentence or card

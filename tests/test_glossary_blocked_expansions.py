@@ -23,14 +23,17 @@ def guards(monkeypatch):
     """Both write guards on, a tiny word list that knows 'government' as a word, an arc universe that lacks 'Zou Island'."""
     monkeypatch.setenv("VERIFY_WRITE_WHOLE_WORD", "1")
     monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
-    monkeypatch.setattr(glossary, "_ORDINARY", {"government"})
+    monkeypatch.setattr(glossary, "_ORDINARY", {"government", "castle"})
 
 
+# term -> (canonical, what the flag-0 run does with it)
 CASES = {
-    "Usop": ("Usopp", "expansion-guarded"),  # whole-word guard: a near-respelling that is_expansion calls an expansion
-    "Burn": ("Coburn", "expansion-guarded"),
+    "D": ("Monkey D. Luffy", "expansion-guarded"),  # more tokens: a real expansion the whole-word guard refused
+    "Castle": ("Hancock Castle", "common-word"),
     "Government": ("World Government", "common-word"),
 }
+# One-token spelling fixes: never droppable, whatever is_expansion says.
+RESPELLINGS = {"Usop": "Usopp", "Burn": "Coburn", "Raftel": "Ratel", "Jabra": "Jabari", "Kaidou": "Kaido", "Lufy": "Luffy"}
 
 
 def apply(terms_to_canon, **extra):
@@ -44,12 +47,13 @@ def apply(terms_to_canon, **extra):
 def test_by_default_blocked_expansions_are_queued_under_the_legacy_reason_strings(guards, monkeypatch):
     """GUARD (passes on the old code)."""
     monkeypatch.delenv("VERIFY_QUEUE_BLOCKED_EXPANSIONS", raising=False)
-    out = apply({t: c for t, (c, _r) in CASES.items()})
+    terms = {**{t: c for t, (c, _r) in CASES.items()}, **RESPELLINGS}
+    out = apply(terms)
     assert out["flagged"]["Usop"] == {"reason": "respelling-needs-review", "canonical": "Usopp"}
-    assert out["flagged"]["Burn"] == {"reason": "respelling-needs-review", "canonical": "Coburn"}
+    assert out["flagged"]["D"] == {"reason": "respelling-needs-review", "canonical": "Monkey D. Luffy"}
     assert out["flagged"]["Government"] == {"reason": "common-word", "canonical": "World Government"}
     monkeypatch.setenv("VERIFY_QUEUE_BLOCKED_EXPANSIONS", "1")
-    assert apply({t: c for t, (c, _r) in CASES.items()}) == out
+    assert apply(terms) == out
 
 
 # ---- off: verified, not queued ------------------------------------- ----
@@ -59,8 +63,27 @@ def test_with_the_queue_off_blocked_expansions_are_verified_but_not_flagged(guar
     monkeypatch.setenv("VERIFY_QUEUE_BLOCKED_EXPANSIONS", "0")
     out = apply({t: c for t, (c, _r) in CASES.items()})
     assert "flagged" not in out
-    assert sorted(out["verified"]) == ["Burn", "Government", "Usop"]
-    assert not set(out["names"]) - {"Usop", "Burn", "Government"} and out["phrases"] == []  # nothing was written either
+    assert sorted(out["verified"]) == ["Castle", "D", "Government"]
+    assert out["phrases"] == [] and sorted(out["names"]) == ["Castle", "D", "Government"]  # nothing was written either
+
+
+@pytest.mark.parametrize("term,canon", sorted(RESPELLINGS.items()))
+def test_a_one_token_spelling_fix_is_always_queued_even_if_is_expansion_says_expansion(guards, monkeypatch, term, canon):
+    """Usop -> Usopp and Burn -> Coburn are expansions to is_expansion but spelling fixes to a reader; the correct spelling would
+    never be offered again if they were dropped."""
+    monkeypatch.setenv("VERIFY_QUEUE_BLOCKED_EXPANSIONS", "0")
+    out = apply({term: canon})
+    assert out["flagged"][term] == {"reason": "respelling-needs-review", "canonical": canon}
+
+
+def test_a_same_token_common_word_block_is_queued_too(monkeypatch):
+    """Without the whole-word guard a common word can be 'expanded' into one token (Castle -> Castles): not droppable."""
+    monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
+    monkeypatch.delenv("VERIFY_WRITE_WHOLE_WORD", raising=False)
+    monkeypatch.setattr(glossary, "_ORDINARY", {"castle"})
+    monkeypatch.setenv("VERIFY_QUEUE_BLOCKED_EXPANSIONS", "0")
+    out = apply({"Castle": "Castles", "Castle Rock": "Hancock Castle Rock"})
+    assert out["flagged"]["Castle"] == {"reason": "common-word", "canonical": "Castles"}
 
 
 def test_a_real_respelling_is_always_queued(guards, monkeypatch):
@@ -97,8 +120,9 @@ def test_low_confidence_and_no_match_are_not_this_flags_business(guards, monkeyp
 
 def _verify(tmp_path, monkeypatch):
     path = tmp_path / "g.json"
-    path.write_text(json.dumps(base(names=["Usop", "Burn", "Government", "Raftel", "Zoro"], wiki="https://x.fandom.com/api.php")))
-    answers = {"Usop": "Usopp", "Burn": "Coburn", "Government": "World Government", "Raftel": "Ratel", "Zoro": "Roronoa Zoro"}
+    path.write_text(json.dumps(base(names=["D", "Usop", "Government", "Raftel", "Zoro"], wiki="https://x.fandom.com/api.php")))
+    answers = {"D": "Monkey D. Luffy", "Usop": "Usopp", "Government": "World Government"}
+    answers |= {"Raftel": "Ratel", "Zoro": "Roronoa Zoro"}
     monkeypatch.setattr(gv, "resolve_wiki", lambda show, override=None: "https://x.fandom.com/api.php")
     monkeypatch.setattr(gv, "fetch_titles", lambda api, show: list(answers.values()))
     monkeypatch.setattr(gv, "VERIFY_BACKEND", "llamacpp")
@@ -113,9 +137,9 @@ def test_the_report_counts_blocked_expansions_with_a_breakdown_only_when_off(gua
     assert "blocked_expansions" not in rep and "blocked_expansions_by_reason" not in rep  # default report shape
     monkeypatch.setenv("VERIFY_QUEUE_BLOCKED_EXPANSIONS", "0")
     rep, saved = _verify(tmp_path, monkeypatch)
-    assert rep["blocked_expansions"] == 3
-    assert rep["blocked_expansions_by_reason"] == {"common-word": 1, "expansion-guarded": 2}
-    assert set(saved["flagged"]) == {"Raftel"}  # only the real respelling is queued
+    assert rep["blocked_expansions"] == 2
+    assert rep["blocked_expansions_by_reason"] == {"common-word": 1, "expansion-guarded": 1}
+    assert set(saved["flagged"]) == {"Raftel", "Usop"}  # the spelling fixes are queued
     assert rep["applied"] == 1  # Zoro -> Roronoa Zoro
 
 

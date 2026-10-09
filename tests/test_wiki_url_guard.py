@@ -32,7 +32,7 @@ def urlopen(monkeypatch):
         calls.append(req.full_url)
         return Resp(req.full_url)
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    monkeypatch.setattr(gv, "_urlopen", fake)
     monkeypatch.delenv("WIKI_ALLOW_HTTP", raising=False)
     return calls
 
@@ -86,7 +86,7 @@ def test_a_redirect_to_a_scheme_that_is_not_allowed_is_refused(urlopen, monkeypa
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: Redirected(b"{}"))
+    monkeypatch.setattr(gv, "_urlopen", lambda req, timeout=None: Redirected(b"{}"))
     with pytest.raises(ValueError):
         gv._http_json("https://x.fandom.com/api.php")
 
@@ -120,3 +120,74 @@ def test_a_glossary_with_a_file_wiki_is_not_verified(tmp_path, monkeypatch):
     path.write_text(json.dumps({"show": "S", "names": ["Zoro"], "wiki": "file:///etc/passwd"}))
     rep = gv.verify(str(path))
     assert "wiki unresolved" in rep["note"]
+
+
+# ---- a redirect never leaves the machine for a scheme that is not allowed ----
+
+
+def _redirect(target, monkeypatch=None):
+    req = urllib.request.Request("https://x.fandom.com/api.php")
+    return gv._GuardedRedirect().redirect_request(req, io.BytesIO(), 302, "Found", {}, target)
+
+
+@pytest.mark.parametrize("target", ["http://x.fandom.com/api.php", "ftp://x.fandom.com/api.php", "file:///etc/hostname"])
+def test_the_redirect_handler_refuses_a_disallowed_target(monkeypatch, target):
+    monkeypatch.delenv("WIKI_ALLOW_HTTP", raising=False)
+    with pytest.raises(ValueError):
+        _redirect(target)
+
+
+def test_the_redirect_handler_follows_an_allowed_target(monkeypatch):
+    monkeypatch.delenv("WIKI_ALLOW_HTTP", raising=False)
+    assert _redirect("https://y.fandom.com/api.php") is not None
+    monkeypatch.setenv("WIKI_ALLOW_HTTP", "1")
+    assert _redirect("http://127.0.0.1:9/api.php") is not None
+
+
+def test_a_real_redirect_to_ftp_is_never_attempted(monkeypatch):
+    """Loopback fake: server A answers 302 -> ftp://127.0.0.1:<B>; B counts connections. B must see none."""
+    import socket
+    import threading
+
+    b = socket.socket()
+    b.bind(("127.0.0.1", 0))
+    b.listen(4)
+    hits = []
+
+    def watch():
+        try:
+            while True:
+                c, _ = b.accept()
+                hits.append(1)
+                c.close()
+        except OSError:
+            return
+
+    threading.Thread(target=watch, daemon=True).start()
+    a = socket.socket()
+    a.bind(("127.0.0.1", 0))
+    a.listen(4)
+
+    def serve():
+        try:
+            while True:
+                c, _ = a.accept()
+                c.recv(4096)
+                loc = f"ftp://127.0.0.1:{b.getsockname()[1]}/x"
+                c.sendall(f"HTTP/1.1 302 Found\r\nLocation: {loc}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".encode())
+                c.close()
+        except OSError:
+            return
+
+    threading.Thread(target=serve, daemon=True).start()
+    monkeypatch.setenv("WIKI_ALLOW_HTTP", "1")
+    try:
+        with pytest.raises(ValueError):
+            gv._http_json(f"http://127.0.0.1:{a.getsockname()[1]}/api.php")
+        import time
+
+        time.sleep(0.2)
+        assert hits == []
+    finally:
+        a.close()
+        b.close()

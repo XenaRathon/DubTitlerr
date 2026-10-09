@@ -23,6 +23,7 @@ def write(path, **extra):
 @pytest.fixture(autouse=True)
 def short_wait(monkeypatch):
     monkeypatch.setenv("GLOSSARY_LOCK_WAIT", "0.2")
+    monkeypatch.setenv("GLOSSARY_LOCK_WAIT_INTERACTIVE", "0.2")
 
 
 class Holder:
