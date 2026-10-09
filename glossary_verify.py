@@ -88,13 +88,15 @@ class BackendConfigError(RuntimeError):
     """The glossary stages' backend is unresolved or misconfigured: nothing may be adjudicated (see backend_problem)."""
 
 
-def backend_problem():
-    """Why the glossary stages must not run, or "" when the configured backend is usable. Checked once before any work by
-    verify() and acquire(), so a misconfiguration refuses the run instead of turning every term into a "no match".
+def backend_problem(backend=None):
+    """Why a glossary stage must not run on ``backend`` (default: VERIFY_BACKEND), or "" when it is usable. Checked once before
+    any work by verify() and acquire(), so a misconfiguration refuses the run instead of turning every term into a "no match".
     The env vars of the openai backend are read here, at call time, and only their NAMES appear in the message."""
-    if VERIFY_BACKEND not in VERIFY_BACKENDS:
-        return BACKEND_PROBLEM or f"VERIFY_BACKEND={VERIFY_BACKEND!r} is not one of {', '.join(VERIFY_BACKENDS)}"
-    if VERIFY_BACKEND == "decision":
+    if backend is None:
+        if VERIFY_BACKEND not in VERIFY_BACKENDS:
+            return BACKEND_PROBLEM or f"VERIFY_BACKEND={VERIFY_BACKEND!r} is not one of {', '.join(VERIFY_BACKENDS)}"
+        backend = VERIFY_BACKEND
+    if backend == "decision":
         import glossary_decision
 
         why = glossary_decision.problem()
@@ -104,7 +106,7 @@ def backend_problem():
             local = os.environ.get("VERIFY_DECISION_LOCAL_BACKEND", "").strip()
             if local and local not in LEGACY_BACKENDS:
                 return f"VERIFY_DECISION_LOCAL_BACKEND must be one of {', '.join(LEGACY_BACKENDS)}"
-    if VERIFY_BACKEND == "openai":
+    if backend == "openai":
         import repair
 
         url = os.environ.get("VERIFY_OPENAI_URL", "").strip()
@@ -139,14 +141,39 @@ def local_backend():
     return inherited if inherited in LEGACY_BACKENDS else "ollama"
 
 
-def announce(stage):
+def acquire_backend():
+    """The backend acquire's LLM calls (tier B's term pick, tier C's pair merge) use. ACQUIRE_BACKEND, when set, wins
+    (llamacpp, ollama, openai or decision). Unset, acquire follows VERIFY_BACKEND, except that VERIFY_BACKEND=decision means the
+    LOCAL backend (local_backend(), as the decision fallback resolves it): on the blind acquire pairs the decision model scored
+    47% against the local model's 72%, so acquire opts in to it explicitly. Read per call."""
+    explicit = (os.environ.get("ACQUIRE_BACKEND") or "").strip()
+    if explicit:
+        return explicit
+    return local_backend() if VERIFY_BACKEND == "decision" else VERIFY_BACKEND
+
+
+def acquire_problem():
+    """Why acquire must not run, or "" : an unknown ACQUIRE_BACKEND, else the same refusal rules verify applies to the backend
+    acquire would use (a hosted choice needs its URL, key and model). A broken VERIFY_BACKEND does not refuse an acquire that does
+    not use it."""
+    explicit = (os.environ.get("ACQUIRE_BACKEND") or "").strip()
+    if explicit and explicit not in VERIFY_BACKENDS:
+        return f"ACQUIRE_BACKEND={explicit!r} is not one of {', '.join(VERIFY_BACKENDS)}"
+    chosen = acquire_backend()
+    if chosen == VERIFY_BACKEND:
+        return backend_problem()  # no split from verify: exactly verify's own check
+    return backend_problem(chosen)
+
+
+def announce(stage, backend=None):
     """At the start of a run on a hosted backend (openai, decision), say which fields go to which host. Local backends say
     nothing: nothing leaves the machine."""
-    if VERIFY_BACKEND == "decision":
+    backend = backend or VERIFY_BACKEND
+    if backend == "decision":
         import glossary_decision
 
         glossary_decision.announce(stage)
-    elif VERIFY_BACKEND == "openai":
+    elif backend == "openai":
         host = urllib.parse.urlsplit(os.environ.get("VERIFY_OPENAI_URL", "")).hostname
         what = (
             "the show name, both spellings of each pair and up to a few transcript lines quoting each"
@@ -159,20 +186,22 @@ def announce(stage):
         )
 
 
-def begin_run(stage):
-    """Start of a verify / acquire run: announce a hosted backend and zero the decision counters."""
-    if VERIFY_BACKEND in ("openai", "decision"):
-        announce(stage)
-    if VERIFY_BACKEND == "decision":
+def begin_run(stage, backend=None):
+    """Start of a verify / acquire run on ``backend`` (default VERIFY_BACKEND): announce a hosted backend and zero the decision
+    counters."""
+    backend = backend or VERIFY_BACKEND
+    if backend in ("openai", "decision"):
+        announce(stage, backend)
+    if backend == "decision":
         import glossary_decision
 
         glossary_decision.reset()
 
 
-def end_run(rep):
+def end_run(rep, backend=None):
     """End of a run: on the decision backend print the one summary line and add the counters to the report as `decision`.
     Any other backend: the report is returned untouched and nothing is printed."""
-    if VERIFY_BACKEND == "decision":
+    if (backend or VERIFY_BACKEND) == "decision":
         import glossary_decision
 
         log(glossary_decision.summary_line())
@@ -286,23 +315,25 @@ def parse_adjudication(text: str) -> dict:
     return {"canonical": str(d.get("canonical", "") or ""), "confidence": conf, "dub_note": str(d.get("dub_note", "") or "")}
 
 
-def adjudicate(term: str, cands: list[str], show: str) -> dict | None:
-    """LLM pick -> {'canonical': str, 'confidence': 'high'|'low'|'none', 'dub_note': str}.
+def adjudicate(term: str, cands: list[str], show: str, backend: str | None = None) -> dict | None:
+    """LLM pick -> {'canonical': str, 'confidence': 'high'|'low'|'none', 'dub_note': str}. ``backend`` defaults to VERIFY_BACKEND;
+    acquire passes acquire_backend().
 
-    Raises BackendConfigError when the configured backend is unusable. Only the decision backend with
+    Raises BackendConfigError when the backend is unusable. Only the decision backend with
     VERIFY_DECISION_FALLBACK=none can return None: the call failed and the term must stay pending, not become a "no match"."""
     if not cands:
         return {"canonical": "", "confidence": "none", "dub_note": ""}
-    problem = backend_problem()
+    problem = backend_problem() if backend in (None, VERIFY_BACKEND) else backend_problem(backend)
     if problem:
         raise BackendConfigError(problem)
-    if VERIFY_BACKEND == "decision":
+    backend = backend or VERIFY_BACKEND
+    if backend == "decision":
         import glossary_decision
 
         return glossary_decision.adjudicate_verify(
             term, cands, show, local=lambda: _adjudicate_llm(term, cands, show, local_backend())
         )  # None = left pending (a failed call with VERIFY_DECISION_FALLBACK=none)
-    return _adjudicate_llm(term, cands, show, VERIFY_BACKEND)
+    return _adjudicate_llm(term, cands, show, backend)
 
 
 def _adjudicate_llm(term: str, cands: list[str], show: str, backend: str) -> dict:

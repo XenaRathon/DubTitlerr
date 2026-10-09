@@ -58,6 +58,7 @@ def decision(monkeypatch):
     for name in ("VERIFY_DECISION_MODEL", "VERIFY_DECISION_TAU", "ACQUIRE_DECISION_TAU", "VERIFY_DECISION_FALLBACK"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(gv, "VERIFY_BACKEND", "decision")
+    monkeypatch.setenv("ACQUIRE_BACKEND", "decision")  # acquire is local by default under decision verify; these tests opt in
     monkeypatch.setattr(gv, "BACKEND_PROBLEM", "")
     monkeypatch.setattr(gv, "llm_chat", lambda *a, **k: pytest.fail("the local model must not be used"))
     monkeypatch.setattr(ga, "llm_chat", lambda *a, **k: pytest.fail("the local model must not be used"))

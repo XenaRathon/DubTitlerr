@@ -8,8 +8,10 @@ wiki owns the candidate list AND every canonical spelling, and the show's own tr
 only decide which wiki entities are worth asking about. Our errors can raise a question;
 they can never become an answer.
 
-Its LLM calls (tier B's per-term pick, tier C's per-pair merge) follow glossary_verify.VERIFY_BACKEND and its VERIFY_* /
-ACQUIRE_DECISION_TAU settings: local by default, or opt-in a hosted text model (openai) or a decision model (decision). A
+Its LLM calls (tier B's per-term pick, tier C's per-pair merge) use glossary_verify.acquire_backend(): ACQUIRE_BACKEND when set,
+else VERIFY_BACKEND, except that VERIFY_BACKEND=decision means the LOCAL backend (acquire opts in to the decision model with
+ACQUIRE_BACKEND=decision). Settings: the VERIFY_* variables and ACQUIRE_DECISION_TAU. Local by default, or opt-in a hosted text
+model (openai) or a decision model (decision). A
 decision call that fails leaves the pair "unavailable" (never cached) and the term without a tier-B entry; the run reports its
 decision counters. See glossary_decision.
 
@@ -364,17 +366,18 @@ def adjudicate_merge(variant: str, canonical: str, ctx_v: list, ctx_c: list, sho
     cached: the model looked and was unsure, which is worth not paying for twice."""
     none = {"same_entity": False, "confidence": "none", "unavailable": True}
     try:
-        problem = glossary_verify.backend_problem()
+        problem = glossary_verify.acquire_problem()
         if problem:
             raise glossary_verify.BackendConfigError(problem)
-        if glossary_verify.VERIFY_BACKEND == "decision":
+        backend = glossary_verify.acquire_backend()
+        if backend == "decision":
             import glossary_decision
 
             return glossary_decision.adjudicate_pair(
                 variant, canonical, ctx_v, ctx_c, show,
                 local=lambda: _merge_via_llm(variant, canonical, ctx_v, ctx_c, show, glossary_verify.local_backend()),
             )  # fmt: skip
-        return _merge_via_llm(variant, canonical, ctx_v, ctx_c, show, glossary_verify.VERIFY_BACKEND)
+        return _merge_via_llm(variant, canonical, ctx_v, ctx_c, show, backend)
     except Exception as e:
         log("acquire: merge adjudication failed:", variant, e)
         return none
@@ -1022,11 +1025,16 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
 
 
 def _acquire_run(gloss_path: str, show_dir: str, apply: bool, override: str | None) -> dict:
-    usable = not glossary_verify.backend_problem()
+    backend = glossary_verify.acquire_backend()
+    usable = not glossary_verify.acquire_problem()
     if usable:
-        glossary_verify.begin_run("acquire")
+        glossary_verify.begin_run("acquire", backend)
+        if glossary_verify.VERIFY_BACKEND in ("openai", "decision") or os.environ.get("ACQUIRE_BACKEND"):
+            log(f"glossary acquire: backend {backend}")  # names the split from verify; a plain local run stays silent
     rep = _acquire(gloss_path, show_dir, apply, override)
-    return glossary_verify.end_run(rep) if usable else rep
+    if not usable:
+        return rep
+    return {**glossary_verify.end_run(rep, backend), "backend": backend}
 
 
 def _acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str | None = None) -> dict:
@@ -1035,7 +1043,7 @@ def _acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str 
     except (OSError, ValueError) as e:
         return {"note": f"load-failed: {e}"}
     show = gloss.get("show") or os.path.basename(gloss_path)[:-5]
-    problem = glossary_verify.backend_problem()
+    problem = glossary_verify.acquire_problem()
     if problem:
         log(f"glossary acquire refused: {problem}")
         return {"show": show, "note": f"refused: {problem}"}
@@ -1168,7 +1176,12 @@ def _acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str 
             log(f"stop requested: leaving tier-b after {done_terms} terms")
             return {"show": show, "wiki": api, "note": "stopped", "files": files}
         try:
-            adj = glossary_verify.adjudicate(term, glossary_verify.candidates(term, titles), show)
+            cands_b = glossary_verify.candidates(term, titles)
+            chosen = glossary_verify.acquire_backend()
+            if chosen == glossary_verify.VERIFY_BACKEND:
+                adj = glossary_verify.adjudicate(term, cands_b, show)
+            else:  # acquire runs on a different backend than verify (ACQUIRE_BACKEND, or local under decision verify)
+                adj = glossary_verify.adjudicate(term, cands_b, show, backend=chosen)
         except Exception as e:
             log("acquire: adjudicate failed:", term, e)
             continue
