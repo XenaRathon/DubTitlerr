@@ -8,6 +8,16 @@ that shipped since.
 
 ## [Unreleased]
 
+- **Glossary hardening.** Wiki fetches speak https only (`WIKI_ALLOW_HTTP=1` allows http, for tests): a glossary's `wiki` value or an
+  override such as `file:///...` or `ftp://...` is refused instead of reaching `urlopen`, and `normalize_api` returns None for it.
+  Every stage that rewrites a glossary (verify, `--tag-arcs`, `acquire --apply`, `mine_glossary`, `--review --apply`, `--revert
+  --apply`) takes one advisory lock, `<glossary>.json.lock`; a stage that finds it busy (waits `GLOSSARY_LOCK_WAIT`, default 5 s)
+  logs `glossary busy: <stage> skipped` and exits 0, so a manual run during the nightly pass no longer loses one side's updates.
+  `--review --apply` applies your decisions to the freshly re-read file. A malformed adjudication (a list, a non-string canonical)
+  is a counted no-match (`malformed` in the verify report); the common-word guard ignores punctuation around a term. A
+  `no-match` flag that carries a candidate is no longer collapsed in `--review`, and `glossary_acquire --review --prune-no-match
+  [--apply]` removes the stored candidate-less no-match flags of verified terms.
+
 - **A smaller repair review queue (both opt-in).** `REPAIR_AUTO_DISMISS_WORDS=N` (unset = off) marks a rejected repair whose
   proposal changed more than N words (added plus dropped, case and punctuation ignored) as `dismissed: large_change`. It is still
   written to the sidecar (the audit trail, with `changes`), but the review page and `unresolved.py` skip it; the page's

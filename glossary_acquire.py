@@ -850,10 +850,10 @@ def review_groups(gloss: dict) -> tuple[list, list]:
     they are returned apart (and the CLI collapses them); everything else is ordered by REVIEW_PRIORITY, then reason, then
     term."""
     items = review_items(gloss)
-    no_match = [i for i in items if i["reason"] == "no-match"]
+    no_match = [i for i in items if i["reason"] == "no-match" and not i["canonical"]]
     rank = {r: n for n, r in enumerate(REVIEW_PRIORITY)}
     decisions = sorted(
-        (i for i in items if i["reason"] != "no-match"),
+        (i for i in items if not (i["reason"] == "no-match" and not i["canonical"])),
         key=lambda i: (rank.get(i["reason"], len(REVIEW_PRIORITY)), i["reason"], i["term"]),
     )
     return decisions, no_match
@@ -1007,6 +1007,17 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     leaves the glossary untouched and is reported, not raised. On a hosted backend the run opens by saying which fields go
     to which host (the transcript lines among them); on the decision backend it ends with one summary line and the report
     gains `decision` (calls / ok / failures / fallbacks / pending)."""
+    import glossary_lock
+
+    if not apply:  # a dry run writes no glossary (only the acquire cache): nothing to lose, nothing to lock
+        return _acquire_run(gloss_path, show_dir, apply, override)
+    with glossary_lock.locked(gloss_path, "acquire") as ok:
+        if not ok:
+            return {"note": "glossary busy: acquire skipped"}
+        return _acquire_run(gloss_path, show_dir, apply, override)
+
+
+def _acquire_run(gloss_path: str, show_dir: str, apply: bool, override: str | None) -> dict:
     usable = not glossary_verify.backend_problem()
     if usable:
         glossary_verify.begin_run("acquire")
@@ -1226,6 +1237,43 @@ def _acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str 
     }
 
 
+def prune_no_match(gloss: dict) -> tuple[dict, int]:
+    """(gloss without its candidate-less 'no-match' flags, how many were removed). Only flags whose term is already in `verified`
+    (so verify will not re-adjudicate it), whose reason is no-match and which name no canonical; a no-match that carries a
+    candidate is a decision and stays. Pure."""
+    g = json.loads(json.dumps(gloss))
+    verified = set(g.get("verified", []))
+    flagged = g.get("flagged") or {}
+    drop = []
+    for term, meta in flagged.items():
+        reason = meta if isinstance(meta, str) else (meta or {}).get("reason", "")
+        canon = "" if isinstance(meta, str) else (meta or {}).get("canonical", "")
+        if reason == "no-match" and not canon and term in verified:
+            drop.append(term)
+    for term in drop:
+        del flagged[term]
+    if not flagged:
+        g.pop("flagged", None)
+    return g, len(drop)
+
+
+def _prune_cli(a) -> None:
+    import glossary_lock
+
+    g = json.load(open(a.glossary, encoding="utf-8"))
+    pruned, n = prune_no_match(g)
+    if not a.apply:
+        log(json.dumps({"pruned": n, "written": False, "note": "dry run: add --apply to write"}))
+        return
+    with glossary_lock.locked(a.glossary, "prune") as ok:
+        if not ok:
+            log(json.dumps({"pruned": 0, "written": False}))
+            return
+        pruned, n = prune_no_match(json.load(open(a.glossary, encoding="utf-8")))  # fresh, under the lock
+        _write_json(a.glossary, pruned)
+    log(json.dumps({"pruned": n, "written": True}))
+
+
 def main():
     ap = argparse.ArgumentParser(description="Acquire proper nouns from a show's own output + its wiki.")
     ap.add_argument("glossary", help="path to <show>.json")
@@ -1237,9 +1285,21 @@ def main():
     ap.add_argument(
         "--all", action="store_true", help="with --review: also walk the 'no-match' entries (collapsed into one line otherwise)"
     )
+    ap.add_argument(
+        "--prune-no-match",
+        action="store_true",
+        help="with --review: remove the stored 'no-match' flags that carry no candidate (their terms are already verified); "
+        "prints the count, writes with --apply",
+    )
     a = ap.parse_args()
+    if a.review and a.prune_no_match:
+        _prune_cli(a)
+        return
     if a.review:
+        import glossary_lock
+
         g = json.load(open(a.glossary, encoding="utf-8"))
+        answers = []  # (term, accept) in order; applied to the FRESH file at the end, not to this stale copy
         decisions, no_match = review_groups(g)
         if no_match and not a.all:
             log(
@@ -1256,16 +1316,29 @@ def main():
                 if ans == "q":
                     break
                 g = record_decision(g, item["term"], accept=(ans == "y"))
+                answers.append((item["term"], ans == "y"))
             else:
                 ans = input("  no fix proposed - mark this spelling correct as-is? [y/N/q] ").strip().lower()
                 if ans == "q":
                     break
                 if ans == "y":
                     g = record_decision(g, item["term"], accept=False)
+                    answers.append((item["term"], False))
                 # 'n' (or anything else): leave it pending in flagged, untouched
+        written = False
         if a.apply:
-            _write_json(a.glossary, g)
-        log(json.dumps({"reviewed": True, "written": a.apply, "pending": len(g.get("flagged", {}))}))
+            # The walk can take minutes: another stage may have rewritten the glossary meanwhile. Re-read it under the lock and
+            # apply the decisions to THAT, so neither side's changes are lost.
+            with glossary_lock.locked(a.glossary, "review") as ok:
+                if ok:
+                    g = json.load(open(a.glossary, encoding="utf-8"))
+                    for term, accept in answers:
+                        g = record_decision(g, term, accept=accept)
+                    _write_json(a.glossary, g)
+                    written = True
+                else:
+                    log("glossary busy: your decisions were not written; run --review again")
+        log(json.dumps({"reviewed": True, "written": written, "pending": len(g.get("flagged", {}))}))
         return
     if a.revert:
         try:
@@ -1274,9 +1347,17 @@ def main():
             log(json.dumps({"note": f"load-failed: {e}"}))
             return
         out = revert(g)
+        written = False
         if a.apply:
-            _write_json(a.glossary, out)
-        log(json.dumps({"reverted": len(g.get("acquired", {})), "written": a.apply}))
+            import glossary_lock
+
+            with glossary_lock.locked(a.glossary, "revert") as ok:
+                if ok:
+                    g = json.load(open(a.glossary, encoding="utf-8"))  # fresh, under the lock
+                    out = revert(g)
+                    _write_json(a.glossary, out)
+                    written = True
+        log(json.dumps({"reverted": len(g.get("acquired", {})), "written": written}))
         return
     rep = acquire(a.glossary, a.show_dir, apply=a.apply, override=a.wiki)
     for p in rep.get("proposals", []):

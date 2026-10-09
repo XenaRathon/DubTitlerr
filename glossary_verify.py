@@ -334,7 +334,8 @@ def auto_writes(term: str, canon: str) -> bool:
     near-respellings: 'Usop' -> 'Usopp', 'Burn' -> 'Coburn'. VERIFY_WRITE_WHOLE_WORD=1 (default off) additionally
     requires the term to be a whole word (token-wise, casefolded) of the canonical, which is how the bake-off's expansion gold
     is defined; anything else is flagged 'respelling-needs-review' like any non-expansion. A term with fewer than two letters
-    ('D', '3') never passes under this guard. Read per call."""
+    ('D', '3', 'G-5') never passes under this guard: it is flagged for review, never lost (the term itself stays in the glossary
+    and the reviewer can accept the write). 'Dr. K' has three letters and is not held back. Read per call."""
     # Imported at call time, NOT at module scope: glossary_acquire imports this module (a hard cycle otherwise).
     from glossary_acquire import is_expansion
 
@@ -484,8 +485,34 @@ def queue_no_match() -> bool:
 
 def is_no_match(adj) -> bool:
     """The adjudication apply_results would flag 'no-match' (not a high confidence answer, and not low-with-a-candidate)."""
-    conf, canon = (adj or {}).get("confidence", "none"), (adj or {}).get("canonical") or ""
+    adj, _bad = clean_adjudication(adj)
+    conf, canon = adj["confidence"], adj["canonical"]
     return (conf != "high" or not canon) and not (conf == "low" and canon)
+
+
+def clean_adjudication(adj) -> tuple[dict, bool]:
+    """(a well-formed {'canonical': str, 'confidence': 'high'|'low'|'none'}, whether anything had to be repaired).
+
+    A backend, a monkeypatch or a future parser can hand apply_results a list, a string, None, or a dict whose canonical is not
+    a string. None of that may write a name or crash the run: it becomes a no-match (and is counted). An unknown confidence word
+    becomes 'low', as parse_adjudication does. dub_note and other fields are dropped; nothing downstream reads them."""
+    if not isinstance(adj, dict):
+        return {"canonical": "", "confidence": "none"}, adj is not None
+    canon, conf = adj.get("canonical", ""), adj.get("confidence", "none")
+    bad = False
+    if canon is None:
+        canon = ""
+    elif not isinstance(canon, str):
+        canon, bad = "", True
+    if isinstance(conf, str):
+        conf = conf.strip().lower()
+        if conf not in ("high", "low", "none"):
+            conf, bad = "low", True
+    else:
+        conf, bad = "none", True
+    if bad and not canon:
+        conf = "none"
+    return {"canonical": canon, "confidence": conf}, bad
 
 
 def apply_results(gloss: dict, results: dict) -> dict:
@@ -526,8 +553,9 @@ def apply_results(gloss: dict, results: dict) -> dict:
     universe = arc_universe(gloss)
     for term, adj in results.items():
         verified.add(term)
-        canon = (adj or {}).get("canonical") or ""
-        conf = (adj or {}).get("confidence", "none")
+        adj, _bad = clean_adjudication(adj)
+        canon = adj["canonical"]
+        conf = adj["confidence"]
         if conf == "high" and canon and canon != term:
             # Imported at call time, NOT at module scope: glossary_acquire imports this
             # module, so a top-level import is a hard cycle (ImportError on the
@@ -573,10 +601,31 @@ def wiki_candidates(title: str) -> list[str]:
     return out
 
 
-def normalize_api(url: str) -> str:
-    """Reduce any wiki URL to its `<scheme>://<host>/api.php`."""
-    m = re.match(r"(https?://[^/]+)", url)
-    return (m.group(1) if m else url).rstrip("/") + "/api.php"
+def _wiki_url_problem(url: str, schemes: tuple = ("https",)) -> str:
+    """Why ``url`` may not be fetched as a wiki api, or "" when it may: a scheme in ``schemes`` (compared case-insensitively;
+    urllib is case-insensitive too, so FILE:///x must not slip past a case-sensitive check), a host, no userinfo."""
+    try:
+        parts = urllib.parse.urlsplit((url or "").strip())
+        host = parts.hostname
+    except ValueError:
+        return "unparseable url"
+    if parts.scheme.lower() not in schemes:
+        return f"scheme {parts.scheme!r} is not allowed"
+    if not host:
+        return "no host"
+    if "@" in parts.netloc:
+        return "credentials in the url"
+    return ""
+
+
+def normalize_api(url: str) -> str | None:
+    """Reduce any wiki URL to its `<scheme>://<host>/api.php`; None for anything that is not an http(s) URL with a host and no
+    credentials (file://, ftp://, javascript:, a bare word): resolve_wiki then finds no wiki. http is accepted here and refused
+    at fetch time unless WIKI_ALLOW_HTTP=1, so a config naming it fails in one place."""
+    if _wiki_url_problem(url, ("https", "http")):
+        return None
+    parts = urllib.parse.urlsplit(url.strip())
+    return f"{parts.scheme.lower()}://{parts.netloc}".rstrip("/") + "/api.php"
 
 
 def allpages_url(api: str, apcontinue: str | None = None) -> str:
@@ -591,16 +640,29 @@ def parse_allpages(resp: dict) -> tuple[list[str], str | None]:
     return titles, resp.get("continue", {}).get("apcontinue")
 
 
+def _wiki_schemes() -> tuple:
+    return ("https", "http") if os.environ.get("WIKI_ALLOW_HTTP") == "1" else ("https",)
+
+
 def _http_json(url: str) -> dict:
+    """GET ``url`` as JSON. https only (http with WIKI_ALLOW_HTTP=1, for tests): a wiki value from a glossary or an override
+    must not reach urlopen as file:// or ftp://. Raises ValueError for a refused URL (callers already swallow any exception),
+    and for a response that ended up on a scheme that is not allowed (a redirect)."""
+    problem = _wiki_url_problem(url, _wiki_schemes())
+    if problem:
+        raise ValueError(f"refused wiki url: {problem}")
     req = urllib.request.Request(url, headers={"User-Agent": "DubTitlerr-glossary-verify"})
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+        final = r.geturl() if hasattr(r, "geturl") else url
+        if _wiki_url_problem(final, _wiki_schemes()):
+            raise ValueError("refused wiki url: redirected to a scheme that is not allowed")
         return json.loads(r.read())
 
 
 def resolve_wiki(title: str, override: str | None = None) -> str | None:
     """Resolve the show's Fandom MediaWiki API base (override wins; else probe candidates)."""
     if override:
-        return normalize_api(override)
+        return normalize_api(override)  # None for a file:// / ftp:// / garbage value: no wiki
     for api in wiki_candidates(title):
         try:
             j = _http_json(api + "?action=query&meta=siteinfo&format=json")
@@ -1136,6 +1198,17 @@ def fetch_scope_cached(cfg: dict, scope: dict, show_key: str) -> tuple[set[str],
 
 
 def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dict:
+    """tag_arcs under the glossary's lock (see glossary_lock): a busy glossary skips the stage, note 'glossary busy: tag-arcs
+    skipped'. The work is _tag_arcs."""
+    import glossary_lock
+
+    with glossary_lock.locked(gloss_path, "tag-arcs") as ok:
+        if not ok:
+            return {"note": "glossary busy: tag-arcs skipped"}
+        return _tag_arcs(gloss_path, show_dir, override)
+
+
+def _tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dict:
     """Tag the glossary's names with the arcs of the show's seasons and store each arc's titles beside the tags.
 
     Additive and idempotent: tags are only added (glossary.tag_names_by_arc), an arc's stored titles are only unioned, and an
@@ -1265,6 +1338,9 @@ def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dic
     return {**rep, "written": True}
 
 
+tag_arcs.__doc__ = (tag_arcs.__doc__ or "") + "\n\n" + (_tag_arcs.__doc__ or "")  # the stage's documentation lives on _tag_arcs
+
+
 def verify(gloss_path: str, override: str | None = None, force: bool = False) -> dict:
     """Orchestrate verification of one glossary file; returns a report. Resilient — any failure
     leaves the glossary unchanged and is reported in `note`, never raised.
@@ -1272,11 +1348,16 @@ def verify(gloss_path: str, override: str | None = None, force: bool = False) ->
     On a hosted backend the run opens by saying which fields go to which host; on the decision backend it ends with one
     summary line and the report gains `decision` (calls / ok / failures / fallbacks / pending). A term whose decision call
     failed with VERIFY_DECISION_FALLBACK=none stays pending (counted in the report's `pending`), not verified, not flagged."""
-    usable = not backend_problem()
-    if usable:
-        begin_run("verify")
-    rep = _verify(gloss_path, override, force)
-    return end_run(rep) if usable else rep
+    import glossary_lock
+
+    with glossary_lock.locked(gloss_path, "verify") as ok:  # the whole read-adjudicate-write: a busy glossary skips the stage
+        if not ok:
+            return {"note": "glossary busy: verify skipped"}
+        usable = not backend_problem()
+        if usable:
+            begin_run("verify")
+        rep = _verify(gloss_path, override, force)
+        return end_run(rep) if usable else rep
 
 
 def _verify(gloss_path: str, override: str | None = None, force: bool = False) -> dict:
@@ -1337,7 +1418,10 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
         log(f"{pending} of {len(terms)} terms left pending: the decision backend could not answer them")
         if not done:
             return {**rep, "wiki": api, "pending": pending, "note": "no adjudications (decision backend unavailable)"}
-    results = done
+    results, malformed = {}, 0
+    for t, a in done.items():
+        results[t], bad = clean_adjudication(a)  # a list, a string or a non-string canonical is a no-match, counted below
+        malformed += bad
     new = apply_results(gloss, results)
     new.setdefault("wiki", api)
     # Imported at call time for the same cycle reason as is_expansion below.
@@ -1373,6 +1457,7 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
         **({"common_word": _common_word_block(common_word_blocked)} if cw_on else {}),
         "flagged": len(new.get("flagged", {})),
         **({"pending": pending} if pending else {}),
+        **({"malformed": malformed} if malformed else {}),
         **({"note": "stopped"} if stopped else {}),
     }
 

@@ -104,7 +104,14 @@ def ordinary_words() -> set[str]:
 
 def is_ordinary_word(token: str) -> bool:
     """True if the list spells ``token`` (any case) as a lowercase word: 'castle', 'Castle' yes; 'Hancock' no."""
-    return token.lower() in ordinary_words()
+    core = token or ""
+    lo, hi = 0, len(core)
+    while lo < hi and not core[lo].isalpha():
+        lo += 1  # 'castle!', '(castle)', curly quotes: leading and trailing non-letters are not part of the word
+    while hi > lo and not core[hi - 1].isalpha():
+        hi -= 1
+    core = core[lo:hi]
+    return bool(core) and core.lower() in ordinary_words()
 
 
 def is_english(token: str) -> bool:

@@ -285,6 +285,14 @@ def main():
     show_dir = sys.argv[1].rstrip("/")
     show = os.path.basename(show_dir)
     gpath = os.path.join(GLOSS_DIR, show + ".json")
+    import glossary_lock
+
+    with glossary_lock.locked(gpath, "mine") as ok:  # the whole read-count-write: a busy glossary skips this sweep's mining
+        if ok:
+            _mine(show_dir, show, gpath)
+
+
+def _mine(show_dir, show, gpath):
     cfg = {"show": show, "initial_prompt": "", "names": [], "hard_fixes": {}}
     if os.path.exists(gpath):
         try:
