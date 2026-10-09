@@ -34,6 +34,8 @@ from dataclasses import dataclass
 
 FLOOR_ARM = "always-candidate-1"
 ORDER_LIMIT = 0.05
+MIN_COMMON_N = 100  # common labelled items needed before (a), (b), the matched tau and (d) can be decided
+MIN_COMMON_FRAC = 0.9  # ...and this share of the baseline's labelled items
 FAILURE_LIMIT = 0.02
 SPAN_PICK_MIN = 0.5
 CLASS_ORDER = ("exact", "expansion_independent", "expansion_incumbent", "negative")
@@ -406,10 +408,21 @@ def build_report(items, rows, baseline="qwen-local", tau_step=0.05, judged=None)
     return report
 
 
+def _incomplete(note):
+    return {"ok": None, "note": note}
+
+
 def _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, present, floor, tau_step):
+    """The five rules for one arm. Each rule is ok True / False, or None when it cannot be evaluated (INCOMPLETE).
+
+    Rules (a), (b), the matched tau and (d) are INCOMPLETE below the sample-size floor (MIN_COMMON_N common labelled items,
+    and MIN_COMMON_FRAC of the baseline's labelled items), and (a), (b) also when the baseline failed, accepted nothing, or has
+    not run the negatives. (a) and (b) are decided on the NON-TRIVIAL items (expansions + negatives); the all-class figure is a
+    secondary column. A rule that holds only within noise is ok True with within_noise set: it reads "not demonstrated"."""
     a = report["arms"][arm]
-    rules = {k: {"ok": None, "note": "no baseline results" if not present else ""} for k in "abcde"}
+    rules = {k: _incomplete("no baseline results" if not present else "") for k in "abcde"}
     out = {"rules": rules, "matched": None}
+    armp = fwd_all[arm]
     # (c) order sensitivity and (e) failure rate do not need the baseline
     o = a["order"]
     rules["c"] = {"ok": None if o["n"] == 0 else o["rate"] <= ORDER_LIMIT, "n": o["n"], "rate": o["rate"], "limit": ORDER_LIMIT}
@@ -420,63 +433,170 @@ def _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, presen
         "rate": f["rate"],
         "limit": FAILURE_LIMIT,
     }
-    # (d) beats the floor on non-trivial gold, on the items this arm ran
-    nt = [i for i in order if i in fwd_all[arm] and classes.get(i) in NON_TRIVIAL]
-    if not nt:
-        rules["d"] = {"ok": False, "n": 0, "note": "no non-trivial items were run"}
-    else:
-        arm_acc = _accuracy([(items_by_id[i], fwd_all[arm][i]) for i in nt])
-        floor_acc = _accuracy([(items_by_id[i], floor.get(i)) for i in nt])
-        rules["d"] = {
-            "ok": arm_acc["accuracy"] > floor_acc["accuracy"],
-            "n": len(nt),
-            "arm": arm_acc["accuracy"],
-            "floor": floor_acc["accuracy"],
-            "within_noise": _overlap(arm_acc["wilson"], floor_acc["wilson"]),
-        }
-    if present:
-        base = fwd_all[baseline]
-        common = [i for i in order if i in fwd_all[arm] and i in base and classes.get(i) is not None]
-        arm_pairs = [(items_by_id[i], fwd_all[arm][i], classes[i]) for i in common]
-        base_pairs = [(items_by_id[i], base[i], classes[i]) for i in common]
-        bh = _hc(base_pairs)
-        base_fa = bh["false_accept_rate"] or 0.0
-        if a["kind"] == "decision":
-            match = None
-            for tau in _taus(tau_step) if common else ():
-                h = _hc(arm_pairs, tau=tau)
-                if (h["false_accept_rate"] or 0.0) <= base_fa:
-                    match = (tau, h)
-                    break
-            hit = match[1] if match else None
-            out["matched"] = {
-                "tau": match[0] if match else None,
-                "n_common": len(common),
-                "baseline_false_accept": base_fa,
-                "baseline_true_accept": bh["true_accept_rate"],
-                "arm_false_accept": (hit["false_accept_rate"] or 0.0) if hit else None,
-                "arm_true_accept": hit["true_accept_rate"] if hit else None,
+
+    base = fwd_all[baseline] if present else {}
+    labelled_common = [i for i in order if i in armp and i in base and classes.get(i) in CLASS_ORDER]
+    base_labelled = [i for i in order if i in base and classes.get(i) in CLASS_ORDER]
+    floor_note = None
+    if present and (len(labelled_common) < MIN_COMMON_N or len(labelled_common) < MIN_COMMON_FRAC * len(base_labelled)):
+        floor_note = (
+            f"below the sample-size floor: {len(labelled_common)} common labelled items "
+            f"(need {MIN_COMMON_N} and 90% of the baseline's {len(base_labelled)})"
+        )
+
+    # (d) beats the floor on the EXPANSION classes (separately), with balanced accuracy shown against the floor's
+    d = {"ok": None, "classes": {}, "n": 0}
+    for cls in ("expansion_independent", "expansion_incumbent"):
+        ids = [i for i in order if i in armp and classes.get(i) == cls]
+        if ids:
+            arm_acc = _accuracy([(items_by_id[i], armp[i]) for i in ids])
+            floor_acc = _accuracy([(items_by_id[i], floor.get(i)) for i in ids])
+            d["classes"][cls] = {
+                "n": len(ids),
+                "arm": arm_acc["accuracy"],
+                "floor": floor_acc["accuracy"],
+                "ok": arm_acc["accuracy"] > floor_acc["accuracy"],
+                "within_noise": _overlap(arm_acc["wilson"], floor_acc["wilson"]),
             }
-            ah = match[1] if match else None
+            d["n"] += len(ids)
+    exp_ids = [i for i in order if i in armp and classes.get(i) in ("expansion_independent", "expansion_incumbent")]
+    neg_ids = [i for i in order if i in armp and classes.get(i) == "negative"]
+    if exp_ids and neg_ids:
+        arm_bal = (
+            _accuracy([(items_by_id[i], armp[i]) for i in exp_ids])["accuracy"]
+            + _accuracy([(items_by_id[i], armp[i]) for i in neg_ids])["accuracy"]
+        ) / 2
+        floor_bal = (
+            _accuracy([(items_by_id[i], floor.get(i)) for i in exp_ids])["accuracy"]
+            + _accuracy([(items_by_id[i], floor.get(i)) for i in neg_ids])["accuracy"]
+        ) / 2
+        d["balanced"] = {"arm": arm_bal, "floor": floor_bal}
+    if present and floor_note:
+        d.update(ok=None, note=floor_note)
+    elif not d["classes"]:
+        d.update(ok=False, note="no expansion items were run")
+    else:
+        d["ok"] = all(c["ok"] for c in d["classes"].values())
+        d["within_noise"] = d["ok"] and any(c["within_noise"] for c in d["classes"].values())
+    rules["d"] = d
+
+    if present:
+        notes = []
+        if floor_note:
+            notes.append(floor_note)
+        neg_all = [i for i in order if classes.get(i) == "negative"]
+        if neg_all and not any(i in base for i in neg_all):
+            notes.append("the baseline has not run the negatives (the verify-neg: items)")
+        nt_common = [i for i in labelled_common if classes[i] in NON_TRIVIAL]
+        base_fail = sum(1 for i in nt_common if base[i] is None)
+        if nt_common and base_fail / len(nt_common) > FAILURE_LIMIT:
+            rate = _pct(base_fail / len(nt_common))
+            notes.append(f"the baseline's failure rate on the common items is {rate} (limit {_pct(FAILURE_LIMIT)})")
+        arm_nt = [(items_by_id[i], armp[i], classes[i]) for i in nt_common]
+        base_nt = [(items_by_id[i], base[i], classes[i]) for i in nt_common]
+        bh = _hc(base_nt)
+        if not nt_common:
+            notes.append("no non-trivial items were run by both")
+        elif bh["accepted"] == 0 and not notes:
+            notes.append("the baseline accepted nothing, so its false-accept rate is undefined")
+        if notes:
+            for k in "ab":
+                rules[k] = _incomplete("; ".join(notes))
+            out["matched"] = {"tau": None, "n_common": len(nt_common), "note": "; ".join(notes)}
         else:
-            ah = _hc(arm_pairs)
-        if ah is None:
-            rules["a"] = {"ok": False, "n": len(common), "note": "no tau reaches the baseline's false-accept rate"}
-            rules["b"] = {"ok": False, "n": len(common), "note": "no matched operating point"}
-        else:
-            arm_fa = ah["false_accept_rate"] or 0.0
-            rules["a"] = {
-                "ok": arm_fa <= base_fa, "n": ah["accepted"], "arm": arm_fa, "baseline": base_fa, "baseline_n": bh["accepted"],
-                "within_noise": _overlap(ah["false_accept_wilson"], bh["false_accept_wilson"]),
+            all_arm = [(items_by_id[i], armp[i], classes[i]) for i in labelled_common]
+            all_base = [(items_by_id[i], base[i], classes[i]) for i in labelled_common]
+            ah, secondary_tau = _decide_hc(a, arm_nt, tau_step, bh, out, len(nt_common))
+            sec_a = _hc(all_arm, tau=secondary_tau)
+            sec_b = _hc(all_base)
+            secondary = {
+                "n": len(labelled_common), "arm": sec_a["false_accept_rate"], "baseline": sec_b["false_accept_rate"],
+                "arm_ta": sec_a["true_accept_rate"], "baseline_ta": sec_b["true_accept_rate"],
             }  # fmt: skip
-            rules["b"] = {
-                "ok": (ah["true_accept_rate"] or 0.0) >= (bh["true_accept_rate"] or 0.0), "n": ah["positives"],
-                "arm": ah["true_accept_rate"], "baseline": bh["true_accept_rate"],
-                "within_noise": _overlap(ah["true_accept_wilson"], bh["true_accept_wilson"]),
-            }  # fmt: skip
+            rules["a"], rules["b"] = _rules_ab(ah, bh, len(nt_common), secondary, a["kind"] == "decision", out["matched"])
     oks = [r["ok"] for r in rules.values()]
-    out["verdict"] = "FAIL" if any(o is False for o in oks) else ("INCOMPLETE" if any(o is None for o in oks) else "PASS")
+    noisy = any(r["ok"] and r.get("within_noise") for r in rules.values())
+    if any(o is False for o in oks):
+        out["verdict"] = "FAIL"
+    elif any(o is None for o in oks):
+        out["verdict"] = "INCOMPLETE"
+    else:
+        out["verdict"] = "NOT DEMONSTRATED" if noisy else "PASS"
     return out
+
+
+def _decide_hc(a, arm_nt, tau_step, bh, out, n_common):
+    """The arm's high-confidence figures on the common non-trivial items: its word-high point (text) or, for a decision arm,
+    the smallest tau whose false-accept rate is no higher than the baseline's (accepting nothing is undefined, never a match)."""
+    if a["kind"] != "decision":
+        return _hc(arm_nt), None
+    base_fa = bh["false_accept_rate"]
+    match = None
+    ever_accepted = False
+    for tau in _taus(tau_step):
+        h = _hc(arm_nt, tau=tau)
+        if h["accepted"] == 0:
+            continue
+        ever_accepted = True
+        if h["false_accept_rate"] <= base_fa:
+            match = (tau, h)
+            break
+    out["matched"] = {
+        "tau": match[0] if match else None,
+        "n_common": n_common,
+        "baseline_false_accept": base_fa,
+        "baseline_true_accept": bh["true_accept_rate"],
+        "arm_false_accept": match[1]["false_accept_rate"] if match else None,
+        "arm_true_accept": match[1]["true_accept_rate"] if match else None,
+        "ever_accepted": ever_accepted,
+    }
+    return (match[1] if match else None), (match[0] if match else None)
+
+
+def _rules_ab(ah, bh, n_common, secondary, decision, matched):
+    if ah is None and decision and matched and not matched["ever_accepted"]:
+        # the arm never accepts anything at any tau: its false-accept rate is undefined, its true-accept rate is zero
+        a = _incomplete("the arm accepted nothing at any tau, so its false-accept rate is undefined")
+        b = {
+            "ok": False,
+            "n": bh["positives"],
+            "arm": 0.0,
+            "baseline": bh["true_accept_rate"],
+            "common_n": n_common,
+            "all_class": secondary,
+        }
+        return a, b
+    if ah is None:
+        note = "no tau reaches the baseline's false-accept rate"
+        return {"ok": False, "note": note, "common_n": n_common, "all_class": secondary}, {
+            "ok": False,
+            "note": note,
+            "common_n": n_common,
+            "all_class": secondary,
+        }
+    if ah["accepted"] == 0 or ah["false_accept_rate"] is None:
+        a = _incomplete("the arm accepted nothing, so its false-accept rate is undefined")
+    else:
+        a = {
+            "ok": ah["false_accept_rate"] <= bh["false_accept_rate"],
+            "n": ah["accepted"],
+            "baseline_n": bh["accepted"],
+            "common_n": n_common,
+            "arm": ah["false_accept_rate"],
+            "baseline": bh["false_accept_rate"],
+            "all_class": {"n": secondary["n"], "arm": secondary["arm"], "baseline": secondary["baseline"]},
+            "within_noise": _overlap(ah["false_accept_wilson"], bh["false_accept_wilson"]),
+        }
+    if bh["true_accept_rate"] is None or ah["true_accept_rate"] is None:
+        b = _incomplete("no gold positives among the common non-trivial items, so true-accept is undefined")
+    else:
+        b = {
+            "ok": ah["true_accept_rate"] >= bh["true_accept_rate"], "n": ah["positives"], "common_n": n_common,
+            "arm": ah["true_accept_rate"], "baseline": bh["true_accept_rate"],
+            "all_class": {"n": secondary["n"], "arm": secondary["arm_ta"], "baseline": secondary["baseline_ta"]},
+            "within_noise": _overlap(ah["true_accept_wilson"], bh["true_accept_wilson"]),
+        }  # fmt: skip
+    return a, b
 
 
 # ---- rendering ------------------------------------------------------------------------------------------------
@@ -587,8 +707,8 @@ def _section_matched(rep, names, arms):
     out = [
         "## Matched operating point",
         "",
-        "For each decision arm: the smallest tau whose false-accept rate is no higher than the baseline's, "
-        "on the items both ran.",
+        "For each decision arm: the smallest tau whose false-accept rate is no higher than the baseline's, on the non-trivial "
+        "items (expansions + negatives) both ran.",
         "",
     ]
     found = False
@@ -597,7 +717,9 @@ def _section_matched(rep, names, arms):
         if arms[a]["kind"] != "decision" or not m:
             continue
         found = True
-        if m["tau"] is None:
+        if m.get("note"):
+            out.append(f"- {a}: not evaluated: {m['note']}")
+        elif m["tau"] is None:
             out.append(
                 f"- {a}: no tau reaches the baseline's false-accept rate "
                 f"({_pct(m['baseline_false_accept'])}; n={m['n_common']} common items)"
@@ -647,39 +769,67 @@ def _section_agreement(rep, names):
     return ["## Agreement", "", intro, "", *_md_table(["", *names], rows), ""]
 
 
+def _state(r):
+    if r["ok"] is None:
+        return "incomplete"
+    if not r["ok"]:
+        return "NO"
+    return "not demonstrated" if r.get("within_noise") else "ok"
+
+
 def _rule_cell(r, text):
-    tag = "n/a" if r["ok"] is None else ("ok" if r["ok"] else "NO")
-    return f"{tag}: {text}" + ("; within noise" if r.get("within_noise") else "")
+    return f"{_state(r)}: {text}" + ("; within noise" if r.get("within_noise") else "")
 
 
-def _vs(r, label="baseline"):
-    if "arm" not in r:
+def _rate_cell(r, what):
+    """Rules (a) and (b): the non-trivial headline, with the all-class figure as the secondary part of the cell."""
+    if r["ok"] is None or "arm" not in r:
         return r.get("note") or "-"
-    other = r.get("baseline", r.get("floor"))
-    return f"{_pct(r['arm'])} vs {label} {_pct(other)} (n={r.get('n', 0)})"
+    sec = r.get("all_class") or {}
+    sec_arm, sec_base = sec.get("arm"), sec.get("baseline")
+    head = f"{_pct(r['arm'])} vs baseline {_pct(r['baseline'])} (n={r['n']} {what}, {r['common_n']} common items)"
+    return head + f"; all classes: {_pct(sec_arm)} vs {_pct(sec_base)} (n={sec.get('n', 0)})"
+
+
+def _d_cell(d):
+    if d["ok"] is None or not d["classes"]:
+        return d.get("note") or "-"
+    names = {"expansion_independent": "independent", "expansion_incumbent": "incumbent-derived"}
+    parts = [f"{names[c]} {_pct(v['arm'])} vs floor {_pct(v['floor'])} (n={v['n']})" for c, v in d["classes"].items()]
+    if "balanced" in d:
+        parts.append(f"balanced accuracy {_pct(d['balanced']['arm'])} vs floor {_pct(d['balanced']['floor'])}")
+    return "; ".join(parts)
 
 
 def _section_verdicts(rep):
     intro = (
         "(a) high-confidence false-accept <= baseline's; (b) true-accept at the matched point >= baseline's; "
-        "(c) order sensitivity <= 5%; (d) beats always-candidate-1 on non-trivial gold (expansion + negatives); "
-        "(e) failure rate <= 2%. PASS needs all five. INCOMPLETE means a rule could not be evaluated. No winner is declared."
+        "(c) order sensitivity <= 5%; (d) beats always-candidate-1 on the expansion classes, each reported separately, with "
+        "balanced accuracy shown; (e) failure rate <= 2%. Rules (a) and (b) are decided on the non-trivial items (expansions + "
+        "negatives); the all-class figure is secondary and the exact controls never carry a rule.",
+        "",
+        "Verdicts: **PASS** every rule holds and none of them only within noise. **FAIL** at least one rule does not hold. "
+        "**NOT DEMONSTRATED** no rule fails but at least one holds only within noise (the intervals overlap), so the simpler "
+        "existing option stays. **INCOMPLETE** a rule could not be evaluated (too few common items: fewer than "
+        f"{MIN_COMMON_N} common labelled items or under {int(MIN_COMMON_FRAC * 100)}% of the baseline's, a failed baseline, "
+        "negatives not run, or no data). No winner is declared.",
+        "",
     )
     rows = []
     for a, v in rep["verdicts"].items():
         r = v["rules"]
         c, e = r["c"], r["e"]
         cells = [
-            _rule_cell(r["a"], _vs(r["a"])),
-            _rule_cell(r["b"], _vs(r["b"])),
+            _rule_cell(r["a"], _rate_cell(r["a"], "accepted")),
+            _rule_cell(r["b"], _rate_cell(r["b"], "gold positives")),
             _rule_cell(c, f"{_pct(c['rate'])} (n={c['n']})" if c["n"] else "no reversed rows (n=0)"),
-            _rule_cell(r["d"], _vs(r["d"], "floor") if r["d"]["n"] else r["d"].get("note", "-")),
+            _rule_cell(r["d"], _d_cell(r["d"])),
             _rule_cell(e, f"{_pct(e['rate'])} (n={e['n']})" if e["n"] else "no rows"),
         ]
         rows.append([a, *cells, f"**{v['verdict']}**"])
     if not rows:
         rows = [["(no arm other than the baseline and the floor)", "", "", "", "", "", ""]]
-    return ["## Rule verdicts", "", intro, "", *_md_table(["arm", "(a)", "(b)", "(c)", "(d)", "(e)", "verdict"], rows)]
+    return ["## Rule verdicts", "", *intro, *_md_table(["arm", "(a)", "(b)", "(c)", "(d)", "(e)", "verdict"], rows)]
 
 
 def _section_judged(rep):
