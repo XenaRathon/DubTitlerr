@@ -311,6 +311,8 @@ def _shape_list(names: list, phrases: list, term: str) -> list:
 
 def _whole_word(term: str, canon: str) -> bool:
     """The term's words occur in the canonical as a contiguous, whole-word run (token-wise, casefolded)."""
+    if len(re.findall(r"[^\W\d_]", term)) < 2:
+        return False  # a one-letter or letterless term ('D', '3') is a whole word of almost any title
     t, c = re.findall(r"\w+", term.casefold()), re.findall(r"\w+", canon.casefold())
     return bool(t) and any(c[i : i + len(t)] == t for i in range(len(c) - len(t) + 1))
 
@@ -321,13 +323,52 @@ def auto_writes(term: str, canon: str) -> bool:
     By default that is glossary_acquire.is_expansion alone. is_expansion is a substring rule, so it also writes
     near-respellings: 'Usop' -> 'Usopp', 'Burn' -> 'Coburn'. VERIFY_WRITE_WHOLE_WORD=1 (default off) additionally
     requires the term to be a whole word (token-wise, casefolded) of the canonical, which is how the bake-off's expansion gold
-    is defined; anything else is flagged 'respelling-needs-review' like any non-expansion. Read per call."""
+    is defined; anything else is flagged 'respelling-needs-review' like any non-expansion. A term with fewer than two letters
+    ('D', '3') never passes under this guard. Read per call."""
     # Imported at call time, NOT at module scope: glossary_acquire imports this module (a hard cycle otherwise).
     from glossary_acquire import is_expansion
 
     if not is_expansion(term, canon):
         return False
     return os.environ.get("VERIFY_WRITE_WHOLE_WORD", "") != "1" or _whole_word(term, canon)
+
+
+_gate_noop_logged = False
+
+
+def arc_universe(gloss: dict):
+    """The titles of every arc the glossary knows (casefolded), or None when the gate does not apply.
+
+    VERIFY_ARC_GATE=1 (default off) turns the gate on; it is a NO-OP, said once in the log, for a glossary without arc titles
+    (never tagged, or a show whose seasons carry no arc). The titles are stored in the glossary by tag_arcs, so applying
+    results needs no network.
+
+    debt: this is the 'first' use of the tags (a hard gate on auto-WRITES). The 'second' -- tag-derived confidence for
+    episodes with no fansub anchor -- would also read this universe; it is deliberately not built (revisit when unanchored
+    repair has a measured need for it)."""
+    global _gate_noop_logged
+    if os.environ.get("VERIFY_ARC_GATE") != "1":
+        return None
+    titles = {t.casefold() for ts in (gloss.get("arc_titles") or {}).values() for t in ts}
+    if not titles:
+        if not _gate_noop_logged:
+            _gate_noop_logged = True
+            log(
+                "VERIFY_ARC_GATE is on but this glossary has no arc titles "
+                "(run glossary_verify --tag-arcs): the gate does nothing"
+            )
+        return None
+    return titles
+
+
+def write_decision(term: str, canon: str, universe) -> str:
+    """'write', 'respelling' (flagged: not an expansion / not a whole word) or 'not-in-arc-pages' (flagged: the canonical is not
+    on any arc page of the show). ONE place for apply_results and the report's counts."""
+    if not auto_writes(term, canon):
+        return "respelling"
+    if universe is not None and canon.casefold() not in universe:
+        return "not-in-arc-pages"
+    return "write"
 
 
 def apply_results(gloss: dict, results: dict) -> dict:
@@ -365,6 +406,7 @@ def apply_results(gloss: dict, results: dict) -> dict:
     names, phrases = g.setdefault("names", []), g.setdefault("phrases", [])
     verified = set(g.get("verified", []))
     flagged = dict(g.get("flagged", {}))
+    universe = arc_universe(gloss)
     for term, adj in results.items():
         verified.add(term)
         canon = (adj or {}).get("canonical") or ""
@@ -374,12 +416,16 @@ def apply_results(gloss: dict, results: dict) -> dict:
             # module, so a top-level import is a hard cycle (ImportError on the
             # acquire-first order only -- verify-first appears to work, which is exactly
             # how it would reach production unnoticed).
-            if auto_writes(term, canon):
+            decision = write_decision(term, canon, universe)
+            if decision == "write":
                 dest = _shape_list(names, phrases, canon)
                 if canon not in dest:
                     dest.append(canon)  # ADD -- the term itself is left in place
             else:
-                flagged[term] = {"reason": "respelling-needs-review", "canonical": canon}
+                flagged[term] = {
+                    "reason": "respelling-needs-review" if decision == "respelling" else decision,
+                    "canonical": canon,
+                }
         elif conf != "high" or not canon:
             flagged[term] = "low-confidence" if (conf == "low" and canon) else "no-match"
     g["verified"] = sorted(verified)
@@ -703,6 +749,111 @@ def fetch_titles(wiki_api: str, show_key: str) -> list[str]:
 _STOPPED = object()  # _one's marker for a term skipped by the soft stop (None is "could not be adjudicated")
 
 
+# ---- arc tagging (GLOSSARY_ARC_TAGS) -----------------------------------------------------------------------------------------
+# [S-11]/[S-5]: ONE arc fetch per distinct arc serves both consumers -- the tags repair weights its prompt by, and the arc
+# titles the verify gate (VERIFY_ARC_GATE) checks writes against. Nothing here runs unless gen_loop's GLOSSARY_ARC_TAGS=1
+# step or `glossary_verify.py <glossary> --tag-arcs <show dir>` asks for it.
+
+
+def arcs_in_show(show_dir: str) -> list[str]:
+    """The distinct arc names of the show's seasons: every directory under ``show_dir`` holding a season.nfo, read with
+    glossary.arc_for (the repair stage's own resolver). Sorted; [] when there are none."""
+    import glossary
+
+    arcs = set()
+    for root, _dirs, files in os.walk(show_dir):
+        if "season.nfo" in files:
+            arc = glossary.arc_for(os.path.join(root, "season"))
+            if arc:
+                arcs.add(arc)
+    return sorted(arcs)
+
+
+def _arc_cache_path(show_key: str) -> str:
+    return os.path.join(CACHE_DIR, re.sub(r"[^A-Za-z0-9]+", "_", show_key) + "_arcs.json")
+
+
+def fetch_arc_titles_cached(wiki_api: str, show_key: str, arc: str) -> tuple[set[str], str]:
+    """(titles, 'cached' | 'fetched' | 'empty'). One JSON cache file per show, each arc WIKI_TTL-gated, only POSITIVE results
+    cached (the same rules as fetch_episode_titles): an empty result -- a non-arc title [S-7] or an unreachable wiki -- is asked
+    again next time."""
+    path = _arc_cache_path(show_key)
+    try:
+        doc = json.load(open(path))
+    except (OSError, ValueError):
+        doc = {}
+    arcs = doc.get("arcs", {}) if doc.get("api") == wiki_api else {}
+    entry = arcs.get(arc)
+    if entry and (time.time() - entry.get("fetched_at", 0)) < WIKI_TTL:
+        return set(entry["titles"]), "cached"
+    titles = fetch_arc_titles(wiki_api, arc)
+    if not titles:
+        return set(), "empty"
+    arcs[arc] = {"fetched_at": time.time(), "titles": sorted(titles)}
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        json.dump({"api": wiki_api, "arcs": arcs}, open(path, "w"))
+    except OSError:
+        pass  # a cache that cannot be written costs a refetch, nothing more
+    return titles, "fetched"
+
+
+def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dict:
+    """Tag the glossary's names with the arcs of the show's seasons and store each arc's titles beside the tags.
+
+    Additive and idempotent: tags are only added (glossary.tag_names_by_arc), an arc's stored titles are only unioned, and an
+    unchanged glossary is not rewritten. An arc the wiki gives nothing for changes nothing [S-7] -- it is logged, never fatal,
+    and cannot clear what other arcs established. The write is atomic (glossary_acquire._write_json). Returns a report; never
+    raises."""
+    import glossary
+
+    try:
+        gloss = json.load(open(gloss_path))
+    except (OSError, ValueError) as e:
+        return {"note": f"load-failed: {e}"}
+    show = gloss.get("show") or os.path.splitext(os.path.basename(gloss_path))[0]
+    rep = {"show": show, "arcs": 0, "fetched": 0, "cached": 0, "empty": 0, "names_tagged": 0, "written": False}
+    arcs = arcs_in_show(show_dir)
+    rep["arcs"] = len(arcs)
+    if not arcs:
+        return {**rep, "note": "no arcs"}
+    api = resolve_wiki(show, override or gloss.get("wiki"))
+    if not api:
+        return {**rep, "note": "wiki unresolved (set a 'wiki' override)"}
+    before = json.dumps(gloss, sort_keys=True)
+    stopped = False
+    for arc in arcs:
+        if stop_requested():
+            stopped = True
+            break
+        titles, how = fetch_arc_titles_cached(api, show, arc)
+        if how == "empty":
+            rep["empty"] += 1
+            log(f"arc tags: no wiki titles for arc {arc!r} (not an arc, or the wiki is unreachable): nothing changed for it")
+            continue
+        rep[how] += 1
+        glossary.tag_names_by_arc(gloss, arc, titles)
+        stored = gloss.setdefault("arc_titles", {})
+        stored[arc] = sorted(set(stored.get(arc, [])) | titles)
+    rep["names_tagged"] = len(gloss.get("arc_tags") or {})
+    if stopped:
+        log("stop requested: leaving arc tagging; nothing written")
+        return {**rep, "note": "stopped"}
+    if json.dumps(gloss, sort_keys=True) == before:
+        return rep
+    from glossary_acquire import _write_json
+
+    try:
+        _write_json(gloss_path, gloss)
+    except OSError as e:
+        try:
+            os.remove(gloss_path + ".tmp")
+        except OSError:
+            pass
+        return {**rep, "note": f"write-failed: {e}"}
+    return {**rep, "written": True}
+
+
 def verify(gloss_path: str, override: str | None = None, force: bool = False) -> dict:
     """Orchestrate verification of one glossary file; returns a report. Resilient — any failure
     leaves the glossary unchanged and is reported in `note`, never raised.
@@ -794,13 +945,17 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
     # and "applied" were the same number. They no longer are: a respelling is escalated,
     # not applied, and reporting it as applied would hide the escalation entirely.
     changed = [t for t, a in results.items() if a["confidence"] == "high" and a["canonical"] and a["canonical"] != t]
-    applied = sum(1 for t in changed if auto_writes(t, results[t]["canonical"]))
+    universe = arc_universe(gloss)
+    decisions = [write_decision(t, results[t]["canonical"], universe) for t in changed]
+    applied = decisions.count("write")
+    blocked = decisions.count("not-in-arc-pages")
     return {
         "show": show,
         "wiki": api,
         "checked": len(done),
         "applied": applied,
         "escalated": len(changed) - applied,
+        **({"arc_gate": {"blocked": blocked, "universe": len(universe)}} if universe is not None else {}),
         "flagged": len(new.get("flagged", {})),
         **({"pending": pending} if pending else {}),
         **({"note": "stopped"} if stopped else {}),
@@ -812,7 +967,15 @@ def main():
     ap.add_argument("glossary", help="path to <show>.json")
     ap.add_argument("--wiki", help="override wiki URL/api.php")
     ap.add_argument("--force", action="store_true", help="re-verify all terms (ignore 'verified')")
+    ap.add_argument(
+        "--tag-arcs",
+        metavar="SHOW_DIR",
+        help="only tag the glossary's names with the arcs of SHOW_DIR's seasons (season.nfo) and store the arc titles; no verify",
+    )
     a = ap.parse_args()
+    if a.tag_arcs:
+        log(json.dumps(tag_arcs(a.glossary, a.tag_arcs, a.wiki), ensure_ascii=False))
+        sys.exit(0)
     rep = verify(a.glossary, a.wiki, a.force)
     log(json.dumps(rep, ensure_ascii=False))
     refusal_exit(rep)

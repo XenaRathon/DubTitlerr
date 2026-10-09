@@ -96,6 +96,18 @@ while :; do
 		fi
 		GLOSS="$GLOSS_DIR/$show.json"
 		[ -f "$GLOSS" ] || GLOSS=""
+		# Arc tags + arc titles (opt-in, default off): one wiki fetch per distinct season.nfo arc, cached on disk, tags the
+		# glossary's names (repair weights its prompt by them) and stores the arc titles VERIFY_ARC_GATE checks writes against.
+		# Additive, atomic, failure-swallowed like every prep step; a title that is not an arc changes nothing.
+		if [ "${GLOSSARY_ARC_TAGS:-0}" = "1" ] && [ -n "$GLOSS" ]; then
+			if stop_requested; then
+				echo "gen_loop: soft stop, not starting ARC TAGS on $show"
+				exit 0
+			fi
+			echo "#### ARC TAGS $show $(date)"
+			timeout "${ARC_TAGS_TIMEOUT:-600}" python3 "$APP_DIR"/glossary_verify.py "$GLOSS" --tag-arcs "$ANIME/$show" </dev/null 2>&1 ||
+				echo "  arc tagging skipped (continuing)"
+		fi
 		# wiki-verify the (mined/updated) glossary: canonical, dub-preferred spellings. Incremental +
 		# cached, and timeout-bounded + failure-swallowed so a slow/down wiki never stalls the sweep.
 		if [ -n "$GLOSS" ]; then
