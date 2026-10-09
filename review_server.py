@@ -610,7 +610,7 @@ def handle_shared_decide(verdicts: list) -> dict:
             if verdict not in r["offered"]:
                 errors.append({"id": sid, "error": "verdict not offered for this entry"})
                 continue
-            if verdict == "correct" and not str(d.get("text", "")).strip():
+            if verdict == "correct" and decisions.is_blank(d.get("text", "")):
                 errors.append({"id": sid, "error": "a correction needs text; the line stays on the page"})
                 continue
             by_show.setdefault(r["show"], []).append((r, verdict, str(d.get("text", ""))))
@@ -676,7 +676,7 @@ def handle_decide_batch(stem: str, verdicts: list) -> dict:
                     errors.append({"index": index, "error": "verdict not offered for this entry"})
                     continue
                 text, note = str(d.get("text", "")), str(d.get("note", ""))
-                if verdict == "correct" and not text.strip():
+                if verdict == "correct" and decisions.is_blank(text):
                     # Named and left pending: decisions.record would drop it silently, and a queue entry resolved for a verdict
                     # that does not exist releases an opted-in review hold with no human decision behind it.
                     errors.append({"index": index, "error": "a correction needs text; the entry stays pending"})
@@ -910,7 +910,7 @@ def render_shared() -> str:
         "document.addEventListener('click',function(ev){const r=ev.target;"
         "if(r&&r.type==='radio'&&r.dataset.wasOn){r.checked=false;r.dataset.wasOn='';tally()}});"
         "tally();SV.addEventListener('click',async()=>{const d=chosen();if(!d.length)return;"
-        "if(d.some(x=>x.verdict==='correct'&&!x.text.trim())){"
+        "if(d.some(x=>x.verdict==='correct'&&!/[^\\s\\u00ad\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\ufeff]/.test(x.text))){"
         "alert('A correction needs text: type the corrected line, or pick another verdict.');return}"
         "SV.disabled=true;const r=await post('/api/shared',{decisions:d});"
         "if(r.error){alert(r.error);SV.disabled=false;return}"
@@ -1130,7 +1130,7 @@ def render_page(stem: str = "") -> str:
         "document.addEventListener('click',function(ev){const r=ev.target;"
         "if(r&&r.type==='radio'&&r.dataset.wasOn){r.checked=false;r.dataset.wasOn='';tally()}});"
         "if(SV){tally();SV.addEventListener('click',async()=>{const d=chosen();if(!d.length)return;"
-        "if(d.some(x=>x.verdict==='correct'&&!x.text.trim())){"
+        "if(d.some(x=>x.verdict==='correct'&&!/[^\\s\\u00ad\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\ufeff]/.test(x.text))){"
         "alert('A correction needs text: type the corrected line, or pick another verdict.');return}"
         "SV.disabled=true;const r=await post('/api/decide',{stem:STEM,decisions:d});"
         # Errors are NAMED, not counted. A reviewer told "2 refused" cannot tell which two of

@@ -92,3 +92,19 @@ def test_both_pages_stop_a_correct_verdict_with_no_text_before_posting(ep, monke
     monkeypatch.setattr(rs, "_STEMS_CACHE", (0.0, []))
     assert "A correction needs text" in rs.render_page(stem)
     assert "A correction needs text" in rs.render_shared()
+
+
+@pytest.mark.parametrize("text", ["​", "‌‍", "﻿", "⁠", " ​   ", "­", "‎"])
+def test_invisible_characters_count_as_blank(ep, text):
+    """Zero-width and other format characters (Unicode Cf), no-break/line spaces and controls look empty on a card."""
+    stem, d = ep
+    res = rs.handle_decide_batch(stem, [{"index": 0, "verdict": "correct", "text": text}])
+    assert res["saved"] == 0 and "text" in res["errors"][0]["error"]
+    assert decisions.load("S", str(d)).get("decisions", []) == []
+    assert decisions.is_blank(text)
+
+
+def test_decisions_record_drops_an_invisible_correction_too(tmp_path):
+    store = decisions.record({}, ORIG, PROP, "correct", text="​﻿")
+    assert decisions.lookup(store, ORIG, PROP) is None
+    assert not decisions.is_blank("a") and not decisions.is_blank("?!") and not decisions.is_blank("café​")
