@@ -323,7 +323,36 @@ def _common_pairs(items_by_id, classes, a, b, order):
     ]
 
 
-def build_report(items, rows, baseline="qwen-local", tau_step=0.05):
+def load_judged(path):
+    """Rows written by import-judge (one per item and arm); torn lines are skipped."""
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and {"item", "arm", "stage", "best", "worst"} <= set(r):
+                rows.append(r)
+    return rows
+
+
+def judged_table(rows):
+    """{stage: {arm: {judged, best, worst, net, sole}}} from import-judge rows: the blind-judged headline."""
+    table = {}
+    for r in rows:
+        t = table.setdefault(r["stage"], {}).setdefault(r["arm"], {"judged": 0, "best": 0, "worst": 0, "net": 0, "sole": 0})
+        t["judged"] += 1
+        t["best"] += bool(r["best"])
+        t["worst"] += bool(r["worst"])
+        t["sole"] += bool(r.get("sole_best"))
+    for stage in table.values():
+        for t in stage.values():
+            t["net"] = t["best"] - t["worst"]
+    return table
+
+
+def build_report(items, rows, baseline="qwen-local", tau_step=0.05, judged=None):
     items_by_id = {i["id"]: i for i in items}
     classes = {i["id"]: item_class(i) for i in items}
     order = [i["id"] for i in items]
@@ -366,7 +395,7 @@ def build_report(items, rows, baseline="qwen-local", tau_step=0.05):
     present = baseline in picks
     report = {
         "baseline": baseline, "baseline_present": present, "tau_step": tau_step, "items": counts, "arms": arms,
-        "agreement": agreement, "verdicts": {}, "matched_note": None,
+        "agreement": agreement, "verdicts": {}, "judged": judged_table(judged) if judged is not None else None,
     }  # fmt: skip
     for arm in arms:
         if arm == FLOOR_ARM or arm == baseline:
@@ -652,6 +681,28 @@ def _section_verdicts(rep):
     return ["## Rule verdicts", "", intro, "", *_md_table(["arm", "(a)", "(b)", "(c)", "(d)", "(e)", "verdict"], rows)]
 
 
+def _section_judged(rep):
+    table = rep.get("judged")
+    if table is None:
+        return []
+    out = [
+        "## Blind-judged accuracy (headline)",
+        "",
+        "From blind judging of the items on which arms disagreed: how often an arm's answer was judged best or worst. "
+        "`sole` counts the items where the arm alone gave the answer judged best. This is the headline table; the gold-based "
+        "tables below are secondary.",
+        "",
+    ]
+    if not table:
+        return [*out, "No judged items yet.", ""]
+    for stage in sorted(table):
+        rows = []
+        for arm, t in sorted(table[stage].items(), key=lambda kv: (-kv[1]["net"], kv[0])):
+            rows.append([arm, t["judged"], t["best"], t["worst"], f"{t['net']:+d}", t["sole"]])
+        out += [f"### {stage}", "", *_md_table(["arm", "judged items", "best", "worst", "net", "sole winner"], rows), ""]
+    return out
+
+
 def render_markdown(rep):
     arms = rep["arms"]
     names = [*(a for a in arms if a != FLOOR_ARM), FLOOR_ARM]
@@ -665,6 +716,7 @@ def render_markdown(rep):
     parts = [
         head,
         _section_items(rep),
+        _section_judged(rep),
         _section_accuracy(names, arms),
         _section_hc(names, arms),
         _section_curves(names, arms),

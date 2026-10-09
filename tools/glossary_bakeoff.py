@@ -85,6 +85,7 @@ import glossary_verify  # noqa: E402
 import repair  # noqa: E402
 import tools.bakeoff as bakeoff  # noqa: E402
 import tools.decision_client as decision_client  # noqa: E402
+import tools.glossary_judge as glossary_judge  # noqa: E402
 import tools.glossary_score as glossary_score  # noqa: E402
 
 LASTRUN = ".lastrun.json"
@@ -790,7 +791,8 @@ def cmd_run(a):
 def cmd_score(a):
     items = glossary_score.load_items(a.items)
     rows = glossary_score.load_results(a.results)
-    report = glossary_score.build_report(items, rows, a.baseline, a.tau_step)
+    judged = glossary_score.load_judged(a.judged) if a.judged else None
+    report = glossary_score.build_report(items, rows, a.baseline, a.tau_step, judged)
     text = glossary_score.render_markdown(report)
     try:
         if a.out:
@@ -803,6 +805,52 @@ def cmd_score(a):
         print(f"score: cannot write the report: {e.strerror or type(e).__name__}", file=sys.stderr)
         return 1
     print(text)
+    return 0
+
+
+def cmd_export_judge(a):
+    items = glossary_judge.load_all_items(a.items)
+    rows = glossary_score.load_results(a.results)
+    known = {arm for (_, arm, _) in rows}
+    unknown = [x for x in a.arms if x not in known]
+    if unknown:
+        print(f"export-judge: no results for arm(s) {', '.join(unknown)}", file=sys.stderr)
+        raise SystemExit(2)
+    markdown, key = glossary_judge.export_judge(items, rows, a.arms, a.stage, a.seed, a.sample, a.include_no_gold)
+    try:
+        glossary_judge.write_export(a.out, markdown, key)
+    except OSError as e:
+        print(f"export-judge: cannot write --out {a.out!r}: {e.strerror or type(e).__name__}", file=sys.stderr)
+        return 1
+    print(
+        f"export-judge: {len(key['items'])} {a.stage} item(s) where the arms disagree -> {a.out}/items.md (key: {a.out}/key.json)"
+    )
+    return 0
+
+
+def cmd_import_judge(a):
+    try:
+        with open(a.key, encoding="utf-8") as f:
+            key = json.load(f)
+        with open(a.verdicts, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, ValueError) as e:
+        print(f"import-judge: cannot read the key or verdicts ({type(e).__name__})", file=sys.stderr)
+        return 2
+    if not isinstance(key, dict) or not isinstance(key.get("items"), list):
+        print("import-judge: --key is not a key.json written by export-judge", file=sys.stderr)
+        return 2
+    rows, stats = glossary_judge.import_judge(key, text)
+    try:
+        with open(a.out, "w", encoding="utf-8", newline="\n") as f:
+            f.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+    except OSError as e:
+        print(f"import-judge: cannot write --out {a.out!r}: {e.strerror or type(e).__name__}", file=sys.stderr)
+        return 1
+    print(
+        f"import-judge: {stats['used']} verdict(s) used, {stats['malformed']} malformed line(s) rejected, "
+        f"{stats['unjudged']} item(s) unjudged"
+    )
     return 0
 
 
@@ -862,8 +910,36 @@ def main(argv=None):
     sc.add_argument(
         "--tau-step", type=float, default=0.05, metavar="STEP", help="confidence-threshold step for the sweep (0 < STEP <= 1)"
     )
+    sc.add_argument("--judged", metavar="FILE", help="judged.jsonl from import-judge: adds the blind-judged headline table")
+    ex = sub.add_parser("export-judge", help="write a blind judging set for the items where the chosen arms disagree")
+    ex.add_argument("--items", required=True, help="items.jsonl from build-set")
+    ex.add_argument("--results", required=True, nargs="+", metavar="FILE", help="result files from run")
+    ex.add_argument("--arms", required=True, nargs="+", metavar="ARM", help="the arms whose forward picks are compared")
+    ex.add_argument("--stage", choices=("verify", "acquire"), required=True)
+    ex.add_argument("--out", required=True, metavar="DIR", help="directory for items.md and key.json")
+    ex.add_argument("--sample", type=int, metavar="N", help="a deterministic random sample of N disagreeing items (with --seed)")
+    ex.add_argument("--seed", type=int, default=0)
+    ex.add_argument(
+        "--include-no-gold", action="store_true", help="also export items without a gold label (default: only gold-labelled)"
+    )
+    im = sub.add_parser("import-judge", help="map a judge's verdict lines back to arms through the key")
+    im.add_argument("--key", required=True, help="key.json from export-judge")
+    im.add_argument("--verdicts", required=True, help="the judge's lines: N | best=A[,B] | worst=C | note")
+    im.add_argument("--out", required=True, help="judged.jsonl to write")
     a = ap.parse_args(argv)
+    if a.cmd == "export-judge":
+        for path in (a.items, *a.results):
+            if not os.path.isfile(path):
+                ap.error(f"{path!r} is not a file")
+        return cmd_export_judge(a)
+    if a.cmd == "import-judge":
+        for path in (a.key, a.verdicts):
+            if not os.path.isfile(path):
+                ap.error(f"{path!r} is not a file")
+        return cmd_import_judge(a)
     if a.cmd == "score":
+        if a.judged and not os.path.isfile(a.judged):
+            ap.error(f"--judged: {a.judged!r} is not a file")
         for path in (a.items, *a.results):
             if not os.path.isfile(path):
                 ap.error(f"{path!r} is not a file")
