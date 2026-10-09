@@ -38,6 +38,7 @@ Env:
   MERGE_ROOTS    default /data/Media/Anime Library  (colon list; the only stems accepted)
 """
 
+import hashlib
 import html
 import http.cookies
 import http.server
@@ -515,6 +516,12 @@ def handle_episode(stem: str, all_reasons: bool = False) -> dict:
 _WRITE_LOCK = threading.Lock()
 
 
+def shared_id(show: str, key_orig: str, key_prop: str) -> str:
+    """A stable handle for one shared (show, original, proposed) pair: a hash of exactly what one stored verdict settles. Unlike
+    a list offset it names the same pair in every tab and on every reload, so a stale page cannot land on a different pair."""
+    return hashlib.sha256(json.dumps([show, key_orig, key_prop]).encode()).hexdigest()[:16]
+
+
 def handle_shared() -> dict:
     """Every still-open line that appears in MORE than one episode, listed once.
 
@@ -550,6 +557,7 @@ def handle_shared() -> dict:
         e = g["e"]
         rows.append(
             {
+                "id": shared_id(show, _ko, _kp),
                 "show": show,
                 "original_text": e.get("original_text", ""),
                 "proposed_text": e.get("proposed_text", ""),
@@ -558,9 +566,9 @@ def handle_shared() -> dict:
                 "offered": list(OFFERED[("repair_applied", "accepted")]),
             }
         )
-    # DETERMINISTIC, because `pair` below is an index into this list and the client sends it
-    # back: render and submit must agree even across processes. Most-repeated first is also
-    # the order that clears the most work per decision.
+    # Deterministic display order (most-repeated first clears the most work per decision). `pair` is only the row's position in
+    # THIS rendering, for the page's sort tie-break: it moves whenever another row disappears, so nothing is ever written by it.
+    # What a verdict names is `id`, the hash of the exact text pair, which does not move.
     rows.sort(key=lambda r: (-r["episodes"], RISK_ORDER.get(r["risk"], 1), r["show"], r["original_text"]))
     for i, r in enumerate(rows):
         r["pair"] = i
@@ -576,24 +584,31 @@ def handle_shared_decide(verdicts: list) -> dict:
     [S-6]. Marking 24 episodes' rows resolved would be 24 rewrites to reach a state the
     pipeline already agrees on.
 
-    The client sends an INDEX into the list this module just built, never the text. A client
-    is not a trust boundary, and accepting raw text here would let it write a decision for
-    any line in the show -- including one nobody was ever shown."""
-    rows = handle_shared()["pairs"]
+    The client sends the stable `id` of a pair this module issued, never the text and never a list offset. A client is not a trust
+    boundary, and accepting raw text here would let it write a decision for any line in the show -- including one nobody was ever
+    shown. An offset is no better: it names whatever row sits there NOW, so a stale tab would approve a different pair. The id is
+    looked up in the list rebuilt UNDER the write lock, so a pair that was decided meanwhile (or no longer shared) is refused as
+    stale instead of being written."""
     errors: list = []
     by_show: dict = {}
     with _WRITE_LOCK:
+        rows = {r["id"]: r for r in handle_shared()["pairs"]}
         for d in verdicts if isinstance(verdicts, list) else []:
             if not isinstance(d, dict):
-                errors.append({"pair": None, "error": "not a verdict"})
+                errors.append({"id": None, "error": "not a verdict"})
                 continue
-            pair, verdict = d.get("pair"), str(d.get("verdict", ""))
-            if isinstance(pair, bool) or not isinstance(pair, int) or not (0 <= pair < len(rows)):
-                errors.append({"pair": pair, "error": "no such shared line"})
+            sid, verdict = d.get("id"), str(d.get("verdict", ""))
+            if not isinstance(sid, str) or sid not in rows:
+                errors.append(
+                    {
+                        "id": sid if isinstance(sid, str) else None,
+                        "error": "stale or unknown shared line: it was decided meanwhile or the page is out of date; reload",
+                    }
+                )
                 continue
-            r = rows[pair]
+            r = rows[sid]
             if verdict not in r["offered"]:
-                errors.append({"pair": pair, "error": "verdict not offered for this entry"})
+                errors.append({"id": sid, "error": "verdict not offered for this entry"})
                 continue
             by_show.setdefault(r["show"], []).append((r, verdict, str(d.get("text", ""))))
         saved, ddir = 0, decisions.DECISIONS_DIR
@@ -800,7 +815,7 @@ def render_shared() -> str:
         lis = []
         for r in srows:
             buttons = "".join(
-                f'<label><input type="radio" name="p{r["pair"]}" value="{html.escape(v)}"> {html.escape(v)}</label> '
+                f'<label><input type="radio" name="p{r["id"]}" value="{html.escape(v)}"> {html.escape(v)}</label> '
                 for v in r["offered"]
             )
             lis.append(
@@ -816,7 +831,7 @@ def render_shared() -> str:
                     r["episodes"],
                     html.escape(RISK_LABEL.get(r["risk"], "")),
                     buttons,
-                    r["pair"],
+                    r["id"],
                 )
             )
         sections.append(
@@ -862,7 +877,7 @@ def render_shared() -> str:
         f"'{TOKEN_HEADER}':TOK.value}},"
         "body:JSON.stringify(b)})).json()}"
         "function chosen(){return [...document.querySelectorAll('#list input[type=radio]:checked')]"
-        ".map(r=>({pair:Number(r.name.slice(1)),verdict:r.value,"
+        ".map(r=>({id:r.name.slice(1),verdict:r.value,"
         "text:(document.getElementById('t'+r.name.slice(1))||{}).value||''}))}"
         "const SV=document.getElementById('save'),TAL=document.getElementById('tally');"
         "function tally(){const n=chosen().length,"
@@ -886,7 +901,7 @@ def render_shared() -> str:
         "SV.disabled=true;const r=await post('/api/shared',{decisions:d});"
         "if(r.error){alert(r.error);SV.disabled=false;return}"
         "if(r.errors&&r.errors.length){alert('saved '+r.saved+', REFUSED '+r.errors.length+':\\n'+"
-        "r.errors.map(x=>'line '+x.pair+': '+x.error).join('\\n'))}"
+        "r.errors.map(x=>'line '+x.id+': '+x.error).join('\\n'))}"
         "location.reload()});"
         "</script>"
     )

@@ -1265,7 +1265,9 @@ def test_shared_lists_each_repeated_line_once_with_its_episode_count(tmp_path, m
     assert rows[0]["episodes"] == 3
     assert rows[0]["proposed_text"].startswith("Running forever.")
     assert rows[0]["risk"] == "punctuation" and rows[0]["offered"] == ["accept", "reject", "correct"]
-    assert rows[0]["pair"] == 0, "a stable handle the client sends back, so raw text never has to be trusted"
+    assert rows[0]["id"] and rows[0]["id"] == review_server.handle_shared()["pairs"][0]["id"], (
+        "a stable handle the client sends back, so raw text never has to be trusted"
+    )
 
 
 def test_deciding_a_shared_line_clears_it_from_every_episode(tmp_path, monkeypatch):
@@ -1278,7 +1280,7 @@ def test_deciding_a_shared_line_clears_it_from_every_episode(tmp_path, monkeypat
     monkeypatch.setattr(review_server, "show_for", lambda s: "One Pace")
     assert [len(review_server.handle_episode(s)["entries"]) for s in stems] == [2, 2, 2]
 
-    res = review_server.handle_shared_decide([{"pair": 0, "verdict": "accept"}])
+    res = review_server.handle_shared_decide([{"id": review_server.handle_shared()["pairs"][0]["id"], "verdict": "accept"}])
 
     assert res["saved"] == 1 and not res["errors"]
     assert [len(review_server.handle_episode(s)["entries"]) for s in stems] == [1, 1, 1], "gone from all three"
@@ -1295,13 +1297,69 @@ def test_a_shared_verdict_is_refused_for_a_pair_that_is_not_on_the_list(tmp_path
     monkeypatch.setattr(review_server.decisions, "DECISIONS_DIR", str(tmp_path))
     monkeypatch.setattr(review_server, "show_for", lambda s: "One Pace")
 
-    res = review_server.handle_shared_decide([{"pair": 7, "verdict": "accept"}, {"pair": 0, "verdict": "force"}])
+    real = review_server.handle_shared()["pairs"][0]["id"]
+    res = review_server.handle_shared_decide([{"id": "0" * 16, "verdict": "accept"}, {"id": real, "verdict": "force"}])
 
     assert res["saved"] == 0
-    assert {e["pair"] for e in res["errors"]} == {7, 0}
-    assert "not offered" in [e["error"] for e in res["errors"] if e["pair"] == 0][0], (
+    assert {e["id"] for e in res["errors"]} == {"0" * 16, real}
+    assert "not offered" in [e["error"] for e in res["errors"] if e["id"] == real][0], (
         "force on an admitted repair is a gate bypass here exactly as it is on an episode page"
     )
+
+
+def _two_shared_pairs(tmp_path, monkeypatch):
+    """Two episodes that each hold the shared pairs A and B (Sol's F1 fixture)."""
+    pairs = [("A harmless line", "A corrected line"), ("B harmless line", "B WRONG line")]
+    for name in ("e01", "e02"):
+        stem = str(tmp_path / name)
+        with open(stem + ".dubtitles.conf.json", "w") as f:
+            json.dump([{"start": 100.0, "end": 102.0, "text": o} for o, _ in pairs], f)
+        for o, p in pairs:
+            unresolved.record(stem, "repair_applied", "accepted", original_text=o, proposed_text=p)
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    monkeypatch.setattr(review_server, "_QUEUE_CACHE", {})
+    monkeypatch.setattr(review_server.decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "show_for", lambda s: "S")
+    return pairs
+
+
+def test_a_stale_tab_is_refused_and_never_approves_a_different_pair(tmp_path, monkeypatch):
+    """Two tabs load the page with A first. Tab one decides A; tab two, still showing A, decides A too. By index, B had become
+    row 0 and the second verdict approved B's WRONG line. By stable id it is refused as stale."""
+    pairs = _two_shared_pairs(tmp_path, monkeypatch)
+    shown = review_server.handle_shared()["pairs"]
+    a = next(r for r in shown if r["original_text"] == pairs[0][0])
+    first = review_server.handle_shared_decide([{"id": a["id"], "verdict": "reject"}])
+    stale = review_server.handle_shared_decide([{"id": a["id"], "verdict": "accept"}])
+    store = review_server.decisions.load("S", str(tmp_path))
+    assert first["saved"] == 1 and not first["errors"]
+    assert stale["saved"] == 0 and "stale" in stale["errors"][0]["error"]
+    assert review_server.decisions.lookup(store, *pairs[1]) is None, "B was never shown to tab two and is not decided"
+    assert review_server.decisions.lookup(store, *pairs[0])["verdict"] == "reject"
+
+
+def test_ids_do_not_move_when_another_pair_is_decided(tmp_path, monkeypatch):
+    pairs = _two_shared_pairs(tmp_path, monkeypatch)
+    before = {r["original_text"]: r["id"] for r in review_server.handle_shared()["pairs"]}
+    review_server.handle_shared_decide([{"id": before[pairs[0][0]], "verdict": "reject"}])
+    after = {r["original_text"]: r["id"] for r in review_server.handle_shared()["pairs"]}
+    assert after == {pairs[1][0]: before[pairs[1][0]]}
+
+
+def test_an_index_only_verdict_is_refused(tmp_path, monkeypatch):
+    """The old protocol sent a list offset, which stops meaning anything the moment the list changes."""
+    _two_shared_pairs(tmp_path, monkeypatch)
+    res = review_server.handle_shared_decide([{"pair": 0, "verdict": "accept"}])
+    assert res["saved"] == 0 and res["errors"]
+    assert review_server.decisions.load("S", str(tmp_path)).get("decisions", []) == []
+
+
+def test_the_shared_page_submits_ids_not_offsets(tmp_path, monkeypatch):
+    _two_shared_pairs(tmp_path, monkeypatch)
+    page = review_server.render_shared()
+    row = review_server.handle_shared()["pairs"][0]
+    assert f'name="p{row["id"]}"' in page and "id:r.name.slice(1)" in page
 
 
 def test_the_shared_route_is_gated_like_every_other_write(tmp_path, monkeypatch):
@@ -1323,7 +1381,8 @@ def test_the_shared_page_renders_one_row_per_line_with_its_count(tmp_path, monke
     page = review_server.render_shared()
 
     assert "in 3 episodes" in page
-    assert 'name="p0" value="accept"' in page and 'name="p0" value="force"' not in page
+    sid = review_server.handle_shared()["pairs"][0]["id"]
+    assert f'name="p{sid}" value="accept"' in page and f'name="p{sid}" value="force"' not in page
     assert 'id="save"' in page and 'id="apply"' not in page
 
 
