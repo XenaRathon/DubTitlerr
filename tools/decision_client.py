@@ -21,7 +21,9 @@ accepts only `noul` questions with plain-string instructions and {"true": str, "
 
 from __future__ import annotations
 
+import math
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -30,7 +32,7 @@ sys.path.insert(0, ".")
 import repair  # noqa: E402
 
 DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
-USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+USER_AGENT = "DubTitlerr-glossary-bakeoff/1.0"  # an honest UA; OpenRouter accepts it
 ALLOWED_MODELS = frozenset(
     {
         "inception/mercury-decide:free",
@@ -113,13 +115,44 @@ def _check_state(model, state):
         raise DecisionError("state must be an object")
 
 
+def _is_prob(x):
+    return _is_number(x) and math.isfinite(x) and 0 <= x <= 1
+
+
+def _find_nonfinite(obj):
+    if isinstance(obj, float):
+        return not math.isfinite(obj)
+    if isinstance(obj, dict):
+        return any(_find_nonfinite(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_find_nonfinite(v) for v in obj)
+    return False
+
+
+def _same_model(requested, served):
+    """The served id is the requested one, ignoring case and a ':free' routing tag, or that id plus a dated suffix
+    ('-' and digits only, e.g. typesafe/jev-1.13-20260917)."""
+
+    def norm(m):
+        m = m.strip().casefold()
+        return m[: -len(":free")] if m.endswith(":free") else m
+
+    req, got = norm(requested), norm(served)
+    return got == req or re.fullmatch(re.escape(req) + r"-\d+", got) is not None
+
+
 def validate_response(model, questions, resp):
-    """The parsed response, or DecisionError. Returns (answers, usage, served_model)."""
+    """The parsed response, or DecisionError (fail closed: nothing here is ever repaired or guessed).
+    Returns (answers, usage, served_model)."""
     if not isinstance(resp, dict):
         raise DecisionError("bad response: not an object")
+    if _find_nonfinite(resp):
+        raise DecisionError("bad response: contains a non-finite number (NaN or Infinity)")
     served = resp.get("model")
     if not isinstance(served, str) or not served:
         raise DecisionError("bad response: no model echoed")
+    if not _same_model(model, served):
+        raise DecisionError("bad response: served by a different model than requested")
     answers = resp.get("answers")
     if not isinstance(answers, dict):
         raise DecisionError("bad response: no answers object")
@@ -130,17 +163,21 @@ def validate_response(model, questions, resp):
         if q["type"] == "choice":
             if not isinstance(a, dict) or a.get("type") != "choice":
                 raise DecisionError(f"bad response: answer {qid!r} is not a choice")
-            if a.get("choice") not in q["criteria"]:
+            choice = a.get("choice")
+            if not isinstance(choice, str) or choice not in q["criteria"]:
                 raise DecisionError(f"bad response: answer {qid!r} picked an option that was not offered")
             probs = a.get("probabilities")
-            if probs is not None and not (isinstance(probs, dict) and all(_is_number(v) for v in probs.values())):
-                raise DecisionError(f"bad response: answer {qid!r} has malformed probabilities")
+            if probs is not None:
+                ok = isinstance(probs, dict) and all(k in q["criteria"] and _is_prob(v) for k, v in probs.items())
+                if not ok or (probs and abs(sum(probs.values()) - 1) > 0.02):
+                    raise DecisionError(f"bad response: answer {qid!r} has inconsistent probabilities")
             conf = a.get("confidence")
-            if conf is not None and not _is_number(conf):
-                raise DecisionError(f"bad response: answer {qid!r} has a non-numeric confidence")
-        elif not (_is_number(a) or isinstance(a, dict)):
-            # noul / score: a bare number (Span-01 Lite) or an object, stored as given
-            raise DecisionError(f"bad response: answer {qid!r} has an unexpected shape")
+            if conf is not None and not _is_prob(conf):
+                raise DecisionError(f"bad response: answer {qid!r} has a confidence outside 0..1")
+        else:  # noul / score: a bare probability (Span-01 Lite) or an object carrying one
+            value = a.get("probability", a.get("score")) if isinstance(a, dict) else a
+            if not _is_prob(value):
+                raise DecisionError(f"bad response: answer {qid!r} is not a probability in 0..1")
     usage = resp.get("usage")
     return answers, (usage if isinstance(usage, dict) else {}), served
 

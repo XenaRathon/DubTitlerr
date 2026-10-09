@@ -1705,3 +1705,46 @@ def test_ask_openai_keeps_a_multi_line_reply_when_first_line_is_off(monkeypatch)
     _capture(monkeypatch, resp=_ok(reply))
     assert bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY", first_line=False)[0] == reply
     assert bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")[0] == "{"  # default unchanged: first line only
+
+
+def test_ask_openai_total_deadline_cuts_off_a_trickling_server_and_is_opt_in(monkeypatch):
+    """urllib's timeout is per socket read, so a server sending a byte at a time holds the call. The glossary harness
+    passes a total deadline; without one the behaviour is exactly what it always was."""
+    import time as real_time
+
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+
+    class Trickle(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(200)
+            self.send_header("Content-Length", "10")
+            self.end_headers()
+            try:
+                for _ in range(10):
+                    self.wfile.write(b" ")
+                    self.wfile.flush()
+                    real_time.sleep(0.5)
+            except OSError:
+                pass
+
+        def log_message(self, *a):
+            pass
+
+    srv = _serve(Trickle)
+    try:
+        t0 = real_time.monotonic()
+        out, _ = bo.ask_openai(f"http://127.0.0.1:{srv.server_port}/x", "m", "P", "TEST_BAKE_KEY", deadline=1.5)
+        assert real_time.monotonic() - t0 < 3.5
+        assert out == "<ERROR TimeoutError>"
+    finally:
+        srv.shutdown()
+
+
+def test_ask_openai_without_a_deadline_calls_post_json_exactly_as_before(monkeypatch):
+    """GUARD: passes on the old code."""
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    seen = {}
+    monkeypatch.setattr(bo, "_post_json", lambda u, b, timeout=180, headers=None, **kw: seen.update(kw) or _ok("x"))
+    bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")
+    assert seen == {"follow_redirects": False}

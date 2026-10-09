@@ -341,11 +341,16 @@ def test_qwen_local_acquire_uses_the_production_merge_prompt_even_without_quotes
 
 
 def _fake_openai(monkeypatch, reply, seen=None):
-    def fake(url, model, prompt, key_env, extra_body=None, usage_sink=None, max_tokens=1024, delay=0.0, first_line=True):
+    def fake(
+        url, model, prompt, key_env, extra_body=None, usage_sink=None, max_tokens=1024, delay=0.0, first_line=True, deadline=None
+    ):
         if seen is not None:
             seen.append(
-                {"url": url, "model": model, "prompt": prompt, "key_env": key_env, "extra": extra_body, "first_line": first_line}
-            )
+                {
+                    "url": url, "model": model, "prompt": prompt, "key_env": key_env, "extra": extra_body,
+                    "first_line": first_line, "deadline": deadline,
+                }
+            )  # fmt: skip
         out = reply(prompt) if callable(reply) else reply
         if usage_sink is not None:
             usage_sink.append({"prompt_tokens": 40, "completion_tokens": 9, "cached_tokens": 32})
@@ -600,7 +605,7 @@ def test_the_startup_line_names_exactly_the_fields_sent_to_a_third_party(tmp_pat
     assert "transcript" not in first  # verify only
     _fake_local(monkeypatch, '{"canonical": "Zoro", "confidence": "high"}')
     _run(tmp_path, items_file, "qwen-local", "--stage", "verify", out="local.jsonl")
-    assert "stays on this machine" in capsys.readouterr().out.splitlines()[0]
+    assert "goes only to the production llm_chat endpoint" in capsys.readouterr().out.splitlines()[0]
 
 
 def test_the_startup_line_mentions_quotes_when_acquire_can_send_them(tmp_path, items_file, monkeypatch, capsys):
@@ -877,3 +882,158 @@ def test_an_arms_default_delay_applies_unless_delay_is_given(tmp_path, items_fil
     slept.clear()
     _run(tmp_path, items_file, "nemotron-super", "--stage", "verify", "--delay", "0", out="b.jsonl")
     assert slept == []  # an explicit --delay 0 wins over the arm's default
+
+
+# =====================================================================================
+# Phase 2b: the reviewer's findings on `run`
+# =====================================================================================
+
+
+def _decision_answer_with(**extra):
+    return {"pick": {"type": "choice", "choice": "c1", "probabilities": {"c1": 1.0}, "confidence": 0.9, **extra}}
+
+
+def test_a_429_storm_stops_the_run_after_five_consecutive_rate_limits(tmp_path, monkeypatch, capsys):
+    attempts = []
+
+    def always_429(*a, **k):
+        attempts.append(1)
+        raise dc.DecisionHTTPError(429)
+
+    monkeypatch.setattr(dc, "decide", always_429)
+    code, rows, _ = _run(tmp_path, _many(tmp_path, 20), "jev")
+    assert code == 3 and len(rows) == 5 and len(attempts) == 5
+    assert "rate limited, resume later with --retry-errors" in capsys.readouterr().err
+
+
+def test_a_429_streak_is_broken_by_any_answer(tmp_path, monkeypatch):
+    n = []
+
+    def flaky(*a, **k):
+        n.append(1)
+        if len(n) % 5 == 0:
+            return dc.DecisionResult(answers=_decision_answer_with(), usage={}, latency_s=0.1, model="typesafe/jev-1.13")
+        raise dc.DecisionHTTPError(429)
+
+    monkeypatch.setattr(dc, "decide", flaky)
+    code, rows, _ = _run(tmp_path, _many(tmp_path, 12), "jev")
+    assert code == 0 and len(rows) == 12  # never 5 in a row
+
+
+def test_a_text_arm_rate_limit_counts_too(tmp_path, monkeypatch):
+    _fake_openai(monkeypatch, "<ERROR rate-limited (HTTP 429)>")
+    code, rows, _ = _run(tmp_path, _many(tmp_path, 20), "nemotron-super")
+    assert code == 3 and len(rows) == 5
+
+
+def test_other_errors_never_trip_the_rate_limit_breaker(tmp_path, monkeypatch):
+    """GUARD: passes on the old code."""
+
+    def boom(*a, **k):
+        raise dc.DecisionHTTPError(500)
+
+    monkeypatch.setattr(dc, "decide", boom)
+    code, rows, _ = _run(tmp_path, _many(tmp_path, 8), "jev")
+    assert code == 0 and len(rows) == 8
+
+
+def test_a_resume_after_a_breaker_stop_works_with_retry_errors(tmp_path, monkeypatch):
+    monkeypatch.setattr(dc, "decide", lambda *a, **k: (_ for _ in ()).throw(dc.DecisionHTTPError(429)))
+    many = _many(tmp_path, 8)
+    _run(tmp_path, many, "jev")
+    monkeypatch.setattr(dc, "decide", lambda *a, **k: dc.DecisionResult(_decision_answer_with(), {}, 0.1, "typesafe/jev-1.13"))
+    code, rows, _ = _run(tmp_path, many, "jev", "--retry-errors")
+    assert code == 0
+    latest = {}
+    for r in rows:
+        latest[r["id"]] = r
+    assert len(latest) == 8 and not any(r["error"] for r in latest.values())
+
+
+def test_only_whitelisted_answer_fields_are_stored(tmp_path, items_file, monkeypatch):
+    secret_header = f"Authorization: Bearer {KEY}"
+    _fake_decide(monkeypatch, lambda m, s, q: _decision_answer_with(debug=secret_header, trace={"echo": secret_header}))
+    _, rows, outp = _run(tmp_path, items_file, "jev", "--stage", "verify", "--only", "gold")
+    assert set(rows[0]["raw"]["answer"]) == {"type", "choice", "probabilities", "confidence"}
+    assert KEY not in outp.read_text(encoding="utf-8")
+
+
+def test_whitelisting_also_covers_span_and_noul_answers(tmp_path, items_file, monkeypatch):
+    leaky = {"probability": 0.4, "debug": f"Bearer {KEY}"}
+    _fake_decide(monkeypatch, lambda m, s, q: {next(iter(q)): leaky})
+    _, rows, outp = _run(tmp_path, items_file, "span-01-lite", "--stage", "verify", "--only", "gold")
+    assert rows[0]["raw"][0]["answer"] == {"probability": 0.4} and KEY not in outp.read_text(encoding="utf-8")
+    _, rows, outp = _run(tmp_path, items_file, "jev", "--stage", "acquire", out="acq.jsonl")
+    assert KEY not in outp.read_text(encoding="utf-8")
+
+
+def test_the_arms_key_value_is_redacted_from_any_row_before_it_is_written(tmp_path, items_file, monkeypatch):
+    """Defence in depth: even a text arm whose reply echoes the key cannot put it in the results file."""
+    _fake_openai(monkeypatch, f'{{"canonical": "{KEY}", "confidence": "high"}}')
+    _, rows, outp = _run(tmp_path, items_file, "longcat-2.0", "--stage", "verify", "--only", "gold")
+    text = outp.read_text(encoding="utf-8")
+    assert KEY not in text and "***" in text and rows[0]["parsed"]["canonical"] == "***"
+
+
+def test_latest_row_per_key_wins(tmp_path, items_file, monkeypatch):
+    """GUARD: passes on the old code; the reviewer's mutation (first row wins) used to pass the suite."""
+    calls = _fake_local(monkeypatch, '{"canonical": "Zoro", "confidence": "high"}')
+    outp = tmp_path / "res" / "out.jsonl"
+    outp.parent.mkdir()
+    base = {"arm": "qwen-local", "order": "fwd"}
+    zoro, luffy = "verify:Alpha Show:Zoro", "verify:Alpha Show:Luffy"
+    rows = [
+        {**base, "id": zoro, "error": "boom", "parsed": None},  # an error, then...
+        {**base, "id": zoro, "error": None, "parsed": {"canonical": "Zoro", "confidence": "high"}},  # ...a good row: done
+        {**base, "id": luffy, "error": None, "parsed": {"canonical": "Luffy", "confidence": "high"}},  # a good row, then...
+        {**base, "id": luffy, "error": "boom", "parsed": None},  # ...an error: the error wins
+    ]
+    outp.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    _run(tmp_path, items_file, "qwen-local", "--stage", "verify", "--only", "all")
+    assert calls == []  # both keys are settled: the first is done, the second is an error that is not retried by default
+    _run(tmp_path, items_file, "qwen-local", "--stage", "verify", "--retry-errors")
+    assert len(calls) == 1 and "Luffy" in calls[0][0]  # only the key whose latest row is an error
+
+
+def test_the_span_branch_follows_the_effective_model_not_the_registry_default(tmp_path, items_file, monkeypatch):
+    seen = []
+    _fake_decide(monkeypatch, lambda m, s, q: {next(iter(q)): 0.5}, seen)
+    monkeypatch.setenv("GLOSSARY_BAKEOFF_JEV_MODEL", "respan/span-01-lite")
+    _run(tmp_path, items_file, "jev", "--stage", "verify", "--only", "gold")
+    assert seen and all(next(iter(s["questions"].values()))["type"] == "noul" for s in seen)
+    assert {s["model"] for s in seen} == {"respan/span-01-lite"}
+
+
+def test_the_local_arms_startup_line_names_the_endpoint_not_a_promise_of_locality(tmp_path, items_file, monkeypatch, capsys):
+    monkeypatch.setattr(gv, "VERIFY_BACKEND", "llamacpp")
+    monkeypatch.setattr(gv, "VERIFY_LLAMACPP_URL", "http://10.1.2.3:8090/v1/chat/completions")
+    _fake_local(monkeypatch, '{"canonical": "Zoro", "confidence": "high"}')
+    _run(tmp_path, items_file, "qwen-local", "--stage", "verify")
+    first = capsys.readouterr().out.splitlines()[0]
+    assert "goes only to the production llm_chat endpoint (10.1.2.3:8090)" in first and "nothing leaves" not in first
+
+
+def test_text_arms_get_a_total_request_deadline_from_the_harness(tmp_path, items_file, monkeypatch):
+    seen = []
+    _fake_openai(monkeypatch, '{"canonical": "Zoro", "confidence": "high"}', seen)
+    _run(tmp_path, items_file, "longcat-2.0", "--stage", "verify")
+    assert seen[0]["deadline"] == gb.repair._request_deadline() and seen[0]["deadline"] >= 10
+
+
+def test_out_equal_to_items_is_refused(tmp_path, items_file, capsys):
+    before = items_file.read_bytes()
+    link = tmp_path / "alias.jsonl"
+    link.symlink_to(items_file)
+    for target in (items_file, link):
+        with pytest.raises(SystemExit) as e:
+            gb.main(["run", "--items", str(items_file), "--arm", "qwen-local", "--out", str(target)])
+        assert e.value.code == 2 and "--out" in capsys.readouterr().err
+    assert items_file.read_bytes() == before
+
+
+def test_decision_rows_record_the_served_model_id(tmp_path, items_file, monkeypatch):
+    monkeypatch.setattr(
+        dc, "decide", lambda *a, **k: dc.DecisionResult(_decision_answer_with(), {}, 0.1, "typesafe/jev-1.13-20260917")
+    )
+    _, rows, _ = _run(tmp_path, items_file, "jev", "--stage", "verify", "--only", "gold")
+    assert rows[0]["served_model"] == "typesafe/jev-1.13-20260917"

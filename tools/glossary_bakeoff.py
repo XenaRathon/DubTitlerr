@@ -72,6 +72,7 @@ import random
 import re
 import sys
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 
 sys.path.insert(0, ".")
@@ -79,6 +80,7 @@ import acquire_cache  # noqa: E402
 import common  # noqa: E402
 import glossary_acquire  # noqa: E402
 import glossary_verify  # noqa: E402
+import repair  # noqa: E402
 import tools.bakeoff as bakeoff  # noqa: E402
 import tools.decision_client as decision_client  # noqa: E402
 
@@ -477,7 +479,7 @@ def _llm_chat_for(arm, cap):
         sink = []
         out, dt = bakeoff.ask_openai(
             _arm_setting(arm, "url"), _arm_setting(arm, "model"), prompt, arm.key_env, arm.extra_body, sink,
-            max_tokens=kw.get("max_tokens", 512), first_line=False,
+            max_tokens=kw.get("max_tokens", 512), first_line=False, deadline=repair._request_deadline(),
         )  # fmt: skip
         cap.latency, cap.usage = dt, (sink[0] if sink else None)
         if out.startswith(("<ERROR", "<EMPTY")):
@@ -487,6 +489,19 @@ def _llm_chat_for(arm, cap):
         return out
 
     return fn
+
+
+ANSWER_FIELDS = ("type", "choice", "probabilities", "confidence", "probability")
+RATE_LIMIT_STREAK = 5
+
+
+def _clean_answer(a):
+    """Keep only the answer fields the scorer reads: a server may echo anything (even our headers) in an answer."""
+    return {k: a[k] for k in ANSWER_FIELDS if k in a} if isinstance(a, dict) else a
+
+
+def _is_span(arm):
+    return _arm_setting(arm, "model").startswith("respan/span-01-lite")
 
 
 def _row(raw=None, parsed=None, latency=0.0, usage=None, error=None, **extra):
@@ -524,7 +539,7 @@ def _decide(arm, state, questions):
 
 
 def _verify_decision(arm, item, titles):
-    if arm.model.startswith("respan/span-01-lite"):
+    if _is_span(arm):
         return _verify_span(arm, item, titles)
     options = {f"c{i}": t for i, t in enumerate(titles, 1)}
     q = {
@@ -544,12 +559,12 @@ def _verify_decision(arm, item, titles):
         "probabilities": ans.get("probabilities"),
         "confidence": ans.get("confidence"),
     }
-    return _row({"answer": ans, "options": options}, parsed, res.latency_s, res.usage)
+    return _row({"answer": _clean_answer(ans), "options": options}, parsed, res.latency_s, res.usage, served_model=res.model)
 
 
 def _verify_span(arm, item, titles):
     """Span-01 Lite takes only noul questions on an {input, output} state: ask once per candidate title."""
-    scores, raws, usage, latency = {}, [], {}, 0.0
+    scores, raws, usage, latency, served = {}, [], {}, 0.0, None
     for title in titles:
         state = {
             "input": [{"role": "user", "content": f"Show: {item['show']}\nMined term: {item['term']}\nWhich wiki page is it?"}],
@@ -561,12 +576,13 @@ def _verify_span(arm, item, titles):
             "criteria": {"true": "the title is the same named entity as the term", "false": "the title is a different entity"},
         }
         res = _decide(arm, state, {"same": q})
-        scores[title] = res.answers["same"]
-        raws.append({"title": title, "answer": res.answers["same"]})
+        served = res.model
+        scores[title] = _clean_answer(res.answers["same"])
+        raws.append({"title": title, "answer": scores[title]})
         latency += res.latency_s
         for k, v in res.usage.items():
             usage[k] = usage.get(k, 0) + v if isinstance(v, (int, float)) else v
-    return _row(raws, {"scores": scores}, latency, usage)
+    return _row(raws, {"scores": scores}, latency, usage, served_model=served)
 
 
 def _acquire_decision(arm, item):
@@ -581,7 +597,7 @@ def _acquire_decision(arm, item):
         "instructions": instructions,
         "criteria": {"true": "the same name, mis-transcribed", "false": "two different forms"},
     }
-    if arm.model.startswith("respan/span-01-lite"):
+    if _is_span(arm):
         body = f"Spelling A: {a}\n" + "\n".join(qv) + f"\nSpelling B: {b}\n" + "\n".join(qc)
         state = {
             "input": [{"role": "user", "content": instructions + "\n" + body}],
@@ -590,7 +606,8 @@ def _acquire_decision(arm, item):
     else:
         state = {"show": item["show"], "spelling_a": a, "spelling_b": b, "quotes_a": qv, "quotes_b": qc}
     res = _decide(arm, state, {"same": q})
-    return _row(res.answers["same"], {"noul": res.answers["same"]}, res.latency_s, res.usage)
+    ans = _clean_answer(res.answers["same"])
+    return _row(ans, {"noul": ans}, res.latency_s, res.usage, served_model=res.model)
 
 
 def run_item(arm, item, order):
@@ -656,7 +673,8 @@ def _ends_with_newline(path):
 
 def _startup_line(arm, stage):
     if not arm.third_party:
-        return f"run: arm={arm.name} stays on this machine (the production llm_chat endpoint); nothing leaves it"
+        url = glossary_verify.VERIFY_LLAMACPP_URL if glossary_verify.VERIFY_BACKEND == "llamacpp" else glossary_verify.OLLAMA
+        return f"run: arm={arm.name} goes only to the production llm_chat endpoint ({urllib.parse.urlsplit(url).netloc or url})"
     host = _arm_setting(arm, "url").split("/")[2] if "//" in _arm_setting(arm, "url") else _arm_setting(arm, "url")
     parts = []
     if stage in ("verify", "both"):
@@ -686,7 +704,9 @@ def cmd_run(a):
     done = _load_done(a.out)
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     n = {"sent": 0, "local": 0, "resumed": 0, "errors": 0, "no_quotes": 0, "not_applicable": 0}
-    handled = 0
+    handled = streak = 0
+    limited = False
+    secret = repair.clean_api_key(os.environ.get(arm.key_env, "")) if arm.key_env else None
     with open(a.out, "a", encoding="utf-8") as out:
         if out.tell() and not _ends_with_newline(a.out):
             out.write("\n")  # a crash mid-row left a torn line; do not glue the next row onto it
@@ -710,8 +730,15 @@ def cmd_run(a):
                 body = run_item(arm, item, order)
                 n["sent"] += 1
                 n["errors"] += 1 if body["error"] else 0
-            out.write(json.dumps({"id": item["id"], "arm": arm.name, "order": order, **body}, ensure_ascii=False) + "\n")
+                streak = streak + 1 if body["error"] and re.search(r"\b429\b", body["error"]) else 0
+            line = json.dumps({"id": item["id"], "arm": arm.name, "order": order, **body}, ensure_ascii=False)
+            if secret and secret in line:
+                line = line.replace(secret, "***")  # defence in depth: nothing a server echoes may carry the key to disk
+            out.write(line + "\n")
             out.flush()
+            if streak >= RATE_LIMIT_STREAK:
+                limited = True
+                break
             handled += 1
             if handled % 25 == 0:
                 print(f"run: {handled}/{len(items)} items, {n['errors']} errors", file=sys.stderr, flush=True)
@@ -719,6 +746,9 @@ def cmd_run(a):
         f"run {arm.name} ({order}): sent {n['sent']}, local no-call {n['local']}, resumed {n['resumed']}, errors {n['errors']}, "
         f"skipped (no quotes): {n['no_quotes']}, skipped (not applicable): {n['not_applicable']}, bad item lines: {bad}"
     )
+    if limited:
+        print(f"run: rate limited, resume later with --retry-errors ({RATE_LIMIT_STREAK} HTTP 429 in a row)", file=sys.stderr)
+        return 3
     return 0
 
 
@@ -774,6 +804,8 @@ def main(argv=None):
         if not os.path.isfile(a.items):
             ap.error(f"--items: {a.items!r} is not a file")
         arm = ARMS[a.arm]
+        if os.path.realpath(a.out) == os.path.realpath(a.items):
+            ap.error("--out must not be the --items file (results would be appended into the item set)")
         if arm.third_party and not os.environ.get(arm.key_env, "").strip():
             ap.error(f"arm {arm.name} needs the API key in the environment variable {arm.key_env}, which is not set")
         return cmd_run(a)

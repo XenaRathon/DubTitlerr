@@ -51,7 +51,7 @@ def test_request_shape_headers_and_result():
     url, body, headers = seen[0]
     assert url == "https://openrouter.ai/api/alpha/decisions"
     assert body == {"model": MODEL, "state": {"show": "S", "term": "T"}, "questions": CHOICE_Q}
-    assert headers["Authorization"] == f"Bearer {KEY}" and "Mozilla" in headers["User-Agent"]
+    assert headers["Authorization"] == f"Bearer {KEY}" and headers["User-Agent"] == "DubTitlerr-glossary-bakeoff/1.0"
     assert res.answers["pick"]["choice"] == "c1" and res.usage == {"input_tokens": 10, "output_tokens": 2}
     assert res.model == MODEL and res.latency_s >= 0
 
@@ -221,3 +221,95 @@ def test_the_default_transport_is_repairs_post_json(monkeypatch):
     monkeypatch.setattr(repair, "_post_json", lambda url, body, headers=None: seen.append(url) or _ok())
     dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY")
     assert seen == [dc.DECISIONS_URL]
+
+
+# --- fail closed: the reviewer's probes (every one of these used to be accepted as a real answer) -------------
+
+
+def _choice_resp(**over):
+    ans = {"type": "choice", "choice": "c1", "probabilities": {"c1": 0.9, "c2": 0.05, "none": 0.05}, "confidence": 0.9}
+    ans.update(over)
+    return {"model": MODEL, "answers": {"pick": ans}, "usage": {}}
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"probabilities": {"c1": 1.0, "c2": 1.0, "none": 1.0}},  # sums to 3
+        {"probabilities": {"c1": 0.5, "c9": 0.5}},  # an option that was never offered
+        {"probabilities": {"c1": 1.5, "c2": -0.5}},  # outside 0..1
+        {"probabilities": {"c1": 0.4, "c2": 0.4}},  # sums to 0.8
+        {"probabilities": {"c1": float("nan"), "c2": 0.5}},
+        {"confidence": 7},
+        {"confidence": -1},
+        {"confidence": float("nan")},
+        {"confidence": float("inf")},
+        {"confidence": True},
+        {"choice": ["c1"]},
+        {"choice": {"c1": 1}},
+        {"choice": 1},
+        {"choice": None},
+    ],
+)
+def test_choice_answers_that_do_not_hold_together_are_rejected(over):
+    with pytest.raises(dc.DecisionError):
+        dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", post=_post_returning(_choice_resp(**over)))
+
+
+def test_a_clean_choice_answer_with_the_probabilities_summing_to_one_is_accepted():
+    """GUARD: passes on the old code."""
+    res = dc.decide(
+        MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", post=_post_returning(_choice_resp(probabilities={"c1": 0.98, "c2": 0.01}))
+    )
+    assert res.answers["pick"]["choice"] == "c1"
+
+
+@pytest.mark.parametrize(
+    "answer", [{"error": "rate limited"}, 5, -3, 1.5, float("nan"), "yes", None, True, [0.3], {"probability": 2}]
+)
+def test_noul_answers_must_be_a_probability(answer):
+    resp = {"model": "respan/span-01-lite", "answers": {"same": answer}, "usage": {}}
+    with pytest.raises(dc.DecisionError):
+        dc.decide("respan/span-01-lite", SPAN_STATE, NOUL_Q, "TEST_DECISION_KEY", post=_post_returning(resp))
+
+
+@pytest.mark.parametrize("answer", [0.0, 0.32, 1, {"probability": 0.7}])
+def test_noul_answers_that_are_probabilities_are_accepted(answer):
+    resp = {"model": "respan/span-01-lite", "answers": {"same": answer}, "usage": {}}
+    assert (
+        dc.decide("respan/span-01-lite", SPAN_STATE, NOUL_Q, "TEST_DECISION_KEY", post=_post_returning(resp)).answers["same"]
+        == answer
+    )
+
+
+def test_the_served_model_must_be_the_requested_one():
+    with pytest.raises(dc.DecisionError, match="model"):
+        dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", post=_post_returning(_ok(model="other/cheap-model")))
+
+
+def test_a_dated_version_suffix_is_accepted_and_the_served_id_is_kept():
+    jev = "typesafe/jev-1.13"
+    res = dc.decide(jev, {}, CHOICE_Q, "TEST_DECISION_KEY", post=_post_returning(_ok(model="typesafe/jev-1.13-20260917")))
+    assert res.model == "typesafe/jev-1.13-20260917"
+    for bad in ("typesafe/jev-1.13-beta", "typesafe/jev-1.130", "typesafe/jev-1.13-"):
+        with pytest.raises(dc.DecisionError):
+            dc.decide(jev, {}, CHOICE_Q, "TEST_DECISION_KEY", post=_post_returning(_ok(model=bad)))
+
+
+def test_the_free_tag_is_a_routing_tag_not_part_of_the_identity():
+    res = dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", post=_post_returning(_ok(model="inception/mercury-decide")))
+    assert res.model == "inception/mercury-decide"
+
+
+def test_non_finite_numbers_anywhere_in_the_response_are_rejected():
+    resp = _ok()
+    resp["usage"] = {"input_tokens": float("inf")}
+    with pytest.raises(dc.DecisionError, match="finite"):
+        dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", post=_post_returning(resp))
+
+
+def test_the_user_agent_is_the_honest_constant():
+    assert dc.USER_AGENT == "DubTitlerr-glossary-bakeoff/1.0"
+    seen = []
+    dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", post=_post_returning(_ok(), seen))
+    assert seen[0][2]["User-Agent"] == "DubTitlerr-glossary-bakeoff/1.0"

@@ -57,6 +57,7 @@ import json
 import math
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -315,13 +316,37 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
-def _post_json(url, body, timeout=180, headers=None, follow_redirects=True):
+def _post_json(url, body, timeout=180, headers=None, follow_redirects=True, deadline=None):
+    """POST JSON. ``deadline`` (opt-in) bounds the TOTAL wall time: urllib's timeout is per socket read, so a server
+    that trickles a byte at a time would hold the call. The request runs in a daemon thread that is abandoned
+    (it dies on its own at the next read timeout) when the deadline passes."""
     req = urllib.request.Request(
         url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json", **(headers or {})}
     )
     opener = urllib.request.urlopen if follow_redirects else _NO_REDIRECT_OPENER.open
-    with opener(req, timeout=timeout) as r:
-        return json.loads(r.read())
+
+    def call(read_timeout):
+        with opener(req, timeout=read_timeout) as r:
+            return json.loads(r.read())
+
+    if deadline is None:
+        return call(timeout)
+    box = {}
+
+    def worker():
+        try:
+            box["value"] = call(min(timeout, deadline))
+        except BaseException as e:  # noqa: BLE001 -- handed back to the caller's thread unchanged
+            box["error"] = e
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(deadline)
+    if t.is_alive():
+        raise TimeoutError(f"request deadline of {deadline}s exceeded")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
 
 
 def _first_line(out):
@@ -420,7 +445,9 @@ def _error_label(e):
     return name
 
 
-def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None, max_tokens=1024, delay=0.0, first_line=True):
+def ask_openai(
+    url, model, prompt, key_env, extra_body=None, usage_sink=None, max_tokens=1024, delay=0.0, first_line=True, deadline=None
+):
     """Any OpenAI-compatible chat API; mirrors repair.llm_openai (same body and headers).
 
     The key is read from the env var NAMED ``key_env`` and never printed (a key with spaces or
@@ -431,6 +458,7 @@ def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None, ma
     ``<ERROR truncated ...>``. Redirects are refused.
 
     The returned latency covers the last attempt only: a Retry-After sleep is not model time.
+    ``deadline`` (opt-in, seconds) bounds the total wall time of each request; the default is no total bound.
     ``first_line=False`` keeps a multi-line reply whole (the glossary bake-off asks for JSON; repair wants one line).
     ``delay`` (--delay) is the floor of the 429 wait when the provider sends no usable Retry-After.
     ``usage_sink`` (a list) gets exactly one entry per call: the token counts from ``usage``
@@ -456,7 +484,8 @@ def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None, ma
         for attempt in (0, 1):
             t0 = time.monotonic()
             try:
-                resp = _post_json(url, body, headers=headers, follow_redirects=False)
+                extra = {} if deadline is None else {"deadline": deadline}
+                resp = _post_json(url, body, headers=headers, follow_redirects=False, **extra)
                 choice = resp["choices"][0]
                 content = (choice["message"].get("content") or "").strip()
                 out = _first_line(content) if first_line else content
