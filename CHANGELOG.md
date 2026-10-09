@@ -8,6 +8,16 @@ that shipped since.
 
 ## [Unreleased]
 
+- **Arc tags and an arc gate for verify (both opt-in).** `GLOSSARY_ARC_TAGS=1` makes `gen_loop.sh` run
+  `glossary_verify.py <glossary> --tag-arcs <show dir>` before VERIFY: one cached wiki fetch per distinct `season.nfo` arc tags
+  the glossary's names (repair weights its prompt by them) and stores each arc's page titles (links normalised to page titles,
+  redirect targets included). Only COMPLETE fetches are stored or cached; the arcs that returned nothing are recorded in
+  `arc_titles_missing`. `VERIFY_ARC_GATE=1` then flags a would-be auto-write whose canonical is on no arc page as
+  `not-in-arc-pages`; it does nothing (and says so once) unless every arc of the show has stored titles. The gate covers verify's
+  auto-writes only: acquire's own writes (`ACQUIRE_APPLY`) are not gated. `--tag-arcs` exits 0 whatever happened (the `note` in
+  its JSON line is the signal) unless `VERIFY_REFUSE_EXIT=1`, which makes a load failure, an unresolved wiki or a failed write
+  exit 2.
+
 - **Repair can keep names as the dub says them (opt-in).** `REPAIR_KEEP_NAME_PARTS=1` makes the repair stage refuse a
   repair that adds or removes a part of a multi-word glossary name next to a name token the line already had
   (`Momonosuke` -> `Kouzuki Momonosuke`, `Zorro` -> `Roronoa Zoro`, and back). Misheard single tokens (`Kojuki` ->

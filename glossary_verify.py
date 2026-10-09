@@ -189,6 +189,16 @@ def refusal_exit(rep):
         sys.exit(2)
 
 
+def tag_failure_exit(rep):
+    """--tag-arcs exits 0 whatever happened (the `note` field in the logged JSON is the signal), unless VERIFY_REFUSE_EXIT=1:
+    then a load failure, an unresolved wiki or a failed write ends with a final 'TAG-ARCS FAILED' line and status 2. An empty
+    or partial arc, a show with no arcs and a soft stop are not failures."""
+    note = rep.get("note", "") if isinstance(rep, dict) else ""
+    if os.environ.get("VERIFY_REFUSE_EXIT") == "1" and note.startswith(("load-failed", "wiki unresolved", "write-failed")):
+        log(f"TAG-ARCS FAILED: {note}")
+        sys.exit(2)
+
+
 def worker_count():
     """Concurrent adjudications in verify(): VERIFY_WORKERS for the local backends (as always); VERIFY_DECISION_WORKERS
     (default 1) for the decision backend, whose provider meters requests and rate-limits per key."""
@@ -343,6 +353,8 @@ def arc_universe(gloss: dict):
     (never tagged, or a show whose seasons carry no arc). The titles are stored in the glossary by tag_arcs, so applying
     results needs no network.
 
+    Not gated: acquire's own writes (ACQUIRE_APPLY) never consult this universe; the gate covers verify's auto-writes only.
+
     debt: this is the 'first' use of the tags (a hard gate on auto-WRITES). The 'second' -- tag-derived confidence for
     episodes with no fansub anchor -- would also read this universe; it is deliberately not built (revisit when unanchored
     repair has a measured need for it)."""
@@ -350,6 +362,14 @@ def arc_universe(gloss: dict):
     if os.environ.get("VERIFY_ARC_GATE") != "1":
         return None
     titles = {t.casefold() for ts in (gloss.get("arc_titles") or {}).values() for t in ts}
+    missing = gloss.get("arc_titles_missing") or []
+    if titles and missing:
+        # Partial evidence blocks names that belong only to the arcs without titles: the gate stays a no-op until every arc
+        # of the show has stored titles (tag_arcs records the ones that do not in `arc_titles_missing`).
+        if not _gate_noop_logged:
+            _gate_noop_logged = True
+            log(f"VERIFY_ARC_GATE is on but these arcs have no stored titles: {', '.join(missing)}: the gate does nothing")
+        return None
     if not titles:
         if not _gate_noop_logged:
             _gate_noop_logged = True
@@ -509,8 +529,8 @@ def resolve_wiki(title: str, override: str | None = None) -> str | None:
     return None
 
 
-def arc_categories(wiki_api: str, arc: str) -> list[str]:
-    """Category pages that scope an arc, DISCOVERED rather than guessed.
+def arc_categories_checked(wiki_api: str, arc: str) -> tuple[list[str], bool]:
+    """Category pages that scope an arc, DISCOVERED rather than guessed, and whether the search itself succeeded.
 
     S-2. Arc category naming is not uniform and cannot be derived from the arc name:
     measured 2026-08-26 on the One Piece wiki, `Category:Dressrosa Arc` does not exist,
@@ -520,14 +540,14 @@ def arc_categories(wiki_api: str, arc: str) -> list[str]:
     Non-canon categories are excluded: this feeds canonical spellings, and `Non-Canon
     Dressrosa Residents` is exactly the material that must not become one.
 
-    Returns [] on any failure. Emptiness is the [S-7] fallback trigger -- a `season.nfo`
-    title that is not an arc at all (`Gaimon` is a character) finds no arc categories, and
-    the caller must degrade rather than tag from some unrelated page's cast."""
+    The list is [] on any failure; the flag is what tells a FAILED search from the [S-7] signal -- a `season.nfo` title that
+    is not an arc at all (`Gaimon` is a character) finds no arc categories, and the caller must degrade rather than tag from
+    some unrelated page's cast."""
     url = wiki_api + "?action=query&list=search&srnamespace=14&srlimit=25&format=json&srsearch=" + urllib.parse.quote(arc)
     try:
         resp = _http_json(url)
     except Exception:
-        return []
+        return [], False
     out = []
     for hit in resp.get("query", {}).get("search", []):
         title = hit.get("title", "")
@@ -541,21 +561,43 @@ def arc_categories(wiki_api: str, arc: str) -> list[str]:
             continue
         if arc.lower() in low:
             out.append(title)
-    return out
+    return out, True
 
 
-def _extract_links(wt: str) -> set[str]:
+def arc_categories(wiki_api: str, arc: str) -> list[str]:
+    """arc_categories_checked without the success flag: [] on any failure (and for a non-arc title, [S-7])."""
+    return arc_categories_checked(wiki_api, arc)[0]
+
+
+_LINK_NAMESPACES = frozenset(
+    "category file image media template help special user talk project portal forum blog thread board w wikipedia wikia c".split()
+)
+
+
+def _extract_links(wt: str, normalise: bool = False) -> set[str]:
     """[[...]] links from wikitext, templates/refs stripped, non-entity links dropped
     (Category:/File:/Image:/w: namespaces, lowercase-first, bare Chapter/Episode/Volume
     N). Shared by arc_page_links (whole page) and plot_section_links (one section) so
-    the filter cannot drift between them."""
+    the filter cannot drift between them.
+
+    ``normalise`` (the ARC stage only; plot_section_links keeps the old filter so acquire's per-episode admission is
+    unchanged) turns a link into the page title MediaWiki would open: a ``#fragment`` is dropped ([[Trafalgar Law#Wano|Law]] ->
+    Trafalgar Law), ``_`` is a space, the first letter is upper-cased instead of dropping a lowercase-first link
+    ([[whitebeard]] -> Whitebeard), and links into other namespaces/interwikis are dropped by name. The verify gate compares
+    these titles with verify's own canonicals (wiki page titles), so the stored form must be the title form."""
     for _ in range(4):  # nested templates
         wt = re.sub(r"\{\{[^{}]*\}\}", " ", wt)
     wt = re.sub(r"<ref[^>]*>.*?</ref>", " ", wt, flags=re.S)
     wt = re.sub(r"<[^>]+>", " ", wt)
     out = set()
-    for link in re.findall(r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]", wt):
+    pattern = r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]" if normalise else r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]"
+    for link in re.findall(pattern, wt):
         link = link.strip()
+        if normalise:
+            link = re.sub(r"\s+", " ", link.replace("_", " ")).strip()
+            if link.partition(":")[0].strip().lower() in _LINK_NAMESPACES and ":" in link:
+                continue
+            link = link[:1].upper() + link[1:]
         if not link or link[:1].islower():
             continue
         if link.startswith(("Category:", "File:", "Image:", "w:")):
@@ -681,8 +723,8 @@ def episode_page_titles(wiki_api: str, show_key: str, page_titles: list[str]) ->
     return union, resolved, failed
 
 
-def arc_page_links(wiki_api: str, arc: str) -> set[str]:
-    """Entities linked from the arc page's PROSE.
+def arc_page_links_checked(wiki_api: str, arc: str) -> tuple[set[str], bool]:
+    """Entities linked from the arc page's PROSE, and whether the page was read.
 
     The primary arc source, because categories provably miss the leads: measured
     2026-08-26, neither `Rebecca` nor `Kyros` -- the arc's two most-mentioned characters --
@@ -694,33 +736,48 @@ def arc_page_links(wiki_api: str, arc: str) -> set[str]:
     franchise-wide entries (`100% Island`, `Abdullah`, ...) and is unusable as an arc
     signal. Verified 2026-08-26.
 
-    Returns an empty set on any failure; this runs inside the sweep."""
+    Links are normalised to page titles (see _extract_links). A page that does not exist (the API's `missingtitle`) is a
+    COMPLETE empty answer; any other failure is not, and the flag says so. Never raises; this runs inside the sweep."""
     url = wiki_api + "?action=parse&prop=wikitext&format=json&page=" + urllib.parse.quote(arc + " Arc")
     # ONLY the "<arc> Arc" page. Falling back to the bare title resolves a page that is not
     # an arc at all and harvests its links: measured 2026-08-26, `Gaimon` -- a season.nfo
     # title that names a CHARACTER -- returned 48 entities that way, which [S-7] requires be
     # treated as no resolution rather than a plausible-looking cast.
     try:
-        wt = _http_json(url)["parse"]["wikitext"]["*"]
+        resp = _http_json(url)
     except Exception:
-        return set()
-    return _extract_links(wt)
+        return set(), False
+    try:
+        wt = resp["parse"]["wikitext"]["*"]
+    except (KeyError, TypeError):
+        missing = isinstance(resp, dict) and (resp.get("error") or {}).get("code") == "missingtitle"
+        return set(), bool(missing)
+    return _extract_links(wt, normalise=True), True
 
 
-def fetch_arc_titles(wiki_api: str, arc: str) -> set[str]:
-    """Every ns0 page belonging to an arc, unioned across its categories.
+def arc_page_links(wiki_api: str, arc: str) -> set[str]:
+    """arc_page_links_checked without the success flag: an empty set on any failure."""
+    return arc_page_links_checked(wiki_api, arc)[0]
 
-    Members come back paged, so continuation is followed -- a truncated union would
-    silently under-tag an arc, which is worse than not tagging it at all because the gap
-    would be invisible. Bounded at 6 pages per category (3,000 titles), far above the 96
-    measured for Dressrosa, so a runaway cannot stall a sweep.
 
-    Returns an empty set on any failure, including an unreachable wiki. This runs inside
-    the sweep and must never stall or fail it."""
-    titles: set[str] = arc_page_links(wiki_api, arc)
-    for cat in arc_categories(wiki_api, arc):
+CATEGORY_PAGE_CAP = 6  # pages of 500 per category (3,000 titles), far above the 96 measured for Dressrosa
+
+
+def fetch_arc_titles_checked(wiki_api: str, arc: str) -> tuple[set[str], bool]:
+    """(titles, complete): every ns0 page belonging to an arc, unioned across its categories, and whether the fetch was whole.
+
+    COMPLETE means the arc page was read (or does not exist), the category search succeeded, and every category was listed to
+    its end: no request failed and no listing was cut at CATEGORY_PAGE_CAP. A partial result is returned for logging but must
+    never be cached or stored -- it would stay the show's universe for a whole cache TTL and block every name it missed.
+
+    Members come back paged, so continuation is followed -- a truncated union would silently under-tag an arc, which is worse
+    than not tagging it at all because the gap would be invisible. Never raises: this runs inside the sweep."""
+    titles, complete = arc_page_links_checked(wiki_api, arc)
+    cats, ok = arc_categories_checked(wiki_api, arc)
+    complete = complete and ok
+    for cat in cats:
         cont = None
-        for _ in range(6):
+        for page in range(CATEGORY_PAGE_CAP):
             url = (
                 wiki_api
                 + "?action=query&list=categorymembers&cmnamespace=0&cmlimit=500&format=json&cmtitle="
@@ -731,12 +788,42 @@ def fetch_arc_titles(wiki_api: str, arc: str) -> set[str]:
             try:
                 resp = _http_json(url)
             except Exception:
+                complete = False
                 break
             titles |= {m["title"] for m in resp.get("query", {}).get("categorymembers", [])}
             cont = resp.get("continue", {}).get("cmcontinue")
             if not cont:
                 break
-    return titles
+            if page == CATEGORY_PAGE_CAP - 1:
+                complete = False  # still more to list: truncated
+    return titles, complete
+
+
+def fetch_arc_titles(wiki_api: str, arc: str) -> set[str]:
+    """fetch_arc_titles_checked without the flag: an empty set on any failure, including an unreachable wiki."""
+    return fetch_arc_titles_checked(wiki_api, arc)[0]
+
+
+REDIRECT_MAX_CHUNKS = 20  # 50 titles per call: an arc beyond 1,000 links leaves the rest unresolved rather than looping
+
+
+def redirect_targets(wiki_api: str, titles) -> tuple[dict[str, str], bool]:
+    """({title: redirect target}, complete) for the titles that are redirects: one call per chunk of <=50, at most
+    REDIRECT_MAX_CHUNKS. A chunk that fails is skipped and the flag turns False; the caller keeps the plain titles either way."""
+    items = sorted(titles)
+    out: dict[str, str] = {}
+    complete = len(items) <= REDIRECT_MAX_CHUNKS * 50
+    for k in range(0, min(len(items), REDIRECT_MAX_CHUNKS * 50), 50):
+        url = wiki_api + "?action=query&redirects=1&format=json&titles=" + urllib.parse.quote("|".join(items[k : k + 50]))
+        try:
+            resp = _http_json(url)
+        except Exception:
+            complete = False
+            continue
+        for r in resp.get("query", {}).get("redirects", []):
+            if r.get("from") and r.get("to"):
+                out[r["from"]] = r["to"]
+    return out, complete
 
 
 def fetch_titles(wiki_api: str, show_key: str) -> list[str]:
@@ -792,10 +879,14 @@ def _arc_cache_path(show_key: str) -> str:
     return os.path.join(CACHE_DIR, re.sub(r"[^A-Za-z0-9]+", "_", show_key) + "_arcs.json")
 
 
-def fetch_arc_titles_cached(wiki_api: str, show_key: str, arc: str) -> tuple[set[str], str]:
-    """(titles, 'cached' | 'fetched' | 'empty'). One JSON cache file per show, each arc WIKI_TTL-gated, only POSITIVE results
-    cached (the same rules as fetch_episode_titles): an empty result -- a non-arc title [S-7] or an unreachable wiki -- is asked
-    again next time."""
+def fetch_arc_titles_cached(wiki_api: str, show_key: str, arc: str) -> tuple[set[str], str, bool]:
+    """(titles, how, redirects_ok); how is 'cached' | 'fetched' | 'partial' | 'empty'.
+
+    One JSON cache file per show, each arc WIKI_TTL-gated. Only a COMPLETE, non-empty result whose redirect step also finished
+    is cached (the rules of fetch_episode_titles, plus completeness): 'empty' -- a non-arc title [S-7] -- and 'partial' -- a
+    request failed or a listing was cut, see fetch_arc_titles_checked -- are returned without titles and asked again next
+    time. The titles include each link's redirect target (Ace -> Portgas D. Ace), resolved once per arc here; if that step fails
+    the plain links are kept and the result is simply not cached, so the next pass resolves them."""
     path = _arc_cache_path(show_key)
     try:
         doc = json.load(open(path))
@@ -804,26 +895,36 @@ def fetch_arc_titles_cached(wiki_api: str, show_key: str, arc: str) -> tuple[set
     arcs = doc.get("arcs", {}) if doc.get("api") == wiki_api else {}
     entry = arcs.get(arc)
     if entry and (time.time() - entry.get("fetched_at", 0)) < WIKI_TTL:
-        return set(entry["titles"]), "cached"
-    titles = fetch_arc_titles(wiki_api, arc)
+        return set(entry["titles"]), "cached", True
+    titles, complete = fetch_arc_titles_checked(wiki_api, arc)
+    if not complete:
+        return set(), "partial", False
     if not titles:
-        return set(), "empty"
-    arcs[arc] = {"fetched_at": time.time(), "titles": sorted(titles)}
-    try:
-        os.makedirs(CACHE_DIR, exist_ok=True)
-        json.dump({"api": wiki_api, "arcs": arcs}, open(path, "w"))
-    except OSError:
-        pass  # a cache that cannot be written costs a refetch, nothing more
-    return titles, "fetched"
+        return set(), "empty", False
+    targets, redirects_ok = redirect_targets(wiki_api, titles)
+    titles = titles | set(targets.values())
+    if redirects_ok:
+        arcs[arc] = {"fetched_at": time.time(), "titles": sorted(titles)}
+        try:
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            json.dump({"api": wiki_api, "arcs": arcs}, open(path, "w"))
+        except OSError:
+            pass  # a cache that cannot be written costs a refetch, nothing more
+    return titles, "fetched", redirects_ok
 
 
 def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dict:
     """Tag the glossary's names with the arcs of the show's seasons and store each arc's titles beside the tags.
 
     Additive and idempotent: tags are only added (glossary.tag_names_by_arc), an arc's stored titles are only unioned, and an
-    unchanged glossary is not rewritten. An arc the wiki gives nothing for changes nothing [S-7] -- it is logged, never fatal,
-    and cannot clear what other arcs established. The write is atomic (glossary_acquire._write_json). Returns a report; never
-    raises."""
+    unchanged glossary is not rewritten. An arc the wiki gives nothing for changes nothing [S-7], and so does an arc whose
+    fetch was PARTIAL (a request failed or a listing was cut): both are logged, never fatal, never cached, and cannot clear
+    what other arcs established. The write is atomic (glossary_acquire._write_json).
+
+    Coverage is recorded so the verify gate can tell a whole universe from a partial one: `arc_titles` (arc -> titles),
+    `arc_coverage` (arc -> {titles: n, redirects: whether the redirect step finished}) and, only while there is any,
+    `arc_titles_missing` (the show's arcs with no stored titles). Returns a report; never raises. A pass that stops writes
+    nothing."""
     import glossary
 
     try:
@@ -831,7 +932,7 @@ def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dic
     except (OSError, ValueError) as e:
         return {"note": f"load-failed: {e}"}
     show = gloss.get("show") or os.path.splitext(os.path.basename(gloss_path))[0]
-    rep = {"show": show, "arcs": 0, "fetched": 0, "cached": 0, "empty": 0, "names_tagged": 0, "written": False}
+    rep = {"show": show, "arcs": 0, "fetched": 0, "cached": 0, "empty": 0, "partial": 0, "names_tagged": 0, "written": False}
     arcs = arcs_in_show(show_dir)
     rep["arcs"] = len(arcs)
     if not arcs:
@@ -845,19 +946,28 @@ def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dic
         if stop_requested():
             stopped = True
             break
-        titles, how = fetch_arc_titles_cached(api, show, arc)
-        if how == "empty":
-            rep["empty"] += 1
-            log(f"arc tags: no wiki titles for arc {arc!r} (not an arc, or the wiki is unreachable): nothing changed for it")
+        titles, how, redirects_ok = fetch_arc_titles_cached(api, show, arc)
+        if how in ("empty", "partial"):
+            rep[how] += 1
+            why = (
+                "partial: a request failed or a listing was cut" if how == "partial" else "not an arc, or the wiki is unreachable"
+            )
+            log(f"arc tags: no usable titles for arc {arc!r} ({why}): nothing changed for it")
             continue
         rep[how] += 1
         glossary.tag_names_by_arc(gloss, arc, titles)
         stored = gloss.setdefault("arc_titles", {})
         stored[arc] = sorted(set(stored.get(arc, [])) | titles)
+        gloss.setdefault("arc_coverage", {})[arc] = {"titles": len(stored[arc]), "redirects": redirects_ok}
     rep["names_tagged"] = len(gloss.get("arc_tags") or {})
     if stopped:
         log("stop requested: leaving arc tagging; nothing written")
         return {**rep, "note": "stopped"}
+    missing = sorted(a for a in arcs if a not in (gloss.get("arc_titles") or {}))
+    if missing:
+        gloss["arc_titles_missing"] = missing
+    else:
+        gloss.pop("arc_titles_missing", None)
     if json.dumps(gloss, sort_keys=True) == before:
         return rep
     from glossary_acquire import _write_json
@@ -996,7 +1106,9 @@ def main():
     )
     a = ap.parse_args()
     if a.tag_arcs:
-        log(json.dumps(tag_arcs(a.glossary, a.tag_arcs, a.wiki), ensure_ascii=False))
+        rep = tag_arcs(a.glossary, a.tag_arcs, a.wiki)
+        log(json.dumps(rep, ensure_ascii=False))
+        tag_failure_exit(rep)
         sys.exit(0)
     rep = verify(a.glossary, a.wiki, a.force)
     log(json.dumps(rep, ensure_ascii=False))

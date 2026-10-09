@@ -270,7 +270,7 @@ def test_arc_titles_unions_the_categories_and_follows_continuation(monkeypatch):
         return pages["two"] if "MORE" in url else pages["one"]
 
     monkeypatch.setattr(gv, "_http_json", fake)
-    monkeypatch.setattr(gv, "arc_categories", lambda a, b: ["Category:Dressrosa Residents"])
+    monkeypatch.setattr(gv, "arc_categories_checked", lambda a, b: (["Category:Dressrosa Residents"], True))
     titles = gv.fetch_arc_titles("https://x/api.php", "Dressrosa")
     assert titles == {"Kyros", "Pica", "Rebecca"}
 
@@ -278,7 +278,7 @@ def test_arc_titles_unions_the_categories_and_follows_continuation(monkeypatch):
 def test_arc_titles_is_empty_when_discovery_finds_nothing(monkeypatch):
     """[S-7] A season.nfo title that is not an arc -- `Gaimon` is a character -- must yield
     NOTHING rather than some other page's cast. Emptiness is the fallback trigger."""
-    monkeypatch.setattr(gv, "arc_categories", lambda a, b: [])
+    monkeypatch.setattr(gv, "arc_categories_checked", lambda a, b: ([], True))
     assert gv.fetch_arc_titles("https://x/api.php", "Gaimon") == set()
 
 

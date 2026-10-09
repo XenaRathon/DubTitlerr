@@ -47,16 +47,17 @@ def write_gloss(tmp_path, **extra):
 
 @pytest.fixture
 def wiki(monkeypatch, tmp_path):
-    """A fake wiki: fetch_arc_titles answers from ARC_TITLES and counts the calls; the cache dir is private."""
+    """A fake wiki: fetch_arc_titles_checked answers from ARC_TITLES and counts the calls; the cache dir is private."""
     monkeypatch.setattr(gv, "CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setattr(gv, "resolve_wiki", lambda show, override=None: "https://x.fandom.com/api.php")
     calls = []
 
     def fetch(api, arc):
         calls.append(arc)
-        return set(ARC_TITLES.get(arc, set()))
+        return set(ARC_TITLES.get(arc, set())), True
 
-    monkeypatch.setattr(gv, "fetch_arc_titles", fetch)
+    monkeypatch.setattr(gv, "fetch_arc_titles_checked", fetch)
+    monkeypatch.setattr(gv, "redirect_targets", lambda api, titles: ({}, True))
     return calls
 
 
@@ -132,9 +133,10 @@ def test_an_empty_arc_changes_nothing_and_is_not_cached(tmp_path, wiki, capsys):
     """[S-7]: Gaimon is a character, not an arc; a network failure looks the same. Neither may touch the glossary."""
     show = make_show(tmp_path, {"Season 01": "Gaimon"})
     path = write_gloss(tmp_path)
-    before = path.read_text()
+    before = json.loads(path.read_text())
     rep = gv.tag_arcs(str(path), str(show))
-    assert path.read_text() == before and rep["written"] is False and rep["empty"] == 1
+    assert rep["empty"] == 1
+    assert json.loads(path.read_text()) == {**before, "arc_titles_missing": ["Gaimon"]}  # no tags, no titles; only the record
     assert "Gaimon" in capsys.readouterr().out
     assert not os.path.exists(os.path.join(gv.CACHE_DIR, "Show_arcs.json"))  # only positive results are cached
     wiki.clear()
@@ -329,3 +331,260 @@ def test_two_letters_are_enough_and_the_default_is_unchanged(monkeypatch):
     assert "Jo March" in gv.apply_results(g, {"Jo": high("Jo March")})["phrases"]
     monkeypatch.delenv("VERIFY_WRITE_WHOLE_WORD")  # GUARD: off by default, a one-letter term is written as before
     assert "Monkey D. Luffy" in gv.apply_results(g, {"D": high("Monkey D. Luffy")})["phrases"]
+
+
+# =====================================================================================
+# Phase 10: normalised arc links, redirects, complete-only storage, coverage
+# =====================================================================================
+
+WIKITEXT = (
+    "[[Monkey_D._Luffy|Luffy]] [[Kaido]] [[whitebeard|the Emperor]] [[Ace]] [[Trafalgar Law#Wano|Law]] "
+    "[[Category:Pirates]] [[File:a.png]] [[wikipedia:Foo]] [[#Plot]] [[Chapter 12]] [[Episode 5]]"
+)
+
+
+def test_arc_links_are_normalised_for_the_arc_stage():
+    got = gv._extract_links(WIKITEXT, normalise=True)
+    assert got == {"Monkey D. Luffy", "Kaido", "Whitebeard", "Ace", "Trafalgar Law"}
+
+
+def test_the_episode_plot_links_keep_their_old_filter_so_acquire_is_byte_identical():
+    """GUARD (passes on the old code): the per-episode candidate path is not touched by the arc stage's normalisation."""
+    assert gv._extract_links(WIKITEXT) == {"Monkey_D._Luffy", "Kaido", "Ace"}
+    assert gv.plot_section_links("==Plot==\n" + WIKITEXT) == {"Monkey_D._Luffy", "Kaido", "Ace"}
+
+
+class RawWiki:
+    """A fake MediaWiki behind gv._http_json: arc page wikitext, category search/members, redirects, with switchable failures."""
+
+    def __init__(self, text=WIKITEXT, categories=None, members=None, redirects=None):
+        self.text, self.categories, self.members = text, categories or [], members or {}
+        self.redirects = redirects or {}
+        self.fail = set()  # "parse" | "search" | "members" | "redirects"
+        self.urls = []
+
+    def __call__(self, url):
+        self.urls.append(url)
+        for kind, marker in (
+            ("parse", "action=parse"),
+            ("search", "list=search"),
+            ("members", "list=categorymembers"),
+            ("redirects", "redirects=1"),
+        ):
+            if marker in url:
+                if kind in self.fail:
+                    raise OSError(f"{kind} down")
+                return getattr(self, "_" + kind)(url)
+        raise AssertionError(url)
+
+    def _parse(self, url):
+        if self.text is None:
+            return {"error": {"code": "missingtitle"}}
+        return {"parse": {"wikitext": {"*": self.text}}}
+
+    def _search(self, url):
+        return {"query": {"search": [{"title": c} for c in self.categories]}}
+
+    def _members(self, url):
+        import urllib.parse as up
+
+        cat = up.unquote(url.split("cmtitle=")[1].split("&")[0])
+        return {"query": {"categorymembers": [{"title": t} for t in self.members.get(cat, [])]}}
+
+    def _redirects(self, url):
+        import urllib.parse as up
+
+        titles = up.unquote(url.split("titles=")[1]).split("|")
+        return {"query": {"redirects": [{"from": t, "to": self.redirects[t]} for t in titles if t in self.redirects]}}
+
+
+@pytest.fixture
+def raw(monkeypatch, tmp_path):
+    monkeypatch.setattr(gv, "CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(gv, "resolve_wiki", lambda show, override=None: "https://x.fandom.com/api.php")
+    wiki = RawWiki(categories=["Category:Wano Residents"], members={"Category:Wano Residents": ["Kaido", "Kouzuki Momonosuke"]})
+    monkeypatch.setattr(gv, "_http_json", wiki)
+    return wiki
+
+
+def test_the_normalised_links_reach_the_stored_universe(tmp_path, raw):
+    show = make_show(tmp_path, {"Season 35": "Wano"})
+    path = write_gloss(tmp_path)
+    gv.tag_arcs(str(path), str(show))
+    stored = json.loads(path.read_text())["arc_titles"]["Wano"]
+    assert {"Monkey D. Luffy", "Whitebeard", "Trafalgar Law", "Kouzuki Momonosuke"} <= set(stored)
+
+
+def test_a_redirect_target_is_stored_beside_the_link(tmp_path, raw):
+    raw.redirects = {"Ace": "Portgas D. Ace", "Whitebeard": "Edward Newgate"}
+    show = make_show(tmp_path, {"Season 35": "Wano"})
+    path = write_gloss(tmp_path)
+    gv.tag_arcs(str(path), str(show))
+    stored = set(json.loads(path.read_text())["arc_titles"]["Wano"])
+    assert {"Ace", "Portgas D. Ace", "Whitebeard", "Edward Newgate"} <= stored  # both the link and where it points
+
+
+def test_redirects_are_resolved_once_per_arc_in_bounded_chunks(tmp_path, raw):
+    raw.text = " ".join(f"[[Person {k}]]" for k in range(120))
+    show = make_show(tmp_path, {"Season 35": "Wano"})
+    gv.tag_arcs(str(write_gloss(tmp_path)), str(show))
+    chunks = [u for u in raw.urls if "redirects=1" in u]
+    assert 1 <= len(chunks) <= 4  # 122 titles at 50 per call, once per arc
+    raw.urls.clear()
+    gv.tag_arcs(str(write_gloss(tmp_path)), str(show))
+    assert not [u for u in raw.urls if "redirects=1" in u]  # served from the cache
+
+
+def test_a_failed_redirect_step_keeps_the_plain_links_and_is_not_cached(tmp_path, raw):
+    raw.fail = {"redirects"}
+    show = make_show(tmp_path, {"Season 35": "Wano"})
+    path = write_gloss(tmp_path)
+    rep = gv.tag_arcs(str(path), str(show))
+    saved = json.loads(path.read_text())
+    assert {"Ace", "Kaido", "Monkey D. Luffy"} <= set(saved["arc_titles"]["Wano"]) and rep["fetched"] == 1
+    assert saved["arc_coverage"]["Wano"]["redirects"] is False
+    raw.fail = set()
+    raw.redirects = {"Ace": "Portgas D. Ace"}
+    gv.tag_arcs(str(path), str(show))  # not cached, so the next pass resolves them
+    assert "Portgas D. Ace" in json.loads(path.read_text())["arc_titles"]["Wano"]
+
+
+# ---- complete results only ---------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("failing", ["parse", "search", "members"])
+def test_a_partial_fetch_is_neither_cached_nor_stored(tmp_path, raw, failing, capsys):
+    raw.fail = {failing}
+    show = make_show(tmp_path, {"Season 35": "Wano"})
+    path = write_gloss(tmp_path)
+    before = json.loads(path.read_text())
+    rep = gv.tag_arcs(str(path), str(show))
+    assert rep["partial"] == 1 and rep["fetched"] == 0
+    assert json.loads(path.read_text()) == {**before, "arc_titles_missing": ["Wano"]}  # nothing from the partial fetch stored
+    assert not os.path.exists(os.path.join(gv.CACHE_DIR, "Show_arcs.json"))
+    assert "partial" in capsys.readouterr().out
+
+
+def test_a_category_listing_that_hits_the_page_cap_is_incomplete(tmp_path, raw, monkeypatch):
+    raw._members = lambda url: {"query": {"categorymembers": [{"title": "Kaido"}]}, "continue": {"cmcontinue": "MORE"}}
+    titles, complete = gv.fetch_arc_titles_checked("https://x.fandom.com/api.php", "Wano")
+    assert "Kaido" in titles and complete is False
+
+
+def test_a_missing_arc_page_is_a_complete_empty_result_for_the_page_not_a_failure(raw):
+    raw.text, raw.categories = None, []  # "Gaimon Arc" does not exist and no category matches: [S-7], nothing to store
+    assert gv.fetch_arc_titles_checked("https://x.fandom.com/api.php", "Gaimon") == (set(), True)
+    assert gv.fetch_arc_titles("https://x.fandom.com/api.php", "Gaimon") == set()
+
+
+def test_a_complete_fetch_reports_complete(raw):
+    titles, complete = gv.fetch_arc_titles_checked("https://x.fandom.com/api.php", "Wano")
+    assert complete is True and "Kouzuki Momonosuke" in titles
+
+
+# ---- coverage -------------------------------------------- -----
+
+
+def test_the_glossary_records_which_arcs_have_titles_and_which_do_not(tmp_path, raw, monkeypatch):
+    show = make_show(tmp_path, {"Season 35": "Wano", "Season 01": "Gaimon"})
+
+    def wiki(url):
+        import urllib.parse as up
+
+        page = up.unquote(url.split("page=")[1].split("&")[0]) if "action=parse" in url else ""
+        if "action=parse" in url and not page.startswith("Wano"):
+            return {"error": {"code": "missingtitle"}}  # "Gaimon Arc" does not exist
+        if "list=search" in url and "Wano" not in up.unquote(url):
+            return {"query": {"search": []}}
+        return raw(url)
+
+    monkeypatch.setattr(gv, "_http_json", wiki)
+    path = write_gloss(tmp_path)
+    gv.tag_arcs(str(path), str(show))
+    saved = json.loads(path.read_text())
+    assert saved["arc_titles_missing"] == ["Gaimon"] and set(saved["arc_coverage"]) == {"Wano"}
+    assert saved["arc_coverage"]["Wano"] == {"titles": len(saved["arc_titles"]["Wano"]), "redirects": True}
+
+
+def test_the_gate_is_a_logged_no_op_while_any_arc_has_no_titles(monkeypatch, capsys):
+    monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    monkeypatch.setattr(gv, "_gate_noop_logged", False)
+    g = gated_gloss(arc_titles_missing=["Marineford"])
+    new = gv.apply_results(g, RESULTS)
+    assert "World Government" in new["phrases"] and "flagged" not in new  # nothing blocked on partial evidence
+    assert "Marineford" in capsys.readouterr().out
+
+
+def test_the_gate_applies_once_every_arc_is_covered(monkeypatch):
+    monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    new = gv.apply_results(gated_gloss(arc_titles_missing=[]), RESULTS)
+    assert new["flagged"]["Government"]["reason"] == "not-in-arc-pages"
+
+
+def test_a_later_pass_that_covers_the_arc_clears_the_missing_list(tmp_path, raw):
+    show = make_show(tmp_path, {"Season 35": "Wano"})
+    path = write_gloss(tmp_path)
+    raw.fail = {"parse"}
+    gv.tag_arcs(str(path), str(show))
+    assert json.loads(path.read_text())["arc_titles_missing"] == ["Wano"]
+    raw.fail = set()
+    gv.tag_arcs(str(path), str(show))
+    saved = json.loads(path.read_text())
+    assert "arc_titles_missing" not in saved and "Wano" in saved["arc_titles"]
+
+
+def test_a_stopped_pass_writes_nothing_including_coverage(tmp_path, raw, monkeypatch):
+    monkeypatch.setattr(gv, "stop_requested", lambda: True)
+    path = write_gloss(tmp_path)
+    before = path.read_text()
+    gv.tag_arcs(str(path), str(make_show(tmp_path, {"Season 35": "Wano"})))
+    assert path.read_text() == before
+
+
+# ---- nits ------------------------------------------------ -----
+
+
+def test_stored_titles_are_unioned_across_passes_not_replaced(tmp_path, wiki, monkeypatch):
+    show = make_show(tmp_path, {"Season 30": "Dressrosa"})
+    path = write_gloss(tmp_path)
+    gv.tag_arcs(str(path), str(show))
+    first = set(json.loads(path.read_text())["arc_titles"]["Dressrosa"])
+    monkeypatch.setattr(gv, "WIKI_TTL", -1)
+    monkeypatch.setattr(gv, "fetch_arc_titles_checked", lambda api, arc: ({"Pica"}, True))
+    monkeypatch.setattr(gv, "redirect_targets", lambda api, titles: ({}, True))
+    gv.tag_arcs(str(path), str(show))
+    assert set(json.loads(path.read_text())["arc_titles"]["Dressrosa"]) == first | {"Pica"}
+
+
+def test_gen_loop_continues_when_arc_tagging_fails():
+    import re
+
+    text = open(os.path.join(os.path.dirname(__file__), "..", "gen_loop.sh")).read()
+    step = text[text.index('"${GLOSSARY_ARC_TAGS:-0}" = "1"') :]
+    step = step[: step.index("\n\t\tfi\n")]
+    assert re.search(r'--tag-arcs "\$ANIME/\$show" </dev/null 2>&1 \|\|\s*\n\s*echo "  arc tagging skipped \(continuing\)"', step)
+    assert "exit 1" not in step and "set -e" not in step
+
+
+def test_tag_arcs_exits_nonzero_for_a_failure_only_under_verify_refuse_exit(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(gv, "resolve_wiki", lambda *a, **k: None)
+    show = make_show(tmp_path, {"Season 30": "Dressrosa"})
+    path = write_gloss(tmp_path)
+    monkeypatch.setattr("sys.argv", ["glossary_verify", str(path), "--tag-arcs", str(show)])
+    monkeypatch.delenv("VERIFY_REFUSE_EXIT", raising=False)
+    with pytest.raises(SystemExit) as e:
+        gv.main()
+    assert e.value.code == 0  # the note field is the signal, as before
+    monkeypatch.setenv("VERIFY_REFUSE_EXIT", "1")
+    with pytest.raises(SystemExit) as e:
+        gv.main()
+    assert e.value.code not in (0, None) and "wiki unresolved" in capsys.readouterr().out.strip().splitlines()[-1]
+
+
+def test_a_tag_arcs_pass_with_an_empty_arc_is_not_a_failure_exit(tmp_path, wiki, monkeypatch):
+    monkeypatch.setenv("VERIFY_REFUSE_EXIT", "1")
+    show = make_show(tmp_path, {"Season 01": "Gaimon"})
+    monkeypatch.setattr("sys.argv", ["glossary_verify", str(write_gloss(tmp_path)), "--tag-arcs", str(show)])
+    with pytest.raises(SystemExit) as e:
+        gv.main()
+    assert e.value.code == 0
