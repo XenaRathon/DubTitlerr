@@ -528,7 +528,7 @@ def _post_json(url, body, headers=None):
 
     watchdog = threading.Timer(deadline, _expire)
     watchdog.daemon = True
-    request_out = False  # conn.request() has completed: from here the server HAS the request (and may bill it)
+    request_out = False  # set BEFORE conn.request() starts sending: from then on the server may have the request (and bill it)
     try:
         conn.connect()
         conn.sock.settimeout(TIMEOUT_READ)
@@ -538,8 +538,9 @@ def _post_json(url, body, headers=None):
         if parsed.query:
             path += "?" + parsed.query
         hdrs = {"Content-Type": "application/json", **(headers or {})}
-        conn.request("POST", path, body=json.dumps(body).encode(), headers=hdrs)
+        payload = json.dumps(body).encode()  # serialised first: a body that cannot be encoded fails before any byte is sent
         request_out = True
+        conn.request("POST", path, body=payload, headers=hdrs)
         resp = conn.getresponse()
         data = resp.read()
         if resp.status >= 300:  # http.client never follows redirects; a 3xx body is not a JSON answer
@@ -550,7 +551,7 @@ def _post_json(url, body, headers=None):
     except Exception as e:
         if expired.is_set():
             raise TimeoutError(f"request deadline of {deadline}s exceeded") from None
-        e.not_sent = not request_out  # read by _is_transport_error: only a failure before the request was out may be re-sent
+        e.not_sent = not request_out  # read by _is_transport_error: only a failure before transmission started may be re-sent
         raise
     finally:
         watchdog.cancel()
@@ -1118,10 +1119,11 @@ def _transport_retries():
 
 
 def _is_transport_error(e):
-    """A failure BEFORE the server had the request: connection refused, DNS, a connect timeout, a reset while connecting or
-    sending (``_post_json`` sets ``e.not_sent``). A read timeout, RemoteDisconnected or IncompleteRead comes after the request
-    went out, and a provider is usually still generating (and billing) it, so re-sending would pay twice. Not an HTTP answer
-    (_HttpError), not the request-deadline watchdog, not a body that parsed badly."""
+    """A failure known to happen BEFORE transmission started: connection refused, DNS, a connect timeout, a reset while
+    connecting (``_post_json`` sets ``e.not_sent``). A failure once sending has begun is ambiguous (the server may hold the
+    body), and so are a read timeout, RemoteDisconnected and IncompleteRead: a provider is usually still generating (and
+    billing) the request, so re-sending would pay twice. Not an HTTP answer (_HttpError), not the request-deadline watchdog,
+    not a body that parsed badly."""
     if isinstance(e, _HttpError) or not getattr(e, "not_sent", False):
         return False
     if isinstance(e, TimeoutError) and str(e).startswith("request deadline"):

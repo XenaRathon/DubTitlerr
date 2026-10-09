@@ -320,3 +320,76 @@ def test_a_refused_connection_is_retried_to_the_budget(live, env, monkeypatch):
 def test_a_live_success_needs_no_retry(live, env):
     srv = live("ok")
     assert repair.llm_openai("P", None) == "fixed line" and srv.received == 1 and env == []
+
+
+# ---- phase 28 F11: a failure once transmission has started is ambiguous and never re-sent --------------------------------------
+
+
+def _loopback_server(received):
+    import contextlib
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            received.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            out = json.dumps(OK).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                self.wfile.write(out)
+
+        def log_message(self, *a):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def test_a_send_failure_after_the_body_reached_the_server_is_not_resent(env, monkeypatch):
+    """Sol's probe: HTTPConnection.send forwards the complete body, then raises OSError before conn.request returns. The server
+    HAS the request (and may bill it), so it must not be sent again."""
+    received = []
+    server, thread = _loopback_server(received)
+    base = http.client.HTTPConnection
+    failed = []
+
+    class AmbiguousSend(base):
+        def send(self, data):
+            super().send(data)
+            if isinstance(data, bytes) and data.startswith(b"{") and not failed:
+                failed.append(True)
+                raise OSError("injected send failure after the bytes reached the peer")
+
+    try:
+        monkeypatch.setattr(repair, "OPENAI_URL", f"http://127.0.0.1:{server.server_port}/v1/chat/completions")
+        monkeypatch.setenv("REPAIR_TRANSPORT_RETRIES", "2")
+        monkeypatch.setattr(repair.http.client, "HTTPConnection", AmbiguousSend)
+        result = repair.llm_openai("exact duplicated prompt", None)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+    assert result == repair.LLM_UNREACHABLE and len(received) == 1
+
+
+def test_a_refused_connection_is_still_retried(env, monkeypatch):
+    """The only retried failures are those known to happen before transmission starts."""
+    attempts = []
+    base = http.client.HTTPConnection
+
+    class Refuses(base):
+        def connect(self):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise ConnectionRefusedError("refused")
+            raise OSError("second attempt also fails, after the first was retried")
+
+    monkeypatch.setenv("REPAIR_TRANSPORT_RETRIES", "2")
+    monkeypatch.setattr(repair.http.client, "HTTPConnection", Refuses)
+    monkeypatch.setattr(repair, "OPENAI_URL", "http://127.0.0.1:9/v1/chat/completions")
+    assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
+    assert len(attempts) == 3  # one attempt plus the two retries: connect failures are retried
