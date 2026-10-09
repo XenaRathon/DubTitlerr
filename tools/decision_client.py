@@ -225,6 +225,10 @@ def decide(
     ):
         # A key goes only to its own provider's host (loopback is for tests), even when the URL came from an env override.
         raise DecisionError(f"request host {host!r} is not the {provider} host")
+    parts = urllib.parse.urlsplit(url)
+    if host != "127.0.0.1" and host != "localhost" and (parts.scheme != "https" or parts.port not in (None, 443)):
+        # The key would leave in clear text, or for a service that is not the provider's API: https on the default port only.
+        raise DecisionError(f"the {provider} endpoint must be https on the default port")
     if model not in allowed:
         raise DecisionError(f"model {model!r} is not in the {provider} allowlist")
     if not isinstance(questions, dict) or not questions:

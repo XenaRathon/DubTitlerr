@@ -29,8 +29,9 @@ sys.path.insert(0, ".")
 import tools.glossary_score as glossary_score  # noqa: E402
 
 LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+OUTSIDE = "(an answer outside the list)"
 VERDICT = re.compile(
-    r"^\s*(\d+)\s*\|\s*best\s*=\s*([A-Za-z](?:\s*,\s*[A-Za-z])*)\s*\|\s*worst\s*=\s*((?:[A-Za-z](?:\s*,\s*[A-Za-z])*)?)\s*(?:\|(.*))?$",
+    r"^\s*(?:item\s+)?(\d+)\s*\[([0-9a-f]{4})\]\s*\|\s*best\s*=\s*([A-Za-z](?:\s*,\s*[A-Za-z])*)\s*\|\s*worst\s*=\s*((?:[A-Za-z](?:\s*,\s*[A-Za-z])*)?)\s*(?:\|(.*))?$",
     re.I,
 )
 
@@ -40,9 +41,13 @@ For every item below, decide which answer is correct, using only what the item s
 correct answer is the candidate that is the same named entity as the term, or `none` if no candidate is. For a
 spelling pair it is whether the two spellings are one name mis-transcribed or two different names.
 
+Every item header carries a short check token, like `Item 12 [k3f9]`. Copy the number AND the token exactly into
+each reply line; a line whose token does not match its number is rejected, so a reply that skipped or shifted an item can
+never be misattributed.
+
 Reply with one line per item:
 
-    N | best=A[,B] | worst=C | short note
+    N [token] | best=A[,B] | worst=C | short note
 
 `best` may list several answers when they are equally right; `worst` may be empty. Answers are labelled per item, and
 their order carries no meaning.
@@ -60,6 +65,11 @@ def load_all_items(path):
             if isinstance(it, dict) and it.get("stage") in ("verify", "acquire") and isinstance(it.get("id"), str):
                 items.append(it)
     return items
+
+
+def item_token(seed, item_id):
+    """The 4-hex check token printed in an item's header and required on its verdict line."""
+    return hashlib.sha256(f"{seed}|{item_id}".encode()).hexdigest()[:4]
 
 
 def _rng(seed, *parts):
@@ -105,6 +115,14 @@ def export_judge(items, rows, arms, stage, seed=0, sample=None, include_no_gold=
             shown = None if row is None else (_verify_answer(row) if stage == "verify" else _acquire_answer(row))
             if shown is None:
                 continue
+            if stage == "verify" and shown != "none":
+                listed = {c["title"].casefold() for c in it["candidates"]}
+                if shown.casefold() not in listed:
+                    # A free-form text answer: the judge must not be able to tell a text arm from a decision arm.
+                    slot = answers.setdefault(OUTSIDE.casefold(), {"pick": OUTSIDE, "arms": [], "raw": []})
+                    slot["arms"].append(arm)
+                    slot["raw"].append(shown)
+                    continue
             slot = answers.setdefault(shown.casefold(), {"pick": shown, "arms": []})
             slot["arms"].append(arm)
         if len(answers) >= 2:
@@ -117,8 +135,15 @@ def export_judge(items, rows, arms, stage, seed=0, sample=None, include_no_gold=
     for n, (it, answers) in enumerate(eligible, 1):
         shuffled = list(answers.values())
         _rng(seed, it["id"], "answers").shuffle(shuffled)
-        labelled = {LABELS[i]: {"pick": a["pick"], "arms": sorted(a["arms"])} for i, a in enumerate(shuffled)}
-        md += [f"### Item {n}", f"- show: {it['show']}"]
+        labelled = {}
+        for i, a in enumerate(shuffled):
+            labelled[LABELS[i]] = {
+                "pick": a["pick"],
+                "arms": sorted(a["arms"]),
+                **({"raw": sorted(a["raw"])} if "raw" in a else {}),
+            }
+        token = item_token(seed, it["id"])
+        md += [f"### Item {n} [{token}]", f"- show: {it['show']}"]
         if stage == "verify":
             titles = [c["title"] for c in it["candidates"]]
             _rng(seed, it["id"], "candidates").shuffle(titles)
@@ -130,7 +155,7 @@ def export_judge(items, rows, arms, stage, seed=0, sample=None, include_no_gold=
             md += [f'- second spelling: "{it["canonical"]}"', *[f"  - {line}" for line in q["canonical"]]]
         md += [f"- answer {label}: {a['pick']}" for label, a in labelled.items()]
         md.append("")
-        key["items"].append({"n": n, "id": it["id"], "answers": labelled})
+        key["items"].append({"n": n, "token": token, "id": it["id"], "answers": labelled})
     return "\n".join(md) + "\n", key
 
 
@@ -149,7 +174,7 @@ def _labels(text):
 def import_judge(key, text):
     """(rows, stats) from a key and the judge's verdict text. The last verdict for an item wins."""
     by_n = {k["n"]: k for k in key["items"]}
-    verdicts, malformed = {}, 0
+    verdicts, malformed, duplicates = {}, 0, 0
     for line in text.splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
             continue
@@ -157,11 +182,17 @@ def import_judge(key, text):
         if not m:
             malformed += 1
             continue
-        n, best, worst, note = int(m.group(1)), _labels(m.group(2)), _labels(m.group(3) or ""), (m.group(4) or "").strip()
+        n, token = int(m.group(1)), m.group(2).lower()
+        best, worst, note = _labels(m.group(3)), _labels(m.group(4) or ""), (m.group(5) or "").strip()
         item = by_n.get(n)
-        if item is None or not all(x in item["answers"] for x in [*best, *worst]) or set(best) & set(worst):
+        if item is None or item.get("token") != token:
+            malformed += 1  # unknown number, or a token that does not belong to it: never misattribute
+            continue
+        if not all(x in item["answers"] for x in [*best, *worst]) or set(best) & set(worst):
             malformed += 1
             continue
+        if n in verdicts:
+            duplicates += 1
         verdicts[n] = (best, worst, note)
     rows = []
     for n, (best, worst, note) in sorted(verdicts.items()):
@@ -181,4 +212,4 @@ def import_judge(key, text):
                         "note": note,
                     }
                 )
-    return rows, {"used": len(verdicts), "malformed": malformed, "unjudged": len(by_n) - len(verdicts)}
+    return rows, {"used": len(verdicts), "malformed": malformed, "duplicates": duplicates, "unjudged": len(by_n) - len(verdicts)}

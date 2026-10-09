@@ -896,7 +896,7 @@ def cmd_import_judge(a):
         return 1
     print(
         f"import-judge: {stats['used']} verdict(s) used, {stats['malformed']} malformed line(s) rejected, "
-        f"{stats['unjudged']} item(s) unjudged"
+        f"{stats['duplicates']} duplicate verdict(s) (the last one won), {stats['unjudged']} item(s) unjudged"
     )
     return 0
 

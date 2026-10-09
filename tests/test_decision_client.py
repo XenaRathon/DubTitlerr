@@ -567,3 +567,38 @@ def test_score_answers_keep_their_previous_strict_rule():
     bad = {"model": MODEL, "answers": {"s": {"type": "noul", "noul": 0.5}}, "usage": {}}
     with pytest.raises(dc.DecisionError):
         dc.decide(MODEL, {}, q, "TEST_DECISION_KEY", post=_post_returning(bad))
+
+
+# --- https and the default port only, for the provider hosts ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "provider,model,url",
+    [
+        ("commandcode", "typesafe/jev", "http://api.commandcode.ai/provider/v1/systemone"),  # the key would travel in clear text
+        ("commandcode", "typesafe/jev", "https://api.commandcode.ai:8443/provider/v1/systemone"),
+        ("commandcode", "typesafe/jev", "https://api.commandcode.ai:80/provider/v1/systemone"),
+        ("openrouter", MODEL, "http://openrouter.ai/api/alpha/decisions"),
+        ("openrouter", MODEL, "https://openrouter.ai:8443/api/alpha/decisions"),
+        ("openrouter", MODEL, "ftp://openrouter.ai/api/alpha/decisions"),
+    ],
+)
+def test_a_provider_host_needs_https_and_the_default_port(provider, model, url):
+    with pytest.raises(dc.DecisionError, match="https"):
+        dc.decide(
+            model, {}, CHOICE_Q, "TEST_DECISION_KEY", provider=provider, url=url, post=lambda *a, **k: pytest.fail("no request")
+        )
+
+
+@pytest.mark.parametrize("url", ["https://openrouter.ai/api/alpha/decisions", "https://openrouter.ai:443/api/alpha/decisions"])
+def test_https_on_the_default_or_explicit_443_port_is_accepted(url):
+    seen = []
+    dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", url=url, post=_post_returning(_ok(), seen))
+    assert seen[0][0] == url
+
+
+def test_loopback_may_still_use_plain_http_on_any_port():
+    """GUARD: passes on the old code (the fake servers in the tests depend on it)."""
+    seen = []
+    dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", url="http://127.0.0.1:8123/x", post=_post_returning(_ok(), seen))
+    assert seen[0][0] == "http://127.0.0.1:8123/x"

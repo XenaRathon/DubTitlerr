@@ -213,6 +213,12 @@ def test_acquire_layout_has_both_spellings_the_quotes_and_merged_answers(tmp_pat
 # ---- import-judge ---------------------------------------------------------------------------------------------------
 
 
+def _head(key, item_id):
+    """'N [token]': what a verdict line must start with."""
+    item = next(k for k in key["items"] if k["id"] == item_id)
+    return f"{item['n']} [{item['token']}]"
+
+
 def _label_of(key, item_id, pick):
     item = next(k for k in key["items"] if k["id"] == item_id)
     return next(lbl for lbl, a in item["answers"].items() if a["pick"] == pick)
@@ -229,7 +235,7 @@ def _import(tmp_path, d, text, name="v.txt"):
 
 def test_import_round_trip_maps_labels_back_to_arms(tmp_path, files, capsys):
     _, _, key, d = _export(tmp_path, files)
-    n_z = key["items"][[k["id"] for k in key["items"]].index(Z)]["n"]
+    n_z = _head(key, Z)
     good, bad = _label_of(key, Z, "Zoro"), _label_of(key, Z, "Roronoa Zoro")
     code, rows = _import(tmp_path, d, f"{n_z} | best={good} | worst={bad} | the exact name\n")
     assert code == 0
@@ -247,7 +253,7 @@ def test_import_round_trip_maps_labels_back_to_arms(tmp_path, files, capsys):
 
 def test_import_tolerates_spaces_case_multiple_best_and_an_empty_worst(tmp_path, files):
     _, _, key, d = _export(tmp_path, files)
-    n_z = next(k["n"] for k in key["items"] if k["id"] == Z)
+    n_z = _head(key, Z)
     a, b = _label_of(key, Z, "Zoro"), _label_of(key, Z, "Roronoa Zoro")
     code, rows = _import(tmp_path, d, f"  {n_z}|  BEST = {a.lower()} , {b.lower()}|worst=|\n")
     assert code == 0 and all(r["best"] for r in rows if r["item"] == Z) and not any(r["worst"] for r in rows)
@@ -255,7 +261,7 @@ def test_import_tolerates_spaces_case_multiple_best_and_an_empty_worst(tmp_path,
 
 def test_malformed_lines_are_counted_and_rejected(tmp_path, files, capsys):
     _, _, key, d = _export(tmp_path, files)
-    n_z = next(k["n"] for k in key["items"] if k["id"] == Z)
+    n_z = _head(key, Z)
     a = _label_of(key, Z, "Zoro")
     text = "\n".join(
         [
@@ -276,7 +282,7 @@ def test_malformed_lines_are_counted_and_rejected(tmp_path, files, capsys):
 
 def test_a_later_verdict_for_the_same_item_wins(tmp_path, files):
     _, _, key, d = _export(tmp_path, files)
-    n_z = next(k["n"] for k in key["items"] if k["id"] == Z)
+    n_z = _head(key, Z)
     a, b = _label_of(key, Z, "Zoro"), _label_of(key, Z, "Roronoa Zoro")
     _, rows = _import(tmp_path, d, f"{n_z} | best={a} | worst={b}\n{n_z} | best={b} | worst={a}\n")
     assert next(r for r in rows if r["arm"] == "mercury-decide" and r["item"] == Z)["best"] is True
@@ -330,7 +336,7 @@ def test_the_judged_table_counts_best_worst_net_and_sole_winners_per_stage():
 def test_score_judged_prints_the_headline_table(tmp_path, files):
     items, res = files
     _, _, key, d = _export(tmp_path, files)
-    n_z = next(k["n"] for k in key["items"] if k["id"] == Z)
+    n_z = _head(key, Z)
     a, b = _label_of(key, Z, "Zoro"), _label_of(key, Z, "Roronoa Zoro")
     _import(tmp_path, d, f"{n_z} | best={a} | worst={b}\n")
     out = tmp_path / "report.md"
@@ -346,7 +352,7 @@ def test_score_judged_prints_the_headline_table(tmp_path, files):
 
 def test_the_import_marks_sole_winners(tmp_path, files):
     _, _, key, d = _export(tmp_path, files)
-    n_z = next(k["n"] for k in key["items"] if k["id"] == Z)
+    n_z = _head(key, Z)
     a, b = _label_of(key, Z, "Zoro"), _label_of(key, Z, "Roronoa Zoro")
     _, rows = _import(tmp_path, d, f"{n_z} | best={b} | worst={a}\n")
     sole = {r["arm"]: r["sole_best"] for r in rows if r["item"] == Z}
@@ -364,3 +370,129 @@ def test_acquire_decision_rows_with_the_noul_shape_become_same_or_different(tmp_
     answers = {a["pick"]: a["arms"] for a in key["items"][0]["answers"].values()}
     assert answers == {"same entity": ["mercury-decide"], "different entities": ["longcat-2.0"]}
     assert "0.97" not in md and "noul" not in md
+
+
+# --- numbering safety: a check token on every item, required on every verdict line ------------------------------------------
+
+
+def test_headers_carry_a_check_token_derived_from_seed_and_id(tmp_path, files):
+    import hashlib
+
+    _, md, key, _ = _export(tmp_path, files, "--seed", "7")
+    for item in key["items"]:
+        token = hashlib.sha256(f"7|{item['id']}".encode()).hexdigest()[:4]
+        assert item["token"] == token and f"### Item {item['n']} [{token}]" in md
+
+
+def test_the_legend_tells_the_judge_to_copy_the_header_token(tmp_path, files):
+    _, md, _, _ = _export(tmp_path, files)
+    head = md.split("### Item 1")[0]
+    assert "[token]" in head.lower() or "token" in head.lower()
+    assert "N [token] | best=A[,B] | worst=C | short note" in head and "copy" in head.lower()
+
+
+def test_a_verdict_line_without_the_token_is_rejected(tmp_path, files, capsys):
+    _, _, key, d = _export(tmp_path, files)
+    n = next(k["n"] for k in key["items"] if k["id"] == Z)
+    a = _label_of(key, Z, "Zoro")
+    code, rows = _import(tmp_path, d, f"{n} | best={a} | worst=\n")
+    assert code == 0 and rows == [] and "1 malformed" in capsys.readouterr().out
+
+
+def test_a_wrong_token_is_rejected_never_misattributed(tmp_path, files, capsys):
+    _, _, key, d = _export(tmp_path, files)
+    n = next(k["n"] for k in key["items"] if k["id"] == Z)
+    a = _label_of(key, Z, "Zoro")
+    _, rows = _import(tmp_path, d, f"{n} [zzzz] | best={a} | worst=\n")
+    assert rows == [] and "1 malformed" in capsys.readouterr().out
+
+
+def test_a_reply_shifted_by_one_is_rejected_entirely(tmp_path, files, capsys):
+    """The judge skipped item 1: every number is off by one while the tokens are copied from the right headers."""
+    _, _, key, d = _export(tmp_path, files, "--include-no-gold")
+    lines = []
+    for item in key["items"]:
+        label = next(iter(item["answers"]))
+        lines.append(f"{item['n'] + 1} [{item['token']}] | best={label} | worst=")  # right token, wrong number
+    code, rows = _import(tmp_path, d, "\n".join(lines) + "\n")
+    out = capsys.readouterr().out
+    assert code == 0 and rows == [] and f"{len(lines)} malformed" in out and "0 verdict" in out
+
+
+def test_an_optional_item_prefix_is_accepted(tmp_path, files):
+    _, _, key, d = _export(tmp_path, files)
+    a = _label_of(key, Z, "Zoro")
+    _, rows = _import(tmp_path, d, f"Item {_head(key, Z)} | best={a} | worst=\n")
+    assert {r["item"] for r in rows} == {Z}
+
+
+def test_duplicate_verdicts_for_one_item_are_counted_and_reported(tmp_path, files, capsys):
+    _, _, key, d = _export(tmp_path, files)
+    a, b = _label_of(key, Z, "Zoro"), _label_of(key, Z, "Roronoa Zoro")
+    h = _head(key, Z)
+    _, rows = _import(tmp_path, d, f"{h} | best={a} | worst={b}\n{h} | best={b} | worst={a}\n")
+    out = capsys.readouterr().out
+    assert "1 duplicate" in out and next(r for r in rows if r["arm"] == "mercury-decide")["best"] is True  # the last one wins
+
+
+# --- the candidate shuffle is real ---------------------------------------------------------------------------------------------
+
+
+def _many_disagreements(tmp_path, n=12):
+    items, rows = [], []
+    for k in range(n):
+        titles = [f"T{k}a", f"T{k}b", f"T{k}c", f"T{k}d"]
+        it = _vitem(f"W{k}", titles, gold=titles[0])
+        items.append(it)
+        rows += [_t(it["id"], "qwen-local", titles[0]), _t(it["id"], "mercury-decide", titles[1])]
+    ip, rp = tmp_path / "many_items.jsonl", tmp_path / "many_res.jsonl"
+    ip.write_text("".join(json.dumps(i) + "\n" for i in items), encoding="utf-8")
+    rp.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    return ip, rp
+
+
+def _first_listed(md):
+    out = []
+    for block in md.split("### Item ")[1:]:
+        lines = block.splitlines()
+        i = lines.index("- wiki titles (candidates):")
+        out.append(lines[i + 1].split(". ", 1)[1])
+    return out
+
+
+def test_the_candidate_list_is_shuffled_per_item(tmp_path):
+    files = _many_disagreements(tmp_path)
+    _, md, key, _ = _export(tmp_path, files, "--seed", "3", arms=("qwen-local", "mercury-decide"))
+    first = _first_listed(md)
+    assert len(first) == 12
+    rank_one = [f"T{k}a" for k in range(12)]
+    assert first != rank_one and any(f != r for f, r in zip(first, rank_one, strict=True))
+    assert sum(f == r for f, r in zip(first, rank_one, strict=True)) < 8  # not a mostly-unshuffled list
+    for k in range(12):  # every candidate is still listed exactly once
+        block = md.split(f"### Item {k + 1} ")[1].split("### Item")[0]
+        assert sorted(line.split(". ", 1)[1] for line in block.splitlines() if line.startswith("  ") and ". " in line) == [
+            f"T{k}{c}" for c in "abcd"
+        ]
+    _, md2, _, _ = _export(tmp_path, files, "--seed", "4", arms=("qwen-local", "mercury-decide"), out="s4")
+    assert _first_listed(md2) != first  # the seed changes it
+
+
+# --- off-list free-form answers are not recognisable as a text arm's ---------------------------------------------
+
+
+def test_an_answer_outside_the_candidate_list_is_shown_neutrally_and_kept_raw_in_the_key(tmp_path):
+    it = _vitem("Odd", ["Odd", "Odd Jr"], gold="Odd")
+    rows = [
+        _t(it["id"], "qwen-local", "Odd Alfa (dub: Alfa)"),
+        _d(it["id"], "mercury-decide", "Odd", 0.9),
+        _t(it["id"], "longcat-2.0", "Something else entirely"),
+    ]
+    ip, rp = tmp_path / "i.jsonl", tmp_path / "r.jsonl"
+    ip.write_text(json.dumps(it) + "\n", encoding="utf-8")
+    rp.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    _, md, key, _ = _export(tmp_path, (ip, rp), arms=KEYS)
+    assert "Alfa" not in md and "Something else" not in md and "(an answer outside the list)" in md
+    answers = list(key["items"][0]["answers"].values())
+    outside = next(a for a in answers if a["pick"] == "(an answer outside the list)")
+    assert sorted(outside["arms"]) == ["longcat-2.0", "qwen-local"]  # both free-form answers share the one neutral entry
+    assert sorted(outside["raw"]) == ["Odd Alfa (dub: Alfa)", "Something else entirely"]
