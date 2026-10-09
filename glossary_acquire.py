@@ -878,6 +878,8 @@ def record_decision(gloss: dict, term: str, accept: bool) -> dict:
     ever writing to hard_fixes. A canonical failing either is free-form model/human-typo
     text, not a wiki spelling, and must not become a hard_fix even on a human 'y'."""
     g = json.loads(json.dumps(gloss))
+    if term not in (g.get("flagged") or {}):
+        return g  # nothing is awaiting a decision: a stale answer must not touch hard_fixes or known
     meta = (g.get("flagged") or {}).get(term)
     if isinstance(meta, str):
         meta = {"reason": meta}
@@ -1279,29 +1281,63 @@ def _read_pending(gloss_path: str) -> list:
         return []
 
 
+@contextlib.contextmanager
+def _pending_lock(gloss_path: str):
+    """A small blocking flock on '<glossary>.json.review-pending.lock' around every read-modify-write of the pending file, so a
+    concurrent reviewer's appended answer is never dropped by another's apply-then-remove. Held briefly and never while waiting
+    for the glossary lock; the order is always glossary lock, then this one. Where it cannot be made, the caller proceeds."""
+    try:
+        import fcntl
+
+        fd = os.open(_pending_path(gloss_path) + ".lock", os.O_RDWR | os.O_CREAT, 0o644)
+    except (ImportError, OSError):
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)  # closing the descriptor releases the lock
+
+
+def _append_pending(gloss_path: str, answers: list) -> None:
+    """Add ``answers`` to '<glossary>.json.review-pending' (atomic, one JSON document), keeping what is already there."""
+    with _pending_lock(gloss_path):
+        _write_json(_pending_path(gloss_path), {"answers": _read_pending(gloss_path) + [list(a) for a in answers]})
+
+
 def _commit_answers(gloss_path: str, answers: list, stage: str = "review") -> bool:
     """Apply a human's answers (after any saved by an earlier busy run) to the FRESH glossary, under the lock, waiting up to
-    GLOSSARY_LOCK_WAIT_INTERACTIVE for it. True when written. When the glossary stays busy the answers are NOT discarded: they
-    are appended to '<glossary>.review-pending' (atomic, one JSON document) and the next --review applies them first."""
+    GLOSSARY_LOCK_WAIT_INTERACTIVE for it. True when written.
+
+    The answers go to '<glossary>.json.review-pending' BEFORE the wait and leave it only after the glossary is written, so a kill
+    while waiting (or between the write and the delete) loses nothing: the next --review replays them. A replay is safe because
+    an answer is applied only to a term that is still flagged in the fresh glossary; one decided meanwhile is skipped and logged,
+    so a stale answer can never undo a decision made in the meantime."""
     import glossary_lock
 
+    if answers:
+        _append_pending(gloss_path, answers)
     with glossary_lock.locked(gloss_path, stage, wait=glossary_lock.interactive_wait_seconds(), announce=True) as ok:
         if not ok:
             if answers:
-                _write_json(_pending_path(gloss_path), {"answers": _read_pending(gloss_path) + [list(a) for a in answers]})
                 log(
                     f"glossary busy: your answers were saved to {_pending_path(gloss_path)} and the next --review will apply them"
                 )
             return False
-        todo = _read_pending(gloss_path) + [list(a) for a in answers]
-        if not todo:
-            return True
-        g = json.load(open(gloss_path, encoding="utf-8"))
-        for term, accept in todo:
-            g = record_decision(g, term, accept=accept)
-        _write_json(gloss_path, g)
-        with contextlib.suppress(OSError):
-            os.remove(_pending_path(gloss_path))
+        with _pending_lock(gloss_path):
+            todo = _read_pending(gloss_path)
+            if not todo:
+                return True
+            g = json.load(open(gloss_path, encoding="utf-8"))
+            for term, accept in todo:
+                if term not in (g.get("flagged") or {}):
+                    log(f"skipped the saved answer for {term!r}: it is no longer flagged (decided meanwhile)")
+                    continue
+                g = record_decision(g, term, accept=accept)
+            _write_json(gloss_path, g)
+            with contextlib.suppress(OSError):
+                os.remove(_pending_path(gloss_path))
         return True
 
 

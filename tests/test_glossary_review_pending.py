@@ -245,3 +245,130 @@ def test_an_unwritable_directory_runs_unlocked_and_says_so_once(tmp_path, capsys
         d.chmod(0o700)
     out = capsys.readouterr().out
     assert out.count("running unlocked") == 1 and "verify" in out
+
+
+# ---- phase 23: a saved answer is replayed only for a term that is still flagged ----
+
+
+def decided(path, **extra):
+    """A glossary where Lufy was ALREADY accepted (a hard fix) by another session while the answer waited."""
+    doc = {
+        "show": "S",
+        "names": ["Zoro"],
+        "phrases": [],
+        "hard_fixes": {"Lufy": "Luffy"},
+        "acquired": {"Lufy": {"canonical": "Luffy", "reason": "human-approved", "run": "review"}},
+        "flagged": {"Zorro": {"reason": "respelling-needs-review", "canonical": "Zoro"}},
+        **extra,
+    }
+    path.write_text(json.dumps(doc))
+
+
+@pytest.mark.parametrize("accept", [False, True])
+def test_a_stale_saved_answer_cannot_undo_a_decision_made_meanwhile(tmp_path, monkeypatch, capsys, accept):
+    path = tmp_path / "S.json"
+    decided(path)
+    json.dump({"answers": [["Lufy", accept], ["Zorro", True]]}, open(pending_file(path), "w"))
+    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("nothing is left to ask"))
+    monkeypatch.setattr(sys, "argv", ["glossary_acquire", str(path), str(tmp_path), "--review", "--apply"])
+    ga.main()
+    saved = json.loads(path.read_text())
+    assert saved["hard_fixes"] == {"Lufy": "Luffy", "Zorro": "Zoro"}  # the earlier fix survives; the still-flagged answer applies
+    assert "Lufy" not in saved.get("known", []) and "Lufy" in saved["acquired"]
+    assert "Lufy" in capsys.readouterr().out and not os.path.exists(pending_file(path))
+
+
+def test_record_decision_leaves_an_unflagged_term_alone():
+    g = {
+        "hard_fixes": {"Lufy": "Luffy"},
+        "acquired": {"Lufy": {"canonical": "Luffy"}},
+        "known": ["Other"],
+        "flagged": {"X": "no-match"},
+    }
+    for accept in (True, False):
+        assert ga.record_decision(g, "Lufy", accept=accept) == g
+    assert ga.record_decision(g, "Never Seen", accept=False) == g
+
+
+def test_record_decision_still_decides_a_flagged_term():
+    g = {"flagged": {"X": "no-match"}}
+    out = ga.record_decision(g, "X", accept=False)
+    assert out["known"] == ["X"] and "flagged" not in out
+
+
+# ---- the pending file is read-modify-written under its own lock ----
+
+
+def test_concurrent_reviewers_never_drop_each_others_saved_answers(tmp_path):
+    path = tmp_path / "S.json"
+    path.write_text("{}")
+    n = 25
+    barrier = threading.Barrier(n)
+
+    def save(i):
+        barrier.wait()
+        ga._append_pending(str(path), [[f"T{i}", True]])
+
+    threads = [threading.Thread(target=save, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert sorted(a[0] for a in json.load(open(pending_file(path)))["answers"]) == sorted(f"T{i}" for i in range(n))
+
+
+def test_appending_waits_while_another_writer_holds_the_pending_lock(tmp_path):
+    path = tmp_path / "S.json"
+    path.write_text("{}")
+    done = threading.Event()
+    with ga._pending_lock(str(path)):
+        t = threading.Thread(target=lambda: (ga._append_pending(str(path), [["A", True]]), done.set()))
+        t.start()
+        assert not done.wait(0.4)  # blocked behind the lock holder
+    assert done.wait(5)
+    t.join(5)
+
+
+def test_the_pending_lock_file_is_not_a_glossary(tmp_path):
+    path = tmp_path / "S.json"
+    path.write_text("{}")
+    ga._append_pending(str(path), [["A", True]])
+    assert not any(n.endswith(".json") and n != "S.json" for n in os.listdir(tmp_path))
+
+
+# ---- answers are on disk BEFORE the wait, so a kill while waiting loses nothing ----
+
+
+def test_a_review_killed_while_waiting_leaves_its_answers_on_disk_and_the_next_review_applies_them(tmp_path):
+    import signal
+
+    path = make(tmp_path)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = (
+        f"import sys; sys.path.insert(0, {root!r}); import glossary_acquire as ga\n"
+        f"ga._commit_answers({str(path)!r}, [['Lufy', True], ['Zorro', False]])\n"
+    )
+    env = {**os.environ, "GLOSSARY_LOCK_WAIT_INTERACTIVE": "60"}
+    with Holder(path):
+        proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True, env=env)
+        try:
+            assert "waiting for nightly-verify" in proc.stdout.readline()
+            assert sorted(map(tuple, json.load(open(pending_file(path)))["answers"])) == [("Lufy", True), ("Zorro", False)]
+            proc.send_signal(signal.SIGKILL)  # no chance to clean up or save anything
+        finally:
+            proc.kill()
+            proc.wait()
+    assert "hard_fixes" not in json.loads(path.read_text())
+    ga._commit_answers(str(path), [])
+    saved = json.loads(path.read_text())
+    assert saved["hard_fixes"] == {"Lufy": "Luffy"} and "Zorro" in saved["known"]
+    assert not os.path.exists(pending_file(path))
+
+
+def test_a_replay_after_a_kill_between_the_write_and_the_delete_is_harmless(tmp_path):
+    path = make(tmp_path)
+    assert ga._commit_answers(str(path), [["Lufy", True]])
+    once = path.read_text()
+    json.dump({"answers": [["Lufy", True]]}, open(pending_file(path), "w"))  # the delete never happened
+    assert ga._commit_answers(str(path), [])
+    assert json.loads(path.read_text()) == json.loads(once)

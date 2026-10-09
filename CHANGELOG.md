@@ -8,6 +8,12 @@ that shipped since.
 
 ## [Unreleased]
 
+- **Saved review answers are safe to replay.** An answer saved while the glossary was busy is applied only to a term that is still
+  flagged; one decided meanwhile is skipped and logged, and `record_decision` leaves an unflagged term alone, so a stale `n` or `y`
+  can no longer delete a hard fix or add the term to `known`. Answers are written to `<glossary>.json.review-pending` before the
+  wait and removed after the glossary is written, so a kill while waiting loses nothing, and every read-modify-write of that file
+  holds a small lock (`<glossary>.json.review-pending.lock`).
+
 - **`REPAIR_ACCEPT_PUNCT_CASE_ONLY` now covers punctuation ADDITIONS only.** A word-identical proposal gets the relaxed layout check
   only when the punctuation between its words differs from the original's by added `.` and `,` (the old marks all survive, in order;
   nothing removed, replaced or reordered, hyphens, brackets, quotes, `?`, `!` and musical notes included; an added `...` or `…` is not
