@@ -65,7 +65,7 @@ REASONS = {
         "rejected_name_invented",  # the model substituted a proper noun that is in
         # neither the glossary nor the original -- the phonetic name guard refused it
         "rejected_name_part",  # the repair added or removed a part of a multi-word glossary
-        # name the line already had a piece of (REPAIR_KEEP_NAME_PARTS=1)
+        # name the line already had a piece of (REPAIR_KEEP_NAME_PARTS, on unless set to 0)
         "decision_unfittable",  # [S-4] a HUMAN verdict whose text cannot be displayed on
         # this card. C1 holds timing immutable, so the ASR text stands -- and the reviewer
         # is told, because a decision that disappears silently is the failure this whole

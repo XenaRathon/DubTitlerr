@@ -393,3 +393,18 @@ def test_a_refused_connection_is_still_retried(env, monkeypatch):
     monkeypatch.setattr(repair, "OPENAI_URL", "http://127.0.0.1:9/v1/chat/completions")
     assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
     assert len(attempts) == 3  # one attempt plus the two retries: connect failures are retried
+
+
+def test_the_summary_key_appears_only_when_the_openai_backend_ran(env, tmp_path, monkeypatch):
+    """transport_retries is about the openai client: a llamacpp/ollama run has no such counter, whatever the budget says."""
+    import test_repair_dismiss as d
+
+    monkeypatch.setenv("REPAIR_TRANSPORT_RETRIES", "2")
+    monkeypatch.setattr(repair, "REPAIR_BACKEND", "llamacpp")
+    _, summary = d._episode(tmp_path, monkeypatch, "the old line", "the old line is here now")
+    assert "transport_retries" not in summary
+    monkeypatch.setattr(repair, "REPAIR_BACKEND", "openai")
+    again = tmp_path / "again"
+    again.mkdir()
+    _, summary = d._episode(again, monkeypatch, "the old line", "the old line is here now")
+    assert summary["transport_retries"] == 0

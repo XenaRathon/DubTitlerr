@@ -7,8 +7,10 @@ apply_results treats an adjudication {canonical, confidence} like this:
   * HIGH confidence, canonical != the term, not an expansion (a respelling): FLAGGED "respelling-needs-review";
   * not high with a canonical and conf "low": FLAGGED "low-confidence"; no canonical or conf none: FLAGGED "no-match";
   * HIGH with canonical == the term: nothing.
-`classify` mirrors that for one pick (is_expansion is imported at call time, as production does). A decision arm's "high" is
-confidence >= tau; a text arm's is the word high.
+`classify` mirrors that for one pick with the PLAIN SUBSTRING rule (is_expansion, imported at call time, as production does). It
+does NOT mirror the guards production has on by default since 2026-10-09 (VERIFY_WRITE_WHOLE_WORD, VERIFY_SKIP_COMMON_WORDS; see
+glossary_verify.write_decision): a bake-off scored here counts as writes some expansions that production now flags for review.
+A decision arm's "high" is confidence >= tau; a text arm's is the word high.
 
 Against the item's gold the outcomes are: GOOD WRITE (an expansion in the item's accepted set), WRONG WRITE (an expansion
 that is not accepted, or any expansion write on an item whose gold is none), the review-only flags, "nothing" (the term itself:
