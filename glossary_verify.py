@@ -366,10 +366,11 @@ def write_decision(term: str, canon: str, universe) -> str:
 
     Check order:
       1. Not an expansion (is_expansion / whole-word guard) -> 'respelling'.
-      2. VERIFY_SKIP_COMMON_WORDS=1 AND single token AND glossary.is_english(term):
-         - If the arc gate is on AND the canonical IS in the arc universe, the arc evidence
-           wins and the write proceeds (skip to 3).
-         - Otherwise -> 'common-word' (flagged for review).
+      2. VERIFY_SKIP_COMMON_WORDS=1 AND the term is a single token AND the word list spells it in LOWERCASE
+         (glossary.is_ordinary_word: 'castle', 'government' yes; 'Hancock', 'Rayleigh', which wamerican spells capitalised,
+         no) -> 'common-word', flagged for review, nothing deleted. The one exception is VERIFY_COMMON_WORD_ARC_RESCUE=1
+         (default off) with the arc gate on and the canonical in the arc universe: the arc page wins and the write goes on.
+         Off by default because it is measured to let back 58 of the 99 wrong writes the guard blocks.
       3. VERIFY_ARC_GATE=1 AND canonical not in the arc universe -> 'not-in-arc-pages'.
       4. Otherwise -> 'write'."""
     if not auto_writes(term, canon):
@@ -378,11 +379,11 @@ def write_decision(term: str, canon: str, universe) -> str:
     if os.environ.get("VERIFY_SKIP_COMMON_WORDS") == "1" and " " not in term.strip():
         import glossary
 
-        if glossary.is_english(term):
-            # Exception: the arc gate is on and the canonical IS in the arc universe.
-            if universe is not None and canon.casefold() in universe:
-                pass  # arc evidence wins — fall through to the arc gate / write
-            else:
+        if glossary.is_ordinary_word(term):
+            rescued = (
+                os.environ.get("VERIFY_COMMON_WORD_ARC_RESCUE") == "1" and universe is not None and canon.casefold() in universe
+            )
+            if not rescued:
                 return "common-word"
     if universe is not None and canon.casefold() not in universe:
         return "not-in-arc-pages"

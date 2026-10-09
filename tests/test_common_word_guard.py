@@ -11,14 +11,16 @@ import pytest
 import glossary
 import glossary_verify as gv
 
-# The host's word list decides what glossary.is_english() says (the bundled list is 233 words here, production's image has
-# wamerican with ~100k), so no test may depend on it: every test runs against exactly these words.
-WORDS = {"government", "castle", "lobby", "elders", "jolly", "world"}
+# The host's word list decides what the guard calls an ordinary word (the bundled list is 233 words here, production's image has
+# wamerican with ~100k, which spells proper names CAPITALISED: Hancock, Rayleigh; ordinary words lowercase: castle, lobby), so no
+# test may depend on it: every test runs against exactly these entries, spelled as a word list spells them.
+ENTRIES = ["government", "castle", "lobby", "elders", "jolly", "world", "Hancock", "Rayleigh"]
 
 
 @pytest.fixture(autouse=True)
 def english_words(monkeypatch):
-    monkeypatch.setattr(glossary, "_WORDS", set(WORDS))
+    monkeypatch.setattr(glossary, "_WORDS", {w.lower() for w in ENTRIES})  # the fuzzy path's lowercased set, untouched
+    monkeypatch.setattr(glossary, "_ORDINARY", {w for w in ENTRIES if w == w.lower()})
 
 
 def high(canon):
@@ -94,10 +96,12 @@ def test_non_english_single_token_unaffected(monkeypatch):
 # ---- arc-gate override: English word IN the arc universe is written ----------
 
 
-def test_arc_gate_overrides_common_word_guard(monkeypatch):
-    """An English word whose canonical IS in the arc universe is written (the arc evidence wins)."""
+def test_arc_gate_overrides_common_word_guard_only_with_its_own_flag(monkeypatch):
+    """An English word whose canonical IS in the arc universe is written -- but only when VERIFY_COMMON_WORD_ARC_RESCUE=1:
+    measured, the rescue lets back 58 of the 99 wrong writes the guard blocks (generic words are on arc pages)."""
     monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
     monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    monkeypatch.setenv("VERIFY_COMMON_WORD_ARC_RESCUE", "1")
     g = _gloss(
         names=["Castle"],
         arc_titles={"Drum Island": ["Drum Castle", "Tony Tony Chopper"]},
@@ -185,7 +189,7 @@ def test_verify_report_has_no_common_word_key_when_guard_off(monkeypatch, tmp_pa
 def test_the_guard_follows_the_word_list_file_and_ignores_case(monkeypatch, tmp_path):
     words = tmp_path / "words"
     words.write_text("castle\n")
-    monkeypatch.setattr(glossary, "_WORDS", None)  # reload from the bundled list plus this file
+    monkeypatch.setattr(glossary, "_ORDINARY", None)  # reload from the bundled list plus this file
     monkeypatch.setattr(glossary, "WORDLIST_PATH", str(words))
     monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
     g = _gloss(names=["CASTLE", "Government"])
@@ -196,12 +200,53 @@ def test_the_guard_follows_the_word_list_file_and_ignores_case(monkeypatch, tmp_
 
 def test_a_name_that_is_also_an_english_word_is_flagged_for_review_not_dropped(monkeypatch):
     """The documented cost: a big dictionary holds words that are names in the show (Law, Smoker). The guard flags them for
-    review; it never deletes the term or the canonical, and the arc gate can rescue them."""
-    monkeypatch.setattr(glossary, "_WORDS", WORDS | {"law"})
+    review; it never deletes the term or the canonical, and the arc rescue (its own flag) can let them through."""
+    monkeypatch.setattr(glossary, "_ORDINARY", {w for w in ENTRIES if w == w.lower()} | {"law"})
     monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
     g = _gloss(names=["Law"])
     new = gv.apply_results(g, {"Law": high("Trafalgar D. Water Law")})
     assert new["names"] == ["Law"] and new["flagged"]["Law"]["reason"] == "common-word"
     monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    monkeypatch.setenv("VERIFY_COMMON_WORD_ARC_RESCUE", "1")
     g = _gloss(names=["Law"], arc_titles={"Dressrosa": ["Trafalgar D. Water Law"]})
     assert "Trafalgar D. Water Law" in gv.apply_results(g, {"Law": high("Trafalgar D. Water Law")})["phrases"]
+
+
+def test_without_the_rescue_flag_the_arc_gate_does_not_override(monkeypatch):
+    monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
+    monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    monkeypatch.delenv("VERIFY_COMMON_WORD_ARC_RESCUE", raising=False)
+    g = _gloss(names=["Castle"], arc_titles={"Drum Island": ["Drum Castle"]})
+    new = gv.apply_results(g, {"Castle": high("Drum Castle")})
+    assert new["flagged"]["Castle"] == {"reason": "common-word", "canonical": "Drum Castle"}
+
+
+# ---- only a word the list spells in LOWERCASE is an ordinary word ------------------------------------------------
+
+
+@pytest.mark.parametrize("term", ["Hancock", "Rayleigh", "hancock", "HANCOCK"])
+def test_a_name_the_list_spells_capitalised_is_not_a_common_word(monkeypatch, term):
+    monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
+    g = _gloss(names=[term])
+    new = gv.apply_results(g, {term: high(f"Boa {term}")})
+    assert f"Boa {term}" in new["phrases"] and "flagged" not in new
+
+
+@pytest.mark.parametrize("term", ["castle", "Castle", "CASTLE"])
+def test_a_word_the_list_spells_lowercase_is_a_common_word_whatever_the_terms_case(monkeypatch, term):
+    monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
+    new = gv.apply_results(_gloss(names=[term]), {term: high("Drum Castle")})
+    assert new["flagged"][term]["reason"] == "common-word"
+
+
+def test_the_ordinary_word_set_keeps_the_lists_case_and_the_fuzzy_path_is_untouched(monkeypatch, tmp_path):
+    words = tmp_path / "words"
+    words.write_text("castle\nHancock\nlobby\nit's\nSmoker\nsmoker\n")
+    monkeypatch.setattr(glossary, "_WORDS", None)
+    monkeypatch.setattr(glossary, "_ORDINARY", None)
+    monkeypatch.setattr(glossary, "WORDLIST_PATH", str(words))
+    assert glossary.is_ordinary_word("Castle") and glossary.is_ordinary_word("lobby")
+    assert not glossary.is_ordinary_word("Hancock")  # listed only capitalised: a name
+    assert glossary.is_ordinary_word("smoker")  # listed both ways: the lowercase entry makes it a word
+    assert not glossary.is_ordinary_word("it's")  # entries with an apostrophe are dropped, as for is_english
+    assert glossary.is_english("Hancock")  # is_english still lowercases everything: the fuzzy path is unchanged

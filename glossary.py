@@ -58,6 +58,35 @@ def _load_words() -> set[str]:
     return _WORDS
 
 
+_ORDINARY: set[str] | None = None
+
+
+def _read_lowercase_entries(path: str) -> set[str]:
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            return {w for w in (ln.strip() for ln in f) if w and "'" not in w and w == w.lower()}
+    except OSError:
+        return set()
+
+
+def ordinary_words() -> set[str]:
+    """The word list's entries that are spelled in LOWERCASE -- ordinary words, as opposed to proper names.
+
+    is_english() lowercases the whole list, which is right for the fuzzy path (a name the dictionary also knows must not be
+    rewritten) but loses the one signal that separates 'castle' from 'Hancock': the production list (wamerican) spells proper
+    names capitalised and ordinary words lowercase. This keeps the original case and returns only the lowercase entries
+    (bundled list included; entries with an apostrophe dropped, as in _read_words)."""
+    global _ORDINARY
+    if _ORDINARY is None:
+        _ORDINARY = _read_lowercase_entries(_BUNDLED) | _read_lowercase_entries(WORDLIST_PATH)
+    return _ORDINARY
+
+
+def is_ordinary_word(token: str) -> bool:
+    """True if the list spells ``token`` (any case) as a lowercase word: 'castle', 'Castle' yes; 'Hancock' no."""
+    return token.lower() in ordinary_words()
+
+
 def is_english(token: str) -> bool:
     """True if the bare token is a real English word (so the fuzzy must not rewrite it)."""
     return token.lower() in _load_words()
