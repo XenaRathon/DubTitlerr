@@ -831,6 +831,21 @@ def _post_json(url, body, timeout=None):
         conn.close()
 
 
+LEGACY_BACKENDS = ("llamacpp", "ollama")  # the local servers a stage may inherit from REPAIR_BACKEND
+
+
+def inherit_repair_backend(repair_value, stage, fix, default="ollama"):
+    """(backend, problem): what a stage that has no backend variable of its own inherits from REPAIR_BACKEND.
+
+    Only the two legacy values are inherited (unset: ``default``). REPAIR_BACKEND=openai describes repair's chat-completions
+    client; handing it to a stage that speaks Ollama's or llama.cpp's request shape sent the wrong request, so anything else
+    is refused with ``stage`` and ``fix`` in the message. One rule for every stage that follows REPAIR_BACKEND."""
+    value = (repair_value or "").strip()
+    if not value or value in LEGACY_BACKENDS:
+        return value or default, ""
+    return "", f"REPAIR_BACKEND={value!r} cannot be inherited by {stage} (it is not llamacpp or ollama): {fix}"
+
+
 OPENAI_RETRIES = 2  # extra tries after HTTP 429 / 5xx on the glossary stages' openai backend (not configurable: YAGNI)
 
 
@@ -860,7 +875,7 @@ def _llm_chat_openai(prompt, *, url, key_env, extra_body, model, max_tokens, fir
     key_name = key_env or "VERIFY_OPENAI_KEY_ENV"
     raw_key = os.environ.get(key_env, "") if key_env else ""
     if not url or not model or not raw_key.strip():
-        log(f"  llm fail: the openai backend needs a URL, a model and the key in env var {key_name}")
+        log("  llm fail: the openai backend is not configured for this stage (URL, model or key missing)")
         return ""
     problem = openai_endpoint_problem(url)
     if problem:

@@ -1231,6 +1231,7 @@ def main():
             f"bound {p.get('bound', 0.0):.3f}  {p['reason']}"
         )
     log(json.dumps({k: v for k, v in rep.items() if k != "proposals"}, ensure_ascii=False))
+    glossary_verify.refusal_exit(rep)
 
 
 if __name__ == "__main__":

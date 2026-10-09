@@ -7,6 +7,8 @@ No test here may reach a model: every one either exercises a pure function or st
 repair.py afterwards.
 """
 
+import pytest
+
 import punctuation
 import qc
 import reflow
@@ -342,3 +344,43 @@ def test_missing_wordlist_means_no_contraction_allowance(monkeypatch):
     """A dev box without wamerican must be STRICTER, never looser."""
     monkeypatch.setattr(punctuation, "WORDS", frozenset())
     assert not punctuation.accept_restoration("dont go", "Don't go.")
+
+
+# ---- phase 7: RESTORE_BACKEND follows the same inheritance rule as VERIFY_BACKEND ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "env,expect",
+    [
+        ({}, "ollama"),
+        ({"REPAIR_BACKEND": "llamacpp"}, "llamacpp"),
+        ({"REPAIR_BACKEND": "ollama"}, "ollama"),
+        ({"RESTORE_BACKEND": "llamacpp", "REPAIR_BACKEND": "openai"}, "llamacpp"),  # explicit wins
+        ({"RESTORE_BACKEND": "", "REPAIR_BACKEND": "llamacpp"}, "llamacpp"),
+    ],
+)
+def test_restore_backend_resolution_accepts(env, expect):
+    assert punctuation.resolve_restore_backend(env) == (expect, "")
+
+
+@pytest.mark.parametrize("env", [{"REPAIR_BACKEND": "openai"}, {"REPAIR_BACKEND": "nonsense"}, {"RESTORE_BACKEND": "openai"}])
+def test_restore_backend_resolution_refuses_with_a_message_naming_the_fix(env):
+    backend, problem = punctuation.resolve_restore_backend(env)
+    assert backend == "" and "RESTORE_BACKEND" in problem and ("openai" in problem or "nonsense" in problem)
+
+
+def test_a_refused_backend_sends_nothing_and_says_so_once(monkeypatch, capsys):
+    monkeypatch.setattr(punctuation, "RESTORE_BACKEND", "")
+    monkeypatch.setattr(punctuation, "RESTORE_PROBLEM", "REPAIR_BACKEND='openai' cannot be inherited: set RESTORE_BACKEND")
+    monkeypatch.setattr(punctuation, "_refusal_logged", False)
+    monkeypatch.setattr(punctuation, "llm_chat", lambda *a, **k: pytest.fail("no model call may be made"))
+    words = [
+        {"text": w, "start": i * 0.5, "end": i * 0.5 + 0.4, "seg": 0}
+        for i, w in enumerate("we have to go it is dangerous".split())
+    ]
+    segs = [{"start": 0.0, "end": 4.0, "text": " ".join(w["text"] for w in words)}]
+    punctuation.restore(words, segs)
+    punctuation.restore(words, segs)
+    shown = capsys.readouterr().out
+    assert shown.count("punctuation restoration is off") == 1 and "RESTORE_BACKEND" in shown
+    assert " ".join(w["text"] for w in words) == "we have to go it is dangerous"

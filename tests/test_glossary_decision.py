@@ -485,3 +485,204 @@ def test_acquire_tier_b_treats_a_pending_term_as_no_entry_not_an_error(tmp_path,
     monkeypatch.setattr(gv, "backend_problem", lambda: "")
     rep = ga.acquire(str(gp), str(tmp_path), apply=False)
     assert rep["tier_b"] == {} and "adjudicate failed" not in capsys.readouterr().out
+
+
+# ---- phase 7: the run-level breaker, workers and retries -----------------------------------------------------------
+
+
+def _names_glossary(tmp_path, n):
+    path = tmp_path / "g.json"
+    path.write_text(
+        json.dumps(
+            {
+                "show": "S",
+                "wiki": "https://x.fandom.com/api.php",
+                "names": [f"Zoro{k}" for k in range(n)],
+                "phrases": [],
+                "hard_fixes": {},
+            }
+        )
+    )
+    return path
+
+
+@pytest.fixture
+def wiki(monkeypatch):
+    monkeypatch.setattr(gv, "resolve_wiki", lambda show, override=None: "https://x.fandom.com/api.php")
+    monkeypatch.setattr(gv, "fetch_titles", lambda api, show: TITLES)
+    monkeypatch.setattr(gv, "candidates", lambda term, titles, k=gv.TOPK: list(TITLES))
+
+
+def test_the_breaker_stops_calling_the_provider_after_five_failed_terms(decision, wiki, tmp_path, capsys):
+    srv = decision(None, status=500)
+    rep = gv.verify(str(_names_glossary(tmp_path, 8)))
+    shown = capsys.readouterr().out
+    assert len(srv.requests) == 5  # one request per failed term (retries default to 0), then nothing
+    assert rep["pending"] == 8 and rep["checked"] == 0
+    assert rep["decision"] == {"calls": 5, "ok": 0, "failures": 5, "fallbacks": 0, "pending": 8, "breaker_tripped_after": 5}
+    assert shown.count("breaker tripped") == 2  # the one-time log line, and the summary line
+    assert shown.count("decision breaker tripped after 5 consecutive failures") == 1
+    assert "breaker tripped after 5 failures" in [ln for ln in shown.splitlines() if ln.startswith("decision backend:")][0]
+    assert KEY not in shown
+
+
+def test_a_success_resets_the_streak(decision, wiki, tmp_path):
+    answers = iter([False] * 4 + [True] + [False] * 4 + [True])
+    srv = FakeServer(
+        lambda req: (
+            (500, {"error": "x"})
+            if not next(answers)
+            else (200, {"model": MODEL, "answers": {"pick": choice_answer("c1", 0.9)}, "usage": {}})
+        )
+    )
+    import os
+
+    os.environ["VERIFY_DECISION_URL"] = srv.base + "/api/alpha/decisions"
+    try:
+        rep = gv.verify(str(_names_glossary(tmp_path, 10)))
+    finally:
+        srv.close()
+    assert "breaker_tripped_after" not in rep["decision"] and rep["decision"]["calls"] == 10
+    assert rep["decision"]["ok"] == 2 and rep["decision"]["failures"] == 8
+
+
+def test_the_breaker_is_configurable_and_zero_turns_it_off(decision, wiki, tmp_path, monkeypatch):
+    srv = decision(None, status=500)
+    monkeypatch.setenv("VERIFY_DECISION_BREAKER", "0")
+    rep = gv.verify(str(_names_glossary(tmp_path, 8)))
+    assert len(srv.requests) == 8 and "breaker_tripped_after" not in rep["decision"]
+    monkeypatch.setenv("VERIFY_DECISION_BREAKER", "2")
+    srv.requests.clear()
+    gv.verify(str(_names_glossary(tmp_path, 8)))
+    assert len(srv.requests) == 2
+
+
+def test_after_the_breaker_trips_a_local_fallback_answers_locally_without_calling_the_provider(
+    decision, wiki, tmp_path, monkeypatch
+):
+    srv = decision(None, status=500)
+    monkeypatch.setenv("VERIFY_DECISION_FALLBACK", "local")
+    local = []
+    monkeypatch.setattr(
+        gv,
+        "llm_chat",
+        lambda prompt, **kw: local.append(1) or '{"canonical": "Roronoa Zoro", "confidence": "low", "dub_note": ""}',
+    )
+    rep = gv.verify(str(_names_glossary(tmp_path, 8)))
+    assert len(srv.requests) == 5 and len(local) == 8 and "pending" not in rep
+    assert rep["decision"] == {"calls": 5, "ok": 0, "failures": 5, "fallbacks": 8, "pending": 0, "breaker_tripped_after": 5}
+
+
+def test_a_tripped_breaker_leaves_pairs_unavailable_and_uncached(decision, monkeypatch):
+    srv = decision(None, status=500)
+    monkeypatch.setenv("VERIFY_DECISION_BREAKER", "2")
+    outs = [ga.adjudicate_merge(f"a{k}", "b", [], [], "S") for k in range(5)]
+    assert all(o == {"same_entity": False, "confidence": "none", "unavailable": True} for o in outs) and len(srv.requests) == 2
+
+
+def test_the_breaker_is_per_run(decision, wiki, tmp_path):
+    srv = decision(None, status=500)
+    gv.verify(str(_names_glossary(tmp_path, 8)))
+    srv.requests.clear()
+    gv.verify(str(_names_glossary(tmp_path, 8)))
+    assert len(srv.requests) == 5  # begin_run reset the breaker
+
+
+def test_the_breaker_counters_hold_under_concurrent_failures(decision, monkeypatch):
+    import concurrent.futures
+
+    srv = decision(None, status=500)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        list(ex.map(lambda k: gv.adjudicate(f"Zoro{k}", TITLES, "S"), range(40)))
+    c = gd.counters()
+    assert 5 <= c["calls"] <= 5 + 7  # at most the calls already in flight when the breaker trips
+    assert c["failures"] == c["calls"] and c["pending"] == 40 and c["breaker_tripped_after"] >= 5
+    assert len(srv.requests) == c["calls"]
+
+
+def test_retries_default_to_zero_for_the_stage_and_are_configurable(decision, monkeypatch):
+    import decision_client
+
+    srv = decision(None, status=500)
+    monkeypatch.setattr(decision_client.time, "sleep", lambda s: None)
+    monkeypatch.setenv("VERIFY_DECISION_BREAKER", "0")
+    gv.adjudicate("Zoro", TITLES, "S")
+    assert len(srv.requests) == 1
+    monkeypatch.setenv("VERIFY_DECISION_RETRIES", "2")
+    gv.adjudicate("Zoro", TITLES, "S")
+    assert len(srv.requests) == 1 + 3
+
+
+def test_the_harness_keeps_the_decision_clients_own_retries():
+    """GUARD: the bake-off calls decide() without `retries`, so it keeps the client's default of 2."""
+    import inspect
+
+    import decision_client
+
+    assert inspect.signature(decision_client.decide).parameters["retries"].default == decision_client.MAX_RETRIES == 2
+
+
+def _tracked_adjudicate(monkeypatch):
+    import threading
+    import time
+
+    state = {"now": 0, "max": 0}
+    lock = threading.Lock()
+
+    def fake(term, cands, show):
+        with lock:
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+        time.sleep(0.05)
+        with lock:
+            state["now"] -= 1
+        return {"canonical": term, "confidence": "low", "dub_note": ""}
+
+    monkeypatch.setattr(gv, "adjudicate", fake)
+    return state
+
+
+def test_the_decision_backend_runs_one_worker_by_default(decision, wiki, tmp_path, monkeypatch):
+    state = _tracked_adjudicate(monkeypatch)
+    gv.verify(str(_names_glossary(tmp_path, 6)))
+    assert state["max"] == 1  # VERIFY_WORKERS (4) is for the local server, not for a metered provider
+
+
+def test_verify_decision_workers_sets_the_concurrency(decision, wiki, tmp_path, monkeypatch):
+    state = _tracked_adjudicate(monkeypatch)
+    monkeypatch.setenv("VERIFY_DECISION_WORKERS", "3")
+    gv.verify(str(_names_glossary(tmp_path, 9)))
+    assert state["max"] == 3
+
+
+def test_a_legacy_backend_keeps_verify_workers(decision, wiki, tmp_path, monkeypatch):
+    """GUARD: the local backends keep VERIFY_WORKERS (4) exactly as before."""
+    monkeypatch.setattr(gv, "VERIFY_BACKEND", "llamacpp")
+    state = _tracked_adjudicate(monkeypatch)
+    gv.verify(str(_names_glossary(tmp_path, 8)))
+    assert state["max"] == gv.VERIFY_WORKERS == 4
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"VERIFY_DECISION_BREAKER": "-1"},
+        {"VERIFY_DECISION_BREAKER": "many"},
+        {"VERIFY_DECISION_WORKERS": "0"},
+        {"VERIFY_DECISION_WORKERS": "x"},
+        {"VERIFY_DECISION_RETRIES": "-1"},
+        {"VERIFY_DECISION_RETRIES": "9"},
+    ],
+)
+def test_the_new_decision_settings_are_validated(decision, monkeypatch, env):
+    decision(lambda q, b: choice_answer("c1", 0.9))
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert next(iter(env)) in gv.backend_problem()
+
+
+def test_the_new_decision_defaults(monkeypatch):
+    for name in ("VERIFY_DECISION_BREAKER", "VERIFY_DECISION_WORKERS", "VERIFY_DECISION_RETRIES"):
+        monkeypatch.delenv(name, raising=False)
+    s = gd.settings()
+    assert (s.breaker, s.workers, s.retries) == (5, 1, 0)

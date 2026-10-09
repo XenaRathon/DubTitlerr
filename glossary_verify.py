@@ -31,6 +31,7 @@ import time
 import urllib.parse
 import urllib.request
 
+import common
 from common import llm_chat, stop_requested
 
 
@@ -50,7 +51,7 @@ OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 # Unset, it follows REPAIR_BACKEND so the whole pipeline can sit on one local model on a shared 8 GB GPU, but ONLY for the two
 # legacy values: REPAIR_BACKEND=openai describes repair's chat-completions client, and inheriting it here used to send glossary
 # prompts in Ollama's request shape. Any other REPAIR_BACKEND with VERIFY_BACKEND unset is refused (resolve_backend).
-LEGACY_BACKENDS = ("llamacpp", "ollama")
+LEGACY_BACKENDS = common.LEGACY_BACKENDS
 VERIFY_BACKENDS = (*LEGACY_BACKENDS, "openai", "decision")
 
 
@@ -65,12 +66,8 @@ def resolve_backend(env=None):
         if explicit in VERIFY_BACKENDS:
             return explicit, ""
         return "", f"VERIFY_BACKEND={explicit!r} is not one of {', '.join(VERIFY_BACKENDS)}"
-    inherited = (env.get("REPAIR_BACKEND") or "").strip()
-    if not inherited or inherited in LEGACY_BACKENDS:
-        return inherited or "ollama", ""
-    return "", (
-        f"REPAIR_BACKEND={inherited!r} cannot be inherited by the glossary stages (it is not llamacpp or ollama): "
-        f"set VERIFY_BACKEND to one of {', '.join(VERIFY_BACKENDS)}"
+    return common.inherit_repair_backend(
+        env.get("REPAIR_BACKEND"), "the glossary stages", f"set VERIFY_BACKEND to one of {', '.join(VERIFY_BACKENDS)}"
     )
 
 
@@ -108,7 +105,6 @@ def backend_problem():
             if local and local not in LEGACY_BACKENDS:
                 return f"VERIFY_DECISION_LOCAL_BACKEND must be one of {', '.join(LEGACY_BACKENDS)}"
     if VERIFY_BACKEND == "openai":
-        import common
         import repair
 
         url = os.environ.get("VERIFY_OPENAI_URL", "").strip()
@@ -182,6 +178,25 @@ def end_run(rep):
         log(glossary_decision.summary_line())
         rep = {**rep, "decision": glossary_decision.counters()}
     return rep
+
+
+def refusal_exit(rep):
+    """VERIFY_REFUSE_EXIT=1 (default off): a run refused for its backend ends with a final 'REFUSED' line and exit status 2, so a
+    wrapper that only looks at the status notices it. Unset, a refusal exits 0 like every other no-op of this stage."""
+    note = rep.get("note", "") if isinstance(rep, dict) else ""
+    if os.environ.get("VERIFY_REFUSE_EXIT") == "1" and note.startswith("refused:"):
+        log(f"REFUSED: {note[len('refused:') :].strip()}")
+        sys.exit(2)
+
+
+def worker_count():
+    """Concurrent adjudications in verify(): VERIFY_WORKERS for the local backends (as always); VERIFY_DECISION_WORKERS
+    (default 1) for the decision backend, whose provider meters requests and rate-limits per key."""
+    if VERIFY_BACKEND == "decision":
+        import glossary_decision
+
+        return glossary_decision.settings().workers
+    return VERIFY_WORKERS
 
 
 def llm_settings(backend=None):
@@ -294,6 +309,27 @@ def _shape_list(names: list, phrases: list, term: str) -> list:
     return phrases if " " in term.strip() else names
 
 
+def _whole_word(term: str, canon: str) -> bool:
+    """The term's words occur in the canonical as a contiguous, whole-word run (token-wise, casefolded)."""
+    t, c = re.findall(r"\w+", term.casefold()), re.findall(r"\w+", canon.casefold())
+    return bool(t) and any(c[i : i + len(t)] == t for i in range(len(c) - len(t) + 1))
+
+
+def auto_writes(term: str, canon: str) -> bool:
+    """Whether a high-confidence ``canon`` for ``term`` is WRITTEN (True) or flagged for review (False).
+
+    By default that is glossary_acquire.is_expansion alone. is_expansion is a substring rule, so it also writes
+    near-respellings: 'Usop' -> 'Usopp', 'Burn' -> 'Coburn'. VERIFY_WRITE_WHOLE_WORD=1 (default off) additionally
+    requires the term to be a whole word (token-wise, casefolded) of the canonical, which is how the bake-off's expansion gold
+    is defined; anything else is flagged 'respelling-needs-review' like any non-expansion. Read per call."""
+    # Imported at call time, NOT at module scope: glossary_acquire imports this module (a hard cycle otherwise).
+    from glossary_acquire import is_expansion
+
+    if not is_expansion(term, canon):
+        return False
+    return os.environ.get("VERIFY_WRITE_WHOLE_WORD", "") != "1" or _whole_word(term, canon)
+
+
 def apply_results(gloss: dict, results: dict) -> dict:
     """Apply per-term adjudications. Pure; preserves unknown fields (curated hard_fixes,
     initial_prompt, wiki, …) by deep-copying the input.
@@ -338,9 +374,7 @@ def apply_results(gloss: dict, results: dict) -> dict:
             # module, so a top-level import is a hard cycle (ImportError on the
             # acquire-first order only -- verify-first appears to work, which is exactly
             # how it would reach production unnoticed).
-            from glossary_acquire import is_expansion
-
-            if is_expansion(term, canon):
+            if auto_writes(term, canon):
                 dest = _shape_list(names, phrases, canon)
                 if canon not in dest:
                     dest.append(canon)  # ADD -- the term itself is left in place
@@ -727,7 +761,7 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
             return _STOPPED
         return adjudicate(t, candidates(t, titles), show)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=VERIFY_WORKERS) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count()) as ex:
         adjudications = list(ex.map(_one, terms))
     # None = the decision backend could not answer (fallback none): that term stays pending like a stopped one, but is not a stop.
     done = {t: a for t, a in zip(terms, adjudications) if a is not None and a is not _STOPPED}
@@ -759,10 +793,8 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
     # high-confidence changed term was written straight into names/phrases, so "proposed"
     # and "applied" were the same number. They no longer are: a respelling is escalated,
     # not applied, and reporting it as applied would hide the escalation entirely.
-    from glossary_acquire import is_expansion
-
     changed = [t for t, a in results.items() if a["confidence"] == "high" and a["canonical"] and a["canonical"] != t]
-    applied = sum(1 for t in changed if is_expansion(t, results[t]["canonical"]))
+    applied = sum(1 for t in changed if auto_writes(t, results[t]["canonical"]))
     return {
         "show": show,
         "wiki": api,
@@ -783,6 +815,7 @@ def main():
     a = ap.parse_args()
     rep = verify(a.glossary, a.wiki, a.force)
     log(json.dumps(rep, ensure_ascii=False))
+    refusal_exit(rep)
     sys.exit(0)
 
 

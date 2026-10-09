@@ -289,3 +289,129 @@ def test_verify_refuses_when_the_openai_backend_is_misconfigured(tmp_path, provi
     path = tmp_path / "S.json"
     path.write_text('{"show": "S", "names": ["Zoro"], "phrases": []}')
     assert gv.verify(str(path))["note"].startswith("refused:")
+
+
+# ---- phase 7: reasoning_content, the whole-word write guard, the opt-in refusal exit -------------------------------------------
+
+
+def test_reasoning_content_is_never_read_even_when_content_is_empty(monkeypatch):
+    monkeypatch.setenv("TEST_PROVIDER_KEY", KEY)  # without a key the call would return "" for the wrong reason
+    srv = FakeServer(lambda r: (200, chat_reply("", reasoning_content='{"canonical": "Leaked", "confidence": "high"}')))
+    try:
+        out = common.llm_chat(
+            "P", backend="openai", openai_url=srv.url, openai_key_env="TEST_PROVIDER_KEY", model="m", first_line=False
+        )
+    finally:
+        srv.close()
+    assert out == ""
+
+
+def test_the_missing_config_message_names_no_other_stages_variables(monkeypatch, capsys):
+    monkeypatch.delenv("TEST_PROVIDER_KEY", raising=False)
+    assert common.llm_chat("P", backend="openai", model="m") == ""
+    shown = capsys.readouterr().out
+    assert "the openai backend is not configured for this stage" in shown and "VERIFY_" not in shown
+
+
+@pytest.mark.parametrize("term,canon", [("Usop", "Usopp"), ("Burn", "Coburn"), ("Zoro", "Zoroaster")])
+def test_by_default_a_substring_expansion_is_written_as_before(monkeypatch, term, canon):
+    """GUARD (passes on the old code): is_expansion's substring rule writes near-respellings. Default behaviour is unchanged."""
+    monkeypatch.delenv("VERIFY_WRITE_WHOLE_WORD", raising=False)
+    g = {"show": "S", "names": [term], "phrases": [], "hard_fixes": {}}
+    new = gv.apply_results(g, {term: {"canonical": canon, "confidence": "high", "dub_note": ""}})
+    assert canon in new["names"] and "flagged" not in new
+
+
+@pytest.mark.parametrize("term,canon", [("Usop", "Usopp"), ("Burn", "Coburn"), ("Zoro", "Zoroaster")])
+def test_with_the_whole_word_guard_a_near_respelling_is_flagged_not_written(monkeypatch, term, canon):
+    monkeypatch.setenv("VERIFY_WRITE_WHOLE_WORD", "1")
+    g = {"show": "S", "names": [term], "phrases": [], "hard_fixes": {}}
+    new = gv.apply_results(g, {term: {"canonical": canon, "confidence": "high", "dub_note": ""}})
+    assert new["names"] == [term] and new["flagged"][term] == {"reason": "respelling-needs-review", "canonical": canon}
+
+
+@pytest.mark.parametrize(
+    "term,canon,dest",
+    [
+        ("Zoro", "Roronoa Zoro", "phrases"),
+        ("Straw Hat", "Monkey D. Luffy's Straw Hat Pirates", "phrases"),
+        ("Zoro", "Zoro Jr", "phrases"),
+    ],
+)
+def test_with_the_whole_word_guard_a_whole_word_expansion_is_still_written(monkeypatch, term, canon, dest):
+    monkeypatch.setenv("VERIFY_WRITE_WHOLE_WORD", "1")
+    g = {"show": "S", "names": [term], "phrases": [], "hard_fixes": {}}
+    new = gv.apply_results(g, {term: {"canonical": canon, "confidence": "high", "dub_note": ""}})
+    assert canon in new["names"] + new["phrases"] and "flagged" not in new
+
+
+def test_the_whole_word_guard_is_token_wise_and_casefolded(monkeypatch):
+    monkeypatch.setenv("VERIFY_WRITE_WHOLE_WORD", "1")
+    assert gv._whole_word("zoro", "Roronoa ZORO") and gv._whole_word("Straw Hat", "The straw hat Pirates")
+    assert not gv._whole_word("Straw Hat", "Straw Pirates Hat") and not gv._whole_word("Usop", "Usopp")
+
+
+def test_verify_counts_applied_the_way_it_writes(monkeypatch, tmp_path):
+    monkeypatch.setattr(gv, "resolve_wiki", lambda show, override=None: "https://x.fandom.com/api.php")
+    monkeypatch.setattr(gv, "fetch_titles", lambda api, show: ["Usopp"])
+    monkeypatch.setattr(gv, "VERIFY_BACKEND", "llamacpp")
+    monkeypatch.setattr(gv, "BACKEND_PROBLEM", "")
+    monkeypatch.setattr(gv, "llm_chat", lambda *a, **k: '{"canonical": "Usopp", "confidence": "high", "dub_note": ""}')
+    path = tmp_path / "g.json"
+    path.write_text('{"show": "S", "names": ["Usop"], "phrases": [], "hard_fixes": {}, "initial_prompt": "P"}')
+    monkeypatch.delenv("VERIFY_WRITE_WHOLE_WORD", raising=False)
+    assert gv.verify(str(path))["applied"] == 1
+    path.write_text('{"show": "S", "names": ["Usop"], "phrases": [], "hard_fixes": {}, "initial_prompt": "P"}')
+    monkeypatch.setenv("VERIFY_WRITE_WHOLE_WORD", "1")
+    rep = gv.verify(str(path))
+    assert rep["applied"] == 0 and rep["escalated"] == 1
+
+
+def _refused_setup(monkeypatch, tmp_path):
+    monkeypatch.setattr(gv, "VERIFY_BACKEND", "")
+    monkeypatch.setattr(gv, "BACKEND_PROBLEM", "no usable backend")
+    path = tmp_path / "S.json"
+    path.write_text('{"show": "S", "names": ["Zoro"], "phrases": []}')
+    return str(path)
+
+
+def test_a_refused_verify_exits_zero_by_default(monkeypatch, tmp_path, capsys):
+    """GUARD: unchanged default -- exit 0, no REFUSED line."""
+    path = _refused_setup(monkeypatch, tmp_path)
+    monkeypatch.delenv("VERIFY_REFUSE_EXIT", raising=False)
+    monkeypatch.setattr("sys.argv", ["glossary_verify", path])
+    with pytest.raises(SystemExit) as e:
+        gv.main()
+    assert e.value.code == 0 and "REFUSED" not in capsys.readouterr().out
+
+
+def test_a_refused_verify_exits_nonzero_with_a_final_refused_line_when_asked(monkeypatch, tmp_path, capsys):
+    path = _refused_setup(monkeypatch, tmp_path)
+    monkeypatch.setenv("VERIFY_REFUSE_EXIT", "1")
+    monkeypatch.setattr("sys.argv", ["glossary_verify", path])
+    with pytest.raises(SystemExit) as e:
+        gv.main()
+    assert e.value.code not in (0, None)
+    assert capsys.readouterr().out.strip().splitlines()[-1].startswith("REFUSED")
+
+
+def test_a_refused_acquire_exits_nonzero_when_asked_and_zero_otherwise(monkeypatch, tmp_path, capsys):
+    path = _refused_setup(monkeypatch, tmp_path)
+    monkeypatch.setattr("sys.argv", ["glossary_acquire", path, str(tmp_path)])
+    monkeypatch.delenv("VERIFY_REFUSE_EXIT", raising=False)
+    ga.main()  # returns normally: exit 0, as before
+    assert "REFUSED" not in capsys.readouterr().out
+    monkeypatch.setenv("VERIFY_REFUSE_EXIT", "1")
+    with pytest.raises(SystemExit) as e:
+        ga.main()
+    assert e.value.code not in (0, None) and capsys.readouterr().out.strip().splitlines()[-1].startswith("REFUSED")
+
+
+def test_a_healthy_run_never_exits_nonzero_for_refusal(monkeypatch, tmp_path):
+    monkeypatch.setenv("VERIFY_REFUSE_EXIT", "1")
+    path = tmp_path / "S.json"
+    path.write_text('{"show": "S", "names": [], "phrases": []}')
+    monkeypatch.setattr("sys.argv", ["glossary_verify", str(path)])
+    with pytest.raises(SystemExit) as e:
+        gv.main()
+    assert e.value.code == 0  # "nothing pending" is not a refusal
