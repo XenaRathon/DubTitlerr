@@ -8,6 +8,10 @@ that shipped since.
 
 ## [Unreleased]
 
+- **A saved review answer applies only to the proposal you saw.** Pending answers now carry the canonical (and the reason) of the
+  flag you answered; on replay one whose flag now proposes a different canonical (after `--revert` and a new verify) is skipped and
+  logged (`the proposal changed since you answered`), as is an entry from an older pending file that has no canonical to check.
+
 - **`REPAIR_GUARD_TERMINAL_PUNCT=1` (default off) refuses the punctuation changes that change tone or meaning.** A repair that adds or
   removes a terminal `?` (question <-> statement, `!` <-> `?`), or turns a trailing ellipsis (`...`, `…`) into `.` or `!` or the
   reverse (`Damn...` -> `Damn!`), is refused with the guard name `terminal_punct`; the summary counts them as

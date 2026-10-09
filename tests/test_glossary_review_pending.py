@@ -12,6 +12,8 @@ import pytest
 import glossary_acquire as ga
 import glossary_lock
 
+RS = "respelling-needs-review"
+LUFY_Y = ("Lufy", True, "Luffy", RS)
 FLAGS = {
     "Lufy": {"reason": "respelling-needs-review", "canonical": "Luffy"},
     "Zorro": {"reason": "respelling-needs-review", "canonical": "Zoro"},
@@ -121,7 +123,7 @@ def test_answers_are_saved_when_another_process_holds_the_lock_and_applied_by_th
     out = capsys.readouterr().out
     assert path.read_text() == before  # nothing was lost, nothing half-written
     doc = json.load(open(pending_file(path)))  # ONE json document
-    assert sorted(map(tuple, doc["answers"])) == [("Lufy", True), ("Zorro", False)]
+    assert sorted(map(tuple, doc["answers"])) == [LUFY_Y, ("Zorro", False, "Zoro", RS)]
     summary = last_json(out)
     assert summary["written"] is False and summary["pending"] == 2 and summary["saved"] == 2
     assert "waiting for nightly-verify to finish" in out and "review-pending" in out
@@ -142,7 +144,7 @@ def test_a_second_timeout_adds_to_the_saved_answers(tmp_path, monkeypatch):
     with Holder(path):
         run_review(path, monkeypatch, answers=("y", "q"))
         first = json.load(open(pending_file(path)))
-        assert [tuple(a) for a in first["answers"]] == [("Lufy", True)]
+        assert [tuple(a) for a in first["answers"]] == [LUFY_Y]
         run_review(path, monkeypatch, answers=("n", "q"))  # still busy: the earlier answer is kept, not replaced
     doc = json.load(open(pending_file(path)))
     assert [a[0] for a in doc["answers"]][0] == "Lufy" and len(doc["answers"]) == 2
@@ -150,7 +152,7 @@ def test_a_second_timeout_adds_to_the_saved_answers(tmp_path, monkeypatch):
 
 def test_pending_answers_are_applied_together_with_new_ones_when_the_lock_is_free(tmp_path, monkeypatch, capsys):
     path = make(tmp_path)
-    json.dump({"answers": [["Lufy", True]]}, open(pending_file(path), "w"))
+    json.dump({"answers": [list(LUFY_Y)]}, open(pending_file(path), "w"))
     answers = iter(["y"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
     monkeypatch.setattr(sys, "argv", ["glossary_acquire", str(path), str(tmp_path), "--review", "--apply"])
@@ -268,7 +270,7 @@ def decided(path, **extra):
 def test_a_stale_saved_answer_cannot_undo_a_decision_made_meanwhile(tmp_path, monkeypatch, capsys, accept):
     path = tmp_path / "S.json"
     decided(path)
-    json.dump({"answers": [["Lufy", accept], ["Zorro", True]]}, open(pending_file(path), "w"))
+    json.dump({"answers": [["Lufy", accept, "Luffy", RS], ["Zorro", True, "Zoro", RS]]}, open(pending_file(path), "w"))
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("nothing is left to ask"))
     monkeypatch.setattr(sys, "argv", ["glossary_acquire", str(path), str(tmp_path), "--review", "--apply"])
     ga.main()
@@ -346,14 +348,15 @@ def test_a_review_killed_while_waiting_leaves_its_answers_on_disk_and_the_next_r
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     code = (
         f"import sys; sys.path.insert(0, {root!r}); import glossary_acquire as ga\n"
-        f"ga._commit_answers({str(path)!r}, [['Lufy', True], ['Zorro', False]])\n"
+        "rs = 'respelling-needs-review'\n"
+        f"ga._commit_answers({str(path)!r}, [['Lufy', True, 'Luffy', rs], ['Zorro', False, 'Zoro', rs]])\n"
     )
     env = {**os.environ, "GLOSSARY_LOCK_WAIT_INTERACTIVE": "60"}
     with Holder(path):
         proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True, env=env)
         try:
             assert "waiting for nightly-verify" in proc.stdout.readline()
-            assert sorted(map(tuple, json.load(open(pending_file(path)))["answers"])) == [("Lufy", True), ("Zorro", False)]
+            assert sorted(map(tuple, json.load(open(pending_file(path)))["answers"])) == [LUFY_Y, ("Zorro", False, "Zoro", RS)]
             proc.send_signal(signal.SIGKILL)  # no chance to clean up or save anything
         finally:
             proc.kill()
@@ -367,8 +370,75 @@ def test_a_review_killed_while_waiting_leaves_its_answers_on_disk_and_the_next_r
 
 def test_a_replay_after_a_kill_between_the_write_and_the_delete_is_harmless(tmp_path):
     path = make(tmp_path)
-    assert ga._commit_answers(str(path), [["Lufy", True]])
+    assert ga._commit_answers(str(path), [list(LUFY_Y)])
     once = path.read_text()
-    json.dump({"answers": [["Lufy", True]]}, open(pending_file(path), "w"))  # the delete never happened
+    json.dump({"answers": [list(LUFY_Y)]}, open(pending_file(path), "w"))  # the delete never happened
     assert ga._commit_answers(str(path), [])
     assert json.loads(path.read_text()) == json.loads(once)
+
+
+# ---- phase 25: an answer applies only to the proposal the human saw ----
+
+
+def reflagged(path, canonical, reason):
+    """Lufy was reverted and flagged again by a later verify with a DIFFERENT proposal."""
+    doc = json.loads(path.read_text())
+    doc["flagged"]["Lufy"] = {"reason": reason, "canonical": canonical}
+    path.write_text(json.dumps(doc))
+
+
+def replay(path, tmp_path, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda prompt="": "q")  # a still-flagged term may be offered again; quit at once
+    monkeypatch.setattr(sys, "argv", ["glossary_acquire", str(path), str(tmp_path), "--review", "--apply"])
+    ga.main()
+    return json.loads(path.read_text())
+
+
+def test_a_saved_yes_is_not_applied_to_a_proposal_that_changed(tmp_path, monkeypatch, capsys):
+    path = make(tmp_path)
+    reflagged(path, "Lufy Bandits", "common-word")
+    json.dump({"answers": [list(LUFY_Y)]}, open(pending_file(path), "w"))
+    saved = replay(path, tmp_path, monkeypatch)
+    assert "Lufy Bandits" not in saved.get("phrases", []) + saved.get("names", []) and "hard_fixes" not in saved
+    assert saved["flagged"]["Lufy"] == {"reason": "common-word", "canonical": "Lufy Bandits"}  # still waiting for a human
+    out = capsys.readouterr().out
+    assert "Lufy" in out and "proposal changed" in out and not os.path.exists(pending_file(path))
+
+
+def test_a_saved_no_is_not_applied_to_a_proposal_that_changed(tmp_path, monkeypatch):
+    path = make(tmp_path)
+    reflagged(path, "Lufy Bandits", "common-word")
+    json.dump({"answers": [["Lufy", False, "Luffy", RS]]}, open(pending_file(path), "w"))
+    saved = replay(path, tmp_path, monkeypatch)
+    assert "Lufy" not in saved.get("known", []) and "Lufy" in saved["flagged"]
+
+
+def test_an_unchanged_canonical_still_applies_even_if_the_reason_moved(tmp_path, monkeypatch):
+    path = make(tmp_path)
+    reflagged(path, "Luffy", "low-confidence")  # same proposal, different bookkeeping reason
+    json.dump({"answers": [list(LUFY_Y)]}, open(pending_file(path), "w"))
+    saved = replay(path, tmp_path, monkeypatch)
+    assert saved["hard_fixes"] == {"Lufy": "Luffy"} and "Lufy" not in saved.get("flagged", {})
+
+
+def test_an_old_format_entry_is_unverifiable_and_skipped(tmp_path, monkeypatch, capsys):
+    path = make(tmp_path)
+    json.dump({"answers": [["Lufy", True], ["Zorro", True, "Zoro", RS]]}, open(pending_file(path), "w"))
+    saved = replay(path, tmp_path, monkeypatch)
+    assert "hard_fixes" in saved and saved["hard_fixes"] == {"Zorro": "Zoro"} and "Lufy" in saved["flagged"]
+    assert "older format" in capsys.readouterr().out
+
+
+def test_new_answers_are_saved_with_the_canonical_and_the_reason(tmp_path, monkeypatch):
+    path = make(tmp_path)
+    with Holder(path):
+        run_review(path, monkeypatch, answers=("y", "y"))
+    saved = sorted(map(tuple, json.load(open(pending_file(path)))["answers"]))
+    assert saved == [LUFY_Y, ("Zorro", True, "Zoro", RS)]
+
+
+def test_a_no_candidate_answer_matches_on_the_empty_canonical(tmp_path, monkeypatch):
+    path = make(tmp_path, flagged={"Aaa": "no-match"})
+    json.dump({"answers": [["Aaa", False, "", "no-match"]]}, open(pending_file(path), "w"))
+    saved = replay(path, tmp_path, monkeypatch)
+    assert saved["known"] == ["Aaa"] and "flagged" not in saved

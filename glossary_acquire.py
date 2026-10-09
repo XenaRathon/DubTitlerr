@@ -1266,14 +1266,15 @@ def _pending_path(gloss_path: str) -> str:
 
 
 def _read_pending(gloss_path: str) -> list:
-    """The answers a busy glossary kept from an earlier --review: [[term, accept], ...]. A file that cannot be read is set aside
-    as '.bad' (never trusted, never deleted) and counts as empty."""
+    """The answers a busy glossary kept from an earlier --review: [[term, accept, canonical, reason], ...] (an older file may
+    hold [term, accept] only). A file that cannot be read is set aside as '.bad' (never trusted, never deleted) and counts as
+    empty."""
     path = _pending_path(gloss_path)
     if not os.path.exists(path):
         return []
     try:
         doc = json.load(open(path, encoding="utf-8"))
-        return [[str(t), bool(acc)] for t, acc in doc["answers"]]
+        return [[str(a[0]), bool(a[1]), *[str(x) for x in a[2:4]]] for a in doc["answers"]]
     except (OSError, ValueError, KeyError, TypeError):
         log(f"the saved review answers in {path} are unreadable; set aside as {path}.bad")
         with contextlib.suppress(OSError):
@@ -1312,8 +1313,9 @@ def _commit_answers(gloss_path: str, answers: list, stage: str = "review") -> bo
 
     The answers go to '<glossary>.json.review-pending' BEFORE the wait and leave it only after the glossary is written, so a kill
     while waiting (or between the write and the delete) loses nothing: the next --review replays them. A replay is safe because
-    an answer is applied only to a term that is still flagged in the fresh glossary; one decided meanwhile is skipped and logged,
-    so a stale answer can never undo a decision made in the meantime."""
+    an answer is applied only to a term that is still flagged in the fresh glossary WITH THE SAME CANONICAL the human saw; one
+    decided meanwhile, re-proposed differently, or saved in the older two-element format is skipped and logged, so a stale answer
+    can never undo a decision or approve a proposal the human never saw."""
     import glossary_lock
 
     if answers:
@@ -1330,9 +1332,19 @@ def _commit_answers(gloss_path: str, answers: list, stage: str = "review") -> bo
             if not todo:
                 return True
             g = json.load(open(gloss_path, encoding="utf-8"))
-            for term, accept in todo:
-                if term not in (g.get("flagged") or {}):
+            for term, accept, *seen in todo:
+                flag = (g.get("flagged") or {}).get(term)
+                if flag is None:
                     log(f"skipped the saved answer for {term!r}: it is no longer flagged (decided meanwhile)")
+                    continue
+                if not seen:
+                    log(f"skipped the saved answer for {term!r}: it is in an older format and cannot be checked against the flag")
+                    continue
+                now = "" if isinstance(flag, str) else (flag or {}).get("canonical", "")
+                if now != seen[0]:
+                    log(
+                        f"skipped the saved answer for {term!r}: the proposal changed since you answered ({seen[0]!r} -> {now!r})"
+                    )
                     continue
                 g = record_decision(g, term, accept=accept)
             _write_json(gloss_path, g)
@@ -1402,14 +1414,14 @@ def main():
                 if ans == "q":
                     break
                 g = record_decision(g, item["term"], accept=(ans == "y"))
-                answers.append((item["term"], ans == "y"))
+                answers.append((item["term"], ans == "y", item["canonical"], item["reason"]))
             else:
                 ans = input("  no fix proposed - mark this spelling correct as-is? [y/N/q] ").strip().lower()
                 if ans == "q":
                     break
                 if ans == "y":
                     g = record_decision(g, item["term"], accept=False)
-                    answers.append((item["term"], False))
+                    answers.append((item["term"], False, "", item["reason"]))
                 # 'n' (or anything else): leave it pending in flagged, untouched
         summary = {"reviewed": True, "written": False}
         if a.apply:
