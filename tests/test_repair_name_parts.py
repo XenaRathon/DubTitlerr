@@ -30,14 +30,14 @@ def accept(orig, new, ref=""):
 # ---- the prompt ---------------
 
 
-def test_the_prompt_tells_the_model_to_write_each_name_as_the_line_says_it():
+def test_the_prompt_tells_the_model_to_write_each_name_as_the_line_says_it(keep):
     p = repair.build_prompt("asr line", "", gl())
     assert "exactly as the line says it" in p
     assert "given name or surname said alone stays alone" in p and "a full name stays full" in p
     assert "never add or remove a name part" in p
 
 
-def test_the_instruction_sits_in_the_rules_before_the_asr_line():
+def test_the_instruction_sits_in_the_rules_before_the_asr_line(keep):
     p = repair.build_prompt("asr line", "the official sub", gl())
     assert p.index("exactly as the line says it") < p.index("Return ONLY") < p.index("ASR line: asr line")
     assert p.endswith("ASR line: asr line\nCorrected line:")  # nothing trails the ASR line
@@ -223,3 +223,17 @@ def test_a_name_part_refusal_is_in_the_review_queue_and_can_be_forced(tmp_path):
         stem, "repair", "rejected_name_part", original_text="Momonosuke is here", proposed_text="Kouzuki Momonosuke is here"
     )
     assert [e["reason"] for e in unresolved.pending(stem, primary_only=True)] == ["rejected_name_part"]
+
+
+def test_the_prompt_rule_switches_on_with_the_check_and_not_before(monkeypatch):
+    """With the flag unset a glossary prompt is byte-identical to the one before phase 9 (no stale verdicts for a feature that
+    is off); the rule and the check go on together."""
+    monkeypatch.delenv("REPAIR_KEEP_NAME_PARTS", raising=False)
+    off = repair.build_prompt("asr line", "", gl())
+    assert "exactly as the line says it" not in off
+    monkeypatch.setenv("REPAIR_KEEP_NAME_PARTS", "1")
+    on = repair.build_prompt("asr line", "", gl())
+    assert "exactly as the line says it" in on
+    rule = on.index("- Write each name exactly")
+    rule_end = on.index("- Do NOT turn")
+    assert on[:rule] + on[rule_end:] == off  # the rule is the ONLY difference

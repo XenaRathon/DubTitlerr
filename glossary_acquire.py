@@ -834,6 +834,10 @@ def review_items(gloss: dict) -> list:
     return out
 
 
+# Flags that glossary_verify raises on an EXPANSION it would otherwise have written: accepting one in review writes it.
+WRITE_BLOCKED_REASONS = frozenset({"common-word", "not-in-arc-pages", "respelling-needs-review"})
+
+
 def record_decision(gloss: dict, term: str, accept: bool) -> dict:
     """Apply one human decision and drop the term from the queue for good, in exactly one state.
 
@@ -854,6 +858,23 @@ def record_decision(gloss: dict, term: str, accept: bool) -> dict:
     canon = meta.get("canonical", "")
     if accept and canon and not is_expansion(term, canon) and normalize_title(canon) == canon:
         g.setdefault("hard_fixes", {})[term] = canon
+        g.setdefault("acquired", {})[term] = {
+            "canonical": canon,
+            "count": meta.get("variant_count", 0),
+            "canonical_count": meta.get("canonical_count", 0),
+            "score": meta.get("score", 0.0),
+            "bound": meta.get("bound", 0.0),
+            "reason": "human-approved",
+            "run": "review",
+        }
+        g["known"] = sorted(set(g.get("known", [])) - {term})
+        g.get("flagged", {}).pop(term, None)
+    elif accept and canon and meta.get("reason") in WRITE_BLOCKED_REASONS and is_expansion(term, canon):
+        # verify's apply_results would have WRITTEN this expansion; a guard flagged it instead (the common-word guard, the
+        # arc gate, the whole-word guard). A human 'y' puts it where apply_results puts a write -- additive, the term stays.
+        dest = glossary_verify._shape_list(g.setdefault("names", []), g.setdefault("phrases", []), canon)
+        if canon not in dest:
+            dest.append(canon)
         g.setdefault("acquired", {})[term] = {
             "canonical": canon,
             "count": meta.get("variant_count", 0),

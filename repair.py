@@ -443,12 +443,13 @@ def build_prompt(asr, sub, gloss, prev_text="", next_text="", arc=None, episode=
     names = _glossary_terms(gloss, arc, episode)
     head = "You fix speech-recognition errors in one English-dub subtitle line.\n"
     name_line = (f"Reference spellings (VERIFICATION ONLY - this is NOT a list of names to insert): {names}.\n") if names else ""
-    # Only when there are reference spellings to refer to: a glossary-less prompt stays byte-identical.
+    # Only with reference spellings to refer to AND the name-part check on (REPAIR_KEEP_NAME_PARTS=1): the rule and the check
+    # switch on together, so a feature that is off costs no prompt change (and no stale human verdicts).
     parts_rule = (
         "- Write each name exactly as the line says it: a given name or surname said alone stays alone, and a full "
         "name stays full. The reference spellings list long forms only for spelling - never add or remove a name part "
         "because of them.\n"
-        if names
+        if names and _keep_name_parts()
         else ""
     )
     ref_intro = (

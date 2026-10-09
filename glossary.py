@@ -61,12 +61,22 @@ def _load_words() -> set[str]:
 _ORDINARY: set[str] | None = None
 
 
-def _read_lowercase_entries(path: str) -> set[str]:
+_ORDINARY_STATUS: str | None = None  # "ok" | "missing" once ordinary_words() has run
+
+
+def _read_lowercase_entries(path: str) -> set[str] | None:
+    """The lowercase entries of a word list, or None when it cannot be read (distinct from an empty list)."""
     try:
         with open(path, encoding="utf-8", errors="ignore") as f:
             return {w for w in (ln.strip() for ln in f) if w and "'" not in w and w == w.lower()}
     except OSError:
-        return set()
+        return None
+
+
+def wordlist_status() -> str:
+    """'ok' or 'missing' (the configured word list could not be read, so the guard runs on the bundled list alone)."""
+    ordinary_words()
+    return _ORDINARY_STATUS or "ok"
 
 
 def ordinary_words() -> set[str]:
@@ -76,9 +86,19 @@ def ordinary_words() -> set[str]:
     rewritten) but loses the one signal that separates 'castle' from 'Hancock': the production list (wamerican) spells proper
     names capitalised and ordinary words lowercase. This keeps the original case and returns only the lowercase entries
     (bundled list included; entries with an apostrophe dropped, as in _read_words)."""
-    global _ORDINARY
+    global _ORDINARY, _ORDINARY_STATUS
     if _ORDINARY is None:
-        _ORDINARY = _read_lowercase_entries(_BUNDLED) | _read_lowercase_entries(WORDLIST_PATH)
+        bundled, listed = _read_lowercase_entries(_BUNDLED), _read_lowercase_entries(WORDLIST_PATH)
+        _ORDINARY = (bundled or set()) | (listed or set())
+        _ORDINARY_STATUS = "ok" if listed is not None else "missing"
+        if listed is None:
+            # Loud once, because the guard degrades quietly otherwise: on the 228-word bundled list it blocks 6 of 119 wrong
+            # writes instead of 99, and the report would look healthy.
+            print(
+                f"word list {WORDLIST_PATH} unreadable: the common-word guard uses the {len(_ORDINARY)}-word bundled list "
+                "(install wamerican or set WORDLIST_PATH)",
+                flush=True,
+            )
     return _ORDINARY
 
 

@@ -24,9 +24,15 @@ that shipped since.
   `Kouzuki`, `Odin` -> `Oden`) are still fixed. A refusal is queued as `rejected_name_part` (visible in the review page, with
   force / reject / correct) and counted in the repair summary. Off by default until a live measurement exists. The repair
   prompt also gained one rule (write each name exactly as the line says it), only when the glossary has reference
-  spellings. **Changing the prompt changes model output**: on the next repair of an episode, stored human accept / correct /
-  force verdicts (keyed on the original and the model's proposal) will no longer match and come back as
-  `verdict_stale_proposal` entries, the same effect a `REPAIR_MODEL` change has.
+  spellings and only while the flag is on. **Changing the prompt changes model output**: on the next repair of an episode,
+  stored human accept / correct / force verdicts (keyed on the original and the model's proposal) will no longer match and come
+  back as `verdict_stale_proposal` entries, the same effect a `REPAIR_MODEL` change has. With the flag unset nothing changes.
+- **A common-word guard for verify (opt-in).** `VERIFY_SKIP_COMMON_WORDS=1` flags a single-token term for review, instead of
+  writing its expansion, when the system word list spells it in lowercase (`castle`, `government`; names such as `Hancock` are
+  capitalised in the list and are not words). On the 163 blind-audited writes it blocks 99 of 119 wrong ones and 11 of 42
+  correct ones. `VERIFY_COMMON_WORD_ARC_RESCUE=1` (needs `VERIFY_ARC_GATE=1`) lets the ones on an arc page through. A missing
+  word list is logged once and shows as `common_word.wordlist: missing` in the verify report. In `glossary_acquire --review`, a
+  `y` on a flagged expansion (`common-word`, `not-in-arc-pages`, `respelling-needs-review`) now writes it, as verify would have.
 
 - **Repair and the bake-off can call any OpenAI-compatible chat API.** `REPAIR_BACKEND=openai`
   (with `REPAIR_OPENAI_URL`, `REPAIR_OPENAI_KEY_ENV` naming the env var that holds the key,

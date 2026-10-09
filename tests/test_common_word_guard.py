@@ -250,3 +250,69 @@ def test_the_ordinary_word_set_keeps_the_lists_case_and_the_fuzzy_path_is_untouc
     assert glossary.is_ordinary_word("smoker")  # listed both ways: the lowercase entry makes it a word
     assert not glossary.is_ordinary_word("it's")  # entries with an apostrophe are dropped, as for is_english
     assert glossary.is_english("Hancock")  # is_english still lowercases everything: the fuzzy path is unchanged
+
+
+# ---- review fixes: the rescue needs the universe, a missing word list is loud ------------------------------
+
+
+def test_the_rescue_needs_the_canonical_to_be_in_the_universe(monkeypatch):
+    """Mutation guard: rescue flag + gate on, canonical NOT on an arc page: the English word stays flagged."""
+    monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
+    monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    monkeypatch.setenv("VERIFY_COMMON_WORD_ARC_RESCUE", "1")
+    g = _gloss(names=["Government"], arc_titles={"Drum Island": ["Drum Castle"]})
+    new = gv.apply_results(g, {"Government": high("World Government")})
+    assert new["flagged"]["Government"]["reason"] == "common-word"
+
+
+def test_the_rescue_does_nothing_without_the_arc_gate(monkeypatch):
+    """The rescue reads the arc universe, which exists only with VERIFY_ARC_GATE=1."""
+    monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
+    monkeypatch.setenv("VERIFY_COMMON_WORD_ARC_RESCUE", "1")
+    monkeypatch.delenv("VERIFY_ARC_GATE", raising=False)
+    g = _gloss(names=["Castle"], arc_titles={"Drum Island": ["Drum Castle"]})
+    assert gv.apply_results(g, {"Castle": high("Drum Castle")})["flagged"]["Castle"]["reason"] == "common-word"
+
+
+def test_a_missing_word_list_is_logged_once_and_reported(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(glossary, "_ORDINARY", None)
+    monkeypatch.setattr(glossary, "_ORDINARY_STATUS", None)
+    monkeypatch.setattr(glossary, "WORDLIST_PATH", str(tmp_path / "nonexistent"))
+    monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
+    glossary.ordinary_words()
+    glossary.is_ordinary_word("castle")
+    shown = capsys.readouterr().out
+    assert shown.count("word list") == 1 and "unreadable" in shown and "bundled" in shown
+    assert glossary.wordlist_status() == "missing"
+
+
+def test_the_verify_report_says_the_word_list_is_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(glossary, "_ORDINARY", None)
+    monkeypatch.setattr(glossary, "_ORDINARY_STATUS", None)
+    monkeypatch.setattr(glossary, "WORDLIST_PATH", str(tmp_path / "nonexistent"))
+    monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
+    rep = _verify_report(monkeypatch, tmp_path)
+    assert rep["common_word"]["wordlist"] == "missing"
+
+
+def test_a_readable_word_list_adds_no_wordlist_key(monkeypatch, tmp_path):
+    """GUARD: the report block only gains the key when something is wrong."""
+    words = tmp_path / "words"
+    words.write_text("government\n")
+    monkeypatch.setattr(glossary, "_ORDINARY", None)
+    monkeypatch.setattr(glossary, "_ORDINARY_STATUS", None)
+    monkeypatch.setattr(glossary, "WORDLIST_PATH", str(words))
+    monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
+    assert _verify_report(monkeypatch, tmp_path)["common_word"] == {"blocked": 1}
+
+
+def _verify_report(monkeypatch, tmp_path):
+    path = tmp_path / "g.json"
+    path.write_text(json.dumps(_gloss(names=["Government", "Momonosuke"])))
+    monkeypatch.setattr(gv, "resolve_wiki", lambda show, override=None: "https://x.fandom.com/api.php")
+    monkeypatch.setattr(gv, "fetch_titles", lambda api, show: ["World Government", "Kouzuki Momonosuke"])
+    monkeypatch.setattr(gv, "VERIFY_BACKEND", "llamacpp")
+    monkeypatch.setattr(gv, "BACKEND_PROBLEM", "")
+    results = {"Government": high("World Government"), "Momonosuke": high("Kouzuki Momonosuke")}
+    monkeypatch.setattr(gv, "adjudicate", lambda term, cands, show: results[term])
+    return gv.verify(str(path))

@@ -381,6 +381,16 @@ def arc_universe(gloss: dict):
     return titles
 
 
+def _common_word_block(blocked: int) -> dict:
+    """The report's common_word block: the count, plus wordlist='missing' when the configured word list could not be read."""
+    import glossary
+
+    block = {"blocked": blocked}
+    if glossary.wordlist_status() == "missing":
+        block["wordlist"] = "missing"
+    return block
+
+
 def write_decision(term: str, canon: str, universe) -> str:
     """'write', 'respelling', 'common-word', or 'not-in-arc-pages'. ONE place for apply_results and the report's counts.
 
@@ -388,8 +398,9 @@ def write_decision(term: str, canon: str, universe) -> str:
       1. Not an expansion (is_expansion / whole-word guard) -> 'respelling'.
       2. VERIFY_SKIP_COMMON_WORDS=1 AND the term is a single token AND the word list spells it in LOWERCASE
          (glossary.is_ordinary_word: 'castle', 'government' yes; 'Hancock', 'Rayleigh', which wamerican spells capitalised,
-         no) -> 'common-word', flagged for review, nothing deleted. The one exception is VERIFY_COMMON_WORD_ARC_RESCUE=1
-         (default off) with the arc gate on and the canonical in the arc universe: the arc page wins and the write goes on.
+         no) -> 'common-word', flagged for review, nothing deleted (a reviewer's 'y' in glossary_acquire --review writes it).
+         The one exception is VERIFY_COMMON_WORD_ARC_RESCUE=1 (default off, and it needs VERIFY_ARC_GATE=1: the universe
+         exists only with the gate) with the canonical in the arc universe: the arc page wins and the write goes on.
          Off by default because it is measured to let back 58 of the 99 wrong writes the guard blocks.
       3. VERIFY_ARC_GATE=1 AND canonical not in the arc universe -> 'not-in-arc-pages'.
       4. Otherwise -> 'write'."""
@@ -1087,7 +1098,7 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
         "applied": applied,
         "escalated": len(changed) - applied,
         **({"arc_gate": {"blocked": blocked, "universe": len(universe)}} if universe is not None else {}),
-        **({"common_word": {"blocked": common_word_blocked}} if cw_on else {}),
+        **({"common_word": _common_word_block(common_word_blocked)} if cw_on else {}),
         "flagged": len(new.get("flagged", {})),
         **({"pending": pending} if pending else {}),
         **({"note": "stopped"} if stopped else {}),
