@@ -6,6 +6,7 @@ has no arc names in its metadata (e.g. Naruto, Pokemon, single-season shows).
 
 from __future__ import annotations
 
+import html
 import os
 import re
 import urllib.parse
@@ -91,7 +92,6 @@ def _resolve_redirects(
     return resolved, redirs_ok
 
 
-
 def normalize_title(title: str) -> str:
     """Normalise title: strip fragment, underscores to spaces, collapse spaces, uppercase first letter."""
     title = title.strip()
@@ -111,18 +111,52 @@ def _is_denied(title: str, patterns: list[str]) -> bool:
     return False
 
 
-def _parse_arc_rows(wt: str, arc_column: str | None = None) -> tuple[list[tuple[str, set[int]]], list[str]]:
-    """Parse wikitext tables into (arc_title, episode_set) tuples and unparseable notes."""
+_H2_RE = re.compile(r"^==\s*([^=].*?)\s*==\s*$", re.M)
+# An episode column: Episode(s), Ep / Ep. / Eps / Eps., Anime. Word-bounded on letters, so Step, Epic and Reps do not match.
+_EP_HEADER = re.compile(r"(?<![A-Za-z])(?:episodes?|eps?|anime)(?![A-Za-z])", re.IGNORECASE)
+
+
+def _clean_cell(cell: str) -> str:
+    """A table cell as plain text: links reduced to their display text ([[Steam Ninja Scrolls Arc|106-111]] -> 106-111),
+    quotes and tags dropped, HTML entities decoded (&ndash;)."""
+    cell = re.sub(r"\[\[(?:[^\]|]*\|)?([^\]]*)\]\]", r"\1", cell)
+    cell = re.sub(r"\'\'+|<[^>]*>", "", cell)
+    return html.unescape(cell).replace("\xa0", " ").strip()
+
+
+def _parse_arc_rows(
+    wt: str,
+    arc_column: str | None = None,
+    episode_column: str | None = None,
+    part: str | None = None,
+) -> tuple[list[tuple[str, set[int]]], list[str], list[str]]:
+    """Parse wikitext tables into ([(arc_title, episodes)], unparseable notes, parts that had arcs).
+
+    A "part" is the level-2 heading (== Part II ==) a table sits under; tables before any heading share the part "". Index
+    pages such as 'Plot of Naruto' keep one table per part and each part numbers its own episodes from 1, so ``part`` (the
+    heading, compared case-insensitively and exactly: "Part I" is not "Part II") restricts the parse to that part's tables.
+    The arc column is the header containing ``arc_column``, else one containing "Arc", else "Title"/"Name"; the episode
+    column is the header containing ``episode_column``, else Episode(s)/Ep/Eps/Anime."""
     arcs: list[tuple[str, set[int]]] = []
     notes: list[str] = []
+    parts: list[str] = []
     if not wt:
-        return arcs, notes
+        return arcs, notes, parts
+    headings = [(m.start(), m.group(1).strip()) for m in _H2_RE.finditer(wt)]
+    want = part.strip().casefold() if part else None
 
-    tables = re.findall(r"(\{\|.*?\|\})", wt, re.DOTALL)
-    for tbl in tables:
+    for tm in re.finditer(r"(\{\|.*?\|\})", wt, re.DOTALL):
+        tbl = tm.group(1)
+        here = ""
+        for pos, name in headings:
+            if pos < tm.start():
+                here = name
+        if want is not None and here.casefold() != want:
+            continue
         rows = re.split(r"\n\|-", tbl)
         arc_col_idx = None
         ep_col_idx = None
+        found = False
 
         for raw_row in rows:
             lines = [line.strip() for line in raw_row.splitlines() if line.strip()]
@@ -134,18 +168,21 @@ def _parse_arc_rows(wt: str, arc_column: str | None = None) -> tuple[list[tuple[
                 header_cells: list[str] = []
                 for ln in lines:
                     if ln.startswith("!"):
-                        parts = re.split(r"!!", ln[1:])
-                        for p in parts:
+                        for p in re.split(r"!!", ln[1:]):
                             if "|" in p:
                                 p = p.split("|")[-1]
                             header_cells.append(p.strip())
+                arc_col_idx = ep_col_idx = None
                 for idx, h in enumerate(header_cells):
-                    if arc_column and arc_column.lower() in h.lower():
-                        arc_col_idx = idx
-                    elif arc_col_idx is None and re.search(r"Arc", h, re.IGNORECASE):
-                        arc_col_idx = idx
-                    if re.search(r"Episode|Anime", h, re.IGNORECASE):
+                    if episode_column and episode_column.lower() in h.lower():
                         ep_col_idx = idx
+                    elif not episode_column and _EP_HEADER.search(h):
+                        ep_col_idx = idx
+                for pattern in ([re.escape(arc_column)] if arc_column else []) + [r"Arc", r"Title|Name"]:
+                    hit = [i for i, h in enumerate(header_cells) if re.search(pattern, h, re.IGNORECASE) and i != ep_col_idx]
+                    if hit:
+                        arc_col_idx = hit[0]
+                        break
                 continue
 
             # Skip table if it has neither arc_col_idx nor ep_col_idx
@@ -156,8 +193,7 @@ def _parse_arc_rows(wt: str, arc_column: str | None = None) -> tuple[list[tuple[
             cells: list[str] = []
             for ln in lines:
                 if ln.startswith("|") and not ln.startswith("|-") and not ln.startswith("|}"):
-                    parts = re.split(r"\|\|", ln[1:])
-                    for p in parts:
+                    for p in re.split(r"\|\|", ln[1:]):
                         cells.append(p.strip())
             if not cells or len(cells) <= max(arc_col_idx, ep_col_idx):
                 continue
@@ -175,13 +211,12 @@ def _parse_arc_rows(wt: str, arc_column: str | None = None) -> tuple[list[tuple[
                 continue
 
             # Extract episodes from episode column
-            ep_cell = cells[ep_col_idx]
+            ep_cell = _clean_cell(cells[ep_col_idx])
             if ep_cell in ("—", "-", "–", "N/A", "n/a", ""):
                 continue
 
             episodes: set[int] = set()
-            parts = [p.strip() for p in ep_cell.split(",") if p.strip()]
-            for p in parts:
+            for p in (p.strip() for p in ep_cell.split(",") if p.strip()):
                 m_range = re.match(r"^(\d+)\s*[-–—]\s*(\d+)$", p)
                 m_single = re.match(r"^(\d+)$", p)
                 if m_range:
@@ -193,10 +228,13 @@ def _parse_arc_rows(wt: str, arc_column: str | None = None) -> tuple[list[tuple[
 
             if episodes:
                 arcs.append((arc_title, episodes))
+                found = True
             else:
                 notes.append(f"unparseable arc row: {arc_title} ({ep_cell})")
+        if found and here not in parts:
+            parts.append(here)
 
-    return arcs, notes
+    return arcs, notes, parts
 
 
 def _extract_table_episode_titles(wt: str) -> set[str]:
@@ -274,6 +312,17 @@ def _extract_table_episode_titles(wt: str) -> set[str]:
     return episodes
 
 
+def _part_for(cfg: dict, season) -> str | None:
+    """The index-page part (section heading) to read: cfg['season_parts'][season] if present, else cfg['part'], else None."""
+    sp = cfg.get("season_parts")
+    if isinstance(sp, dict) and season is not None:
+        chosen = sp.get(str(season), sp.get(season))
+        if isinstance(chosen, str) and chosen.strip():
+            return chosen
+    part = cfg.get("part")
+    return part if isinstance(part, str) and part.strip() else None
+
+
 def resolve_scope(
     cfg: dict | None,
     season: int | str | None = None,
@@ -348,8 +397,21 @@ def resolve_scope(
             return ScopeResult(titles=set(), complete=False, rung=rung, notes=[f"error in index page response: {err}"])
 
         wt = resp.get("parse", {}).get("wikitext", {}).get("*", "")
-        arcs, parse_notes = _parse_arc_rows(wt, arc_column=cfg.get("arc_column"))
+        part = _part_for(cfg, season)
+        arcs, parse_notes, parts = _parse_arc_rows(
+            wt, arc_column=cfg.get("arc_column"), episode_column=cfg.get("episode_column"), part=part
+        )
         notes.extend(parse_notes)
+        if part is None and len(parts) > 1:
+            # Each part numbers its own episodes from 1: merging the tables would pick the arcs of several series.
+            return ScopeResult(
+                titles=set(),
+                complete=False,
+                rung=rung,
+                notes=notes + [f"index page has several parts {parts}: set cfg['part'] or cfg['season_parts']"],
+            )
+        if part is not None and not arcs:
+            notes.append(f"no arc rows under the part {part!r} (parts with arcs on the page: see index page headings)")
 
         if not arcs:
             return ScopeResult(
@@ -403,11 +465,7 @@ def resolve_scope(
             notes.append("redirect resolution incomplete or failed")
 
         deny_patterns = DEFAULT_GLOBAL_DENY + custom_deny
-        filtered = {
-            normalize_title(t)
-            for t in all_titles
-            if normalize_title(t) and not _is_denied(t, deny_patterns)
-        }
+        filtered = {normalize_title(t) for t in all_titles if normalize_title(t) and not _is_denied(t, deny_patterns)}
         return ScopeResult(titles=filtered, complete=complete, rung=rung, notes=notes)
 
     # -------------------------------------------------------------------------
@@ -449,11 +507,7 @@ def resolve_scope(
 
         ep_list_page_cfg = cfg.get("episode_list_page")
         if ep_list_page_cfg:
-            ep_list_page = (
-                str(ep_list_page_cfg)
-                .replace("{season:02d}", f"{s_int:02d}")
-                .replace("{season}", str(s_int))
-            )
+            ep_list_page = str(ep_list_page_cfg).replace("{season:02d}", f"{s_int:02d}").replace("{season}", str(s_int))
             ep_url = f"{wiki}?action=parse&page={urllib.parse.quote(ep_list_page)}&prop=wikitext&format=json"
             try:
                 ep_resp = fetch_json(ep_url)
@@ -482,9 +536,7 @@ def resolve_scope(
         filtered = {
             normalize_title(t)
             for t in raw_titles
-            if normalize_title(t)
-            and not _is_denied(t, deny_patterns)
-            and normalize_title(t) not in normalized_table_episodes
+            if normalize_title(t) and not _is_denied(t, deny_patterns) and normalize_title(t) not in normalized_table_episodes
         }
         return ScopeResult(titles=filtered, complete=complete, rung=rung, notes=notes)
 
@@ -531,11 +583,7 @@ def resolve_scope(
                 notes.append("allpages exceeded 10-page limit (continuation truncated)")
 
         deny_patterns = DEFAULT_GLOBAL_DENY + DEFAULT_STRUCTURAL_DENY + custom_deny
-        filtered = {
-            normalize_title(t)
-            for t in all_raw_titles
-            if normalize_title(t) and not _is_denied(t, deny_patterns)
-        }
+        filtered = {normalize_title(t) for t in all_raw_titles if normalize_title(t) and not _is_denied(t, deny_patterns)}
         return ScopeResult(titles=filtered, complete=complete, rung=rung, notes=notes)
 
     return ScopeResult(titles=set(), complete=False, rung="none", notes=["unhandled execution path"])
