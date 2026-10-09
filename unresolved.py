@@ -153,15 +153,27 @@ def items(stem: str) -> list:
 _WORD = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
 
 
-def word_changes(original: str, proposed: str) -> int:
+def _join_known_phrases(text: str, phrases) -> str:
+    """``text`` with every occurrence of a listed multi-word phrase written as one word ('Van der Decken' -> 'vanderdecken'), so a
+    re-spacing of a known phrase ('Vanderdecken' <-> 'Van der Decken') is the same word on both sides."""
+    for phrase in sorted(phrases or (), key=len, reverse=True):
+        words = _WORD.findall(phrase.replace("\u2019", "'").lower())
+        if len(words) > 1:
+            text = re.sub(r"(?<!\w)" + r"[\W_]+".join(map(re.escape, words)) + r"(?!\w)", "".join(words), text)
+    return text
+
+
+def word_changes(original: str, proposed: str, phrases=()) -> int:
     """How many words a proposal changed: words added plus words dropped, as a multiset difference over lower-cased words with
     punctuation stripped. ONE definition for every caller (repair, punctuation, the tests): case and punctuation alone are 0;
     letters with accents are letters; a curly apostrophe is a straight one; order does not count. A respelled or split word is a
-    drop plus its additions ('Mobydick' -> 'Moby Dick' is 3)."""
+    drop plus its additions ('Mobydick' -> 'Moby Dick' is 3), unless ``phrases`` lists 'Moby Dick': re-spacing a KNOWN phrase is
+    0, because it is the correction the glossary asks for, not a large rewrite."""
     import collections
 
     def words(text: str) -> collections.Counter:
-        return collections.Counter(_WORD.findall((text or "").replace("\u2019", "'").lower()))
+        text = _join_known_phrases((text or "").replace("\u2019", "'").lower(), phrases)
+        return collections.Counter(_WORD.findall(text))
 
     a, b = words(original), words(proposed)
     return sum((b - a).values()) + sum((a - b).values())
@@ -188,13 +200,13 @@ def auto_dismiss_threshold():
     return None
 
 
-def dismissal(original: str, proposed: str) -> dict:
+def dismissal(original: str, proposed: str, phrases=()) -> dict:
     """The fields that mark a rejected proposal as dismissed from the review queue: {} while the rule is off or the change is not
     larger than the threshold. Spread into the record() call, so the entry is ALWAYS written (the audit trail), only marked."""
     limit = auto_dismiss_threshold()
     if limit is None:
         return {}
-    n = word_changes(original, proposed)
+    n = word_changes(original, proposed, phrases)
     return {"dismissed": "large_change", "changes": n} if n > limit else {}
 
 

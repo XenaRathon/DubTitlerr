@@ -692,7 +692,25 @@ def invents_name(orig, new, gloss):
     proper_cores = _proper_cores
     orig_all = {m.group(2).lower() for m in (glossary._TOKEN_RE.match(t) for t in (orig or "").split()) if m}
     known = {n.lower() for n in gloss["names"]} | {v.lower() for v in gloss["token_fixes"].values()}
+    known |= _phrase_tokens_in(new, gloss.get("phrases") or [])
     return any(c.lower() not in orig_all and c.lower() not in known for c in proper_cores(new))
+
+
+def _core_tokens(text):
+    """The lower-cased bare cores (glossary._TOKEN_RE strips surrounding punctuation) of ``text``'s whitespace tokens."""
+    return [m.group(2).lower() for m in (glossary._TOKEN_RE.match(t) for t in (text or "").split()) if m]
+
+
+def _phrase_tokens_in(text, phrases):
+    """The component tokens of every listed multi-word phrase that appears WHOLE (contiguous, case-insensitive) in ``text``.
+    A listed phrase vouches for its own words only where it is present as a phrase: 'Decken' alone, or 'Van Decken', is not
+    vouched by 'Van der Decken'. This is how a long form that verify wrote into `phrases` (not `names`) is recognised."""
+    toks, out = _core_tokens(text), set()
+    for phrase in phrases:
+        p = _core_tokens(phrase)
+        if len(p) > 1 and any(toks[i : i + len(p)] == p for i in range(len(toks) - len(p) + 1)):
+            out.update(p)
+    return out
 
 
 def substitutes_a_vouched_name(orig, new, gloss):
@@ -1663,7 +1681,7 @@ def _process_episode(conf_path):
                     rejected_name_part += 1
                 else:
                     reason = "rejected_guard"
-                dismissed_fields = unresolved.dismissal(c["text"], new)
+                dismissed_fields = unresolved.dismissal(c["text"], new, phrases=gloss.get("phrases") or [])
                 dismissed_large_change += bool(dismissed_fields)
                 guard_name = rejecting_guard(c["text"], new, ref, dur, gloss, prev_text=prev_text)
                 rejected_terminal_punct += guard_name == "terminal_punct"
