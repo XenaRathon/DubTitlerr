@@ -259,3 +259,132 @@ def test_a_missing_scope_key_keeps_the_gate_off(monkeypatch):
         "arc_titles_missing": ["scope:arc_index:2"],
     }
     assert gv.arc_universe(g) is None
+
+
+# =====================================================================================
+# Phase 15: review fixes
+# =====================================================================================
+
+
+def add_episode(show, season, episode):
+    d = show / f"Season {season:02d}"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"Naruto - S{season:02d}E{episode:02d} - Title.mkv").write_bytes(b"")
+
+
+def test_a_missing_wiki_scope_module_is_an_incomplete_scope_not_a_crash(tmp_path, wiki, monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "wiki_scope", None)  # `import wiki_scope` now raises ImportError
+    show = library(tmp_path, {1: [1, 2]})
+    path = gloss(tmp_path, ARC_INDEX)
+    rep = gv.tag_arcs(str(path), str(show))
+    assert rep["scope_incomplete"] == 1 and json.loads(path.read_text())["arc_titles_missing"] == ["scope:arc_index:1"]
+
+
+def test_an_incomplete_refetch_of_a_stored_scope_turns_the_gate_off(tmp_path, wiki, monkeypatch):
+    """Season 1 was stored whole; a new episode changes the digest and the refetch fails. The old titles may not contain the
+    new episode's arc, so the stored scope must stop counting as evidence until a pass completes it."""
+    monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    show = library(tmp_path, {1: [1, 2]})
+    path = gloss(tmp_path, ARC_INDEX)
+    gv.tag_arcs(str(path), str(show))
+    assert gv.arc_universe(json.loads(path.read_text())) is not None
+    add_episode(show, 1, 3)
+    wiki.fail = True
+    gv.tag_arcs(str(path), str(show))
+    saved = json.loads(path.read_text())
+    assert saved["arc_titles"]["scope:arc_index:1"] and saved["arc_titles_missing"] == ["scope:arc_index:1"]  # kept, but missing
+    monkeypatch.setattr(gv, "_gate_noop_logged", False)
+    assert gv.arc_universe(saved) is None
+    wiki.fail = False
+    gv.tag_arcs(str(path), str(show))  # a complete pass lifts it
+    assert "arc_titles_missing" not in json.loads(path.read_text())
+
+
+def test_a_result_that_is_incomplete_but_has_titles_is_neither_stored_nor_cached(tmp_path, wiki):
+    """One of two arc pages fails: resolve_scope returns the other arc's titles with complete=False."""
+    real = wiki.__call__
+
+    def flaky(url):
+        if "Ch%C5%ABnin" in url or "Chūnin" in url:
+            raise OSError("arc page down")
+        return real(url)
+
+    gv._http_json = flaky  # restored by the wiki fixture's monkeypatch
+    show = library(tmp_path, {1: [1, 30]})  # Prologue (1-19) and Chunin Exams (20-67)
+    path = gloss(tmp_path, ARC_INDEX)
+    rep = gv.tag_arcs(str(path), str(show))
+    saved = json.loads(path.read_text())
+    assert "arc_titles" not in saved and rep["scope_incomplete"] == 1
+    assert not os.path.exists(os.path.join(gv.CACHE_DIR, "Naruto_arcs.json"))
+
+
+def test_a_new_episode_changes_the_cache_key_and_refetches(tmp_path, wiki):
+    show = library(tmp_path, {1: [1, 2]})
+    path = gloss(tmp_path, ARC_INDEX)
+    gv.tag_arcs(str(path), str(show))
+    calls = len(wiki.urls)
+    add_episode(show, 1, 3)
+    assert gv.tag_arcs(str(path), str(show))["scope_fetched"] == 1 and len(wiki.urls) > calls
+
+
+def test_a_stored_scope_is_replaced_not_unioned(tmp_path, wiki):
+    show = library(tmp_path, {1: [1, 2]})
+    old_cov = {"titles": 1, "kind": "scope", "rung": "arc_index", "complete": True, "redirects": True}
+    path = gloss(
+        tmp_path, ARC_INDEX, arc_titles={"scope:arc_index:1": ["Gone Title"]}, arc_coverage={"scope:arc_index:1": old_cov}
+    )
+    gv.tag_arcs(str(path), str(show))
+    assert "Gone Title" not in json.loads(path.read_text())["arc_titles"]["scope:arc_index:1"]
+
+
+def test_a_small_whole_wiki_scope_is_not_tiny(tmp_path, wiki, monkeypatch):
+    monkeypatch.setenv("ARC_MIN_TITLES", "10")
+    wiki.allpages = ["Naruto Uzumaki", "Konoha"]
+    show = library(tmp_path, {1: [1]})
+    path = gloss(tmp_path, {"rung": "whole_wiki", "wiki": NARUTO})
+    rep = gv.tag_arcs(str(path), str(show))
+    saved = json.loads(path.read_text())
+    assert rep["tiny"] == 0 and "arc_titles_missing" not in saved and saved["arc_titles"]["scope:whole_wiki:all"]
+
+
+def test_season_zero_specials_get_no_scope_unless_the_config_names_them(tmp_path, wiki):
+    show = library(tmp_path, {0: [1], 1: [1, 2]})
+    cfg = dict(ARC_INDEX)
+    assert [s["key"] for s in gv.scopes_in_show(cfg, str(show))] == ["scope:arc_index:1"]
+    cfg["season_offsets"] = {"0": 0}
+    assert [s["key"] for s in gv.scopes_in_show(cfg, str(show))] == ["scope:arc_index:0", "scope:arc_index:1"]
+    cfg = {**ARC_INDEX, "season_parts": {"0": "Part I"}}
+    assert "scope:arc_index:0" in [s["key"] for s in gv.scopes_in_show(cfg, str(show))]
+
+
+def test_an_incomplete_whole_wiki_scope_does_not_turn_the_gate_off_for_the_arcs(tmp_path, wiki, monkeypatch):
+    """The whole-wiki titles are never in the universe, so their absence cannot make the evidence partial."""
+    wiki.fail = True
+    show = library(tmp_path, {1: [1]})
+    path = gloss(tmp_path, {"rung": "whole_wiki", "wiki": NARUTO})
+    gv.tag_arcs(str(path), str(show))
+    assert "arc_titles_missing" not in json.loads(path.read_text())
+
+
+@pytest.mark.parametrize("name", ["Naruto - S01E01E02 - x.mkv", "Naruto - S01E01-E02 - x.mkv", "Naruto - S01E01-E02-E03 - x.mkv"])
+def test_a_multi_episode_file_counts_every_episode(tmp_path, name):
+    show = tmp_path / "Naruto" / "Season 01"
+    show.mkdir(parents=True)
+    (show / name).write_bytes(b"")
+    (scope,) = gv.scopes_in_show(ARC_INDEX, str(tmp_path / "Naruto"))
+    assert scope["episodes"][:2] == [1, 2]
+
+
+def test_a_small_whole_wiki_scope_does_not_trip_the_floor_in_the_universe(monkeypatch):
+    monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    monkeypatch.setenv("ARC_MIN_TITLES", "10")
+    g = {
+        "arc_titles": {"Wano": ["Kaido"] * 12, "scope:whole_wiki:all": ["Naruto Uzumaki", "Konoha"]},
+        "arc_coverage": {
+            "Wano": {"titles": 12, "redirects": True},
+            "scope:whole_wiki:all": {"titles": 2, "kind": "scope", "rung": "whole_wiki", "complete": True, "redirects": True},
+        },
+    }
+    assert gv.arc_universe(g) == {"kaido"}

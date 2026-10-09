@@ -22,6 +22,8 @@ bulbapedia.bulbagarden.net or a host listed in WIKI_HOST_ALLOW):
                      is row 37 of the Part II table)
     arc_column       header text of the arc column (default: a header with "Arc", else "Title"/"Name")
     episode_column   header text of the episode column (default: Episode(s), Ep, Ep., Eps, Anime)
+    uncovered_ok     episode numbers (table numbering; ints or "lo-hi" strings) known to sit in no row, e.g. fillers: they count
+                     as covered, so a season holding one can still be complete. Everything else in a gap stays incomplete.
     -- season_page: one wiki page per season --
     season_page      page-title format, "{season:02d}" or "{season}" replaced by the season number (default "S{season:02d}")
     episode_list_page  optional page (same format) whose episode table titles are dropped from the season page's links
@@ -239,11 +241,16 @@ def _parse_arc_rows(
             # Extract arc title from arc column
             arc_cell = cells[arc_col_idx]
             arc_title = None
+            arc_links = []
             for m in re.finditer(r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]", arc_cell):
                 target = m.group(1).strip()
                 if not re.search(r"^(Chapter|Volume|Episode)\s+\d+", target, re.IGNORECASE):
-                    arc_title = target
-                    break
+                    arc_links.append(target)
+            if arc_links:
+                arc_title = arc_links[0]
+            if len(arc_links) > 1:
+                # Only the first link is the arc; the others may be arcs of their own. The caller marks the result incomplete.
+                notes.append(f"arc cell with several links: {arc_title}: {arc_links}")
 
             if not arc_title:
                 continue
@@ -348,6 +355,24 @@ def _extract_table_episode_titles(wt: str) -> set[str]:
                         episodes.add(target)
 
     return episodes
+
+
+def _uncovered_ok(cfg: dict) -> set[int]:
+    """cfg['uncovered_ok']: episode numbers (table numbering) a human knows sit in no row of the index (fillers, recaps) and
+    accepts as covered. A list of ints and/or "lo-hi" strings; anything else is ignored."""
+    out: set[int] = set()
+    items = cfg.get("uncovered_ok")
+    if not isinstance(items, list):
+        return out
+    for item in items:
+        if isinstance(item, int) and not isinstance(item, bool):
+            out.add(item)
+        elif isinstance(item, str):
+            m = re.match(r"^\s*(\d+)\s*(?:[-–—]\s*(\d+))?\s*$", item)
+            if m:
+                lo, hi = int(m.group(1)), int(m.group(2) or m.group(1))
+                out.update(range(lo, hi + 1) if lo <= hi else [])
+    return out
 
 
 def _part_for(cfg: dict, season) -> str | None:
@@ -469,8 +494,11 @@ def resolve_scope(
             )
 
         complete = True
+        ambiguous = {n.split(": ")[1] for n in parse_notes if n.startswith("arc cell with several links: ")}
+        if ambiguous & set(matching_arcs):
+            complete = False  # a selected row names several links: the arc may be any of them
         if req_eps:
-            all_arc_eps = set().union(*(arc_eps for _, arc_eps in arcs))
+            all_arc_eps = set().union(*(arc_eps for _, arc_eps in arcs)) | _uncovered_ok(cfg)
             uncovered = req_eps - all_arc_eps
             if uncovered:
                 complete = False

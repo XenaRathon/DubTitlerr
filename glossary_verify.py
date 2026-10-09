@@ -1032,6 +1032,11 @@ def fetch_arc_titles_cached(wiki_api: str, show_key: str, arc: str) -> tuple[set
     return titles, "fetched", redirects_ok
 
 
+# SxxExx, also S01E01E02 / S01E01-E02 / S01E01-E02-E03: every episode of a multi-episode file counts (a range written
+# S01E01-03 is not recognised: only the first episode is read).
+_MULTI_EPISODE = re.compile(r"[Ss](\d+)[Ee](\d+)((?:[-_ ]?[Ee]\d+)*)")
+
+
 def scopes_in_show(cfg: dict, show_dir: str) -> list[dict]:
     """The wiki scopes a show with a wiki_scope config needs: [{key, season, episodes, video}].
 
@@ -1043,21 +1048,24 @@ def scopes_in_show(cfg: dict, show_dir: str) -> list[dict]:
     seasons or episodes, so arc_index / season_page get NO scopes for it; whole_wiki still works. Revisit if such a show needs
     an arc index (e.g. read an absolute number from the name, or from the .nfo 'Covers anime episode(s)' line)."""
     import common
-    import ordering
 
     rung = cfg.get("rung")
     if rung == "whole_wiki":
         return [{"key": "scope:whole_wiki:all", "season": None, "episodes": None, "video": None}]
+    named = {str(k) for key in ("season_parts", "season_offsets") if isinstance(cfg.get(key), dict) for k in cfg[key]}
     seasons: dict[int, dict] = {}
     for root, _dirs, files in os.walk(show_dir):
         for name in sorted(files):
             if not name.lower().endswith(common.VIDEO_EXTS):
                 continue
-            s, e = ordering.season_ep(name)
-            if s == ordering.NO_SEASON:
+            m = _MULTI_EPISODE.search(name)
+            if not m:
                 continue
+            s = int(m.group(1))
+            if s == 0 and "0" not in named:
+                continue  # S00 specials sit in no part of an index page: skipped unless the config names season 0
             entry = seasons.setdefault(s, {"episodes": set(), "video": os.path.join(root, name)})
-            entry["episodes"].add(e)
+            entry["episodes"].update([int(m.group(2)), *(int(x) for x in re.findall(r"[Ee](\d+)", m.group(3)))])
     return [
         {"key": f"scope:{rung}:{s}", "season": s, "episodes": sorted(v["episodes"]), "video": v["video"]}
         for s, v in sorted(seasons.items())
@@ -1079,8 +1087,6 @@ def fetch_scope_cached(cfg: dict, scope: dict, show_key: str) -> tuple[set[str],
     is part of 'complete'. Never raises. Every request goes through this module's _http_json, looked up at call time and
     passed as the function itself (wiki_scope._resolve_redirects temporarily swaps that global for the function it is given,
     so a wrapper lambda would call itself)."""
-    import wiki_scope
-
     path = _arc_cache_path(show_key)
     wiki = (cfg.get("wiki") or "").rstrip("/")
     try:
@@ -1093,6 +1099,8 @@ def fetch_scope_cached(cfg: dict, scope: dict, show_key: str) -> tuple[set[str],
     if entry and (time.time() - entry.get("fetched_at", 0)) < WIKI_TTL:
         return set(entry["titles"]), "cached"
     try:
+        import wiki_scope  # inside the try: a module missing from the image is an incomplete scope, not a crash
+
         res = wiki_scope.resolve_scope(cfg, scope["season"], scope["episodes"], http=_http_json)
     except Exception as e:  # noqa: BLE001 -- the sweep must never fail on a wiki
         log(f"arc tags: scope {scope['key']}: {type(e).__name__}")
@@ -1175,6 +1183,7 @@ def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dic
         stored = gloss.setdefault("arc_titles", {})
         stored[arc] = sorted(set(stored.get(arc, [])) | titles)
         gloss.setdefault("arc_coverage", {})[arc] = {"titles": len(stored[arc]), "redirects": redirects_ok}
+    incomplete_scopes: set[str] = set()
     for sc in scopes:
         if stopped or stop_requested():
             stopped = True
@@ -1182,7 +1191,8 @@ def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dic
         titles, how = fetch_scope_cached(cfg, sc, show)
         if how == "incomplete":
             rep["scope_incomplete"] += 1
-            continue  # nothing stored for a scope that did not come back whole
+            incomplete_scopes.add(sc["key"])  # a stored scope from before is stale evidence now: listed missing below
+            continue  # nothing new stored for a scope that did not come back whole
         rep[f"scope_{how}"] += 1
         gloss.setdefault("arc_titles", {})[sc["key"]] = sorted(titles)  # replaced, not unioned: the config decides the scope
         gloss.setdefault("arc_coverage", {})[sc["key"]] = {
@@ -1214,7 +1224,10 @@ def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dic
     rep["tiny"] = len(tiny)
     for a in tiny:
         log(f"arc tags: arc {a!r} has only {len(stored_now[a])} titles (ARC_MIN_TITLES={floor}): counted as missing")
-    missing = sorted({a for a in expected if a not in waived and a not in stored_now} | set(tiny))
+    # A whole-wiki scope is never in the gate's universe, so its absence cannot make the evidence partial.
+    missing = sorted(
+        ({a for a in expected if a not in waived and a not in stored_now} | set(tiny) | incomplete_scopes) - whole_keys
+    )
     if missing:
         gloss["arc_titles_missing"] = missing
     else:

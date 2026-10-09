@@ -194,3 +194,48 @@ def test_the_documented_examples_are_valid_configs():
         cfg_ = json.loads(ex)
         assert cfg_["rung"] in ("arc_index", "season_page", "whole_wiki")
         assert wiki_scope._validate_wiki_url(cfg_["wiki"])[0]
+
+
+# ---- phase 15: ambiguous arc cells and episodes known to sit in no row ------------------------
+
+
+def test_an_arc_cell_with_several_links_makes_the_result_incomplete():
+    wt = '{| class="wikitable"\n|-\n! Arc Name\n! Episodes\n|-\n| [[Arc A]] and [[Arc B]]\n| 1-3\n|}'
+    res = wiki_scope.resolve_scope(
+        {"rung": "arc_index", "wiki": WIKI, "index_page": "Plot of Naruto"},
+        season=1,
+        episode_numbers=[2],
+        http=FakeWiki(index_text=wt),
+    )
+    assert res.complete is False and any("several links" in n for n in res.notes)
+
+
+def test_the_real_page_has_no_multi_link_arc_cells():
+    for part in (None, "Part I", "Part II", "Blank Period", "New Era: Part I", "New Era: Part II"):
+        _arcs, notes, _parts = wiki_scope._parse_arc_rows(FIXTURE, part=part)
+        assert not [n for n in notes if "several links" in n], part
+
+
+def test_episodes_listed_as_uncovered_ok_count_as_covered():
+    """Episode 101 is in no Part I row; a human who knows it is a filler lets it pass."""
+    http = FakeWiki()
+    base = cfg(part="Part I")
+    assert wiki_scope.resolve_scope(base, season=1, episode_numbers=[100, 101], http=http).complete is False
+    ok = wiki_scope.resolve_scope({**base, "uncovered_ok": [101]}, season=1, episode_numbers=[100, 101], http=FakeWiki())
+    assert ok.complete is True
+    ranges = wiki_scope.resolve_scope(
+        {**base, "uncovered_ok": ["101-101", "158"]}, season=1, episode_numbers=[100, 101], http=FakeWiki()
+    )
+    assert ranges.complete is True
+
+
+def test_uncovered_ok_does_not_hide_other_gaps():
+    res = wiki_scope.resolve_scope(
+        cfg(part="Part I", uncovered_ok=[101]), season=1, episode_numbers=[100, 101, 158], http=FakeWiki()
+    )
+    assert res.complete is False and any("158" in n for n in res.notes)
+
+
+def test_a_bad_uncovered_ok_is_ignored():
+    res = wiki_scope.resolve_scope(cfg(part="Part I", uncovered_ok="101"), season=1, episode_numbers=[101], http=FakeWiki())
+    assert res.complete is False
