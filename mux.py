@@ -41,6 +41,7 @@ Requires mkvtoolnix (mkvmerge) + ffprobe.  Built with help of Claude (Anthropic)
 import argparse
 import errno
 import json
+import math
 import os
 import re
 import shutil
@@ -370,7 +371,12 @@ def verify(orig, out):
         return "missing-av"
     if not has_dubtitles_track(info):
         return "no-dubtitles-track"
-    if abs(video_duration(out) - video_duration(orig)) > DUR_TOL:
+    out_s, orig_s = video_duration(out), video_duration(orig)
+    # An unmeasurable file reads 0.0 (ffprobe missing, timing out or erroring); two zeros are "equal" and used to let a
+    # truncated remux replace a full episode. Both measurements must be finite and positive before they are compared.
+    if not all(math.isfinite(s) and s > 0 for s in (out_s, orig_s)):
+        return "duration-unmeasurable"
+    if abs(out_s - orig_s) > DUR_TOL:
         return "duration-mismatch"
     # D2: font-attachment audit -- mkvmerge -J reports attachments as a top-level
     # "attachments" array (sibling of "tracks"), NOT as track entries; .get(..., [])

@@ -6,6 +6,8 @@ import os
 import shutil
 import time
 
+import pytest
+
 import mux
 
 
@@ -1345,3 +1347,21 @@ def test_process_post_stamp_cleanup_removes_a_stale_ass_part(tmp_path, monkeypat
     assert mux.process(str(v), apply=True) == "muxed"
     assert not ass.exists()
     assert not part.exists()
+
+
+# --- phase 28 F2: an unmeasurable duration must refuse, never pass -----------------------------------------------------
+
+
+@pytest.mark.parametrize("orig_s,out_s", [(0.0, 0.0), (5.0, 0.0), (0.0, 5.0), (float("nan"), 5.0), (5.0, float("inf"))])
+def test_verify_refuses_when_either_duration_cannot_be_measured(monkeypatch, orig_s, out_s):
+    """ffprobe missing or failing makes video_duration() 0.0 for BOTH files; abs(0 - 0) <= DUR_TOL used to pass and a truncated
+    remux replaced the full episode. Finite, positive measurements of both videos are required."""
+    monkeypatch.setattr(mux, "identify", lambda p: _ok_info())
+    monkeypatch.setattr(mux, "video_duration", lambda p: orig_s if p == "orig.mkv" else out_s)
+    assert mux.verify("orig.mkv", "out.mkv") == "duration-unmeasurable"
+
+
+def test_verify_refuses_a_truncated_output_when_every_ffprobe_call_fails(monkeypatch):
+    monkeypatch.setattr(mux, "identify", lambda p: _ok_info())
+    monkeypatch.setattr(mux.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no ffprobe")))
+    assert mux.verify("full.mkv", "truncated.mkv") == "duration-unmeasurable"
