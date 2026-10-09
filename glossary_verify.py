@@ -9,6 +9,10 @@ are applied to the glossary; low-confidence / no-match terms are kept and flagge
 Incremental (a ``verified`` set skips re-checks) and cached (page index per show). Resilient:
 any wiki/LLM failure is a no-op, never stalls the pipeline.
 
+What adjudicates is VERIFY_BACKEND (llamacpp | ollama | openai | decision; see the comment above resolve_backend): the local
+qwen3:8b by default, a hosted OpenAI-compatible text model, or a decision model through glossary_decision. The hosted two are
+opt-in; a misconfigured or unresolvable backend refuses the run (`note: refused: ...`) instead of marking terms "no match".
+
 Reusable module + CLI — called by the mining hook in gen_loop, a standalone command, and
 future community-repo front-ends. Source of truth = wiki/publisher (dub-preferred). See
 specs/glossary-wiki-verify/spec.md.  Built with help of Claude (Anthropic).
@@ -93,6 +97,16 @@ def backend_problem():
     The env vars of the openai backend are read here, at call time, and only their NAMES appear in the message."""
     if VERIFY_BACKEND not in VERIFY_BACKENDS:
         return BACKEND_PROBLEM or f"VERIFY_BACKEND={VERIFY_BACKEND!r} is not one of {', '.join(VERIFY_BACKENDS)}"
+    if VERIFY_BACKEND == "decision":
+        import glossary_decision
+
+        why = glossary_decision.problem()
+        if why:
+            return why
+        if glossary_decision.settings().fallback == "local":
+            local = os.environ.get("VERIFY_DECISION_LOCAL_BACKEND", "").strip()
+            if local and local not in LEGACY_BACKENDS:
+                return f"VERIFY_DECISION_LOCAL_BACKEND must be one of {', '.join(LEGACY_BACKENDS)}"
     if VERIFY_BACKEND == "openai":
         import common
         import repair
@@ -119,18 +133,70 @@ def backend_problem():
     return ""
 
 
-def llm_settings():
-    """The keyword arguments adjudication passes to common.llm_chat for the configured backend. For a legacy backend they are
-    exactly the six the stages have always passed; the openai backend adds its three."""
+def local_backend():
+    """The local backend the decision backend falls back to (VERIFY_DECISION_FALLBACK=local): VERIFY_DECISION_LOCAL_BACKEND,
+    else REPAIR_BACKEND when it is llamacpp or ollama, else ollama."""
+    chosen = os.environ.get("VERIFY_DECISION_LOCAL_BACKEND", "").strip()
+    if chosen in LEGACY_BACKENDS:
+        return chosen
+    inherited = os.environ.get("REPAIR_BACKEND", "").strip()
+    return inherited if inherited in LEGACY_BACKENDS else "ollama"
+
+
+def announce(stage):
+    """At the start of a run on a hosted backend (openai, decision), say which fields go to which host. Local backends say
+    nothing: nothing leaves the machine."""
+    if VERIFY_BACKEND == "decision":
+        import glossary_decision
+
+        glossary_decision.announce(stage)
+    elif VERIFY_BACKEND == "openai":
+        host = urllib.parse.urlsplit(os.environ.get("VERIFY_OPENAI_URL", "")).hostname
+        what = (
+            "the show name, both spellings of each pair and up to a few transcript lines quoting each"
+            if stage == "acquire"
+            else "the show name, the term and its candidate wiki page titles"
+        )
+        log(
+            f"glossary {stage}: sending {what} to {host} (model {os.environ.get('VERIFY_MODEL', '')}); "
+            "nothing else leaves the machine"
+        )
+
+
+def begin_run(stage):
+    """Start of a verify / acquire run: announce a hosted backend and zero the decision counters."""
+    if VERIFY_BACKEND in ("openai", "decision"):
+        announce(stage)
+    if VERIFY_BACKEND == "decision":
+        import glossary_decision
+
+        glossary_decision.reset()
+
+
+def end_run(rep):
+    """End of a run: on the decision backend print the one summary line and add the counters to the report as `decision`.
+    Any other backend: the report is returned untouched and nothing is printed."""
+    if VERIFY_BACKEND == "decision":
+        import glossary_decision
+
+        log(glossary_decision.summary_line())
+        rep = {**rep, "decision": glossary_decision.counters()}
+    return rep
+
+
+def llm_settings(backend=None):
+    """The keyword arguments adjudication passes to common.llm_chat for ``backend`` (default: the configured one). For a legacy
+    backend they are exactly the six the stages have always passed; the openai backend adds its three."""
+    backend = backend or VERIFY_BACKEND
     kw = {
-        "backend": VERIFY_BACKEND,
+        "backend": backend,
         "ollama_url": OLLAMA,
         "llamacpp_url": VERIFY_LLAMACPP_URL,
         "model": VERIFY_MODEL,
         "max_tokens": VERIFY_MAX_TOKENS,
         "first_line": False,
     }
-    if VERIFY_BACKEND == "openai":
+    if backend == "openai":
         kw.update(
             model=os.environ.get("VERIFY_MODEL", "").strip(),
             openai_url=os.environ.get("VERIFY_OPENAI_URL", "").strip(),
@@ -195,14 +261,27 @@ def parse_adjudication(text: str) -> dict:
     return {"canonical": str(d.get("canonical", "") or ""), "confidence": conf, "dub_note": str(d.get("dub_note", "") or "")}
 
 
-def adjudicate(term: str, cands: list[str], show: str) -> dict:
-    """LLM pick -> {'canonical': str, 'confidence': 'high'|'low'|'none', 'dub_note': str}."""
+def adjudicate(term: str, cands: list[str], show: str) -> dict | None:
+    """LLM pick -> {'canonical': str, 'confidence': 'high'|'low'|'none', 'dub_note': str}.
+
+    Raises BackendConfigError when the configured backend is unusable. Only the decision backend with
+    VERIFY_DECISION_FALLBACK=none can return None: the call failed and the term must stay pending, not become a "no match"."""
     if not cands:
         return {"canonical": "", "confidence": "none", "dub_note": ""}
     problem = backend_problem()
     if problem:
         raise BackendConfigError(problem)
-    out = llm_chat(build_adjudication_prompt(term, cands, show), **llm_settings())
+    if VERIFY_BACKEND == "decision":
+        import glossary_decision
+
+        return glossary_decision.adjudicate_verify(
+            term, cands, show, local=lambda: _adjudicate_llm(term, cands, show, local_backend())
+        )  # None = left pending (a failed call with VERIFY_DECISION_FALLBACK=none)
+    return _adjudicate_llm(term, cands, show, VERIFY_BACKEND)
+
+
+def _adjudicate_llm(term: str, cands: list[str], show: str, backend: str) -> dict:
+    out = llm_chat(build_adjudication_prompt(term, cands, show), **llm_settings(backend))
     if not out:
         return {"canonical": "", "confidence": "none", "dub_note": ""}
     return parse_adjudication(out)
@@ -587,9 +666,24 @@ def fetch_titles(wiki_api: str, show_key: str) -> list[str]:
     return titles
 
 
+_STOPPED = object()  # _one's marker for a term skipped by the soft stop (None is "could not be adjudicated")
+
+
 def verify(gloss_path: str, override: str | None = None, force: bool = False) -> dict:
     """Orchestrate verification of one glossary file; returns a report. Resilient — any failure
-    leaves the glossary unchanged and is reported in `note`, never raised."""
+    leaves the glossary unchanged and is reported in `note`, never raised.
+
+    On a hosted backend the run opens by saying which fields go to which host; on the decision backend it ends with one
+    summary line and the report gains `decision` (calls / ok / failures / fallbacks / pending). A term whose decision call
+    failed with VERIFY_DECISION_FALLBACK=none stays pending (counted in the report's `pending`), not verified, not flagged."""
+    usable = not backend_problem()
+    if usable:
+        begin_run("verify")
+    rep = _verify(gloss_path, override, force)
+    return end_run(rep) if usable else rep
+
+
+def _verify(gloss_path: str, override: str | None = None, force: bool = False) -> dict:
     try:
         gloss = json.load(open(gloss_path))
     except (OSError, ValueError) as e:
@@ -630,17 +724,23 @@ def verify(gloss_path: str, override: str | None = None, force: bool = False) ->
     # sweep picks them up. Everything completed is written once, atomically, below.
     def _one(t):
         if stop_requested():
-            return None
+            return _STOPPED
         return adjudicate(t, candidates(t, titles), show)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=VERIFY_WORKERS) as ex:
-        adjudications = ex.map(_one, terms)
-        done = {t: a for t, a in zip(terms, adjudications) if a is not None}
-    stopped = len(done) < len(terms)
+        adjudications = list(ex.map(_one, terms))
+    # None = the decision backend could not answer (fallback none): that term stays pending like a stopped one, but is not a stop.
+    done = {t: a for t, a in zip(terms, adjudications) if a is not None and a is not _STOPPED}
+    stopped = any(a is _STOPPED for a in adjudications)
+    pending = sum(1 for a in adjudications if a is None)
     if stopped:
         log(f"stop requested: leaving verify after {len(done)} terms")
         if not done:
             return {**rep, "wiki": api, "note": "stopped"}
+    if pending:
+        log(f"{pending} of {len(terms)} terms left pending: the decision backend could not answer them")
+        if not done:
+            return {**rep, "wiki": api, "pending": pending, "note": "no adjudications (decision backend unavailable)"}
     results = done
     new = apply_results(gloss, results)
     new.setdefault("wiki", api)
@@ -670,6 +770,7 @@ def verify(gloss_path: str, override: str | None = None, force: bool = False) ->
         "applied": applied,
         "escalated": len(changed) - applied,
         "flagged": len(new.get("flagged", {})),
+        **({"pending": pending} if pending else {}),
         **({"note": "stopped"} if stopped else {}),
     }
 

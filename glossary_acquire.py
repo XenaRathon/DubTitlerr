@@ -8,6 +8,11 @@ wiki owns the candidate list AND every canonical spelling, and the show's own tr
 only decide which wiki entities are worth asking about. Our errors can raise a question;
 they can never become an answer.
 
+Its LLM calls (tier B's per-term pick, tier C's per-pair merge) follow glossary_verify.VERIFY_BACKEND and its VERIFY_* /
+ACQUIRE_DECISION_TAU settings: local by default, or opt-in a hosted text model (openai) or a decision model (decision). A
+decision call that fails leaves the pair "unavailable" (never cached) and the term without a tier-B entry; the run reports its
+decision counters. See glossary_decision.
+
 See docs/superpowers/specs/2026-08-19-glossary-name-acquisition-design.md.
 Built with help of Claude (Anthropic).
 """
@@ -361,10 +366,23 @@ def adjudicate_merge(variant: str, canonical: str, ctx_v: list, ctx_c: list, sho
         problem = glossary_verify.backend_problem()
         if problem:
             raise glossary_verify.BackendConfigError(problem)
-        out = llm_chat(build_merge_prompt(variant, canonical, ctx_v, ctx_c, show), **glossary_verify.llm_settings())
+        if glossary_verify.VERIFY_BACKEND == "decision":
+            import glossary_decision
+
+            return glossary_decision.adjudicate_pair(
+                variant, canonical, ctx_v, ctx_c, show,
+                local=lambda: _merge_via_llm(variant, canonical, ctx_v, ctx_c, show, glossary_verify.local_backend()),
+            )  # fmt: skip
+        return _merge_via_llm(variant, canonical, ctx_v, ctx_c, show, glossary_verify.VERIFY_BACKEND)
     except Exception as e:
         log("acquire: merge adjudication failed:", variant, e)
         return none
+
+
+def _merge_via_llm(variant: str, canonical: str, ctx_v: list, ctx_c: list, show: str, backend: str) -> dict:
+    """The text-model merge decision: one llm_chat call, its reply parsed; "unavailable" when it is unusable."""
+    none = {"same_entity": False, "confidence": "none", "unavailable": True}
+    out = llm_chat(build_merge_prompt(variant, canonical, ctx_v, ctx_c, show), **glossary_verify.llm_settings(backend))
     if not out:
         return none
     m = re.search(r"\{.*\}", out, re.S)
@@ -940,7 +958,17 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     """Harvest -> score -> gate -> (optionally) write. Returns a report; never raises.
 
     Resilient by the same contract as glossary_verify.verify(): any wiki, LLM or IO failure
-    leaves the glossary untouched and is reported, not raised."""
+    leaves the glossary untouched and is reported, not raised. On a hosted backend the run opens by saying which fields go
+    to which host (the transcript lines among them); on the decision backend it ends with one summary line and the report
+    gains `decision` (calls / ok / failures / fallbacks / pending)."""
+    usable = not glossary_verify.backend_problem()
+    if usable:
+        glossary_verify.begin_run("acquire")
+    rep = _acquire(gloss_path, show_dir, apply, override)
+    return glossary_verify.end_run(rep) if usable else rep
+
+
+def _acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str | None = None) -> dict:
     try:
         gloss = json.load(open(gloss_path, encoding="utf-8"))
     except (OSError, ValueError) as e:
@@ -1083,8 +1111,8 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
         except Exception as e:
             log("acquire: adjudicate failed:", term, e)
             continue
-        if adj.get("confidence") != "high" or not adj.get("canonical"):
-            continue
+        if adj is None or adj.get("confidence") != "high" or not adj.get("canonical"):
+            continue  # None: the decision backend could not answer; the term simply gets no tier-B entry this run
         # C1: tier B's canonical is free-form LLM text -- re-run R1 (wiki membership) and
         # R2 (expansion) on it exactly like tier A, or it becomes the module's only path
         # for un-vetted model text to reach hard_fixes. A failing canonical is recorded

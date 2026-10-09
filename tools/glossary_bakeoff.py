@@ -82,6 +82,7 @@ import acquire_cache  # noqa: E402
 import common  # noqa: E402
 import decision_client  # noqa: E402
 import glossary_acquire  # noqa: E402
+import glossary_decision  # noqa: E402
 import glossary_verify  # noqa: E402
 import repair  # noqa: E402
 import tools.bakeoff as bakeoff  # noqa: E402
@@ -475,7 +476,7 @@ ARMS = {
         Arm("jev", "decision", "typesafe/jev", decision_client.COMMANDCODE_URL, "COMMANDCODE_API_KEY", provider="commandcode"),
     )
 }
-NONE_OPTION = "no candidate is the same named entity"
+NONE_OPTION = glossary_decision.NONE_OPTION  # the v1 questions live in production: one implementation
 
 # Framing v2 is a POST-HOC change, made after seeing the v1 results (v1's "same named entity" wording is stricter than
 # production's prompt, where a term may be a short form of a fuller name, and its `none` option made abstention a model choice
@@ -656,16 +657,8 @@ def _verify_decision(arm, item, titles):
         return _verify_span_v2(arm, item, titles) if _is_span(arm) else _verify_decision_v2(arm, item, titles)
     if _is_span(arm):
         return _verify_span(arm, item, titles)
-    options = {f"c{i}": t for i, t in enumerate(titles, 1)}
-    q = {
-        "type": "choice",
-        "instructions": (
-            f'A term was mined from the English dub of "{item["show"]}". Pick the candidate wiki page that is the '
-            f'SAME named entity as the term "{item["term"]}". Choose "none" if no candidate is the same entity.'
-        ),
-        "criteria": {**options, "none": NONE_OPTION},
-    }
-    res = _decide(arm, {"show": item["show"], "term": item["term"]}, {"pick": q})
+    state, questions, options = glossary_decision.verify_question(item["show"], item["term"], titles)
+    res = _decide(arm, state, questions)
     ans = res.answers["pick"]
     choice = ans["choice"]
     parsed = {
@@ -704,15 +697,8 @@ def _verify_span(arm, item, titles):
 def _acquire_decision(arm, item):
     qv, qc = _quotes(item)
     a, b = item["variant"], item["canonical"]
-    instructions = (
-        f'Two spellings appear in the English dub of "{item["show"]}": "{a}" and "{b}". Are they the SAME name '
-        "mis-transcribed (true), or two different legitimate forms such as a nickname, a title or a separate character (false)?"
-    )
-    q = {
-        "type": "noul",
-        "instructions": instructions,
-        "criteria": {"true": "the same name, mis-transcribed", "false": "two different forms"},
-    }
+    q = glossary_decision.acquire_noul_question(item["show"], a, b)
+    instructions = q["instructions"]
     if _is_span(arm):
         body = f"Spelling A: {a}\n" + "\n".join(qv) + f"\nSpelling B: {b}\n" + "\n".join(qc)
         state = {
@@ -720,7 +706,7 @@ def _acquire_decision(arm, item):
             "output": {"role": "assistant", "content": f"{a} = {b}"},
         }
     else:
-        state = {"show": item["show"], "spelling_a": a, "spelling_b": b, "quotes_a": qv, "quotes_b": qc}
+        state, _questions = glossary_decision.acquire_question(item["show"], a, b, qv, qc)
     res = _decide(arm, state, {"same": q})
     ans = _clean_answer(res.answers["same"])
     p = ans["noul"]  # P(the two spellings are one entity), a raw float: no threshold is applied here
