@@ -420,7 +420,7 @@ def _error_label(e):
     return name
 
 
-def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None, max_tokens=1024, delay=0.0):
+def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None, max_tokens=1024, delay=0.0, first_line=True):
     """Any OpenAI-compatible chat API; mirrors repair.llm_openai (same body and headers).
 
     The key is read from the env var NAMED ``key_env`` and never printed (a key with spaces or
@@ -431,6 +431,7 @@ def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None, ma
     ``<ERROR truncated ...>``. Redirects are refused.
 
     The returned latency covers the last attempt only: a Retry-After sleep is not model time.
+    ``first_line=False`` keeps a multi-line reply whole (the glossary bake-off asks for JSON; repair wants one line).
     ``delay`` (--delay) is the floor of the 429 wait when the provider sends no usable Retry-After.
     ``usage_sink`` (a list) gets exactly one entry per call: the token counts from ``usage``
     (``cached_tokens`` when the provider reports it) or None."""
@@ -457,7 +458,8 @@ def ask_openai(url, model, prompt, key_env, extra_body=None, usage_sink=None, ma
             try:
                 resp = _post_json(url, body, headers=headers, follow_redirects=False)
                 choice = resp["choices"][0]
-                out = _first_line((choice["message"].get("content") or "").strip())
+                content = (choice["message"].get("content") or "").strip()
+                out = _first_line(content) if first_line else content
                 if not out:
                     truncated = choice.get("finish_reason") == "length"
                     out = "<ERROR truncated (finish_reason=length)>" if truncated else "<EMPTY no content>"

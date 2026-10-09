@@ -1696,3 +1696,12 @@ def test_refs_run_without_the_flag_sends_exactly_repair_build_prompt(tmp_path, m
         _prod.build_prompt("grbled four", "ref B", g, "grbled three", "", None, None),
     ]
     assert prompts == expected
+
+
+def test_ask_openai_keeps_a_multi_line_reply_when_first_line_is_off(monkeypatch):
+    """The glossary bake-off asks for pretty-printed JSON; the repair bake-off wants one subtitle line."""
+    monkeypatch.setenv("TEST_BAKE_KEY", _KEY)
+    reply = '{\n  "canonical": "Zoro",\n  "confidence": "high"\n}'
+    _capture(monkeypatch, resp=_ok(reply))
+    assert bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY", first_line=False)[0] == reply
+    assert bo.ask_openai("u", "m", "P", "TEST_BAKE_KEY")[0] == "{"  # default unchanged: first line only

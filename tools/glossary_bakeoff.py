@@ -8,6 +8,9 @@ caches into `items.jsonl`, the fixed question set a later `run` / `score` will p
 specs/glossary-decision-bakeoff/spec.md.
 
   python3 tools/glossary_bakeoff.py build-set --glossaries DIR --wiki-cache DIR --out items.jsonl [--show TEXT ...]
+  python3 tools/glossary_bakeoff.py run --items items.jsonl --arm NAME --out results/NAME.jsonl
+        [--stage verify|acquire|both] [--only gold|all|nocall] [--sample N --seed S] [--limit N]
+        [--reverse] [--delay S] [--retry-errors]
 
 Offline by construction: no network, no model, no production module changed. The candidate list of every
 verify item is recomputed with the production `glossary_verify.candidates` (TOPK 6, cutoff 0.62), so what a
@@ -27,23 +30,58 @@ Everything else has `gold: null`. No label is invented.
 Acquire items are the cached pairs of `<show>.acquire-cache.json`: the two spellings and the local model's
 historical verdict. The transcript quotes are not available offline, so `quotes` is null.
 
-Re-running on the same input gives byte-identical output."""
+Re-running on the same input gives byte-identical output.
+
+`run` puts the items to ONE arm (see ARMS) and appends one row per (item, arm, order) to a results file:
+id, arm, order ("fwd" | "rev"), raw, parsed, latency_s, usage, error (+ local: true for no-call controls).
+  * the PRODUCTION prompt builders and parsers are used (glossary_verify.build_adjudication_prompt /
+    parse_adjudication via adjudicate; glossary_acquire.build_merge_prompt and the parse inside
+    adjudicate_merge), by routing each arm through the production function with its llm_chat swapped for the
+    arm's transport; so parsing quality is part of what is measured;
+  * a failure is a row with `error` set and parsed null: never a guessed pick. Only an exception's CLASS or an
+    HTTP status is recorded, never its text (http.client quotes header values);
+  * resumable: a (id, arm, order) already present without error is skipped; errored rows are skipped too
+    unless --retry-errors (the retry appends a new row; the latest row for a key wins at score time);
+  * no-call controls (zero candidates) are answered locally by the production rule and sent nowhere;
+  * the confidence threshold of the decision arms is NOT applied here: tau is swept at score time.
+PRIVACY: a third-party arm receives, for verify items, only the show title, the mined term and the wiki candidate
+titles; for acquire items it receives the two spellings and the transcript quotes, so acquire items without
+quotes are not sent to third-party arms. The first line printed says exactly this."""
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import difflib
 import json
 import os
+import random
 import re
 import sys
+import time
+from dataclasses import dataclass, field
 
 sys.path.insert(0, ".")
 import acquire_cache  # noqa: E402
+import common  # noqa: E402
+import glossary_acquire  # noqa: E402
 import glossary_verify  # noqa: E402
+import tools.bakeoff as bakeoff  # noqa: E402
+import tools.decision_client as decision_client  # noqa: E402
 
 LASTRUN = ".lastrun.json"
 GLOSSARY_GLOB_EXCLUDE = (LASTRUN, acquire_cache.SUFFIX)
+
+
+def _delay_seconds(raw):
+    """argparse type: a finite, non-negative number of seconds."""
+    try:
+        value = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a number of seconds") from None
+    if value != value or value in (float("inf"), float("-inf")) or value < 0:
+        raise argparse.ArgumentTypeError(f"{raw!r} must be a finite number of seconds, 0 or more")
+    return value
 
 
 def _read_json(path):
@@ -242,6 +280,339 @@ def _summary(stats, skipped, n_items):
     return "\n".join(lines)
 
 
+_sleep = time.sleep  # indirection so tests never really sleep
+
+
+# ---- run ---------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Arm:
+    """One thing to measure. kind: local (the production llm_chat), text (an OpenAI-compatible chat API through
+    tools/bakeoff.ask_openai) or decision (OpenRouter's decisions API through tools/decision_client).
+    url / model can be overridden per arm with GLOSSARY_BAKEOFF_<ARM>_URL / _MODEL (ARM = upper-case, - -> _)."""
+
+    name: str
+    kind: str
+    model: str = ""
+    url: str = ""
+    key_env: str = ""
+    extra_body: dict = field(default_factory=dict)
+    third_party: bool = True
+
+
+_LONGCAT_URL = "https://api.longcat.chat/openai/v1/chat/completions"
+# NVIDIA's OpenAI-compatible endpoint; the nemotron model id is the one place a value could not be checked against the
+# repo (no caller of tools/bakeoff.py records it), so it is overridable with GLOSSARY_BAKEOFF_NEMOTRON_SUPER_MODEL.
+_NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+_DECISIONS = decision_client.DECISIONS_URL
+_JEV_KEY = "OPENROUTER_JEV_API_KEY"
+ARMS = {
+    a.name: a
+    for a in (
+        Arm("qwen-local", "local", model=glossary_verify.VERIFY_MODEL, third_party=False),
+        Arm("longcat-2.0", "text", "LongCat-2.0", _LONGCAT_URL, "LONGCATAI_API_KEY", {"thinking": {"type": "disabled"}}),
+        Arm("longcat-2.5", "text", "LongCat-2.5-Preview", _LONGCAT_URL, "LONGCATAI_API_KEY", {"thinking": {"type": "disabled"}}),
+        Arm(
+            "nemotron-super",
+            "text",
+            "nvidia/nemotron-3-super-120b-a12b",
+            _NVIDIA_URL,
+            "NVIDIA_API_KEY",
+            {"chat_template_kwargs": {"enable_thinking": False}},
+        ),  # fmt: skip
+        Arm("mercury-decide", "decision", "inception/mercury-decide:free", _DECISIONS, _JEV_KEY),
+        Arm("span-01-lite", "decision", "respan/span-01-lite", _DECISIONS, _JEV_KEY),
+        Arm("solar-decide-flash", "decision", "upstage/solar-decide-flash", _DECISIONS, _JEV_KEY),
+        Arm("pplx-decider", "decision", "perplexity/pplx-decider-v1.1-27b", _DECISIONS, _JEV_KEY),
+        Arm("gpt-6-luna-decisions", "decision", "openai/gpt-6-luna-decisions", _DECISIONS, _JEV_KEY),
+        Arm("jev", "decision", "typesafe/jev-1.13", _DECISIONS, _JEV_KEY),
+    )
+}
+NONE_OPTION = "no candidate is the same named entity"
+
+
+def _arm_setting(arm, field_name):
+    env = f"GLOSSARY_BAKEOFF_{arm.name.upper().replace('-', '_').replace('.', '_')}_{field_name.upper()}"
+    return os.environ.get(env) or getattr(arm, field_name)
+
+
+@contextlib.contextmanager
+def _swapped_llm_chat(fn):
+    """Route the production adjudicators through ``fn`` (same signature as common.llm_chat) for one call."""
+    saved = (glossary_verify.llm_chat, glossary_acquire.llm_chat)
+    glossary_verify.llm_chat = glossary_acquire.llm_chat = fn
+    try:
+        yield
+    finally:
+        glossary_verify.llm_chat, glossary_acquire.llm_chat = saved
+
+
+class _Capture:
+    """What the swapped llm_chat saw: the raw text, the failure (if any), usage and latency."""
+
+    def __init__(self):
+        self.raw, self.error, self.usage, self.latency = None, None, None, 0.0
+
+
+def _llm_chat_for(arm, cap):
+    def fn(prompt, **kw):
+        t0 = time.monotonic()
+        if arm.kind == "local":
+            out = common.llm_chat(prompt, **kw)  # looked up at call time: the production transport
+            cap.latency = time.monotonic() - t0
+            if not out:
+                cap.error = "no answer from the local model"
+                return ""
+            cap.raw = out
+            return out
+        sink = []
+        out, dt = bakeoff.ask_openai(
+            _arm_setting(arm, "url"), _arm_setting(arm, "model"), prompt, arm.key_env, arm.extra_body, sink,
+            max_tokens=kw.get("max_tokens", 512), first_line=False,
+        )  # fmt: skip
+        cap.latency, cap.usage = dt, (sink[0] if sink else None)
+        if out.startswith(("<ERROR", "<EMPTY")):
+            cap.error = out.strip("<>")
+            return ""
+        cap.raw = out
+        return out
+
+    return fn
+
+
+def _row(raw=None, parsed=None, latency=0.0, usage=None, error=None, **extra):
+    return {"raw": raw, "parsed": parsed, "latency_s": round(latency, 4), "usage": usage, "error": error, **extra}
+
+
+def _quotes(item):
+    q = item.get("quotes")
+    if isinstance(q, dict) and isinstance(q.get("variant"), list) and isinstance(q.get("canonical"), list):
+        return q["variant"], q["canonical"]
+    return None
+
+
+def _verify_text(arm, item, titles):
+    cap = _Capture()
+    with _swapped_llm_chat(_llm_chat_for(arm, cap)):
+        adj = glossary_verify.adjudicate(item["term"], titles, item["show"])
+    if cap.error:
+        return _row(error=cap.error, latency=cap.latency, usage=cap.usage)
+    return _row(cap.raw, {"canonical": adj["canonical"], "confidence": adj["confidence"]}, cap.latency, cap.usage)
+
+
+def _acquire_text(arm, item):
+    ctx_v, ctx_c = _quotes(item) or ([], [])
+    cap = _Capture()
+    with _swapped_llm_chat(_llm_chat_for(arm, cap)):
+        adj = glossary_acquire.adjudicate_merge(item["variant"], item["canonical"], ctx_v, ctx_c, item["show"])
+    if cap.error or adj.get("unavailable"):
+        return _row(raw=cap.raw, error=cap.error or "unparseable answer", latency=cap.latency, usage=cap.usage)
+    return _row(cap.raw, {"same_entity": adj["same_entity"], "confidence": adj["confidence"]}, cap.latency, cap.usage)
+
+
+def _decide(arm, state, questions):
+    return decision_client.decide(_arm_setting(arm, "model"), state, questions, arm.key_env, url=_arm_setting(arm, "url"))
+
+
+def _verify_decision(arm, item, titles):
+    if arm.model.startswith("respan/span-01-lite"):
+        return _verify_span(arm, item, titles)
+    options = {f"c{i}": t for i, t in enumerate(titles, 1)}
+    q = {
+        "type": "choice",
+        "instructions": (
+            f'A term was mined from the English dub of "{item["show"]}". Pick the candidate wiki page that is the '
+            f'SAME named entity as the term "{item["term"]}". Choose "none" if no candidate is the same entity.'
+        ),
+        "criteria": {**options, "none": NONE_OPTION},
+    }
+    res = _decide(arm, {"show": item["show"], "term": item["term"]}, {"pick": q})
+    ans = res.answers["pick"]
+    choice = ans["choice"]
+    parsed = {
+        "choice": choice,
+        "canonical": options.get(choice, ""),
+        "probabilities": ans.get("probabilities"),
+        "confidence": ans.get("confidence"),
+    }
+    return _row({"answer": ans, "options": options}, parsed, res.latency_s, res.usage)
+
+
+def _verify_span(arm, item, titles):
+    """Span-01 Lite takes only noul questions on an {input, output} state: ask once per candidate title."""
+    scores, raws, usage, latency = {}, [], {}, 0.0
+    for title in titles:
+        state = {
+            "input": [{"role": "user", "content": f"Show: {item['show']}\nMined term: {item['term']}\nWhich wiki page is it?"}],
+            "output": {"role": "assistant", "content": title},
+        }
+        q = {
+            "type": "noul",
+            "instructions": "Is this title the same named entity as the term?",
+            "criteria": {"true": "the title is the same named entity as the term", "false": "the title is a different entity"},
+        }
+        res = _decide(arm, state, {"same": q})
+        scores[title] = res.answers["same"]
+        raws.append({"title": title, "answer": res.answers["same"]})
+        latency += res.latency_s
+        for k, v in res.usage.items():
+            usage[k] = usage.get(k, 0) + v if isinstance(v, (int, float)) else v
+    return _row(raws, {"scores": scores}, latency, usage)
+
+
+def _acquire_decision(arm, item):
+    qv, qc = _quotes(item)
+    a, b = item["variant"], item["canonical"]
+    instructions = (
+        f'Two spellings appear in the English dub of "{item["show"]}": "{a}" and "{b}". Are they the SAME name '
+        "mis-transcribed (true), or two different legitimate forms such as a nickname, a title or a separate character (false)?"
+    )
+    q = {
+        "type": "noul",
+        "instructions": instructions,
+        "criteria": {"true": "the same name, mis-transcribed", "false": "two different forms"},
+    }
+    if arm.model.startswith("respan/span-01-lite"):
+        body = f"Spelling A: {a}\n" + "\n".join(qv) + f"\nSpelling B: {b}\n" + "\n".join(qc)
+        state = {
+            "input": [{"role": "user", "content": instructions + "\n" + body}],
+            "output": {"role": "assistant", "content": f"{a} = {b}"},
+        }
+    else:
+        state = {"show": item["show"], "spelling_a": a, "spelling_b": b, "quotes_a": qv, "quotes_b": qc}
+    res = _decide(arm, state, {"same": q})
+    return _row(res.answers["same"], {"noul": res.answers["same"]}, res.latency_s, res.usage)
+
+
+def run_item(arm, item, order):
+    """One result row body for (arm, item, order); a failure is an error row, never a pick."""
+    titles = [c["title"] for c in item.get("candidates", [])]
+    if order == "rev":
+        titles.reverse()
+    try:
+        if item["stage"] == "verify":
+            if arm.kind == "decision":
+                return _verify_decision(arm, item, titles)
+            return _verify_text(arm, item, titles)
+        if arm.kind == "decision":
+            return _acquire_decision(arm, item)
+        return _acquire_text(arm, item)
+    except decision_client.DecisionError as e:
+        return _row(error=str(e))  # messages are built from a status / class name only
+    except SystemExit as e:  # bakeoff.ask_openai refuses an unusable key this way; the text names only the variable
+        return _row(error=f"SystemExit: {e}")
+    except Exception as e:  # noqa: BLE001 -- only the class is recorded: a transport error's text can quote a header
+        return _row(error=type(e).__name__)
+
+
+def _load_items(path):
+    items, bad = [], 0
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                it = json.loads(line)
+            except ValueError:
+                bad += 1
+                continue
+            if isinstance(it, dict) and it.get("stage") in ("verify", "acquire") and isinstance(it.get("id"), str):
+                items.append(it)
+            else:
+                bad += 1
+    return items, bad
+
+
+def _load_done(path):
+    """{(id, arm, order): errored?} from an existing results file, the latest row per key winning.
+    A torn last line (a crash mid-write) is ignored."""
+    state = {}
+    if not os.path.exists(path):
+        return state
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                r = json.loads(line)
+                state[(r["id"], r["arm"], r["order"])] = bool(r.get("error"))
+            except (ValueError, KeyError, TypeError):
+                continue
+    return state
+
+
+def _ends_with_newline(path):
+    with open(path, "rb") as f:
+        f.seek(-1, os.SEEK_END)
+        return f.read(1) == b"\n"
+
+
+def _startup_line(arm, stage):
+    if not arm.third_party:
+        return f"run: arm={arm.name} stays on this machine (the production llm_chat endpoint); nothing leaves it"
+    host = _arm_setting(arm, "url").split("/")[2] if "//" in _arm_setting(arm, "url") else _arm_setting(arm, "url")
+    parts = []
+    if stage in ("verify", "both"):
+        parts.append("verify items: show title, mined term, wiki candidate titles")
+    if stage in ("acquire", "both"):
+        parts.append("acquire items WITH quotes only: the two spellings and transcript quotes")
+    return f"run: arm={arm.name} ({_arm_setting(arm, 'model')}) sends to {host}: " + "; ".join(parts)
+
+
+def cmd_run(a):
+    arm = ARMS[a.arm]
+    items, bad = _load_items(a.items)
+    if a.stage != "both":
+        items = [i for i in items if i["stage"] == a.stage]
+    if a.only == "gold":
+        items = [i for i in items if i["stage"] == "verify" and i.get("gold") is not None]
+    elif a.only == "nocall":
+        items = [i for i in items if i["stage"] == "verify" and i.get("no_call")]
+    if a.sample is not None and a.sample < len(items):
+        keep = set(random.Random(a.seed).sample(range(len(items)), a.sample))
+        items = [it for i, it in enumerate(items) if i in keep]
+    if a.limit is not None:
+        items = items[: a.limit]
+    order = "rev" if a.reverse else "fwd"
+    print(_startup_line(arm, a.stage), flush=True)
+    done = _load_done(a.out)
+    os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
+    n = {"sent": 0, "local": 0, "resumed": 0, "errors": 0, "no_quotes": 0, "not_applicable": 0}
+    handled = 0
+    with open(a.out, "a", encoding="utf-8") as out:
+        if out.tell() and not _ends_with_newline(a.out):
+            out.write("\n")  # a crash mid-row left a torn line; do not glue the next row onto it
+        for item in items:
+            key = (item["id"], arm.name, order)
+            if item["stage"] == "acquire" and a.reverse:
+                n["not_applicable"] += 1  # an acquire pair has no candidate list to reverse
+                continue
+            if item["stage"] == "acquire" and arm.third_party and _quotes(item) is None:
+                n["no_quotes"] += 1  # no quotes yet, and none are invented
+                continue
+            if key in done and (not done[key] or not a.retry_errors):
+                n["resumed"] += 1
+                continue
+            if item["stage"] == "verify" and (item.get("no_call") or not item.get("candidates")):
+                body = _row(None, {"canonical": "", "confidence": "none"}, 0.0, None, None, local=True)
+                n["local"] += 1
+            else:
+                if n["sent"] and a.delay:
+                    _sleep(a.delay)
+                body = run_item(arm, item, order)
+                n["sent"] += 1
+                n["errors"] += 1 if body["error"] else 0
+            out.write(json.dumps({"id": item["id"], "arm": arm.name, "order": order, **body}, ensure_ascii=False) + "\n")
+            out.flush()
+            handled += 1
+            if handled % 25 == 0:
+                print(f"run: {handled}/{len(items)} items, {n['errors']} errors", file=sys.stderr, flush=True)
+    print(
+        f"run {arm.name} ({order}): sent {n['sent']}, local no-call {n['local']}, resumed {n['resumed']}, errors {n['errors']}, "
+        f"skipped (no quotes): {n['no_quotes']}, skipped (not applicable): {n['not_applicable']}, bad item lines: {bad}"
+    )
+    return 0
+
+
 def cmd_build_set(a):
     items, stats, skipped = build_set(a.glossaries, a.wiki_cache, a.show or ())
     text = "".join(json.dumps(i, ensure_ascii=False, sort_keys=False) + "\n" for i in items)
@@ -259,7 +630,31 @@ def main(argv=None):
     bs.add_argument("--wiki-cache", required=True, help="directory of wiki title caches (<show_key>.json)")
     bs.add_argument("--out", required=True, help="items.jsonl to write")
     bs.add_argument("--show", nargs="+", metavar="SUBSTRING", help="only shows whose name contains one of these (casefolded)")
+    rn = sub.add_parser("run", help="put the item set to one arm and append result rows")
+    rn.add_argument("--items", required=True, help="items.jsonl from build-set")
+    rn.add_argument("--arm", required=True, choices=sorted(ARMS), help="which model / route to measure")
+    rn.add_argument("--out", required=True, help="results file (appended; resumable)")
+    rn.add_argument("--stage", choices=("verify", "acquire", "both"), default="both")
+    rn.add_argument(
+        "--only",
+        choices=("gold", "all", "nocall"),
+        default="all",
+        help="gold: items with a gold label; nocall: only the controls",
+    )
+    rn.add_argument("--sample", type=int, metavar="N", help="a deterministic random sample of N items (with --seed)")
+    rn.add_argument("--seed", type=int, default=0)
+    rn.add_argument("--limit", type=int, metavar="N", help="stop after the first N selected items")
+    rn.add_argument("--reverse", action="store_true", help="verify items with the candidate list reversed (order 'rev')")
+    rn.add_argument("--delay", type=_delay_seconds, default=0.0, metavar="SECONDS", help="pause between sent calls (rate limits)")
+    rn.add_argument("--retry-errors", action="store_true", help="re-run rows that ended in an error")
     a = ap.parse_args(argv)
+    if a.cmd == "run":
+        if not os.path.isfile(a.items):
+            ap.error(f"--items: {a.items!r} is not a file")
+        arm = ARMS[a.arm]
+        if arm.third_party and not os.environ.get(arm.key_env, "").strip():
+            ap.error(f"arm {arm.name} needs the API key in the environment variable {arm.key_env}, which is not set")
+        return cmd_run(a)
     for flag in ("glossaries", "wiki_cache"):
         if not os.path.isdir(getattr(a, flag)):
             ap.error(f"--{flag.replace('_', '-')}: {getattr(a, flag)!r} is not a directory")
