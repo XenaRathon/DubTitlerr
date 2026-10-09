@@ -8,6 +8,16 @@ that shipped since.
 
 ## [Unreleased]
 
+- **Repair can keep names as the dub says them (opt-in).** `REPAIR_KEEP_NAME_PARTS=1` makes the repair stage refuse a
+  repair that adds or removes a part of a multi-word glossary name next to a name token the line already had
+  (`Momonosuke` -> `Kouzuki Momonosuke`, `Zorro` -> `Roronoa Zoro`, and back). Misheard single tokens (`Kojuki` ->
+  `Kouzuki`, `Odin` -> `Oden`) are still fixed. A refusal is queued as `rejected_name_part` (visible in the review page, with
+  force / reject / correct) and counted in the repair summary. Off by default until a live measurement exists. The repair
+  prompt also gained one rule (write each name exactly as the line says it), only when the glossary has reference
+  spellings. **Changing the prompt changes model output**: on the next repair of an episode, stored human accept / correct /
+  force verdicts (keyed on the original and the model's proposal) will no longer match and come back as
+  `verdict_stale_proposal` entries, the same effect a `REPAIR_MODEL` change has.
+
 - **Repair and the bake-off can call any OpenAI-compatible chat API.** `REPAIR_BACKEND=openai`
   (with `REPAIR_OPENAI_URL`, `REPAIR_OPENAI_KEY_ENV` naming the env var that holds the key,
   `REPAIR_MAX_TOKENS`, optional `REPAIR_EXTRA_BODY` JSON) works against OpenRouter, Kilo,

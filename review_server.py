@@ -151,6 +151,7 @@ OFFERED = {
     ("repair_applied", "accepted"): ("accept", "reject", "correct"),
     ("repair", "rejected_guard"): ("force", "reject", "correct"),
     ("repair", "rejected_name_invented"): ("force", "reject", "correct"),
+    ("repair", "rejected_name_part"): ("force", "reject", "correct"),
     ("repair", "decision_unfittable"): ("correct", "reject"),
     # An approval the model orphaned by proposing different wording for the same line
     # (usually a REPAIR_MODEL change). The reviewer is being asked to rule again, on the

@@ -63,6 +63,8 @@ REASONS = {
         "rejected_guard",  # the model proposed an edit; accept_repair() refused it
         "rejected_name_invented",  # the model substituted a proper noun that is in
         # neither the glossary nor the original -- the phonetic name guard refused it
+        "rejected_name_part",  # the repair added or removed a part of a multi-word glossary
+        # name the line already had a piece of (REPAIR_KEEP_NAME_PARTS=1)
         "decision_unfittable",  # [S-4] a HUMAN verdict whose text cannot be displayed on
         # this card. C1 holds timing immutable, so the ASR text stands -- and the reviewer
         # is told, because a decision that disappears silently is the failure this whole
@@ -111,6 +113,7 @@ PRIMARY = (
     ("repair_applied", "accepted"),
     ("repair", "rejected_guard"),
     ("repair", "rejected_name_invented"),
+    ("repair", "rejected_name_part"),
     # [S-4]. In PRIMARY because it is the reviewer's OWN decision coming back refused: left
     # out of the default view, their verdict would vanish silently, which is precisely what
     # the entry was written to prevent. Unlike the punctuation entries held out above, this
@@ -379,6 +382,7 @@ _EVIDENCE = {
     "no_reference": ("original_text", "source_start", "source_end", "avg_logprob"),
     "rejected_guard": ("original_text", "proposed_text", "reference", "avg_logprob", "words"),
     "rejected_name_invented": ("original_text", "proposed_text", "reference", "avg_logprob", "words"),
+    "rejected_name_part": ("original_text", "proposed_text", "reference", "avg_logprob", "words"),
     "llm_empty": ("original_text", "segments", "words"),
     # The repair was APPLIED. The reviewer's whole job is comparing these two texts.
     "accepted": ("original_text", "proposed_text", "avg_logprob"),
@@ -404,7 +408,7 @@ def _render(i: int, e: dict) -> str:
 #
 #   repair_applied/accepted -- the repair SHIPPED, so the card shows it. Keeping it as-is
 #       endorses the repair (`accept`); needing fixing rejects it.
-#   repair/rejected_guard, rejected_name_invented -- the repair was REFUSED, so the card
+#   repair/rejected_guard, rejected_name_invented, rejected_name_part -- the repair was REFUSED, so the card
 #       shows the ASR text. Keeping it as-is endorses the refusal (`reject` of the
 #       proposal); needing fixing says the ASR is wrong and the refused proposal should
 #       stand, which is `force`.
@@ -415,6 +419,7 @@ _CLI_VERDICT = {
     ("repair_applied", "accepted"): {"k": "accept", "f": "reject"},
     ("repair", "rejected_guard"): {"k": "reject", "f": "force"},
     ("repair", "rejected_name_invented"): {"k": "reject", "f": "force"},
+    ("repair", "rejected_name_part"): {"k": "reject", "f": "force"},
     ("repair", "decision_unfittable"): {"k": "reject", "f": "reject"},
 }
 

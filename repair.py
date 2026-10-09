@@ -443,6 +443,14 @@ def build_prompt(asr, sub, gloss, prev_text="", next_text="", arc=None, episode=
     names = _glossary_terms(gloss, arc, episode)
     head = "You fix speech-recognition errors in one English-dub subtitle line.\n"
     name_line = (f"Reference spellings (VERIFICATION ONLY - this is NOT a list of names to insert): {names}.\n") if names else ""
+    # Only when there are reference spellings to refer to: a glossary-less prompt stays byte-identical.
+    parts_rule = (
+        "- Write each name exactly as the line says it: a given name or surname said alone stays alone, and a full "
+        "name stays full. The reference spellings list long forms only for spelling - never add or remove a name part "
+        "because of them.\n"
+        if names
+        else ""
+    )
     ref_intro = (
         (
             "A DIFFERENT translation of this moment is quoted below; use it only to "
@@ -458,9 +466,7 @@ def build_prompt(asr, sub, gloss, prev_text="", next_text="", arc=None, episode=
         "- You MUST NOT change any proper noun unless it is an obvious phonetic "
         "misspelling of a reference spelling above.\n"
         "- Never insert a name that is not already in the line.\n"
-        "- Write each name exactly as the line says it: a given name or surname said alone stays alone, and a full "
-        "name stays full. The reference spellings list long forms only for spelling - never add or remove a name part "
-        "because of them.\n"
+        f"{parts_rule}"
         "- Do NOT turn ordinary words into names. Keep the wording and length almost identical.\n\n"
         "Example -> ASR line: it worked Now we run\n"
         "Corrected line: It worked. Now we run.\n"
@@ -727,21 +733,23 @@ def substitutes_a_vouched_name(orig, new, gloss):
     return False
 
 
-# ON by default: replayed over all 728 before/after cues of the Wano LongCat-2.0 run (.freebuff/wano-review, S35E01-18) against
-# the live One Pace glossary, the rebuilt one and both plus Wano long forms, it rejected 0 -- no legitimate fix was refused.
-# Only 97 of those cues touch a part of a multi-word name and none turns a bare name full or a full name bare, so it also
-# proves little in the other direction. REPAIR_KEEP_NAME_PARTS=0 turns it off.
-KEEP_NAME_PARTS_DEFAULT = "1"
+# OFF until there is a live measurement. The replay over the 728 Wano cues had no long forms in its cue context, so it measured
+# nothing either way; the live glossary has no multi-word NAMES at all (verify writes long forms into phrases), so with this on
+# the check also judges mined phrases like 'Grand Line' and 'Devil Fruit'. To measure: repair the Wano episodes with the rebuilt
+# glossary once on, once off, and judge the rejected_name_part cues. REPAIR_KEEP_NAME_PARTS=1 turns it on.
+KEEP_NAME_PARTS_DEFAULT = "0"
 
 
 def _keep_name_parts():
-    """REPAIR_KEEP_NAME_PARTS=1 turns the name-part check on, =0 off; unset: on (KEEP_NAME_PARTS_DEFAULT). Read per call."""
+    """REPAIR_KEEP_NAME_PARTS=1 turns the name-part check on, =0 off; unset: off (KEEP_NAME_PARTS_DEFAULT). Read per call."""
     return os.environ.get("REPAIR_KEEP_NAME_PARTS", KEEP_NAME_PARTS_DEFAULT) == "1"
 
 
 def _name_tokens(text):
     """Lower-cased bare cores of the tokens of ``text`` (punctuation stripped, as the name guards compare them)."""
-    return [m.group(2).lower() for m in (glossary._TOKEN_RE.match(t) for t in (text or "").split()) if m]
+    cores = [m.group(2).lower() for m in (glossary._TOKEN_RE.match(t) for t in (text or "").split()) if m]
+    # a possessive is the same name: "Momonosuke's" -> "momonosuke"
+    return [re.sub(r"(?:['\u2019]s|['\u2019])$", "", c) or c for c in cores]
 
 
 def changes_name_parts(orig, new, gloss):
@@ -752,9 +760,13 @@ def changes_name_parts(orig, new, gloss):
     stays full. So an INSERT that completes a glossary full name around a token the line already had ('Momonosuke' ->
     'Kouzuki Momonosuke'), or a DELETE that breaks one ('Kouzuki Momonosuke' -> 'Momonosuke'), is refused.
 
-    A REPLACE is never judged, which is what keeps a misheard token fixable: 'Kojuki Momonosuke' -> 'Kouzuki Momonosuke',
-    'Odin' -> 'Oden'. Neither is a re-spacing like 'Grandline' -> 'Grand Line' (no token of the run is kept, so no part is
-    added 'next to an existing name token'). Tokens are aligned with difflib on the lower-cased bare cores."""
+    A same-length REPLACE is never judged, which is what keeps a misheard token fixable: 'Kojuki Momonosuke' -> 'Kouzuki
+    Momonosuke', 'Odin' -> 'Oden'. A replace that GROWS ('Zorro' -> 'Roronoa Zoro') is judged like an insert of its extra
+    tokens, unless the new tokens only re-space the old ('Grandline' -> 'Grand Line'). A name invented from nothing, with no
+    kept part ('I'm here.' -> 'Nico Robin, I'm here.'), is invents_name's business. Possessives count as the name.
+    Tokens are aligned with difflib on the lower-cased bare cores. A fansub reference does not rescue a refusal: the dub line is
+    the evidence of what was said, and this runs before any reference logic. Glossary PHRASES count as names here (verify writes
+    long forms there), so a mined phrase like 'Grand Line' is judged too -- one reason the check is opt-in."""
     import difflib
 
     full = set()
@@ -770,7 +782,12 @@ def changes_name_parts(orig, new, gloss):
     o, n = _name_tokens(orig), _name_tokens(new)
     inserted, deleted, kept_new, kept_old = set(), set(), set(), set()
     for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, o, n, autojunk=False).get_opcodes():
-        if tag == "insert":
+        if tag == "replace" and (j2 - j1) > (i2 - i1) and "".join(n[j1:j2]) != "".join(o[i1:i2]):
+            # A fixed token that also GREW ('Zorro' -> 'Roronoa Zoro', 'Kojuki' -> 'Kouzuki Momonosuke'): the extra tokens are
+            # an insert, the aligned ones count as kept. A pure re-spacing ('Grandline' -> 'Grand Line') adds no name part.
+            kept_new.update(range(j1, j2))
+            inserted.update(range(j1 + (i2 - i1), j2))
+        elif tag == "insert":
             inserted.update(range(j1, j2))
         elif tag == "delete":
             deleted.update(range(i1, i2))

@@ -9,11 +9,13 @@ import pytest
 import glossary
 import repair
 
-NAMES = ["Momonosuke", "Kouzuki", "Kouzuki Momonosuke", "Oden", "Kozuki Oden", "Zoro", "Roronoa Zoro"]
+# The production shape (verify writes long forms into PHRASES; no real glossary has a multi-word NAME).
+NAMES = ["Momonosuke", "Kouzuki", "Oden", "Zoro", "Nico", "Robin"]
+PHRASES = ["Kouzuki Momonosuke", "Kozuki Oden", "Roronoa Zoro", "Nico Robin"]
 
 
 def gl():
-    return glossary.load_dict({"names": NAMES})
+    return glossary.load_dict({"names": NAMES, "phrases": PHRASES})
 
 
 @pytest.fixture
@@ -86,7 +88,6 @@ def test_an_unrelated_edit_next_to_a_bare_name_is_fine(keep):
 def test_the_check_is_off_unless_asked_so_the_default_ships_what_it_did_before(monkeypatch):
     """GUARD (passes on the old code): without REPAIR_KEEP_NAME_PARTS nothing changes."""
     monkeypatch.delenv("REPAIR_KEEP_NAME_PARTS", raising=False)
-    monkeypatch.setattr(repair, "KEEP_NAME_PARTS_DEFAULT", "0")
     assert accept("Momonosuke is going to Wano.", "Kouzuki Momonosuke is going to Wano.")
 
 
@@ -150,9 +151,75 @@ def test_without_the_flag_the_summary_key_is_zero(tmp_path, monkeypatch):
     assert summary["rejected_name_part"] == 0 and summary["repaired"] == 1
 
 
-def test_the_check_is_on_by_default_and_the_env_turns_it_off(monkeypatch):
+def test_the_check_is_opt_in_until_a_live_measurement_exists(monkeypatch):
     monkeypatch.delenv("REPAIR_KEEP_NAME_PARTS", raising=False)
-    assert repair.KEEP_NAME_PARTS_DEFAULT == "1"
+    assert repair.KEEP_NAME_PARTS_DEFAULT == "0"
+    assert accept("Momonosuke is going to Wano.", "Kouzuki Momonosuke is going to Wano.")  # the default ships it
+    monkeypatch.setenv("REPAIR_KEEP_NAME_PARTS", "1")
     assert not accept("Momonosuke is going to Wano.", "Kouzuki Momonosuke is going to Wano.")
-    monkeypatch.setenv("REPAIR_KEEP_NAME_PARTS", "0")
-    assert accept("Momonosuke is going to Wano.", "Kouzuki Momonosuke is going to Wano.")
+
+
+# ---- review findings: phrases, grown replaces, possessives, unrelated names ----------------------------------------------------
+
+
+def test_the_check_works_on_phrases_the_shape_verify_writes(keep):
+    g = glossary.load_dict({"names": ["Momonosuke"], "phrases": ["Kouzuki Momonosuke"]})
+    assert repair.changes_name_parts("Momonosuke is here", "Kouzuki Momonosuke is here", g)
+    assert not repair.changes_name_parts(
+        "Momonosuke is here", "Kouzuki Momonosuke is here", glossary.load_dict({"names": ["Momonosuke"]})
+    )
+
+
+def test_a_fixed_and_grown_name_is_refused(keep):
+    assert repair.changes_name_parts("Zorro, behind you!", "Roronoa Zoro, behind you!", gl())
+    assert repair.changes_name_parts("Kojuki is very angry today.", "Kouzuki Momonosuke is very angry today.", gl())
+    assert not accept("Zorro, behind you, quickly!", "Roronoa Zoro, behind you, quickly!")
+
+
+def test_a_respacing_that_is_not_a_new_name_part_is_not_refused(keep):
+    g = glossary.load_dict({"names": ["Grand", "Line"], "phrases": ["Grand Line"]})
+    assert not repair.changes_name_parts("the Grandline is wide", "the Grand Line is wide", g)
+
+
+def test_a_same_length_replace_stays_unjudged(keep):
+    assert not repair.changes_name_parts("Kojuki Momonosuke is here", "Kouzuki Momonosuke is here", gl())
+    assert not repair.changes_name_parts("Odin is brave", "Oden is brave", gl())
+
+
+def test_possessives_are_judged_like_the_name(keep):
+    assert repair.changes_name_parts("Kouzuki Momonosuke's sword!", "Momonosuke's sword!", gl())
+    assert repair.changes_name_parts("Momonosuke's sword is here!", "Kouzuki Momonosuke's sword is here!", gl())
+    assert not repair.changes_name_parts("Kouzuki Momonosuke's sword!", "Kouzuki Momonosuke's sword.", gl())
+
+
+def test_an_unrelated_full_name_with_no_kept_part_is_not_this_checks_business(keep):
+    """Mutation guard for the kept-token requirement: inventing a name from nothing is invents_name's job."""
+    assert not repair.changes_name_parts("I'm here.", "Nico Robin, I'm here.", gl())
+    assert not repair.changes_name_parts("Nico Robin, I'm here.", "I'm here.", gl())
+
+
+# ---- the prompt rule needs names to refer to ---------------
+
+
+def test_a_prompt_without_a_glossary_has_no_name_rule():
+    p = repair.build_prompt("asr line", "", glossary.load_dict({}))
+    assert "exactly as the line says it" not in p and "reference spellings" not in p.split("Rules:")[1]
+
+
+# ---- the reviewer can see and overrule a refusal ---------------
+
+
+def test_a_name_part_refusal_is_in_the_review_queue_and_can_be_forced(tmp_path):
+    import review_server
+    import unresolved
+
+    key = ("repair", "rejected_name_part")
+    assert "rejected_name_part" in unresolved.REASONS["repair"] and key in unresolved.PRIMARY
+    assert unresolved._EVIDENCE["rejected_name_part"] == unresolved._EVIDENCE["rejected_guard"]
+    assert unresolved._CLI_VERDICT[key] == {"k": "reject", "f": "force"}
+    assert review_server.OFFERED[key] == ("force", "reject", "correct")
+    stem = str(tmp_path / "ep")
+    unresolved.record(
+        stem, "repair", "rejected_name_part", original_text="Momonosuke is here", proposed_text="Kouzuki Momonosuke is here"
+    )
+    assert [e["reason"] for e in unresolved.pending(stem, primary_only=True)] == ["rejected_name_part"]
