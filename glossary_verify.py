@@ -38,11 +38,39 @@ TOPK = 6  # candidate titles per term handed to the LLM
 CAND_CUTOFF = 0.62  # min similarity for a candidate (0.5 let junk like blarghxyzqq->Largo in)
 VERIFY_MODEL = os.environ.get("VERIFY_MODEL", "qwen3:8b")
 OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
-# VERIFY_BACKEND (ollama|llamacpp) lets adjudication run on the same server as repair, so
-# the whole pipeline can sit on one model instead of keeping a second one resident on a
-# shared 8 GB GPU. Defaults follow REPAIR_* so setting the repair backend moves this too,
-# unless it is overridden explicitly.
-VERIFY_BACKEND = os.environ.get("VERIFY_BACKEND", os.environ.get("REPAIR_BACKEND", "ollama"))
+# VERIFY_BACKEND (llamacpp|ollama|openai|decision) picks what adjudicates, for verify AND acquire's LLM calls:
+#   llamacpp / ollama  the local server (the default; VERIFY_LLAMACPP_URL / OLLAMA_URL, VERIFY_MODEL for ollama);
+#   openai             a hosted OpenAI-compatible text model: VERIFY_OPENAI_URL, VERIFY_OPENAI_KEY_ENV (the NAME of the env
+#                      var holding the key), VERIFY_MODEL (required), VERIFY_OPENAI_EXTRA_BODY (optional JSON object);
+#   decision           a decision model through decision_client (see glossary_decision for its VERIFY_DECISION_* variables).
+# Unset, it follows REPAIR_BACKEND so the whole pipeline can sit on one local model on a shared 8 GB GPU, but ONLY for the two
+# legacy values: REPAIR_BACKEND=openai describes repair's chat-completions client, and inheriting it here used to send glossary
+# prompts in Ollama's request shape. Any other REPAIR_BACKEND with VERIFY_BACKEND unset is refused (resolve_backend).
+LEGACY_BACKENDS = ("llamacpp", "ollama")
+VERIFY_BACKENDS = (*LEGACY_BACKENDS, "openai", "decision")
+
+
+def resolve_backend(env=None):
+    """(backend, problem): the glossary stages' backend from the environment, or ("", why it is refused).
+
+    VERIFY_BACKEND, when set and non-empty, must be one of VERIFY_BACKENDS. Unset, REPAIR_BACKEND is inherited only when it
+    is llamacpp or ollama (unset too: ollama, the long-standing default); anything else must be answered explicitly."""
+    env = os.environ if env is None else env
+    explicit = (env.get("VERIFY_BACKEND") or "").strip()
+    if explicit:
+        if explicit in VERIFY_BACKENDS:
+            return explicit, ""
+        return "", f"VERIFY_BACKEND={explicit!r} is not one of {', '.join(VERIFY_BACKENDS)}"
+    inherited = (env.get("REPAIR_BACKEND") or "").strip()
+    if not inherited or inherited in LEGACY_BACKENDS:
+        return inherited or "ollama", ""
+    return "", (
+        f"REPAIR_BACKEND={inherited!r} cannot be inherited by the glossary stages (it is not llamacpp or ollama): "
+        f"set VERIFY_BACKEND to one of {', '.join(VERIFY_BACKENDS)}"
+    )
+
+
+VERIFY_BACKEND, BACKEND_PROBLEM = resolve_backend()
 VERIFY_LLAMACPP_URL = os.environ.get(
     "VERIFY_LLAMACPP_URL", os.environ.get("REPAIR_LLAMACPP_URL", "http://127.0.0.1:8080/v1/chat/completions")
 )
@@ -53,6 +81,63 @@ CACHE_DIR = os.environ.get("WIKI_CACHE_DIR", "/config/wiki_cache")
 HTTP_TIMEOUT = int(os.environ.get("WIKI_HTTP_TIMEOUT", "20"))
 WIKI_TTL = int(os.environ.get("WIKI_CACHE_TTL", str(30 * 24 * 3600)))  # refresh index monthly
 VERIFY_WORKERS = int(os.environ.get("VERIFY_WORKERS", "4"))  # V2 C2: concurrent adjudicate() calls
+
+
+class BackendConfigError(RuntimeError):
+    """The glossary stages' backend is unresolved or misconfigured: nothing may be adjudicated (see backend_problem)."""
+
+
+def backend_problem():
+    """Why the glossary stages must not run, or "" when the configured backend is usable. Checked once before any work by
+    verify() and acquire(), so a misconfiguration refuses the run instead of turning every term into a "no match".
+    The env vars of the openai backend are read here, at call time, and only their NAMES appear in the message."""
+    if VERIFY_BACKEND not in VERIFY_BACKENDS:
+        return BACKEND_PROBLEM or f"VERIFY_BACKEND={VERIFY_BACKEND!r} is not one of {', '.join(VERIFY_BACKENDS)}"
+    if VERIFY_BACKEND == "openai":
+        import common
+        import repair
+
+        url = os.environ.get("VERIFY_OPENAI_URL", "").strip()
+        key_env = os.environ.get("VERIFY_OPENAI_KEY_ENV", "").strip()
+        if not url:
+            return "VERIFY_BACKEND=openai needs VERIFY_OPENAI_URL"
+        why = common.openai_endpoint_problem(url)
+        if why:
+            return f"VERIFY_OPENAI_URL is refused: {why}"
+        if not key_env:
+            return "VERIFY_BACKEND=openai needs VERIFY_OPENAI_KEY_ENV (the NAME of the env var holding the key)"
+        if not os.environ.get(key_env, "").strip():
+            return f"the env var {key_env} named by VERIFY_OPENAI_KEY_ENV is not set"
+        if repair.clean_api_key(os.environ[key_env]) is None:
+            return f"the key in env var {key_env} contains spaces or control characters"
+        if not os.environ.get("VERIFY_MODEL", "").strip():
+            return "VERIFY_BACKEND=openai needs VERIFY_MODEL (the default belongs to the local Ollama)"
+        try:
+            repair._parse_extra_body(os.environ.get("VERIFY_OPENAI_EXTRA_BODY", ""))
+        except ValueError:
+            return "VERIFY_OPENAI_EXTRA_BODY is not a valid JSON object"
+    return ""
+
+
+def llm_settings():
+    """The keyword arguments adjudication passes to common.llm_chat for the configured backend. For a legacy backend they are
+    exactly the six the stages have always passed; the openai backend adds its three."""
+    kw = {
+        "backend": VERIFY_BACKEND,
+        "ollama_url": OLLAMA,
+        "llamacpp_url": VERIFY_LLAMACPP_URL,
+        "model": VERIFY_MODEL,
+        "max_tokens": VERIFY_MAX_TOKENS,
+        "first_line": False,
+    }
+    if VERIFY_BACKEND == "openai":
+        kw.update(
+            model=os.environ.get("VERIFY_MODEL", "").strip(),
+            openai_url=os.environ.get("VERIFY_OPENAI_URL", "").strip(),
+            openai_key_env=os.environ.get("VERIFY_OPENAI_KEY_ENV", "").strip(),
+            openai_extra_body=os.environ.get("VERIFY_OPENAI_EXTRA_BODY", ""),
+        )
+    return kw
 
 
 def candidates(term: str, titles: list[str], k: int = TOPK) -> list[str]:
@@ -114,15 +199,10 @@ def adjudicate(term: str, cands: list[str], show: str) -> dict:
     """LLM pick -> {'canonical': str, 'confidence': 'high'|'low'|'none', 'dub_note': str}."""
     if not cands:
         return {"canonical": "", "confidence": "none", "dub_note": ""}
-    out = llm_chat(
-        build_adjudication_prompt(term, cands, show),
-        backend=VERIFY_BACKEND,
-        ollama_url=OLLAMA,
-        llamacpp_url=VERIFY_LLAMACPP_URL,
-        model=VERIFY_MODEL,
-        max_tokens=VERIFY_MAX_TOKENS,
-        first_line=False,
-    )
+    problem = backend_problem()
+    if problem:
+        raise BackendConfigError(problem)
+    out = llm_chat(build_adjudication_prompt(term, cands, show), **llm_settings())
     if not out:
         return {"canonical": "", "confidence": "none", "dub_note": ""}
     return parse_adjudication(out)
@@ -521,6 +601,10 @@ def verify(gloss_path: str, override: str | None = None, force: bool = False) ->
     rep = {"show": show, "checked": 0, "applied": 0, "flagged": 0}
     if not terms:
         return {**rep, "note": "nothing pending"}
+    problem = backend_problem()
+    if problem:
+        log(f"glossary verify refused: {problem}")
+        return {**rep, "note": f"refused: {problem}"}
     pinned = override or gloss.get("wiki")
     api = resolve_wiki(show, pinned)
     if not api:

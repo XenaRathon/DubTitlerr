@@ -358,15 +358,10 @@ def adjudicate_merge(variant: str, canonical: str, ctx_v: list, ctx_c: list, sho
     cached: the model looked and was unsure, which is worth not paying for twice."""
     none = {"same_entity": False, "confidence": "none", "unavailable": True}
     try:
-        out = llm_chat(
-            build_merge_prompt(variant, canonical, ctx_v, ctx_c, show),
-            backend=glossary_verify.VERIFY_BACKEND,
-            ollama_url=glossary_verify.OLLAMA,
-            llamacpp_url=glossary_verify.VERIFY_LLAMACPP_URL,
-            model=glossary_verify.VERIFY_MODEL,
-            max_tokens=glossary_verify.VERIFY_MAX_TOKENS,
-            first_line=False,
-        )
+        problem = glossary_verify.backend_problem()
+        if problem:
+            raise glossary_verify.BackendConfigError(problem)
+        out = llm_chat(build_merge_prompt(variant, canonical, ctx_v, ctx_c, show), **glossary_verify.llm_settings())
     except Exception as e:
         log("acquire: merge adjudication failed:", variant, e)
         return none
@@ -951,6 +946,10 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     except (OSError, ValueError) as e:
         return {"note": f"load-failed: {e}"}
     show = gloss.get("show") or os.path.basename(gloss_path)[:-5]
+    problem = glossary_verify.backend_problem()
+    if problem:
+        log(f"glossary acquire refused: {problem}")
+        return {"show": show, "note": f"refused: {problem}"}
     # Harvest-first: nothing to score means no reason to spend a wiki round-trip.
     cands, mid, scope = harvest_candidates(show_dir)
     counts = {t: c["occurrence_count"] for t, c in cands.items() if c["occurrence_count"]}

@@ -831,7 +831,91 @@ def _post_json(url, body, timeout=None):
         conn.close()
 
 
-def llm_chat(prompt, *, backend="ollama", ollama_url=None, llamacpp_url=None, model=None, max_tokens=80, first_line=True):
+OPENAI_RETRIES = 2  # extra tries after HTTP 429 / 5xx on the glossary stages' openai backend (not configurable: YAGNI)
+
+
+def openai_endpoint_problem(url):
+    """Why ``url`` may not carry an API key, or "" when it may: an http(s) URL without userinfo, and https unless it is
+    loopback (a key must never travel in clear text to another machine)."""
+    parts = urllib.parse.urlsplit(url or "")
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return "the URL must be http(s) with a host"
+    if "@" in parts.netloc:
+        return "the URL must not carry credentials"
+    if parts.scheme != "https" and parts.hostname not in ("127.0.0.1", "localhost", "::1"):
+        return "a key may only be sent over https (plain http is for loopback only)"
+    return ""
+
+
+def _llm_chat_openai(prompt, *, url, key_env, extra_body, model, max_tokens, first_line):
+    """The glossary stages' hosted-text-model branch of llm_chat: any OpenAI-compatible chat API.
+
+    Same contract as the other branches: the reply text, or "" for no answer / any failure (never raises). Only
+    choices[0].message.content is read (a reasoning monologue in ``reasoning_content`` is ignored). The key is looked up by
+    NAME at call time; only the name, an HTTP status or an exception class is ever logged -- a provider may echo the key in
+    an error body and http.client quotes a bad header value. Transport is repair's hardened helper (connect/read timeouts and
+    a wall-clock request deadline); 429 and 5xx get OPENAI_RETRIES retries, Retry-After honoured and capped."""
+    import repair  # at call time: repair imports this module
+
+    key_name = key_env or "VERIFY_OPENAI_KEY_ENV"
+    raw_key = os.environ.get(key_env, "") if key_env else ""
+    if not url or not model or not raw_key.strip():
+        log(f"  llm fail: the openai backend needs a URL, a model and the key in env var {key_name}")
+        return ""
+    problem = openai_endpoint_problem(url)
+    if problem:
+        log(f"  llm fail: the openai endpoint is refused: {problem}")
+        return ""
+    key = repair.clean_api_key(raw_key)
+    if key is None:
+        log(f"  llm fail: the key in env var {key_name} contains spaces or control characters (CRLF .env?)")
+        return ""
+    try:
+        extra = repair._parse_extra_body(extra_body or "")
+    except ValueError:
+        log("  llm fail: VERIFY_OPENAI_EXTRA_BODY is not a valid JSON object")  # the name only, never the content
+        return ""
+    body = {
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        **extra,
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    headers = {"Authorization": f"Bearer {key}", "User-Agent": "DubTitlerr/glossary"}
+    for attempt in range(OPENAI_RETRIES + 1):
+        try:
+            choice = repair._post_json(url, body, headers=headers)["choices"][0]
+            out = (choice["message"].get("content") or "").strip()
+        except repair._HttpError as e:
+            if (e.status == 429 or e.status >= 500) and attempt < OPENAI_RETRIES and not stop_requested():
+                log(f"  llm retry {attempt + 1}/{OPENAI_RETRIES} after HTTP {e.status}")
+                time.sleep(repair._retry_wait(e.retry_after, attempt))
+                continue
+            log(f"  llm fail: HTTP {e.status}")
+            return ""
+        except Exception as e:  # noqa: BLE001 -- the class only: the text may quote a header
+            log(f"  llm fail: {type(e).__name__}")
+            return ""
+        if not out:
+            return ""
+        return out.splitlines()[0].strip().strip('"').strip() if first_line else out
+    return ""
+
+
+def llm_chat(
+    prompt,
+    *,
+    backend="ollama",
+    ollama_url=None,
+    llamacpp_url=None,
+    model=None,
+    max_tokens=80,
+    first_line=True,
+    openai_url=None,
+    openai_key_env=None,
+    openai_extra_body=None,
+):
     """One prompt in, the model's text out. ``""`` means "no answer" — never raises, since
     a transport error must not abort a whole show mid-sweep.
 
@@ -844,7 +928,15 @@ def llm_chat(prompt, *, backend="ollama", ollama_url=None, llamacpp_url=None, mo
 
     ``first_line`` suits a subtitle (one line, often quoted by the model). Adjudication
     returns a multi-line JSON object and must pass ``first_line=False`` or it is truncated
-    to its opening brace — and ``max_tokens`` high enough that the JSON isn't cut short."""
+    to its opening brace — and ``max_tokens`` high enough that the JSON isn't cut short.
+
+    ``openai`` (glossary stages only, opt-in) posts to ``openai_url`` with the key held in the env var NAMED ``openai_key_env``
+    and ``openai_extra_body`` (a JSON object string) merged into the request; see _llm_chat_openai."""
+    if backend == "openai":
+        return _llm_chat_openai(
+            prompt, url=openai_url, key_env=openai_key_env, extra_body=openai_extra_body, model=model,
+            max_tokens=max_tokens, first_line=first_line,
+        )  # fmt: skip
     if backend == "llamacpp":
         url = llamacpp_url
         body = {
