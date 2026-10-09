@@ -85,6 +85,7 @@ import glossary_verify  # noqa: E402
 import repair  # noqa: E402
 import tools.bakeoff as bakeoff  # noqa: E402
 import tools.decision_client as decision_client  # noqa: E402
+import tools.glossary_score as glossary_score  # noqa: E402
 
 LASTRUN = ".lastrun.json"
 GLOSSARY_GLOB_EXCLUDE = (LASTRUN, acquire_cache.SUFFIX)
@@ -786,6 +787,25 @@ def cmd_run(a):
     return 0
 
 
+def cmd_score(a):
+    items = glossary_score.load_items(a.items)
+    rows = glossary_score.load_results(a.results)
+    report = glossary_score.build_report(items, rows, a.baseline, a.tau_step)
+    text = glossary_score.render_markdown(report)
+    try:
+        if a.out:
+            with open(a.out, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+        if a.json:
+            with open(a.json, "w", encoding="utf-8", newline="\n") as f:
+                json.dump(report, f, ensure_ascii=False, indent=1)
+    except OSError as e:
+        print(f"score: cannot write the report: {e.strerror or type(e).__name__}", file=sys.stderr)
+        return 1
+    print(text)
+    return 0
+
+
 def cmd_build_set(a):
     items, stats, skipped = build_set(a.glossaries, a.wiki_cache, a.show or (), a.as_of)
     text = "".join(json.dumps(i, ensure_ascii=False, sort_keys=False) + "\n" for i in items)
@@ -833,7 +853,23 @@ def main(argv=None):
         help="pause between sent calls (default: the arm's own, see ARMS)",
     )
     rn.add_argument("--retry-errors", action="store_true", help="re-run rows that ended in an error")
+    sc = sub.add_parser("score", help="score run results offline against the item set (no network)")
+    sc.add_argument("--items", required=True, help="items.jsonl from build-set")
+    sc.add_argument("--results", required=True, nargs="+", metavar="FILE", help="result files from run (latest row per key wins)")
+    sc.add_argument("--out", help="write the markdown report here")
+    sc.add_argument("--json", help="write the structured report here")
+    sc.add_argument("--baseline", default="qwen-local", help="the arm every other arm is compared with")
+    sc.add_argument(
+        "--tau-step", type=float, default=0.05, metavar="STEP", help="confidence-threshold step for the sweep (0 < STEP <= 1)"
+    )
     a = ap.parse_args(argv)
+    if a.cmd == "score":
+        for path in (a.items, *a.results):
+            if not os.path.isfile(path):
+                ap.error(f"{path!r} is not a file")
+        if not 0 < a.tau_step <= 1:
+            ap.error("--tau-step must be in (0, 1]")
+        return cmd_score(a)
     if a.cmd == "run":
         if not os.path.isfile(a.items):
             ap.error(f"--items: {a.items!r} is not a file")
