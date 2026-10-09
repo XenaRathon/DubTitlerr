@@ -101,6 +101,7 @@ def small_floors(monkeypatch):
     """The sample-size floors (100 common labelled items, 90% of the baseline's) off, for tests of one rule on a tiny set."""
     monkeypatch.setattr(gs, "MIN_COMMON_N", 1)
     monkeypatch.setattr(gs, "MIN_COMMON_FRAC", 0.0)
+    monkeypatch.setattr(gs, "MIN_REVERSED_PAIRS", 0)
 
 
 # ---- wilson ------------------------------------------------------------------------------------
@@ -216,9 +217,9 @@ def test_text_arms_have_no_tau_curve(tmp_path):
     assert _report(tmp_path, _perfect("m"), baseline="m")["arms"]["m"]["curve"] is None
 
 
-def test_matched_operating_point_is_the_smallest_tau_not_above_the_baselines_false_accept(tmp_path, small_floors):
+def test_matched_operating_point_is_the_smallest_tau_not_above_the_baselines_wrong_write_rate(tmp_path, small_floors):
     base = [_t(IDS["Xa"], "qwen-local", "Xa Zed"), _t(IDS["Xc"], "qwen-local", "Xc Prime"), _t(NEG["Ng1"], "qwen-local", "")]
-    # on the 3 shared non-trivial items the baseline accepts 2 with 1 wrong: FA 1/2; positives Xa, Xc -> TA 1/2
+    # on the 3 shared non-trivial items the baseline writes 2, 1 wrong: wrong-write 1/2; gold Xa, Xc -> good-write 1/2
     dec = [
         _d(IDS["Xa"], "d", "Xa Zed", 0.4),
         _d(IDS["Xb"], "d", "Xb Prime", 0.8),  # not shared
@@ -228,10 +229,10 @@ def test_matched_operating_point_is_the_smallest_tau_not_above_the_baselines_fal
     m = _report(tmp_path, base + dec, tau_step=0.1)["arms"]["d"]["matched"]
     assert (
         m["n_common"] == 3
-        and m["baseline_false_accept"] == pytest.approx(0.5)
-        and m["baseline_true_accept"] == pytest.approx(0.5)
+        and m["baseline_wrong_write_rate"] == pytest.approx(0.5)
+        and m["baseline_good_write_rate"] == pytest.approx(0.5)
     )
-    assert m["tau"] == pytest.approx(0.0)  # FA 1/2 already at tau 0, which is not above the baseline's
+    assert m["tau"] == pytest.approx(0.0)  # wrong-write 1/2 already at tau 0, which is not above the baseline's
 
 
 def test_a_tau_above_zero_is_chosen_when_low_confidence_picks_are_the_wrong_ones(tmp_path, small_floors):
@@ -242,7 +243,9 @@ def test_a_tau_above_zero_is_chosen_when_low_confidence_picks_are_the_wrong_ones
     ]  # FA 0
     dec = [_d(IDS["Xa"], "d", "Xa Zed", 0.4), _d(IDS["Xc"], "d", "Xc Prime", 0.7), _d(NEG["Ng1"], "d", "", 0.9)]
     m = _report(tmp_path, base + dec, tau_step=0.1)["arms"]["d"]["matched"]
-    assert m["tau"] == pytest.approx(0.5) and m["arm_false_accept"] == 0.0 and m["arm_true_accept"] == pytest.approx(1 / 2)
+    assert (
+        m["tau"] == pytest.approx(0.5) and m["arm_wrong_write_rate"] == 0.0 and m["arm_good_write_rate"] == pytest.approx(1 / 2)
+    )
 
 
 def test_no_matched_point_when_no_tau_reaches_the_baselines_false_accept(tmp_path, small_floors):
@@ -516,7 +519,7 @@ def test_a_failed_baseline_cannot_let_an_always_none_arm_pass(tmp_path):
 def test_a_baseline_that_accepted_nothing_leaves_a_and_b_incomplete(tmp_path):
     rows = _with_rev("qwen-local", _none) + _with_rev("t", _right)
     v = _big_report(tmp_path, rows)["verdicts"]["t"]
-    assert v["rules"]["a"]["ok"] is None and v["rules"]["b"]["ok"] is None and "accepted nothing" in v["rules"]["a"]["note"]
+    assert v["rules"]["a"]["ok"] is None and v["rules"]["b"]["ok"] is None and "no writes" in v["rules"]["a"]["note"]
     assert v["verdict"] == "INCOMPLETE"
 
 
@@ -613,3 +616,321 @@ def test_a_v1_arm_is_not_labelled_post_hoc(tmp_path):
     """GUARD: passes on the old code."""
     md = gs.render_markdown(_report(tmp_path, _perfect("qwen-local"), baseline="qwen-local"))
     assert "post-hoc" not in md
+
+
+# =====================================================================================
+# Phase 5: arms are scored by their consequences for the glossary (apply_results), plus the reviewer's scorer fixes
+# =====================================================================================
+
+
+def _big_items_n(n_exact, n_exp, n_neg):
+    items = [_item(f"E{k}", [f"E{k}", f"E{k} Jr"], f"E{k}", "exact") for k in range(n_exact)]
+    for cls_name, incumbent in (("I", False), ("N", True)):
+        for k in range(n_exp):
+            titles = [f"{cls_name}{k} Prime", f"{cls_name}{k} Zed"] if k < 5 else [f"{cls_name}{k} Zed", f"{cls_name}{k} Prime"]
+            items.append(_item(f"{cls_name}{k}", titles, f"{cls_name}{k} Prime", "expansion", incumbent=incumbent))
+    items += [_item(f"G{k}", [f"G{k}x", f"G{k}y"], negative=True) for k in range(n_neg)]
+    return items
+
+
+def _rows_for(items, arm, picker, order="fwd", conf="high"):
+    out = []
+    for it in items:
+        title = picker(it)
+        out.append(_t(it["id"], arm, title, conf if title else "none", order))
+    return out
+
+
+def _report_for(tmp_path, items, rows, baseline="qwen-local", tau_step=0.25):
+    return gs.build_report(
+        gs.load_items(str(_write_items(tmp_path, items))), gs.load_results([str(_write_rows(tmp_path, rows))]), baseline, tau_step
+    )
+
+
+def _both_orders(items, arm, picker):
+    return _rows_for(items, arm, picker) + _rows_for(items, arm, picker, order="rev")
+
+
+# ---- the metric: wrong writes and good writes, with the old false-accept rate as the secondary column ------------------------
+
+
+def test_rule_a_is_the_wrong_write_rate_and_the_old_false_accept_rate_is_secondary(tmp_path):
+    rows = _with_rev("qwen-local", _mediocre) + _with_rev("t", _right)
+    a = _big_report(tmp_path, rows)["verdicts"]["t"]["rules"]["a"]
+    assert a["metric"] == "wrong-write rate" and a["baseline"] == pytest.approx(44 / 64) and a["arm"] == 0.0
+    assert a["all_class"]["baseline"] == pytest.approx(44 / 104)  # the legacy all-class false-accept rate, kept as a column
+
+
+def test_rule_b_is_the_good_write_rate_over_the_expansion_gold_items(tmp_path):
+    rows = _with_rev("qwen-local", _mediocre) + _with_rev("t", _right)
+    b = _big_report(tmp_path, rows)["verdicts"]["t"]["rules"]["b"]
+    assert b["metric"] == "good-write rate" and b["baseline"] == pytest.approx(20 / 40) and b["arm"] == 1.0 and b["n"] == 40
+
+
+def test_an_arm_that_always_says_none_makes_no_wrong_writes_but_cannot_pass_rule_b(tmp_path):
+    rows = _with_rev("qwen-local", _mediocre) + _with_rev("t", _none)
+    v = _big_report(tmp_path, rows)["verdicts"]["t"]
+    assert v["rules"]["b"]["ok"] is False and v["rules"]["b"]["arm"] == 0.0 and v["verdict"] == "FAIL"
+    assert v["rules"]["a"]["ok"] is None  # no writes at all: its wrong-write rate is undefined, never zero
+
+
+def test_an_arm_right_only_on_the_exact_controls_cannot_pass(tmp_path):
+    rows = _with_rev("qwen-local", _mediocre) + _with_rev("t", _exact_only)
+    v = _big_report(tmp_path, rows)["verdicts"]["t"]
+    assert v["verdict"] == "FAIL" and v["rules"]["b"]["ok"] is False
+
+
+def test_an_arm_whose_false_accepts_are_all_on_exact_controls_does_not_decide_rule_a(tmp_path):
+    """Exact items are controls: wrong high-confidence picks there show only in the all-class secondary column."""
+
+    def picker(it):
+        if it.get("gold_kind") == "exact":
+            return "Q" + it["term"][1:]  # a respelling of a correct term, at high confidence
+        return _right(it)
+
+    rows = _with_rev("qwen-local", _mediocre) + _with_rev("t", picker)
+    a = _big_report(tmp_path, rows)["verdicts"]["t"]["rules"]["a"]
+    assert a["ok"] is True and a["arm"] == 0.0  # decided on the 100 non-trivial items, where the arm is perfect
+    assert a["all_class"]["arm"] == pytest.approx(40 / 80)  # 40 harmless-to-the-rule but wrong accepts among 80 accepted overall
+
+
+# ---- floors: non-trivial coverage, each expansion class, negatives, the absolute labelled floor ----------------------------
+
+
+def test_an_arm_on_all_exact_controls_but_few_non_trivial_items_is_incomplete(tmp_path):
+    rows = (
+        _with_rev("qwen-local", _mediocre) + [r for r in _with_rev("t", _right) if not r["id"].startswith("verify-neg:G")][:100]
+    )
+    rows = _with_rev("qwen-local", _mediocre) + [
+        r for r in _with_rev("t", _right) if r["id"].startswith("verify:S:E") or "I1" in r["id"] or "N1" in r["id"]
+    ]
+    v = _big_report(tmp_path, rows)["verdicts"]["t"]
+    assert v["verdict"] == "INCOMPLETE" and v["rules"]["a"]["ok"] is None and "90%" in v["rules"]["a"]["note"]
+
+
+def test_each_expansion_class_must_be_90_percent_covered(tmp_path):
+    only_some_incumbent = lambda r: not (r["id"].startswith("verify:S:N") and int(r["id"].rsplit("N", 1)[1]) >= 12)  # noqa: E731
+    rows = _with_rev("qwen-local", _mediocre) + [r for r in _with_rev("t", _right) if only_some_incumbent(r)]
+    v = _big_report(tmp_path, rows)["verdicts"]["t"]
+    assert v["rules"]["a"]["ok"] is None and "expansion_incumbent" in v["rules"]["a"]["note"]
+
+
+def test_the_baseline_must_have_run_90_percent_of_the_negatives_not_just_one(tmp_path):
+    base = [r for r in _with_rev("qwen-local", _mediocre) if not r["id"].startswith("verify-neg:") or r["id"].endswith("G0")]
+    v = _big_report(tmp_path, base + _with_rev("t", _right))["verdicts"]["t"]
+    assert v["rules"]["a"]["ok"] is None and "1 of 60 negatives" in v["rules"]["a"]["note"]
+
+
+def test_the_absolute_labelled_floor_still_bites_when_the_90_percent_share_is_met(tmp_path, monkeypatch):
+    items = _big_items_n(20, 15, 50)  # 100 labelled, 80 non-trivial
+    base = _both_orders(items, "qwen-local", _mediocre)
+    arm = [
+        r for r in _both_orders(items, "t", _right) if not r["id"].startswith("verify:S:E") or int(r["id"].rsplit("E", 1)[1]) >= 5
+    ]
+    v = _report_for(tmp_path, items, base + arm)["verdicts"]["t"]  # 95 common labelled items: over 90%, under 100
+    assert v["rules"]["a"]["ok"] is None and "floor" in v["rules"]["a"]["note"]
+    monkeypatch.setattr(gs, "MIN_COMMON_N", 95)
+    v = _report_for(tmp_path / "x", items, base + arm)["verdicts"]["t"] if (tmp_path / "x").mkdir() is None else None
+    assert v["rules"]["a"]["ok"] is not None
+
+
+# ---- rule (d): pooled expansion classes, >= is "no worse", > beyond noise is "demonstrated" -----------------------------------
+
+
+def test_a_perfect_arm_passes_d_even_when_the_floor_is_already_perfect_on_a_class(tmp_path):
+    items = _big_items_n(20, 20, 60)
+    for it in items:  # make always-candidate-1 perfect on every expansion item
+        if it.get("gold_kind") == "expansion":
+            it["candidates"] = sorted(it["candidates"], key=lambda c: c["title"] != it["gold"])
+    rows = _both_orders(items, "qwen-local", _mediocre) + _both_orders(items, "t", _right)
+    d = _report_for(tmp_path, items, rows)["verdicts"]["t"]["rules"]["d"]
+    assert d["ok"] is True and d["within_noise"] is True and "already perfect" in d["note"]
+
+
+def test_an_arm_equal_to_the_floor_is_no_worse_but_not_demonstrated(tmp_path):
+    rows = _with_rev("qwen-local", _mediocre) + _with_rev(
+        "t", lambda it: it["candidates"][0]["title"] if not it.get("negative") else ""
+    )
+    d = _big_report(tmp_path, rows)["verdicts"]["t"]["rules"]["d"]
+    assert d["ok"] is True and d["within_noise"] is True  # `>=`: not a FAIL; the intervals overlap: not demonstrated
+
+
+def test_an_arm_below_the_floor_on_the_pooled_expansions_fails_d(tmp_path):
+    rows = _with_rev("qwen-local", _mediocre) + _with_rev("t", _none)
+    d = _big_report(tmp_path, rows)["verdicts"]["t"]["rules"]["d"]
+    assert d["ok"] is False and set(d["classes"]) == {
+        "expansion_independent",
+        "expansion_incumbent",
+    }  # the split is reporting only
+
+
+# ---- rules (c) and (e): sample floors, and a FAIL within noise ----------------------------------------------------------------
+
+
+def test_rule_c_is_incomplete_below_100_reversed_pairs(tmp_path):
+    items = _big_items_n(20, 15, 50)
+    base = _both_orders(items, "qwen-local", _mediocre)
+    arm = _rows_for(items, "t", _right) + _rows_for(items, "t", _right, order="rev")[:60]
+    c = _report_for(tmp_path, items, base + arm)["verdicts"]["t"]["rules"]["c"]
+    assert c["ok"] is None and c["below_floor"] is True and "100" in c["note"]
+
+
+def test_a_rule_c_fail_within_noise_reads_fail_within_noise(tmp_path):
+    items = _big_items_n(20, 15, 50)
+    base = _both_orders(items, "qwen-local", _mediocre)
+
+    def flip(it):  # 6 of the 100 reversed answers change: over 5%, but the interval reaches under it
+        if it.get("negative") or int(it["term"][1:]) % 14:
+            return _right(it)
+        return it["candidates"][0]["title"] if it["candidates"][0]["title"] != it["gold"] else it["candidates"][1]["title"]
+
+    arm = _rows_for(items, "t", _right) + _rows_for(items, "t", flip, order="rev")
+    rep = _report_for(tmp_path, items, base + arm)
+    c = rep["verdicts"]["t"]["rules"]["c"]
+    assert c["ok"] is False and c["within_noise"] is True  # the point estimate is over 5%, the interval reaches under it
+    assert "FAIL (within noise)" in gs.render_markdown(rep)
+
+
+def test_a_floor_incomplete_outranks_a_fail_in_the_overall_verdict(tmp_path):
+    items = _big_items_n(20, 15, 50)
+    base = _both_orders(items, "qwen-local", _mediocre)
+    arm = _rows_for(items, "t", _right) + _rows_for(items, "t", _right, order="rev")[:40]  # (c) below its floor
+    arm += [_e(it["id"], "t") for it in items[:5]]  # and (e) would otherwise fail
+    v = _report_for(tmp_path, items, base + arm)["verdicts"]["t"]
+    assert v["rules"]["c"]["below_floor"] and v["verdict"] == "INCOMPLETE"
+
+
+def test_rule_e_is_incomplete_below_the_labelled_floor(tmp_path):
+    rows = _with_rev("qwen-local", _mediocre) + [_e(BIG[0]["id"], "t"), _t(BIG[1]["id"], "t", "E1")]
+    e = _big_report(tmp_path, rows)["verdicts"]["t"]["rules"]["e"]
+    assert e["ok"] is None and e["below_floor"] is True
+
+
+# ---- Span-01 Lite and any per-candidate noul arm: argmax, tau decides ---------------------------------------------------------
+
+
+def _span_row(item_id, scores, arm="span", order="fwd"):
+    return {
+        "id": item_id,
+        "arm": arm,
+        "order": order,
+        "raw": [],
+        "latency_s": 0.1,
+        "usage": None,
+        "error": None,
+        "parsed": {"scores": scores},
+    }
+
+
+def test_a_scores_row_picks_the_argmax_title_with_its_score_and_never_none():
+    pick = gs.row_pick(_span_row("i", {"Zoro": 0.06, "Roronoa Zoro": 0.09}))
+    assert pick.title == "Roronoa Zoro" and pick.conf == 0.09
+    assert not hasattr(gs, "SPAN_PICK_MIN")
+
+
+def test_the_tau_sweep_decides_a_span_arms_abstention(tmp_path):
+    rows = [_span_row(IDS["Xa"], {"Xa Prime": 0.09, "Xa Zed": 0.02}), _span_row(IDS["Xb"], {"Xb Alt": 0.04, "Xb Prime": 0.03})]
+    curve = _report(tmp_path, rows, baseline="span", tau_step=0.05)["arms"]["span"]["curve"]
+    by = {round(p["tau"], 2): p for p in curve}
+    assert by[0.0]["accepted"] == 2 and by[0.05]["accepted"] == 1 and by[0.1]["accepted"] == 0
+
+
+def test_score_distributions_are_reported_and_a_per_candidate_noul_is_not_called_a_choice_probability(tmp_path):
+    rows = [
+        _span_row(IDS["Xa"], {"Xa Prime": 0.09, "Xa Zed": 0.02}),
+        _span_row(IDS["Xc"], {"Xc Prime": 0.30}),
+        _span_row(IDS["Xb"], {"Xb Alt": 0.06, "Xb Prime": 0.01}),
+    ]
+    rep = _report(tmp_path, rows, baseline="span", tau_step=0.25)
+    cal = rep["arms"]["span"]["calibration"]
+    assert cal["scores"]["correct_median"] == pytest.approx(0.09) and cal["scores"]["other_median"] == pytest.approx(0.04)
+    assert cal["scores"]["n_correct"] == 3 and cal["scores"]["n_other"] == 2
+    assert cal["pick_conf"]["n_correct"] == 2 and cal["pick_conf"]["n_wrong"] == 1
+    md = gs.render_markdown(rep)
+    assert "not a choice probability" in md and "median" in md.lower()
+
+
+# ---- matched point: the new metric, optimism stated, a held-out figure --------------------------------------------------------
+
+
+def test_the_matched_tau_is_the_smallest_tau_whose_wrong_write_rate_is_not_above_the_baselines(tmp_path):
+    base = _with_rev("qwen-local", _mediocre)
+
+    # a decision arm: right with high confidence on the first 10 of every expansion class, wrong with low confidence elsewhere
+    def dec(it):
+        return it["gold"] if it.get("gold_kind") == "exact" or (not it.get("negative") and int(it["term"][1:]) < 10) else None
+
+    rows = []
+    for it in BIG:
+        if it.get("negative"):
+            rows.append(_d(it["id"], "d", it["candidates"][0]["title"], 0.2))  # wrong writes only below tau 0.3
+        elif dec(it):
+            rows.append(_d(it["id"], "d", it["gold"], 0.9))
+        else:
+            wrong = [c["title"] for c in it["candidates"] if c["title"] != it["gold"]][0]
+            rows.append(_d(it["id"], "d", wrong, 0.2))
+    rows += [{**r, "order": "rev"} for r in rows]
+    rep = _big_report(tmp_path, base + rows)
+    m = rep["arms"]["d"]["matched"]
+    assert m["tau"] == pytest.approx(0.25) and m["arm_wrong_write_rate"] == 0.0
+    assert m["baseline_wrong_write_rate"] == pytest.approx(44 / 64) and m["arm_good_write_rate"] == pytest.approx(20 / 40)
+    assert m["n_common"] == 100
+
+
+def test_the_report_says_the_matched_point_is_optimistic_and_gives_a_held_out_figure(tmp_path):
+    rows = _with_rev("qwen-local", _mediocre) + [
+        _d(it["id"], "d", _right(it) or it["candidates"][0]["title"], 0.9 if not it.get("negative") else 0.1) for it in BIG
+    ]
+    rows += [{**r, "order": "rev"} for r in rows if r["arm"] == "d"]
+    rep = _big_report(tmp_path, rows)
+    ho = rep["arms"]["d"]["matched"]["held_out"]
+    assert ho["n_a"] + ho["n_b"] == 100 and ho["tau_a"] is not None and "arm_wrong_write_rate_b" in ho
+    md = gs.render_markdown(rep)
+    assert "optimistic" in md and "held-out" in md.lower()
+
+
+# ---- the report: consequences section, non-trivial primary curve, off-list rate, collapsed accept counts ----------------------
+
+
+def test_the_report_states_the_metric_follows_apply_results_and_prints_a_consequences_section(tmp_path):
+    rows = _with_rev("qwen-local", _mediocre) + _with_rev("t", _right)
+    md = gs.render_markdown(_big_report(tmp_path, rows))
+    assert "apply_results" in md and "## Consequences" in md
+    section = md.split("## Consequences")[1].split("\n## ")[0]
+    for needle in ("good writes", "wrong-write rate", "missed", "review load", "harmful flags", "qwen-local"):
+        assert needle in section.lower() or needle in section
+
+
+def test_decision_arms_show_consequences_at_the_matched_tau_and_at_0_5_and_0_8(tmp_path):
+    rows = _with_rev("qwen-local", _mediocre) + [_d(it["id"], "d", _right(it) or it["candidates"][0]["title"], 0.9) for it in BIG]
+    rep = _big_report(tmp_path, rows)
+    pts = rep["arms"]["d"]["consequence_points"]
+    assert {"matched", "0.50", "0.80"} <= set(pts) and pts["0.50"]["writes"] > 0
+    md = gs.render_markdown(rep)
+    assert "tau 0.50" in md and "tau 0.80" in md
+
+
+def test_the_primary_operating_curve_is_the_non_trivial_one_with_the_all_class_column_secondary(tmp_path):
+    rows = _with_rev("qwen-local", _mediocre) + [_d(it["id"], "d", _right(it) or it["candidates"][0]["title"], 0.9) for it in BIG]
+    rep = _big_report(tmp_path, rows)
+    assert rep["arms"]["d"]["curve_nt"][0]["tau"] == 0.0 and "all_class_false_accept" in rep["arms"]["d"]["curve_nt"][0]
+    curve = gs.render_markdown(rep).split("## Operating curve")[1].split("\n## ")[0]
+    assert "non-trivial" in curve and "all-class" in curve
+
+
+def test_each_arms_off_list_answer_rate_is_reported(tmp_path):
+    rows = [
+        _t(IDS["Xa"], "m", "Something Else Entirely"),
+        _t(IDS["Xb"], "m", "Xb Prime"),
+        _t(IDS["Xc"], "m", ""),
+        _e(IDS["Ex1"], "m"),
+    ]
+    assert _report(tmp_path, rows, baseline="m")["arms"]["m"]["off_list"] == {"n": 1, "of": 3}
+
+
+def test_accepted_answer_choices_are_collapsed_to_counts(tmp_path):
+    rows = [_t(IDS["Ex2"], "m", "Ex2"), _t(IDS["Ex2"], "m", "Ex2 Jr")]  # the same key twice: the latest wins
+    m = _report(tmp_path, rows, baseline="m")["arms"]["m"]
+    assert m["accept_counts"] == {"exact": 0, "expansion": 1}
+    md = gs.render_markdown(_report(tmp_path, rows, baseline="m"))
+    assert "Ex2 Jr" not in md  # no title list in the report

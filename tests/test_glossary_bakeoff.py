@@ -1352,14 +1352,15 @@ def test_span_01_lite_per_candidate_end_to_end_with_the_real_shape(tmp_path, ite
     assert pick.title == "Zoro" and pick.conf == 0.93
 
 
-def test_span_01_lite_below_half_is_a_none_pick(tmp_path, items_file, monkeypatch):
+def test_span_01_lite_below_half_is_still_a_titled_pick_the_tau_sweep_abstains(tmp_path, items_file, monkeypatch):
     srv = _NoulServer(lambda b: 0.11, SPAN_SERVED)
     monkeypatch.setenv("GLOSSARY_BAKEOFF_SPAN_01_LITE_URL", srv.url)
     try:
         _, rows, _ = _run(tmp_path, items_file, "span-01-lite", "--stage", "verify", "--only", "gold")
     finally:
         srv.close()
-    assert glossary_score.row_pick(rows[0]).title == ""
+    pick = glossary_score.row_pick(rows[0])
+    assert pick.title and pick.conf == pytest.approx(0.11)  # no fixed 0.5 cut: abstention is the tau sweep's job
 
 
 @pytest.mark.parametrize(
