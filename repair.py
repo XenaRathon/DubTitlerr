@@ -152,6 +152,7 @@ def env_int(name, default, lo=None, hi=None):
         value = min(value, hi)
     return value
 
+
 OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 # qwen3-4b-instruct, not nanbeige4.2-3b -- flipped 2026-09-01 on a live anchored bake-off
 # against real production data (Trigun, MARRIAGETOXIN, Serial Experiments Lain), each
@@ -457,6 +458,9 @@ def build_prompt(asr, sub, gloss, prev_text="", next_text="", arc=None, episode=
         "- You MUST NOT change any proper noun unless it is an obvious phonetic "
         "misspelling of a reference spelling above.\n"
         "- Never insert a name that is not already in the line.\n"
+        "- Write each name exactly as the line says it: a given name or surname said alone stays alone, and a full "
+        "name stays full. The reference spellings list long forms only for spelling - never add or remove a name part "
+        "because of them.\n"
         "- Do NOT turn ordinary words into names. Keep the wording and length almost identical.\n\n"
         "Example -> ASR line: it worked Now we run\n"
         "Corrected line: It worked. Now we run.\n"
@@ -723,6 +727,69 @@ def substitutes_a_vouched_name(orig, new, gloss):
     return False
 
 
+# ON by default: replayed over all 728 before/after cues of the Wano LongCat-2.0 run (.freebuff/wano-review, S35E01-18) against
+# the live One Pace glossary, the rebuilt one and both plus Wano long forms, it rejected 0 -- no legitimate fix was refused.
+# Only 97 of those cues touch a part of a multi-word name and none turns a bare name full or a full name bare, so it also
+# proves little in the other direction. REPAIR_KEEP_NAME_PARTS=0 turns it off.
+KEEP_NAME_PARTS_DEFAULT = "1"
+
+
+def _keep_name_parts():
+    """REPAIR_KEEP_NAME_PARTS=1 turns the name-part check on, =0 off; unset: on (KEEP_NAME_PARTS_DEFAULT). Read per call."""
+    return os.environ.get("REPAIR_KEEP_NAME_PARTS", KEEP_NAME_PARTS_DEFAULT) == "1"
+
+
+def _name_tokens(text):
+    """Lower-cased bare cores of the tokens of ``text`` (punctuation stripped, as the name guards compare them)."""
+    return [m.group(2).lower() for m in (glossary._TOKEN_RE.match(t) for t in (text or "").split()) if m]
+
+
+def changes_name_parts(orig, new, gloss):
+    """True if ``new`` ADDS or REMOVES a part of a multi-word glossary name next to a name token ``orig`` already had.
+
+    A dub often says one name alone ('Momonosuke'), and the glossary now also lists the long form ('Kouzuki Momonosuke') as a
+    spelling reference. The line is the evidence of what was said: a given name or surname said alone stays alone, a full name
+    stays full. So an INSERT that completes a glossary full name around a token the line already had ('Momonosuke' ->
+    'Kouzuki Momonosuke'), or a DELETE that breaks one ('Kouzuki Momonosuke' -> 'Momonosuke'), is refused.
+
+    A REPLACE is never judged, which is what keeps a misheard token fixable: 'Kojuki Momonosuke' -> 'Kouzuki Momonosuke',
+    'Odin' -> 'Oden'. Neither is a re-spacing like 'Grandline' -> 'Grand Line' (no token of the run is kept, so no part is
+    added 'next to an existing name token'). Tokens are aligned with difflib on the lower-cased bare cores."""
+    import difflib
+
+    full = set()
+    terms = (
+        list(gloss["names"]) + list(gloss["phrases"]) + list(gloss["token_fixes"].values()) + list(gloss["phrase_fixes"].values())
+    )
+    for t in terms:
+        toks = tuple(_name_tokens(t))
+        if len(toks) >= 2:
+            full.add(toks)
+    if not full:
+        return False
+    o, n = _name_tokens(orig), _name_tokens(new)
+    inserted, deleted, kept_new, kept_old = set(), set(), set(), set()
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, o, n, autojunk=False).get_opcodes():
+        if tag == "insert":
+            inserted.update(range(j1, j2))
+        elif tag == "delete":
+            deleted.update(range(i1, i2))
+        elif tag == "equal":
+            kept_old.update(range(i1, i2))
+            kept_new.update(range(j1, j2))
+
+    def broken(tokens, changed, kept):
+        for f in full:
+            for p in range(len(tokens) - len(f) + 1):
+                if tuple(tokens[p : p + len(f)]) == f:
+                    idx = set(range(p, p + len(f)))
+                    if idx & changed and idx & kept:
+                        return True
+        return False
+
+    return broken(n, inserted, kept_new) or broken(o, deleted, kept_old)
+
+
 def accept_repair(orig, new, ref, dur, gloss):
     """Whether to write ``new`` over ``orig`` on a card lasting ``dur`` seconds.
 
@@ -767,6 +834,8 @@ def accept_repair(orig, new, ref, dur, gloss):
         return False  # nothing changed
     if invents_name(orig, new, gloss):
         return False  # phonetic-name-guard: fabricated proper noun, not a real correction
+    if _keep_name_parts() and changes_name_parts(orig, new, gloss):
+        return False  # a name said alone stays alone, a full name stays full
     if not ref and substitutes_a_vouched_name(orig, new, gloss):
         return False  # S-14: no reference, so no standing to overrule a vouched name
     ratio = len(new) / max(1, len(orig))
@@ -1096,6 +1165,7 @@ def _process_episode(conf_path):
     refuse_why = None  # set when the episode must be refused: what to say in the log
     rejected_4xx = 0  # request-scoped client errors (llm_openai): no repair for that line, not an outage
     rejected_secondary = 0  # C5: second-pass output refused by the gate
+    rejected_name_part = 0  # subset of rejected: the repair added or removed a part of a name
     unreachable_secondary = 0  # the second-pass backend call itself failed (first pass stands)
     # The model returned the line verbatim -- the single most common outcome of this stage
     # (568 of 836 targets on the SAO pass). accept_repair refuses it and the `not admitted`
@@ -1308,7 +1378,13 @@ def _process_episode(conf_path):
                 rejected += 1  # surfaced in the summary so the guard stays visible
                 # ...but the PROPOSAL was discarded, and it is the whole evidence a human
                 # needs to judge whether the guard was right or overzealous.
-                reason = "rejected_name_invented" if invents_name(c["text"], new, gloss) else "rejected_guard"
+                if invents_name(c["text"], new, gloss):
+                    reason = "rejected_name_invented"
+                elif _keep_name_parts() and changes_name_parts(c["text"], new, gloss):
+                    reason = "rejected_name_part"
+                    rejected_name_part += 1
+                else:
+                    reason = "rejected_guard"
                 unresolved.record(
                     stem,
                     "repair",
@@ -1449,6 +1525,7 @@ def _process_episode(conf_path):
     # the library did until this fix.
     srt_out = out_for(srt)
     rep_out = out_for(stem + ".dubtitles.repair.csv")
+
     def _render_srt(f):
         i = 0
         for c in conf:
@@ -1479,6 +1556,7 @@ def _process_episode(conf_path):
         "unreachable": unreachable,
         "rejected_4xx": rejected_4xx,  # subset of llm_empty: the provider rejected that one request
         "rejected_guard": rejected,  # model proposed an edit, accept_repair() refused it
+        "rejected_name_part": rejected_name_part,  # subset of rejected_guard: it added/removed a name part
         "unreachable_secondary": unreachable_secondary,
         "rejected_secondary": rejected_secondary,  # C5: second pass refused, first pass kept
         "unchanged": unchanged,  # model echoed the line back; nothing proposed, nothing shipped
