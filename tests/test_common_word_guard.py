@@ -105,6 +105,9 @@ def test_arc_gate_overrides_common_word_guard_only_with_its_own_flag(monkeypatch
     g = _gloss(
         names=["Castle"],
         arc_titles={"Drum Island": ["Drum Castle", "Tony Tony Chopper"]},
+        arc_coverage={
+            a: {"titles": len(t), "redirects": True} for a, t in {"Drum Island": ["Drum Castle", "Tony Tony Chopper"]}.items()
+        },
     )
     new = gv.apply_results(g, {"Castle": high("Drum Castle")})
     assert "Drum Castle" in new["phrases"]
@@ -119,6 +122,9 @@ def test_arc_gate_does_not_override_when_canonical_not_in_universe(monkeypatch):
     g = _gloss(
         names=["Government"],
         arc_titles={"Drum Island": ["Drum Castle", "Tony Tony Chopper"]},
+        arc_coverage={
+            a: {"titles": len(t), "redirects": True} for a, t in {"Drum Island": ["Drum Castle", "Tony Tony Chopper"]}.items()
+        },
     )
     new = gv.apply_results(g, {"Government": high("World Government")})
     assert new["flagged"]["Government"]["reason"] == "common-word"
@@ -208,7 +214,11 @@ def test_a_name_that_is_also_an_english_word_is_flagged_for_review_not_dropped(m
     assert new["names"] == ["Law"] and new["flagged"]["Law"]["reason"] == "common-word"
     monkeypatch.setenv("VERIFY_ARC_GATE", "1")
     monkeypatch.setenv("VERIFY_COMMON_WORD_ARC_RESCUE", "1")
-    g = _gloss(names=["Law"], arc_titles={"Dressrosa": ["Trafalgar D. Water Law"]})
+    g = _gloss(
+        names=["Law"],
+        arc_titles={"Dressrosa": ["Trafalgar D. Water Law"]},
+        arc_coverage={a: {"titles": len(t), "redirects": True} for a, t in {"Dressrosa": ["Trafalgar D. Water Law"]}.items()},
+    )
     assert "Trafalgar D. Water Law" in gv.apply_results(g, {"Law": high("Trafalgar D. Water Law")})["phrases"]
 
 
@@ -216,7 +226,11 @@ def test_without_the_rescue_flag_the_arc_gate_does_not_override(monkeypatch):
     monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
     monkeypatch.setenv("VERIFY_ARC_GATE", "1")
     monkeypatch.delenv("VERIFY_COMMON_WORD_ARC_RESCUE", raising=False)
-    g = _gloss(names=["Castle"], arc_titles={"Drum Island": ["Drum Castle"]})
+    g = _gloss(
+        names=["Castle"],
+        arc_titles={"Drum Island": ["Drum Castle"]},
+        arc_coverage={a: {"titles": len(t), "redirects": True} for a, t in {"Drum Island": ["Drum Castle"]}.items()},
+    )
     new = gv.apply_results(g, {"Castle": high("Drum Castle")})
     assert new["flagged"]["Castle"] == {"reason": "common-word", "canonical": "Drum Castle"}
 
@@ -260,7 +274,11 @@ def test_the_rescue_needs_the_canonical_to_be_in_the_universe(monkeypatch):
     monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
     monkeypatch.setenv("VERIFY_ARC_GATE", "1")
     monkeypatch.setenv("VERIFY_COMMON_WORD_ARC_RESCUE", "1")
-    g = _gloss(names=["Government"], arc_titles={"Drum Island": ["Drum Castle"]})
+    g = _gloss(
+        names=["Government"],
+        arc_titles={"Drum Island": ["Drum Castle"]},
+        arc_coverage={a: {"titles": len(t), "redirects": True} for a, t in {"Drum Island": ["Drum Castle"]}.items()},
+    )
     new = gv.apply_results(g, {"Government": high("World Government")})
     assert new["flagged"]["Government"]["reason"] == "common-word"
 
@@ -270,7 +288,11 @@ def test_the_rescue_does_nothing_without_the_arc_gate(monkeypatch):
     monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
     monkeypatch.setenv("VERIFY_COMMON_WORD_ARC_RESCUE", "1")
     monkeypatch.delenv("VERIFY_ARC_GATE", raising=False)
-    g = _gloss(names=["Castle"], arc_titles={"Drum Island": ["Drum Castle"]})
+    g = _gloss(
+        names=["Castle"],
+        arc_titles={"Drum Island": ["Drum Castle"]},
+        arc_coverage={a: {"titles": len(t), "redirects": True} for a, t in {"Drum Island": ["Drum Castle"]}.items()},
+    )
     assert gv.apply_results(g, {"Castle": high("Drum Castle")})["flagged"]["Castle"]["reason"] == "common-word"
 
 

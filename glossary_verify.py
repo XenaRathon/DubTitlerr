@@ -353,6 +353,15 @@ def arc_universe(gloss: dict):
     (never tagged, or a show whose seasons carry no arc). The titles are stored in the glossary by tag_arcs, so applying
     results needs no network.
 
+    The gate turns on only when the stored evidence is whole: every stored arc has a coverage record (older glossaries do not:
+    run --tag-arcs again), no arc's redirect step is unfinished, and no arc of the show is missing. Missing includes an arc below
+    ARC_MIN_TITLES titles (default 10) and an arc the wiki has no "<arc> Arc" page for. For One Pace that means the gate CANNOT
+    turn on as things stand: `Gaimon`, `The Adventures of Buggy's Crew`, `The Adventures of the Straw Hats` and `The Trials of
+    Koby-Meppo` are not arcs, and `Water Seven` is the page "Water 7 Arc". A human closes the gap per glossary, never in code:
+    `arc_aliases` ({"Water Seven": "Water 7"}) names the wiki page to fetch for a season's arc, and `arc_waived` (["Gaimon"])
+    lists seasons that are accepted as covered by the other arcs. Measured offline, the gate on top of nothing blocks 45 of 119
+    wrong audited writes and 8 of 42 correct ones, less than the common-word guard: weigh it on top of that guard.
+
     Not gated: acquire's own writes (ACQUIRE_APPLY) never consult this universe; the gate covers verify's auto-writes only.
 
     debt: this is the 'first' use of the tags (a hard gate on auto-WRITES). The 'second' -- tag-derived confidence for
@@ -361,7 +370,22 @@ def arc_universe(gloss: dict):
     global _gate_noop_logged
     if os.environ.get("VERIFY_ARC_GATE") != "1":
         return None
-    titles = {t.casefold() for ts in (gloss.get("arc_titles") or {}).values() for t in ts}
+    stored = gloss.get("arc_titles") or {}
+    titles = {t.casefold() for ts in stored.values() for t in ts}
+    coverage = gloss.get("arc_coverage")
+    if titles and not (isinstance(coverage, dict) and all(a in coverage for a in stored)):
+        # Tagged by an older version (phase 8 recorded no coverage; its titles may come from a partial or raw-link fetch).
+        if not _gate_noop_logged:
+            _gate_noop_logged = True
+            log("VERIFY_ARC_GATE is on but this glossary was tagged by an older version: run glossary_verify --tag-arcs again")
+        return None
+    unfinished = sorted(a for a, c in (coverage or {}).items() if isinstance(c, dict) and c.get("redirects") is False)
+    if titles and unfinished:
+        # Without the redirect targets a correct canonical (Ace -> Portgas D. Ace) is outside the universe: not trustworthy yet.
+        if not _gate_noop_logged:
+            _gate_noop_logged = True
+            log(f"VERIFY_ARC_GATE is on but the redirect step is unfinished for: {', '.join(unfinished)}: the gate does nothing")
+        return None
     missing = gloss.get("arc_titles_missing") or []
     if titles and missing:
         # Partial evidence blocks names that belong only to the arcs without titles: the gate stays a no-op until every arc
@@ -872,6 +896,21 @@ _STOPPED = object()  # _one's marker for a term skipped by the soft stop (None i
 # step or `glossary_verify.py <glossary> --tag-arcs <show dir>` asks for it.
 
 
+# SEAM -- feeding the same store from wiki_scope.py (design only, nothing here is built for it). A show with no arcs (Naruto-like
+# seasons, or one whole-wiki scope) cannot use tag_arcs as it stands. What must change first:
+#  1. Coverage per writer, not one global list: store per scope {"kind": "arc"|"season"|"wiki", "expected": true, "titles": n,
+#     "complete": bool, "redirects": bool, "source": "tag_arcs"|"wiki_scope"} in arc_coverage, and COMPUTE missing inside
+#     arc_universe (expected scopes without complete titles, across writers) instead of storing arc_titles_missing, which
+#     tag_arcs recomputes from season.nfo on every run and would clobber, and which "no arcs" never clears.
+#  2. arc_universe must use only kind in ("arc", "season"): a whole-wiki scope makes the universe the whole wiki, so the gate
+#     would pass everything while reporting arc_gate.blocked 0. With only a "wiki" scope it is a logged no-op.
+#  3. arc_tags are per arc name and repair weights by glossary.arc_for(video): a "wiki" scope must NOT call tag_names_by_arc
+#     (every name tagged for no episode), and a "season" scope key must equal what arc_for returns for that season's videos
+#     (test the round trip arc_for(path) -> scope key -> arc_tags).
+#  4. Namespace the stored keys ("arc:Dressrosa", "wiki:*") or use separate top-level keys, so one writer's titles can never make
+#     the other's coverage look complete; both writers keep the version-2 cache document and the complete-only rule.
+
+
 def arcs_in_show(show_dir: str) -> list[str]:
     """The distinct arc names of the show's seasons: every directory under ``show_dir`` holding a season.nfo, read with
     glossary.arc_for (the repair stage's own resolver). Sorted; [] when there are none."""
@@ -884,6 +923,18 @@ def arcs_in_show(show_dir: str) -> list[str]:
             if arc:
                 arcs.add(arc)
     return sorted(arcs)
+
+
+ARC_CACHE_VERSION = 2  # v1 (5722bb2) entries may be partial or hold raw links: never served
+
+
+def arc_min_titles() -> int:
+    """ARC_MIN_TITLES (default 10; the smallest real One Piece arc, Orange Town, has 38): an arc with fewer stored titles counts
+    as missing, because a one-title 'arc' (Fishman Island resolving to a stub page) would block its whole cast."""
+    try:
+        return max(0, int(os.environ.get("ARC_MIN_TITLES", "10")))
+    except ValueError:
+        return 10
 
 
 def _arc_cache_path(show_key: str) -> str:
@@ -903,7 +954,7 @@ def fetch_arc_titles_cached(wiki_api: str, show_key: str, arc: str) -> tuple[set
         doc = json.load(open(path))
     except (OSError, ValueError):
         doc = {}
-    arcs = doc.get("arcs", {}) if doc.get("api") == wiki_api else {}
+    arcs = doc.get("arcs", {}) if doc.get("api") == wiki_api and doc.get("v") == ARC_CACHE_VERSION else {}
     entry = arcs.get(arc)
     if entry and (time.time() - entry.get("fetched_at", 0)) < WIKI_TTL:
         return set(entry["titles"]), "cached", True
@@ -918,7 +969,7 @@ def fetch_arc_titles_cached(wiki_api: str, show_key: str, arc: str) -> tuple[set
         arcs[arc] = {"fetched_at": time.time(), "titles": sorted(titles)}
         try:
             os.makedirs(CACHE_DIR, exist_ok=True)
-            json.dump({"api": wiki_api, "arcs": arcs}, open(path, "w"))
+            json.dump({"v": ARC_CACHE_VERSION, "api": wiki_api, "arcs": arcs}, open(path, "w"))
         except OSError:
             pass  # a cache that cannot be written costs a refetch, nothing more
     return titles, "fetched", redirects_ok
@@ -934,8 +985,13 @@ def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dic
 
     Coverage is recorded so the verify gate can tell a whole universe from a partial one: `arc_titles` (arc -> titles),
     `arc_coverage` (arc -> {titles: n, redirects: whether the redirect step finished}) and, only while there is any,
-    `arc_titles_missing` (the show's arcs with no stored titles). Returns a report; never raises. A pass that stops writes
-    nothing."""
+    `arc_titles_missing` (the show's arcs with no stored titles, or fewer than ARC_MIN_TITLES). Returns a report; never
+    raises. A pass that stops writes nothing.
+
+    Per-glossary hand-edited keys (never written by code): `arc_aliases` {season arc: wiki page name} for a season whose arc
+    page is named differently ("Water Seven" -> "Water 7"); `arc_waived` [season arcs] accepted as covered by the other arcs
+    (non-arc seasons such as "Gaimon"), which are neither fetched nor missing. Without them VERIFY_ARC_GATE cannot turn on for
+    One Pace (see arc_universe)."""
     import glossary
 
     try:
@@ -943,7 +999,10 @@ def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dic
     except (OSError, ValueError) as e:
         return {"note": f"load-failed: {e}"}
     show = gloss.get("show") or os.path.splitext(os.path.basename(gloss_path))[0]
-    rep = {"show": show, "arcs": 0, "fetched": 0, "cached": 0, "empty": 0, "partial": 0, "names_tagged": 0, "written": False}
+    rep = {
+        "show": show, "arcs": 0, "fetched": 0, "cached": 0, "empty": 0, "partial": 0, "tiny": 0, "waived": 0,
+        "names_tagged": 0, "written": False,
+    }  # fmt: skip
     arcs = arcs_in_show(show_dir)
     rep["arcs"] = len(arcs)
     if not arcs:
@@ -952,12 +1011,19 @@ def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dic
     if not api:
         return {**rep, "note": "wiki unresolved (set a 'wiki' override)"}
     before = json.dumps(gloss, sort_keys=True)
+    aliases = gloss.get("arc_aliases") if isinstance(gloss.get("arc_aliases"), dict) else {}
+    waived = {a for a in (gloss.get("arc_waived") or []) if isinstance(a, str)}
     stopped = False
     for arc in arcs:
         if stop_requested():
             stopped = True
             break
-        titles, how, redirects_ok = fetch_arc_titles_cached(api, show, arc)
+        if arc in waived:
+            rep["waived"] += 1
+            continue  # a human accepted this season as covered by the other arcs: no fetch, never missing
+        alias = aliases.get(arc)
+        fetch_name = alias if isinstance(alias, str) and alias.strip() else arc  # the wiki page to ask for; data is keyed by arc
+        titles, how, redirects_ok = fetch_arc_titles_cached(api, show, fetch_name)
         if how in ("empty", "partial"):
             rep[how] += 1
             why = (
@@ -974,7 +1040,13 @@ def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dic
     if stopped:
         log("stop requested: leaving arc tagging; nothing written")
         return {**rep, "note": "stopped"}
-    missing = sorted(a for a in arcs if a not in (gloss.get("arc_titles") or {}))
+    stored_now = gloss.get("arc_titles") or {}
+    floor = arc_min_titles()
+    tiny = sorted(a for a in arcs if a not in waived and a in stored_now and len(stored_now[a]) < floor)
+    rep["tiny"] = len(tiny)
+    for a in tiny:
+        log(f"arc tags: arc {a!r} has only {len(stored_now[a])} titles (ARC_MIN_TITLES={floor}): counted as missing")
+    missing = sorted({a for a in arcs if a not in waived and a not in stored_now} | set(tiny))
     if missing:
         gloss["arc_titles_missing"] = missing
     else:

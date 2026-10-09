@@ -45,6 +45,12 @@ def write_gloss(tmp_path, **extra):
     return path
 
 
+@pytest.fixture(autouse=True)
+def small_arcs_allowed(monkeypatch):
+    """The fixtures' arcs are tiny; the minimum-size rule has its own tests, which unset this."""
+    monkeypatch.setenv("ARC_MIN_TITLES", "1")
+
+
 @pytest.fixture
 def wiki(monkeypatch, tmp_path):
     """A fake wiki: fetch_arc_titles_checked answers from ARC_TITLES and counts the calls; the cache dir is private."""
@@ -104,7 +110,12 @@ def test_tagging_is_idempotent_and_does_not_rewrite_an_unchanged_glossary(tmp_pa
 
 def test_tagging_is_additive_and_keeps_other_tags_and_titles(tmp_path, wiki):
     show = make_show(tmp_path, {"Season 30": "Dressrosa"})
-    path = write_gloss(tmp_path, arc_tags={"spandam": ["Enies Lobby"]}, arc_titles={"Enies Lobby": ["Spandam"]})
+    path = write_gloss(
+        tmp_path,
+        arc_tags={"spandam": ["Enies Lobby"]},
+        arc_titles={"Enies Lobby": ["Spandam"]},
+        arc_coverage={a: {"titles": len(t), "redirects": True} for a, t in {"Enies Lobby": ["Spandam"]}.items()},
+    )
     gv.tag_arcs(str(path), str(show))
     saved = json.loads(path.read_text())
     assert saved["arc_tags"]["spandam"] == ["Enies Lobby"] and saved["arc_titles"]["Enies Lobby"] == ["Spandam"]
@@ -222,6 +233,7 @@ def gated_gloss(**extra):
         "names": ["Government", "Momonosuke"],
         "phrases": [],
         "arc_titles": {"Wano": ["Kouzuki Momonosuke", "Kaido"]},
+        "arc_coverage": {"Wano": {"titles": 2, "redirects": True}},
         **extra,
     }
 
@@ -245,7 +257,12 @@ def test_the_gate_blocks_a_generic_expansion_and_allows_one_in_an_arc_page(monke
 
 def test_the_arc_universe_is_the_union_of_every_arcs_titles_compared_casefolded(monkeypatch):
     monkeypatch.setenv("VERIFY_ARC_GATE", "1")
-    g = gated_gloss(arc_titles={"Wano": ["Kaido"], "Dressrosa": ["kouzuki momonosuke"]})
+    g = gated_gloss(
+        arc_titles={"Wano": ["Kaido"], "Dressrosa": ["kouzuki momonosuke"]},
+        arc_coverage={
+            a: {"titles": len(t), "redirects": True} for a, t in {"Wano": ["Kaido"], "Dressrosa": ["kouzuki momonosuke"]}.items()
+        },
+    )
     new = gv.apply_results(g, {"Momonosuke": high("Kouzuki Momonosuke")})
     assert "Kouzuki Momonosuke" in new["phrases"] and "flagged" not in new
 
@@ -588,3 +605,131 @@ def test_a_tag_arcs_pass_with_an_empty_arc_is_not_a_failure_exit(tmp_path, wiki,
     with pytest.raises(SystemExit) as e:
         gv.main()
     assert e.value.code == 0
+
+
+# =====================================================================================
+# Phase 12: the gate needs coverage, redirects, a versioned cache, a minimum size, aliases and waivers
+# =====================================================================================
+
+
+def test_a_glossary_tagged_by_an_older_version_does_not_gate(monkeypatch, capsys):
+    """No arc_coverage (tagged by phase 8, possibly from partial or raw-link fetches): the gate is a logged no-op."""
+    monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    monkeypatch.setattr(gv, "_gate_noop_logged", False)
+    g = gated_gloss()
+    del g["arc_coverage"]
+    new = gv.apply_results(g, RESULTS)
+    assert "World Government" in new["phrases"] and "flagged" not in new
+    assert "tagged by an older version" in capsys.readouterr().out and "--tag-arcs" in gv.arc_universe.__doc__
+
+
+def test_every_stored_arc_needs_a_coverage_record(monkeypatch):
+    monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    g = gated_gloss(
+        arc_titles={"Wano": ["Kaido"], "Dressrosa": ["Rebecca"]}, arc_coverage={"Wano": {"titles": 1, "redirects": True}}
+    )
+    assert "World Government" in gv.apply_results(g, RESULTS)["phrases"]  # Dressrosa has no record: not covered
+    g["arc_coverage"]["Dressrosa"] = {"titles": 1, "redirects": True}
+    assert gv.apply_results(g, RESULTS)["flagged"]["Government"]["reason"] == "not-in-arc-pages"
+
+
+def test_an_unfinished_redirect_step_keeps_the_gate_off(monkeypatch, capsys):
+    monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    monkeypatch.setattr(gv, "_gate_noop_logged", False)
+    g = gated_gloss(arc_coverage={"Wano": {"titles": 2, "redirects": False}})
+    new = gv.apply_results(g, RESULTS)
+    assert "World Government" in new["phrases"] and "flagged" not in new
+    assert "redirect" in capsys.readouterr().out
+
+
+def test_a_version_one_cache_file_is_ignored(tmp_path, wiki):
+    """5722bb2 wrote {api, arcs} with no version: its entries may be partial or hold raw links, so they are not served."""
+    show = make_show(tmp_path, {"Season 30": "Dressrosa"})
+    os.makedirs(gv.CACHE_DIR, exist_ok=True)
+    stale = {
+        "api": "https://x.fandom.com/api.php",
+        "arcs": {"Dressrosa": {"fetched_at": __import__("time").time(), "titles": ["Raw_Link"]}},
+    }
+    json.dump(stale, open(os.path.join(gv.CACHE_DIR, "Show_arcs.json"), "w"))
+    path = write_gloss(tmp_path)
+    rep = gv.tag_arcs(str(path), str(show))
+    assert (
+        wiki == ["Dressrosa"] and rep["cached"] == 0 and "Raw_Link" not in json.loads(path.read_text())["arc_titles"]["Dressrosa"]
+    )
+    doc = json.load(open(os.path.join(gv.CACHE_DIR, "Show_arcs.json")))
+    assert doc["v"] == 2
+
+
+def test_a_version_two_cache_is_served(tmp_path, wiki):
+    show = make_show(tmp_path, {"Season 30": "Dressrosa"})
+    gv.tag_arcs(str(write_gloss(tmp_path)), str(show))
+    wiki.clear()
+    assert gv.tag_arcs(str(write_gloss(tmp_path)), str(show))["cached"] == 1 and wiki == []
+
+
+def test_a_tiny_arc_counts_as_missing(tmp_path, wiki, monkeypatch):
+    """Fishman Island resolved to a one-title page: stored, but the gate must not trust it."""
+    monkeypatch.delenv("ARC_MIN_TITLES", raising=False)  # the default is 10
+    show = make_show(tmp_path, {"Season 30": "Dressrosa"})  # 4 titles
+    path = write_gloss(tmp_path)
+    rep = gv.tag_arcs(str(path), str(show))
+    saved = json.loads(path.read_text())
+    assert saved["arc_titles_missing"] == ["Dressrosa"] and rep["tiny"] == 1
+    assert saved["arc_titles"]["Dressrosa"]  # the titles themselves are kept
+    monkeypatch.setenv("ARC_MIN_TITLES", "3")
+    gv.tag_arcs(str(path), str(show))
+    assert "arc_titles_missing" not in json.loads(path.read_text())
+
+
+def test_the_minimum_defaults_to_ten_and_ignores_garbage(monkeypatch):
+    monkeypatch.delenv("ARC_MIN_TITLES", raising=False)
+    assert gv.arc_min_titles() == 10
+    monkeypatch.setenv("ARC_MIN_TITLES", "many")
+    assert gv.arc_min_titles() == 10
+    monkeypatch.setenv("ARC_MIN_TITLES", "25")
+    assert gv.arc_min_titles() == 25
+
+
+def test_an_alias_names_the_page_to_fetch_but_the_season_name_keys_the_data(tmp_path, wiki):
+    show = make_show(tmp_path, {"Season 30": "Wano"})
+    path = write_gloss(tmp_path, arc_aliases={"Wano": "Dressrosa"})  # stands in for 'Water Seven' -> 'Water 7'
+    gv.tag_arcs(str(path), str(show))
+    saved = json.loads(path.read_text())
+    assert wiki == ["Dressrosa"] and "Rebecca" in saved["arc_titles"]["Wano"] and "Dressrosa" not in saved["arc_titles"]
+    assert saved["arc_tags"]["doflamingo"] == ["Wano"]  # repair weights by arc_for's season name
+
+
+def test_a_bad_alias_value_is_ignored(tmp_path, wiki):
+    show = make_show(tmp_path, {"Season 30": "Dressrosa"})
+    gv.tag_arcs(str(write_gloss(tmp_path, arc_aliases={"Dressrosa": 7, "Other": "X"})), str(show))
+    assert wiki == ["Dressrosa"]
+
+
+def test_a_waived_arc_is_neither_fetched_nor_missing(tmp_path, wiki):
+    show = make_show(tmp_path, {"Season 30": "Dressrosa", "Season 01": "Gaimon"})
+    path = write_gloss(tmp_path, arc_waived=["Gaimon"])
+    rep = gv.tag_arcs(str(path), str(show))
+    saved = json.loads(path.read_text())
+    assert wiki == ["Dressrosa"] and "arc_titles_missing" not in saved and rep["waived"] == 1
+
+
+def test_without_a_waiver_the_same_arc_keeps_the_gate_off(tmp_path, wiki, monkeypatch):
+    monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    show = make_show(tmp_path, {"Season 30": "Dressrosa", "Season 01": "Gaimon"})
+    path = write_gloss(tmp_path)
+    gv.tag_arcs(str(path), str(show))
+    assert json.loads(path.read_text())["arc_titles_missing"] == ["Gaimon"]
+    assert gv.arc_universe(json.loads(path.read_text())) is None
+
+
+def test_a_waiver_can_turn_the_gate_on(tmp_path, wiki, monkeypatch):
+    monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    show = make_show(tmp_path, {"Season 30": "Dressrosa", "Season 01": "Gaimon"})
+    path = write_gloss(tmp_path, arc_waived=["Gaimon"])
+    gv.tag_arcs(str(path), str(show))
+    assert "rebecca" in gv.arc_universe(json.loads(path.read_text()))
+
+
+def test_the_stage_docstring_says_the_gate_needs_aliases_and_waivers_for_one_pace():
+    doc = (gv.tag_arcs.__doc__ or "") + (gv.arc_universe.__doc__ or "")
+    assert "arc_aliases" in doc and "arc_waived" in doc and "cannot turn on" in doc

@@ -8,6 +8,12 @@ that shipped since.
 
 ## [Unreleased]
 
+- **The arc gate only turns on when its evidence is whole.** `VERIFY_ARC_GATE=1` is a logged no-op unless every stored arc has a
+  coverage record (a glossary tagged by an older version needs `--tag-arcs` again), no arc's redirect step is unfinished and no
+  arc is missing. An arc with fewer than `ARC_MIN_TITLES` (default 10) titles counts as missing. The arc cache is versioned
+  (version-1 files are ignored). Two hand-edited, per-glossary keys close gaps the code must not guess: `arc_aliases`
+  (`{"Water Seven": "Water 7"}`: the wiki page to fetch for a season's arc) and `arc_waived` (`["Gaimon"]`: seasons accepted as
+  covered by the other arcs). Without them the gate cannot turn on for One Pace; nothing is added to any glossary by code.
 - **Arc tags and an arc gate for verify (both opt-in).** `GLOSSARY_ARC_TAGS=1` makes `gen_loop.sh` run
   `glossary_verify.py <glossary> --tag-arcs <show dir>` before VERIFY: one cached wiki fetch per distinct `season.nfo` arc tags
   the glossary's names (repair weights its prompt by them) and stores each arc's page titles (links normalised to page titles,

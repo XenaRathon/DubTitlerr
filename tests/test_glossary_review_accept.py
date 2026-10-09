@@ -27,7 +27,11 @@ def flagged_by(monkeypatch, reason):
     elif reason == "not-in-arc-pages":
         monkeypatch.setenv("VERIFY_ARC_GATE", "1")
         term, canon = "Weevil", "Edward Weevil"
-        g = base(names=[term], arc_titles={"Wano": ["Kaido"]})
+        g = base(
+            names=[term],
+            arc_titles={"Wano": ["Kaido"]},
+            arc_coverage={a: {"titles": len(t), "redirects": True} for a, t in {"Wano": ["Kaido"]}.items()},
+        )
     else:  # respelling-needs-review, from the whole-word guard
         monkeypatch.setenv("VERIFY_WRITE_WHOLE_WORD", "1")
         term, canon = "Usop", "Usopp"
