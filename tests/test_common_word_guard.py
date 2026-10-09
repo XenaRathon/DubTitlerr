@@ -11,6 +11,13 @@ import pytest
 import glossary
 import glossary_verify as gv
 
+
+@pytest.fixture(autouse=True)
+def small_arcs_allowed(monkeypatch):
+    """These fixtures' arcs are tiny; the minimum-size rule (ARC_MIN_TITLES) has its own tests."""
+    monkeypatch.setenv("ARC_MIN_TITLES", "1")
+
+
 # The host's word list decides what the guard calls an ordinary word (the bundled list is 233 words here, production's image has
 # wamerican with ~100k, which spells proper names CAPITALISED: Hancock, Rayleigh; ordinary words lowercase: castle, lobby), so no
 # test may depend on it: every test runs against exactly these entries, spelled as a word list spells them.

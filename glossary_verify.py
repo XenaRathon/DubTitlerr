@@ -371,9 +371,13 @@ def arc_universe(gloss: dict):
     if os.environ.get("VERIFY_ARC_GATE") != "1":
         return None
     stored = gloss.get("arc_titles") or {}
-    titles = {t.casefold() for ts in stored.values() for t in ts}
     coverage = gloss.get("arc_coverage")
-    if titles and not (isinstance(coverage, dict) and all(a in coverage for a in stored)):
+    # An arc whose season is gone is marked stale by tag_arcs and left out; a stored arc with no record at all was tagged by an
+    # older version.
+    stale = {a for a, c in (coverage or {}).items() if isinstance(c, dict) and c.get("stale")}
+    titles = {t.casefold() for a, ts in stored.items() if a not in stale for t in ts}
+    coverage_ok = isinstance(coverage, dict) and all(a in coverage for a in stored)
+    if titles and not coverage_ok:
         # Tagged by an older version (phase 8 recorded no coverage; its titles may come from a partial or raw-link fetch).
         if not _gate_noop_logged:
             _gate_noop_logged = True
@@ -385,6 +389,22 @@ def arc_universe(gloss: dict):
         if not _gate_noop_logged:
             _gate_noop_logged = True
             log(f"VERIFY_ARC_GATE is on but the redirect step is unfinished for: {', '.join(unfinished)}: the gate does nothing")
+        return None
+    floor = arc_min_titles()
+    tiny = sorted(
+        a
+        for a, c in (coverage or {}).items()
+        if isinstance(c, dict)
+        and not c.get("waived")
+        and not c.get("stale")
+        and isinstance(c.get("titles"), int)
+        and c["titles"] < floor
+    )
+    if titles and tiny:
+        # ARC_MIN_TITLES is rechecked here, against the stored counts, so changing it needs no new --tag-arcs.
+        if not _gate_noop_logged:
+            _gate_noop_logged = True
+            log(f"VERIFY_ARC_GATE is on but these arcs have fewer than {floor} titles (ARC_MIN_TITLES): {', '.join(tiny)}")
         return None
     missing = gloss.get("arc_titles_missing") or []
     if titles and missing:
@@ -578,6 +598,7 @@ def arc_categories_checked(wiki_api: str, arc: str) -> tuple[list[str], bool]:
     The list is [] on any failure; the flag is what tells a FAILED search from the [S-7] signal -- a `season.nfo` title that
     is not an arc at all (`Gaimon` is a character) finds no arc categories, and the caller must degrade rather than tag from
     some unrelated page's cast."""
+    arc = wiki_arc_name(arc)
     url = wiki_api + "?action=query&list=search&srnamespace=14&srlimit=25&format=json&srsearch=" + urllib.parse.quote(arc)
     try:
         resp = _http_json(url)
@@ -773,7 +794,7 @@ def arc_page_links_checked(wiki_api: str, arc: str) -> tuple[set[str], bool]:
 
     Links are normalised to page titles (see _extract_links). A page that does not exist (the API's `missingtitle`) is a
     COMPLETE empty answer; any other failure is not, and the flag says so. Never raises; this runs inside the sweep."""
-    url = wiki_api + "?action=parse&prop=wikitext&format=json&page=" + urllib.parse.quote(arc + " Arc")
+    url = wiki_api + "?action=parse&prop=wikitext&format=json&page=" + urllib.parse.quote(wiki_arc_name(arc) + " Arc")
     # ONLY the "<arc> Arc" page. Falling back to the bare title resolves a page that is not
     # an arc at all and harvests its links: measured 2026-08-26, `Gaimon` -- a season.nfo
     # title that names a CHARACTER -- returned 48 entities that way, which [S-7] requires be
@@ -925,6 +946,33 @@ def arcs_in_show(show_dir: str) -> list[str]:
     return sorted(arcs)
 
 
+_config_logged: set = set()
+
+
+def _config(gloss: dict, key: str, kind):
+    """gloss[key] as a ``kind`` (list or dict), or an empty one -- logging ONCE per key when it has the wrong type. A bare string
+    for a list key is a one-item list (arc_waived: "Gaimon")."""
+    value = gloss.get(key)
+    if value is None:
+        return kind()
+    if kind is list and isinstance(value, str):
+        return [value]
+    if isinstance(value, kind):
+        return value
+    if key not in _config_logged:
+        _config_logged.add(key)
+        log(f"arc tags: {key} must be a {'list of arc names' if kind is list else 'mapping of arc to wiki page'}; ignored")
+    return kind()
+
+
+def wiki_arc_name(arc: str) -> str:
+    """The arc name to ask the WIKI for: a trailing parenthetical is dropped ('Wano (WIP)' -> 'Wano'). One Pace marks unfinished
+    seasons that way in season.nfo, but the wiki's page is 'Wano Arc' and its categories 'Wano ...'. Only a trailing one, and
+    never down to nothing; the stored key stays what glossary.arc_for returns."""
+    bare = re.sub(r"\s*\([^()]*\)\s*$", "", arc).strip()
+    return bare or arc
+
+
 ARC_CACHE_VERSION = 2  # v1 (5722bb2) entries may be partial or hold raw links: never served
 
 
@@ -1011,8 +1059,8 @@ def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dic
     if not api:
         return {**rep, "note": "wiki unresolved (set a 'wiki' override)"}
     before = json.dumps(gloss, sort_keys=True)
-    aliases = gloss.get("arc_aliases") if isinstance(gloss.get("arc_aliases"), dict) else {}
-    waived = {a for a in (gloss.get("arc_waived") or []) if isinstance(a, str)}
+    aliases = _config(gloss, "arc_aliases", dict)
+    waived = {a for a in _config(gloss, "arc_waived", list) if isinstance(a, str)}
     stopped = False
     for arc in arcs:
         if stop_requested():
@@ -1041,6 +1089,13 @@ def tag_arcs(gloss_path: str, show_dir: str, override: str | None = None) -> dic
         log("stop requested: leaving arc tagging; nothing written")
         return {**rep, "note": "stopped"}
     stored_now = gloss.get("arc_titles") or {}
+    coverage_now = gloss.setdefault("arc_coverage", {})
+    for a in sorted(waived & set(arcs)):
+        coverage_now[a] = {"titles": len(stored_now.get(a, [])), "waived": True}
+    for a in sorted(set(stored_now) - set(arcs)):
+        coverage_now[a] = {"titles": len(stored_now[a]), "stale": True}  # its season is gone: kept, but not in the universe
+    if not coverage_now:
+        gloss.pop("arc_coverage")
     floor = arc_min_titles()
     tiny = sorted(a for a in arcs if a not in waived and a in stored_now and len(stored_now[a]) < floor)
     rep["tiny"] = len(tiny)

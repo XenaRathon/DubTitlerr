@@ -733,3 +733,117 @@ def test_a_waiver_can_turn_the_gate_on(tmp_path, wiki, monkeypatch):
 def test_the_stage_docstring_says_the_gate_needs_aliases_and_waivers_for_one_pace():
     doc = (gv.tag_arcs.__doc__ or "") + (gv.arc_universe.__doc__ or "")
     assert "arc_aliases" in doc and "arc_waived" in doc and "cannot turn on" in doc
+
+
+# =====================================================================================
+# Phase 13: waived/stale coverage, config types, the floor rechecked, parenthetical season titles
+# =====================================================================================
+
+
+def test_a_waived_arc_gets_a_coverage_record_even_when_its_titles_were_stored_earlier(tmp_path, wiki, monkeypatch):
+    monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    show = make_show(tmp_path, {"Season 30": "Dressrosa", "Season 01": "Gaimon"})
+    # tagged by an older version: Gaimon's titles stored, no coverage; now a human waives it
+    path = write_gloss(tmp_path, arc_titles={"Gaimon": ["Gaimon Page"]}, arc_waived=["Gaimon"])
+    gv.tag_arcs(str(path), str(show))
+    saved = json.loads(path.read_text())
+    assert saved["arc_coverage"]["Gaimon"] == {"titles": 1, "waived": True} and wiki == ["Dressrosa"]
+    assert "arc_titles_missing" not in saved
+    universe = gv.arc_universe(saved)
+    assert universe is not None and "gaimon page" in universe and "rebecca" in universe  # the gate is ON
+
+
+def test_a_waived_arc_with_no_stored_titles_is_covered_with_zero_titles(tmp_path, wiki):
+    show = make_show(tmp_path, {"Season 30": "Dressrosa", "Season 01": "Gaimon"})
+    path = write_gloss(tmp_path, arc_waived=["Gaimon"])
+    gv.tag_arcs(str(path), str(show))
+    assert json.loads(path.read_text())["arc_coverage"]["Gaimon"] == {"titles": 0, "waived": True}
+
+
+def test_a_stored_arc_whose_season_is_gone_is_marked_stale_and_left_out_of_the_universe(tmp_path, wiki, monkeypatch):
+    monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    show = make_show(tmp_path, {"Season 30": "Dressrosa"})
+    path = write_gloss(tmp_path, arc_titles={"Old Arc": ["Old Page"]})  # no coverage, and no season for it any more
+    gv.tag_arcs(str(path), str(show))
+    saved = json.loads(path.read_text())
+    assert saved["arc_coverage"]["Old Arc"] == {"titles": 1, "stale": True}
+    universe = gv.arc_universe(saved)
+    assert universe is not None and "old page" not in universe and "rebecca" in universe
+
+
+def test_a_waived_string_is_a_one_item_list_and_a_wrong_type_is_logged_once(tmp_path, wiki, capsys, monkeypatch):
+    monkeypatch.setattr(gv, "_config_logged", set())
+    show = make_show(tmp_path, {"Season 30": "Dressrosa", "Season 01": "Gaimon"})
+    path = write_gloss(tmp_path, arc_waived="Gaimon")
+    gv.tag_arcs(str(path), str(show))
+    assert wiki == ["Dressrosa"] and "arc_titles_missing" not in json.loads(path.read_text())
+    wiki.clear()
+    path2 = write_gloss(tmp_path, arc_waived=7, arc_aliases=["Dressrosa"])
+    gv.tag_arcs(str(path2), str(show))
+    gv.tag_arcs(str(path2), str(show))
+    shown = capsys.readouterr().out
+    assert shown.count("arc_waived must be") == 1 and shown.count("arc_aliases must be") == 1
+
+
+@pytest.mark.parametrize("alias", ["", "   ", None, 7])
+def test_an_empty_or_non_string_alias_falls_back_to_the_season_name(tmp_path, wiki, alias):
+    show = make_show(tmp_path, {"Season 30": "Dressrosa"})
+    gv.tag_arcs(str(write_gloss(tmp_path, arc_aliases={"Dressrosa": alias})), str(show))
+    assert wiki == ["Dressrosa"]
+
+
+def test_changing_the_floor_takes_effect_without_a_new_tag_run(monkeypatch):
+    monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    monkeypatch.setattr(gv, "_gate_noop_logged", False)
+    g = gated_gloss(arc_coverage={"Wano": {"titles": 2, "redirects": True}})
+    monkeypatch.setenv("ARC_MIN_TITLES", "10")
+    assert gv.arc_universe(g) is None
+    monkeypatch.setenv("ARC_MIN_TITLES", "2")
+    assert gv.arc_universe(g) is not None
+
+
+def test_a_waived_arc_is_exempt_from_the_floor(monkeypatch):
+    monkeypatch.setenv("VERIFY_ARC_GATE", "1")
+    monkeypatch.setenv("ARC_MIN_TITLES", "10")
+    g = gated_gloss(
+        arc_titles={"Wano": ["Kaido"] * 12, "Gaimon": ["One"]},
+        arc_coverage={"Wano": {"titles": 12, "redirects": True}, "Gaimon": {"titles": 1, "waived": True}},
+    )
+    assert gv.arc_universe(g) is not None
+
+
+# ---- a season title with a trailing parenthetical (One Pace: "Wano (WIP)", "Egghead (WIP)") ------------------------------------
+
+
+ONE_PACE_SEASONS = (
+    "Romance Dawn, Orange Town, Syrup Village, Gaimon, Baratie, Arlong Park, The Adventures of Buggy's Crew, Loguetown, "
+    "Reverse Mountain, The Trials of Koby-Meppo, Little Garden, Drum Island, Arabasta, Jaya, Skypiea, Long Ring Long Land, "
+    "Water Seven, Enies Lobby, Post-Enies Lobby, Thriller Bark, Sabaody Archipelago, Amazon Lily, Impel Down, "
+    "The Adventures of the Straw Hats, Marineford, Post-War, Return to Sabaody, Fishman Island, Punk Hazard, Dressrosa, Zou, "
+    "Whole Cake Island, Reverie, Wano (WIP), Egghead (WIP)"
+).split(", ")
+
+
+def test_the_wiki_name_drops_only_a_trailing_parenthetical():
+    changed = {t: gv.wiki_arc_name(t) for t in ONE_PACE_SEASONS if gv.wiki_arc_name(t) != t}
+    assert changed == {"Wano (WIP)": "Wano", "Egghead (WIP)": "Egghead"}
+    assert len(ONE_PACE_SEASONS) == 35
+    assert gv.wiki_arc_name("Arc (The) Thing") == "Arc (The) Thing"  # only a trailing one
+    assert gv.wiki_arc_name("(WIP)") == "(WIP)"  # never to nothing
+
+
+def test_the_wiki_is_asked_for_the_bare_arc_but_the_data_keeps_the_season_title(tmp_path, raw):
+    raw.categories = ["Category:Wano Residents"]
+    show = make_show(tmp_path, {"Season 35": "Wano (WIP)"})
+    path = write_gloss(tmp_path)
+    gv.tag_arcs(str(path), str(show))
+    import urllib.parse as up
+
+    asked = [up.unquote(u) for u in raw.urls]
+    assert any("page=Wano Arc" in u for u in asked) and any("srsearch=Wano&" in u or u.endswith("srsearch=Wano") for u in asked)
+    assert not any("(WIP)" in u for u in asked)
+    saved = json.loads(path.read_text())
+    assert (
+        "Wano (WIP)" in saved["arc_titles"] and "Wano" not in saved["arc_titles"] and "Kaido" in saved["arc_titles"]["Wano (WIP)"]
+    )
+    assert saved["arc_tags"]["kaido"] == ["Wano (WIP)"]  # repair weights by arc_for's title

@@ -9,6 +9,12 @@ import glossary_acquire as ga
 import glossary_verify as gv
 
 
+@pytest.fixture(autouse=True)
+def small_arcs_allowed(monkeypatch):
+    """These fixtures' arcs are tiny; the minimum-size rule (ARC_MIN_TITLES) has its own tests."""
+    monkeypatch.setenv("ARC_MIN_TITLES", "1")
+
+
 def high(canon):
     return {"canonical": canon, "confidence": "high", "dub_note": ""}
 
