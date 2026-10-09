@@ -28,13 +28,11 @@ from __future__ import annotations
 import math
 import os
 import re
-import sys
 import time
 import urllib.parse
 from dataclasses import dataclass, field
 
-sys.path.insert(0, ".")
-import repair  # noqa: E402
+import repair
 
 DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
 USER_AGENT = "DubTitlerr-glossary-bakeoff/1.0"  # an honest UA; OpenRouter accepts it

@@ -80,11 +80,11 @@ from dataclasses import dataclass, field, replace
 sys.path.insert(0, ".")
 import acquire_cache  # noqa: E402
 import common  # noqa: E402
+import decision_client  # noqa: E402
 import glossary_acquire  # noqa: E402
 import glossary_verify  # noqa: E402
 import repair  # noqa: E402
 import tools.bakeoff as bakeoff  # noqa: E402
-import tools.decision_client as decision_client  # noqa: E402
 import tools.glossary_judge as glossary_judge  # noqa: E402
 import tools.glossary_score as glossary_score  # noqa: E402
 
@@ -419,7 +419,7 @@ _sleep = time.sleep  # indirection so tests never really sleep
 @dataclass(frozen=True)
 class Arm:
     """One thing to measure. kind: local (the production llm_chat), text (an OpenAI-compatible chat API through
-    tools/bakeoff.ask_openai) or decision (OpenRouter's decisions API through tools/decision_client).
+    tools/bakeoff.ask_openai) or decision (OpenRouter's decisions API through decision_client).
     url / model can be overridden per arm with GLOSSARY_BAKEOFF_<ARM>_URL / _MODEL (ARM = upper-case, - -> _)."""
 
     name: str

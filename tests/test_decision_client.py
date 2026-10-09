@@ -1,11 +1,11 @@
-"""tools/decision_client.py: OpenRouter's alpha decisions API. No network: the transport is faked."""
+"""decision_client.py: OpenRouter's alpha decisions API. No network: the transport is faked."""
 
 import json
 
 import pytest
 
+import decision_client as dc
 import repair
-import tools.decision_client as dc
 
 KEY = "sk-SENTINEL-KEY-12345"
 MODEL = "inception/mercury-decide:free"
@@ -602,3 +602,12 @@ def test_loopback_may_still_use_plain_http_on_any_port():
     seen = []
     dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", url="http://127.0.0.1:8123/x", post=_post_returning(_ok(), seen))
     assert seen[0][0] == "http://127.0.0.1:8123/x"
+
+
+def test_the_client_is_a_top_level_production_module():
+    """Production (glossary_verify / glossary_acquire) imports it; the tools import it from the same place."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    assert pathlib.Path(dc.__file__).resolve() == root / "decision_client.py"
+    assert not (root / "tools" / "decision_client.py").exists()

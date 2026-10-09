@@ -231,9 +231,9 @@ def test_unknown_flags_and_missing_directories_exit_2(tmp_path, data):
 
 import acquire_cache as _ac  # noqa: E402,F401
 import common  # noqa: E402
+import decision_client as dc  # noqa: E402
 import glossary_acquire as ga  # noqa: E402
 import tools.bakeoff as bakeoff  # noqa: E402
-import tools.decision_client as dc  # noqa: E402
 import tools.glossary_score as glossary_score  # noqa: E402
 
 KEY = "sk-SENTINEL-RUN-KEY-777"
