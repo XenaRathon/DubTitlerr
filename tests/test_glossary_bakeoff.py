@@ -633,3 +633,247 @@ def test_no_key_value_is_ever_written_to_the_results_file(tmp_path, items_file, 
     _, _, outp = _run(tmp_path, items_file, "jev")
     out = capsys.readouterr()
     assert KEY not in outp.read_text(encoding="utf-8") + out.out + out.err
+
+
+# =====================================================================================
+# Phase 1b: honest gold labels, synthetic negatives, honest framing
+# =====================================================================================
+
+import os  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+REPO = Path(__file__).resolve().parent.parent
+
+
+def _one_show(tmp_path, gloss, titles, name="Case Show", fetched_at=1, api="https://x/api.php"):
+    g, w = tmp_path / "g", tmp_path / "w"
+    _put(g / f"{name}.json", {"show": name, **gloss})
+    _put(w / (re.sub(r"[^A-Za-z0-9]+", "_", name) + ".json"), {"api": api, "fetched_at": fetched_at, "titles": titles})
+    return g, w
+
+
+def _items_for(tmp_path, gloss, titles, **kw):
+    g, w = _one_show(tmp_path, gloss, titles, **kw)
+    return _build(tmp_path, g, w)[1]
+
+
+def _by_term(items, term, stage="verify"):
+    return next(i for i in items if i["stage"] == stage and i.get("term") == term and not i.get("negative"))
+
+
+def test_a_curated_respelling_or_other_character_is_never_gold(tmp_path):
+    """The reviewer's reproduction: another character with similar letters became the 'right answer'."""
+    gloss = {"_curated": True, "names": ["Nanami", "Hanami", "Grandpa", "Panda"], "phrases": []}
+    items = _items_for(tmp_path, gloss, ["Hanami", "Panda", "Kento Nanami"])
+    nanami = _by_term(items, "Nanami")
+    assert "Hanami" in [c["title"] for c in nanami["candidates"]]  # the trap is really in the candidate list
+    assert nanami["gold"] != "Hanami" and nanami["gold"] is None  # Kento Nanami is not a curated name here
+    assert _by_term(items, "Grandpa")["gold"] != "Panda"
+
+
+def test_an_expansion_that_is_a_curated_name_is_gold(tmp_path):
+    gloss = {"_curated": True, "names": ["Nanami", "Hanami", "Kento Nanami"], "phrases": []}
+    nanami = _by_term(_items_for(tmp_path, gloss, ["Hanami", "Kento Nanami"]), "Nanami")
+    assert nanami["gold"] == "Kento Nanami" and nanami["gold_kind"] == "expansion" and nanami["gold_source"] == "curated"
+
+
+def test_an_exact_match_is_gold_kind_exact(tmp_path):
+    gloss = {"_curated": True, "names": ["Zoro"], "phrases": []}
+    zoro = _by_term(_items_for(tmp_path, gloss, ["Zoro", "Zorro Jr"]), "Zoro")
+    assert zoro["gold"] == "Zoro" and zoro["gold_kind"] == "exact" and zoro["incumbent_derived"] is False
+
+
+def test_two_qualifying_candidates_mean_no_gold_and_no_tie_break(tmp_path):
+    gloss = {"_curated": True, "names": ["Ace", "Aces", "Acey"], "phrases": []}
+    ace = _by_term(_items_for(tmp_path, gloss, ["Aces", "Acey"]), "Ace")
+    assert len(ace["candidates"]) == 2
+    assert ace["gold"] is None and ace["gold_ambiguous"] is True and "gold_kind" not in ace and "gold_source" not in ace
+
+
+def test_an_exact_title_plus_a_curated_expansion_is_ambiguous(tmp_path):
+    gloss = {"_curated": True, "names": ["Zoro", "Zoros"], "phrases": []}
+    zoro = _by_term(_items_for(tmp_path, gloss, ["Zoro", "Zoros"]), "Zoro")
+    assert len(zoro["candidates"]) == 2
+    assert zoro["gold"] is None and zoro["gold_ambiguous"] is True
+
+
+def test_hard_fixes_targets_are_not_a_gold_source(tmp_path):
+    gloss = {"_curated": True, "names": ["Zoro"], "phrases": [], "hard_fixes": {"zorro": "Roronoa Zoro"}}
+    zoro = _by_term(_items_for(tmp_path, gloss, ["Roronoa Zoro"]), "Zoro")
+    assert zoro["gold"] is None
+
+
+def test_an_expansion_gold_of_a_verified_term_is_flagged_incumbent_derived(tmp_path):
+    gloss = {"_curated": True, "names": ["Nanami", "Kento Nanami"], "phrases": [], "verified": ["Nanami"]}
+    items = _items_for(tmp_path, gloss, ["Kento Nanami"])
+    assert _by_term(items, "Nanami")["incumbent_derived"] is True
+    gloss["verified"] = []
+    (tmp_path / "second").mkdir()
+    items = _items_for(tmp_path / "second", gloss, ["Kento Nanami"])
+    assert _by_term(items, "Nanami")["incumbent_derived"] is False
+
+
+def _neg_fixture(tmp_path):
+    gloss = {"_curated": True, "names": ["Nami", "Luffy", "Solo"], "phrases": []}
+    titles = ["Nami", "Naomi", "Namie", "Luffy", "Monkey D. Luffy", "Solo"]
+    return _items_for(tmp_path, gloss, titles)
+
+
+def test_negatives_come_only_from_exact_gold_and_drop_the_title_and_every_expansion(tmp_path):
+    items = _neg_fixture(tmp_path)
+    nami = _by_term(items, "Nami")
+    assert nami["gold_kind"] == "exact" and [c["title"] for c in nami["candidates"]][0] == "Nami"
+    neg = next(i for i in items if i["id"] == "verify-neg:Case Show:Nami")
+    assert neg["negative"] is True and neg["source_id"] == nami["id"] and neg["gold"] == "none" and neg["stage"] == "verify"
+    titles = [c["title"] for c in neg["candidates"]]
+    assert "Nami" not in titles and "Namie" not in titles  # the exact title and an expansion are gone
+    assert titles == [c["title"] for c in nami["candidates"] if c["title"] in titles]  # production order kept
+    by_title = {c["title"]: c["score"] for c in nami["candidates"]}
+    assert all(c["score"] == by_title[c["title"]] for c in neg["candidates"])  # scores untouched
+    assert titles == ["Naomi"] and neg["no_call"] is False
+
+
+def test_a_negative_whose_candidates_all_disappear_is_skipped(tmp_path):
+    items = _neg_fixture(tmp_path)
+    assert not [
+        i for i in items if i["id"] in ("verify-neg:Case Show:Luffy", "verify-neg:Case Show:Solo")
+    ]  # only expansions / nothing left
+
+
+def test_negatives_are_not_made_from_expansion_gold_and_ids_are_unique(tmp_path):
+    gloss = {"_curated": True, "names": ["Nanami", "Hanami", "Kento Nanami"], "phrases": []}
+    items = _items_for(tmp_path, gloss, ["Hanami", "Kento Nanami"])
+    assert not [i for i in items if i.get("negative") and i["term"] == "Nanami"]
+    (tmp_path / "again").mkdir()
+    ids = [i["id"] for i in _neg_fixture(tmp_path / "again")]
+    assert len(ids) == len(set(ids))
+
+
+def test_existing_item_ids_and_candidates_are_what_phase_1_produced(tmp_path, data):
+    """The baseline run joins on these: ids and candidate lists/order must not move."""
+    g, w = data
+    _, items, _ = _build(tmp_path, g, w)
+    ids = {i["id"] for i in items}
+    for term in ("Zoro", "Luffy", "Nami", "Sanji", "Chopper", "Straw Hat Pirates"):
+        assert f"verify:Alpha Show:{term}" in ids
+    assert "verify:Beta Show:Kaido" in ids and "acquire:Alpha Show:Zoroo|Zoro" in ids
+    for it in (i for i in items if i["stage"] == "verify" and not i.get("negative") and i["show"] == "Alpha Show"):
+        assert [c["title"] for c in it["candidates"]] == gv.candidates(it["term"], ALPHA_TITLES)
+
+
+def test_would_ask_matches_what_production_verify_would_actually_adjudicate(tmp_path, monkeypatch):
+    gloss = {"names": ["Kaido", "Zoro", "Luffy"], "phrases": [], "verified": ["Zoro"]}
+    g, w = _one_show(tmp_path, gloss, ["Kaido", "Luffy", "Zoro"], name="Parity Show")
+    items = _build(tmp_path, g, w)[1]
+    asked = []
+    monkeypatch.setattr(gv, "resolve_wiki", lambda title, override=None: "https://x/api.php")
+    monkeypatch.setattr(gv, "fetch_titles", lambda api, show: ["Kaido", "Luffy", "Zoro"])
+    monkeypatch.setattr(
+        gv, "adjudicate", lambda term, cands, show: asked.append(term) or {"canonical": "", "confidence": "none", "dub_note": ""}
+    )
+    gv.verify(str(g / "Parity Show.json"))
+    assert sorted(asked) == sorted(i["term"] for i in items if i["would_ask"])
+    assert [i["would_ask"] for i in items if i["term"] == "Zoro"] == [False]
+
+
+def test_would_ask_is_false_for_a_show_production_refuses_as_a_wiki_mismatch(tmp_path, monkeypatch):
+    gloss = {"names": ["Aaa", "Bbb", "Ccc"], "phrases": []}  # none of these is a wiki title, no pinned wiki
+    g, w = _one_show(tmp_path, gloss, ["Totally Different", "Other Page"], name="Mismatch Show")
+    items = _build(tmp_path, g, w)[1]
+    assert items and not any(i["would_ask"] for i in items)
+    monkeypatch.setattr(gv, "resolve_wiki", lambda title, override=None: "https://x/api.php")
+    monkeypatch.setattr(gv, "fetch_titles", lambda api, show: ["Totally Different", "Other Page"])
+    monkeypatch.setattr(gv, "adjudicate", lambda *a: pytest.fail("production refuses this show before any call"))
+    assert "mismatch" in gv.verify(str(g / "Mismatch Show.json"))["note"]
+    gloss["wiki"] = "https://pinned.example/api.php"  # a pinned wiki skips the gate
+    g2, w2 = _one_show(tmp_path / "p", gloss, ["Totally Different"], name="Mismatch Show")
+    assert all(i["would_ask"] for i in _build(tmp_path / "p", g2, w2)[1])
+
+
+def test_wiki_cache_staleness_follows_the_production_refresh_rule(tmp_path):
+    day = 24 * 3600
+    ttl = gv.WIKI_TTL
+    g, w = _one_show(tmp_path, {"names": ["Kaido"], "phrases": []}, ["Kaido"], name="Old Show", fetched_at=1000)
+    _put(w / "Fresh_Show.json", {"api": "https://x/api.php", "fetched_at": 1000 + ttl + day, "titles": ["T"]})
+    items = _build(tmp_path, g, w)[1]
+    assert items[0]["wiki_cache_stale"] is True  # older than WIKI_TTL as of the freshest cache in the snapshot
+    code, items2, _ = _build(tmp_path, g, w, "--as-of", str(1000 + ttl - 1), name="b.jsonl")
+    assert items2[0]["wiki_cache_stale"] is False
+
+
+def test_a_pinned_wiki_that_differs_from_the_cached_api_is_stale(tmp_path):
+    gloss = {"names": ["Kaido"], "phrases": [], "wiki": "https://other.example/wiki/Main"}
+    items = _items_for(tmp_path, gloss, ["Kaido"], fetched_at=10**10, api="https://x/api.php")
+    assert items[0]["wiki_cache_stale"] is True  # fetch_titles would refetch: the api differs
+
+
+def test_the_summary_is_honest_about_what_the_set_is(tmp_path, data, capsys):
+    g, w = data
+    _build(tmp_path, g, w)
+    out = capsys.readouterr().out
+    assert "verify --force" in out and "offline snapshot" in out
+    for label in ("exact", "expansion", "incumbent-derived", "ambiguous", "single-candidate", "negatives", "would_ask"):
+        assert label in out
+    assert "items production would ask" not in out
+
+
+def test_the_set_is_identical_across_processes_with_different_hash_seeds(tmp_path, data):
+    g, w = data
+    outs = []
+    for seed in ("1", "2"):
+        out = tmp_path / f"seed{seed}.jsonl"
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        r = subprocess.run(
+            [sys.executable, "tools/glossary_bakeoff.py", "build-set", "--glossaries", str(g)]
+            + ["--wiki-cache", str(w), "--out", str(out)],
+            cwd=REPO, env=env, capture_output=True, text=True, timeout=120, check=False,
+        )  # fmt: skip
+        assert r.returncode == 0, r.stderr
+        outs.append(out.read_bytes())
+    assert outs[0] == outs[1] and outs[0]
+
+
+def test_an_unwritable_out_is_a_clean_message_and_exit_1(tmp_path, data, capsys):
+    g, w = data
+    code = gb.main(
+        ["build-set", "--glossaries", str(g), "--wiki-cache", str(w), "--out", str(tmp_path / "no" / "such" / "dir" / "o.jsonl")]
+    )
+    err = capsys.readouterr().err
+    assert code == 1 and "--out" in err and "Traceback" not in err
+
+
+def test_a_malformed_glossary_says_its_acquire_cache_was_not_read(tmp_path, capsys):
+    g, w = tmp_path / "g", tmp_path / "w"
+    _put(g / "Broken Show.json", "{ nope")
+    _put(g / "Broken Show.acquire-cache.json", {"A": {"B": {"same_entity": True, "confidence": "high"}}})
+    w.mkdir()
+    code, items, _ = _build(tmp_path, g, w)
+    out = capsys.readouterr().out
+    assert code == 0 and not items and "Broken Show" in out and "acquire cache" in out and "not read" in out
+
+
+def test_the_registry_pins_the_verified_endpoints_models_and_pacing():
+    r = gb.ARMS
+    nemo, lc20, lc25 = r["nemotron-super"], r["longcat-2.0"], r["longcat-2.5"]
+    assert (
+        nemo.url == "https://integrate.api.nvidia.com/v1/chat/completions" and nemo.model == "nvidia/nemotron-3-super-120b-a12b"
+    )
+    assert nemo.key_env == "NVIDIA_API_KEY" and nemo.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+    for lc, model in ((lc20, "LongCat-2.0"), (lc25, "LongCat-2.5-Preview")):
+        assert lc.url == "https://api.longcat.chat/openai/v1/chat/completions" and lc.model == model
+        assert lc.key_env == "LONGCATAI_API_KEY" and lc.extra_body == {"thinking": {"type": "disabled"}}
+    assert nemo.delay >= 1.6  # NVIDIA's free tier is ~40 requests a minute
+    assert lc20.delay == lc25.delay == 0.3
+
+
+def test_an_arms_default_delay_applies_unless_delay_is_given(tmp_path, items_file, monkeypatch):
+    slept = []
+    monkeypatch.setattr(gb, "_sleep", slept.append)
+    _fake_openai(monkeypatch, '{"canonical": "Zoro", "confidence": "high"}')
+    _run(tmp_path, items_file, "nemotron-super", "--stage", "verify")
+    assert slept == [gb.ARMS["nemotron-super"].delay]
+    slept.clear()
+    _run(tmp_path, items_file, "nemotron-super", "--stage", "verify", "--delay", "0", out="b.jsonl")
+    assert slept == []  # an explicit --delay 0 wins over the arm's default

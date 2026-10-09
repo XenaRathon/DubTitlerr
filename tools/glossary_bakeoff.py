@@ -16,16 +16,29 @@ Offline by construction: no network, no model, no production module changed. The
 verify item is recomputed with the production `glossary_verify.candidates` (TOPK 6, cutoff 0.62), so what a
 model is asked is what production would have asked.
 
-What counts as a verify item. Production (`glossary_verify.verify`) adjudicates `pending_terms(gloss)`: every
-name and phrase not yet in `verified`, or all of them under `--force`. A live glossary has mostly been verified
-already, so the set takes ALL names and phrases (what --force sends) and records `verified` and `flagged` on
-each item; the term's origin is its `list` ("names" or "phrases"). A term with no candidates is kept with
-`no_call: true`: production returns "none" for it without a model call, so it is a control, not a question.
+What the set is: what `glossary_verify.verify --force` would send, computed from an OFFLINE SNAPSHOT of the
+glossaries and wiki caches. It is not a list of what production would ask tonight. Production (`verify`)
+adjudicates `pending_terms(gloss)`, the names and phrases not yet in `verified`; a live glossary has mostly been
+verified already, so the set takes ALL names and phrases and says per item whether production would still ask:
+`would_ask` is true only for an unverified term of a show that production would not refuse as a wiki mismatch,
+and `wiki_cache_stale` says production would refetch the titles (cache older than its refresh rule as of
+--as-of, default the freshest cache in the snapshot, or a pinned wiki that differs from the cached api), so the
+candidates could differ. A term with no candidates is kept with `no_call: true`: production returns "none"
+for it without a model call, so it is a control, not a question.
 
-Gold. Only for shows with `_curated` true, and only where a curated spelling (any name, phrase or hard_fixes
-target of that glossary) equals, casefolded, one of the item's candidate titles. If several candidates
-qualify the exact term wins, otherwise the one production ranked first, and `gold_ambiguous` is set.
-Everything else has `gold: null`. No label is invented.
+Gold, only for shows with `_curated` true, and only where the label is not a guess. A candidate is gold when
+  * `exact`: its title equals the term (casefolded); or
+  * `expansion`: `glossary_acquire.is_expansion(term, title)` holds AND the title is itself one of the glossary's
+    names/phrases (the same entity written longer; `incumbent_derived` is set when the term is in `verified`,
+    because the incumbent model may have written that name itself).
+A respelling or another character that merely shares letters is never gold, and hard_fixes targets are not a
+source. If more than one candidate qualifies there is no gold: `gold` null, `gold_ambiguous` true, no tie-break.
+Respelling cases are left to the spec's human-review queue.
+
+Synthetic negatives. From every item whose gold is `exact`, an extra item `verify-neg:{show}:{term}` with
+`negative: true`, `gold: "none"` and the source's candidates minus the exact title and minus every remaining
+candidate that is an expansion of the term (otherwise a leftover 'Monkey D. Luffy' would make "none" wrong).
+Survivors keep production order and scores; a negative left with no candidate is dropped.
 
 Acquire items are the cached pairs of `<show>.acquire-cache.json`: the two spellings and the local model's
 historical verdict. The transcript quotes are not available offline, so `quotes` is null.
@@ -116,37 +129,71 @@ def _glossary_files(gloss_dir):
     return sorted(f for f in names if os.path.isfile(os.path.join(gloss_dir, f)))
 
 
-def _curated_spellings(gloss):
-    spellings = [*gloss.get("names", []), *gloss.get("phrases", [])]
-    hard = gloss.get("hard_fixes")
-    if isinstance(hard, dict):
-        spellings += [v for v in hard.values() if isinstance(v, str)]
-    return {s.casefold() for s in spellings if isinstance(s, str)}
-
-
 def _gold(term, cand_titles, gloss):
-    """(gold title, ambiguous) for a curated glossary, else (None, False)."""
+    """(gold title, kind, ambiguous) for a curated glossary, else (None, None, False). See the module docstring."""
     if not gloss.get("_curated"):
-        return None, False
-    canon = _curated_spellings(gloss)
-    hits = [t for t in cand_titles if t.casefold() in canon]
-    if not hits:
-        return None, False
-    exact = [t for t in hits if t.casefold() == term.casefold()]
-    return (exact or hits)[0], len(hits) > 1
+        return None, None, False
+    members = {x.casefold() for x in [*gloss.get("names", []), *gloss.get("phrases", [])] if isinstance(x, str)}
+    qualifying = []
+    for title in cand_titles:
+        if title.casefold() == term.casefold():
+            qualifying.append((title, "exact"))
+        elif title.casefold() in members and glossary_acquire.is_expansion(term, title):
+            qualifying.append((title, "expansion"))
+    if not qualifying:
+        return None, None, False
+    if len(qualifying) > 1:
+        return None, None, True
+    return qualifying[0][0], qualifying[0][1], False
 
 
-def verify_items(gloss, show, titles):
-    """One item per name/phrase, candidates from the PRODUCTION function in production order."""
+def _wiki_mismatch(gloss, titles):
+    """glossary_verify.verify's sanity gate (it is inline there, so mirrored): an auto-resolved wiki is refused
+    when none of the glossary's known names is a title on it. A pinned `wiki` skips the gate."""
+    names = gloss.get("names", [])
+    if gloss.get("wiki") or len(names) < 3:
+        return False
+    tl = {t.lower() for t in titles}
+    return not any(n.lower() in tl for n in names)
+
+
+def _wiki_stale(doc, as_of, gloss):
+    """Would fetch_titles refetch? Its rule: cached api differs from the resolved one, or the cache is at least
+    WIKI_TTL old. The resolved api is known offline only for a pinned wiki."""
+    fetched = doc.get("fetched_at")
+    fetched = fetched if isinstance(fetched, (int, float)) and not isinstance(fetched, bool) else 0
+    pinned = gloss.get("wiki")
+    if isinstance(pinned, str) and pinned and doc.get("api") != glossary_verify.normalize_api(pinned):
+        return True
+    return as_of - fetched >= glossary_verify.WIKI_TTL
+
+
+def _snapshot_time(wiki_dir):
+    """The freshest fetched_at among the wiki caches: 'now' as the snapshot saw it, so the set does not depend on
+    the day it is rebuilt."""
+    best = 0.0
+    for f in sorted(os.listdir(wiki_dir)):
+        if f.endswith(".json"):
+            doc, err = _read_json(os.path.join(wiki_dir, f))
+            v = doc.get("fetched_at") if not err and isinstance(doc, dict) else None
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                best = max(best, float(v))
+    return best
+
+
+def verify_items(gloss, show, titles, stale=False):
+    """One item per name/phrase, candidates from the PRODUCTION function in production order, each followed by its
+    synthetic negative when it has one."""
     names, phrases = gloss.get("names", []), gloss.get("phrases", [])
     verified = set(gloss.get("verified", []) if isinstance(gloss.get("verified"), list) else [])
     flagged = gloss.get("flagged") if isinstance(gloss.get("flagged"), dict) else {}
     acquired = gloss.get("acquired") or ()
     items = []
+    mismatch = _wiki_mismatch(gloss, titles)
     # pending_terms with nothing verified == names then phrases, deduplicated: what `verify --force` sends.
     for term in glossary_verify.pending_terms({"names": names, "phrases": phrases}):
         cand_titles = glossary_verify.candidates(term, titles)
-        gold, ambiguous = _gold(term, cand_titles, gloss)
+        gold, kind, ambiguous = _gold(term, cand_titles, gloss)
         item = {
             "id": f"verify:{show}:{term}",
             "stage": "verify",
@@ -158,13 +205,37 @@ def verify_items(gloss, show, titles):
             "acquired": term in acquired,
             "candidates": [{"title": t, "score": _score(term, t)} for t in cand_titles],
             "no_call": not cand_titles,
+            "would_ask": term not in verified and not mismatch,
+            "wiki_cache_stale": stale,
             "gold": gold,
         }
         if gold is not None:
             item["gold_source"] = "curated"
-            if ambiguous:
-                item["gold_ambiguous"] = True
+            item["gold_kind"] = kind
+            item["incumbent_derived"] = kind == "expansion" and term in verified
+        elif ambiguous:
+            item["gold_ambiguous"] = True
         items.append(item)
+        if kind == "exact":
+            survivors = [
+                c for c in item["candidates"] if c["title"] != gold and not glossary_acquire.is_expansion(term, c["title"])
+            ]
+            if survivors:  # an empty list would be a no-call control, not a question
+                items.append(
+                    {
+                        **{k: item[k] for k in ("stage", "show", "term", "list", "verified", "flagged", "acquired")},
+                        "id": f"verify-neg:{show}:{term}",
+                        "candidates": survivors,
+                        "no_call": False,
+                        "would_ask": item["would_ask"],
+                        "wiki_cache_stale": stale,
+                        "negative": True,
+                        "source_id": item["id"],
+                        "gold": "none",
+                        "gold_source": "synthetic",
+                        "gold_kind": "negative",
+                    }
+                )
     return items
 
 
@@ -199,9 +270,11 @@ def _wanted(show, stem, filters):
     return not filters or any(f.casefold() in show.casefold() or f.casefold() in stem.casefold() for f in filters)
 
 
-def build_set(gloss_dir, wiki_dir, filters=()):
+def build_set(gloss_dir, wiki_dir, filters=(), as_of=None):
     """(items, per-show stats, skipped notes). Pure with respect to its inputs; never raises on bad data."""
     items, stats, skipped = [], {}, []
+    if as_of is None:
+        as_of = _snapshot_time(wiki_dir)
     stems_with_glossary = set()
     for fname in _glossary_files(gloss_dir):
         stem = fname[: -len(".json")]
@@ -210,11 +283,13 @@ def build_set(gloss_dir, wiki_dir, filters=()):
         if err or not isinstance(gloss, dict):
             if _wanted(stem, stem, filters):
                 skipped.append((stem, f"glossary skipped: {err or 'not a JSON object'}"))
+                if os.path.exists(os.path.join(gloss_dir, stem + acquire_cache.SUFFIX)):
+                    skipped.append((stem, "its acquire cache was not read (the glossary is unusable)"))
             continue
         show = gloss.get("show") if isinstance(gloss.get("show"), str) and gloss.get("show") else stem
         if not _wanted(show, stem, filters):
             continue
-        row = stats.setdefault(show, {"verify": 0, "with_candidates": 0, "no_call": 0, "with_gold": 0, "acquire": 0})
+        row = stats.setdefault(show, dict.fromkeys(_COLS, 0))
         lists_ok = all(
             isinstance(gloss.get(k, []), list) and all(isinstance(x, str) for x in gloss.get(k, [])) for k in ("names", "phrases")
         )
@@ -233,19 +308,22 @@ def build_set(gloss_dir, wiki_dir, filters=()):
                     skipped.append((show, "wiki cache empty: no titles (verify items skipped)"))
                 else:
                     titles = [t for t in titles if isinstance(t, str)]
-                    vi = verify_items(gloss, show, titles)
+                    vi = verify_items(gloss, show, titles, _wiki_stale(doc, as_of, gloss))
                     items += vi
-                    row["verify"] = len(vi)
-                    row["with_candidates"] = sum(1 for i in vi if not i["no_call"])
-                    row["no_call"] = sum(1 for i in vi if i["no_call"])
-                    row["with_gold"] = sum(1 for i in vi if i["gold"] is not None)
+                    real = [i for i in vi if not i.get("negative")]
+                    row["verify"] = len(real)
+                    row["with_candidates"] = sum(1 for i in real if not i["no_call"])
+                    row["no_call"] = sum(1 for i in real if i["no_call"])
+                    row["with_gold"] = sum(1 for i in real if i["gold"] is not None)
+                    row["negatives"] = len(vi) - len(real)
+                    row["would_ask"] = sum(1 for i in real if i["would_ask"])
         _acquire_for(os.path.join(gloss_dir, stem + acquire_cache.SUFFIX), show, row, items, skipped)
     # acquire caches whose glossary file is missing: the show is the file stem
     for fname in sorted(os.listdir(gloss_dir)):
         if fname.endswith(acquire_cache.SUFFIX):
             stem = fname[: -len(acquire_cache.SUFFIX)]
             if stem not in stems_with_glossary and _wanted(stem, stem, filters):
-                row = stats.setdefault(stem, {"verify": 0, "with_candidates": 0, "no_call": 0, "with_gold": 0, "acquire": 0})
+                row = stats.setdefault(stem, dict.fromkeys(_COLS, 0))
                 _acquire_for(os.path.join(gloss_dir, fname), stem, row, items, skipped)
     return items, stats, skipped
 
@@ -264,17 +342,35 @@ def _acquire_for(path, show, row, items, skipped):
         skipped.append((show, f"{bad} malformed acquire pair entr{'y' if bad == 1 else 'ies'} skipped"))
 
 
-def _summary(stats, skipped, n_items):
-    cols = ("verify", "with_candidates", "no_call", "with_gold", "acquire")
-    head = f"{'show':<44} {'verify':>7} {'w/cands':>8} {'no_call':>8} {'w/gold':>7} {'acquire':>8}"
-    lines = [head, "-" * len(head)]
+_COLS = ("verify", "with_candidates", "no_call", "with_gold", "negatives", "would_ask", "acquire")
+
+
+def _summary(stats, skipped, items):
+    widths = (7, 8, 8, 7, 5, 9, 8)
+    head = f"{'show':<44} {'verify':>7} {'w/cands':>8} {'no_call':>8} {'w/gold':>7} {'neg':>5} {'would_ask':>9} {'acquire':>8}"
+    lines = [
+        "Verify items = what `verify --force` would send, from an offline snapshot "
+        "(would_ask: what a normal sweep would still ask).",
+        head,
+        "-" * len(head),
+    ]
     for show in sorted(stats):
         r = stats[show]
-        lines.append(f"{show[:44]:<44} " + " ".join(f"{r[c]:>{w}}" for c, w in zip(cols, (7, 8, 8, 7, 8), strict=True)))
-    tot = {c: sum(r[c] for r in stats.values()) for c in cols}
+        lines.append(f"{show[:44]:<44} " + " ".join(f"{r[c]:>{w}}" for c, w in zip(_COLS, widths, strict=True)))
+    tot = {c: sum(r[c] for r in stats.values()) for c in _COLS}
     lines.append("-" * len(head))
-    lines.append(f"{'TOTAL':<44} " + " ".join(f"{tot[c]:>{w}}" for c, w in zip(cols, (7, 8, 8, 7, 8), strict=True)))
-    lines.append(f"{n_items} items written")
+    lines.append(f"{'TOTAL':<44} " + " ".join(f"{tot[c]:>{w}}" for c, w in zip(_COLS, widths, strict=True)))
+    v = [i for i in items if i["stage"] == "verify" and not i.get("negative")]
+    kinds = {k: sum(1 for i in v if i.get("gold_kind") == k) for k in ("exact", "expansion")}
+    lines.append(
+        f"gold: exact {kinds['exact']}, expansion {kinds['expansion']} "
+        f"(incumbent-derived {sum(1 for i in v if i.get('incumbent_derived'))}); "
+        f"ambiguous (no gold) {sum(1 for i in v if i.get('gold_ambiguous'))}; "
+        f"single-candidate items {sum(1 for i in v if len(i['candidates']) == 1)}; "
+        f"negatives {tot['negatives']}; would_ask {tot['would_ask']}; "
+        f"wiki_cache_stale {sum(1 for i in v if i['wiki_cache_stale'])}"
+    )
+    lines.append(f"{len(items)} items written")
     lines.append(f"skipped: {len(skipped)}")
     lines += [f"  - {show}: {why}" for show, why in skipped]
     return "\n".join(lines)
@@ -299,11 +395,12 @@ class Arm:
     key_env: str = ""
     extra_body: dict = field(default_factory=dict)
     third_party: bool = True
+    delay: float = 0.0  # default pause between calls (seconds); --delay overrides, including with 0
 
 
 _LONGCAT_URL = "https://api.longcat.chat/openai/v1/chat/completions"
-# NVIDIA's OpenAI-compatible endpoint; the nemotron model id is the one place a value could not be checked against the
-# repo (no caller of tools/bakeoff.py records it), so it is overridable with GLOSSARY_BAKEOFF_NEMOTRON_SUPER_MODEL.
+# URLs, model ids, key variables and extra bodies below are the ones the anchored repair bake-off ran live. NVIDIA's free tier
+# allows about 40 requests a minute, hence the 1.6 s default pause; override with GLOSSARY_BAKEOFF_<ARM>_URL / _MODEL.
 _NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 _DECISIONS = decision_client.DECISIONS_URL
 _JEV_KEY = "OPENROUTER_JEV_API_KEY"
@@ -311,8 +408,18 @@ ARMS = {
     a.name: a
     for a in (
         Arm("qwen-local", "local", model=glossary_verify.VERIFY_MODEL, third_party=False),
-        Arm("longcat-2.0", "text", "LongCat-2.0", _LONGCAT_URL, "LONGCATAI_API_KEY", {"thinking": {"type": "disabled"}}),
-        Arm("longcat-2.5", "text", "LongCat-2.5-Preview", _LONGCAT_URL, "LONGCATAI_API_KEY", {"thinking": {"type": "disabled"}}),
+        Arm(
+            "longcat-2.0", "text", "LongCat-2.0", _LONGCAT_URL, "LONGCATAI_API_KEY", {"thinking": {"type": "disabled"}}, delay=0.3
+        ),
+        Arm(
+            "longcat-2.5",
+            "text",
+            "LongCat-2.5-Preview",
+            _LONGCAT_URL,
+            "LONGCATAI_API_KEY",
+            {"thinking": {"type": "disabled"}},
+            delay=0.3,
+        ),  # fmt: skip
         Arm(
             "nemotron-super",
             "text",
@@ -320,6 +427,7 @@ ARMS = {
             _NVIDIA_URL,
             "NVIDIA_API_KEY",
             {"chat_template_kwargs": {"enable_thinking": False}},
+            delay=1.6,
         ),  # fmt: skip
         Arm("mercury-decide", "decision", "inception/mercury-decide:free", _DECISIONS, _JEV_KEY),
         Arm("span-01-lite", "decision", "respan/span-01-lite", _DECISIONS, _JEV_KEY),
@@ -573,6 +681,7 @@ def cmd_run(a):
     if a.limit is not None:
         items = items[: a.limit]
     order = "rev" if a.reverse else "fwd"
+    delay = arm.delay if a.delay is None else a.delay
     print(_startup_line(arm, a.stage), flush=True)
     done = _load_done(a.out)
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
@@ -596,8 +705,8 @@ def cmd_run(a):
                 body = _row(None, {"canonical": "", "confidence": "none"}, 0.0, None, None, local=True)
                 n["local"] += 1
             else:
-                if n["sent"] and a.delay:
-                    _sleep(a.delay)
+                if n["sent"] and delay:
+                    _sleep(delay)
                 body = run_item(arm, item, order)
                 n["sent"] += 1
                 n["errors"] += 1 if body["error"] else 0
@@ -614,11 +723,15 @@ def cmd_run(a):
 
 
 def cmd_build_set(a):
-    items, stats, skipped = build_set(a.glossaries, a.wiki_cache, a.show or ())
+    items, stats, skipped = build_set(a.glossaries, a.wiki_cache, a.show or (), a.as_of)
     text = "".join(json.dumps(i, ensure_ascii=False, sort_keys=False) + "\n" for i in items)
-    with open(a.out, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
-    print(_summary(stats, skipped, len(items)))
+    try:
+        with open(a.out, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+    except OSError as e:
+        print(f"build-set: cannot write --out {a.out!r}: {e.strerror or type(e).__name__}", file=sys.stderr)
+        return 1
+    print(_summary(stats, skipped, items))
     return 0
 
 
@@ -629,6 +742,9 @@ def main(argv=None):
     bs.add_argument("--glossaries", required=True, help="directory of <show>.json and <show>.acquire-cache.json copies")
     bs.add_argument("--wiki-cache", required=True, help="directory of wiki title caches (<show_key>.json)")
     bs.add_argument("--out", required=True, help="items.jsonl to write")
+    bs.add_argument(
+        "--as-of", type=float, metavar="EPOCH", help="'now' for the wiki-cache staleness flag (default: the freshest cache)"
+    )
     bs.add_argument("--show", nargs="+", metavar="SUBSTRING", help="only shows whose name contains one of these (casefolded)")
     rn = sub.add_parser("run", help="put the item set to one arm and append result rows")
     rn.add_argument("--items", required=True, help="items.jsonl from build-set")
@@ -645,7 +761,13 @@ def main(argv=None):
     rn.add_argument("--seed", type=int, default=0)
     rn.add_argument("--limit", type=int, metavar="N", help="stop after the first N selected items")
     rn.add_argument("--reverse", action="store_true", help="verify items with the candidate list reversed (order 'rev')")
-    rn.add_argument("--delay", type=_delay_seconds, default=0.0, metavar="SECONDS", help="pause between sent calls (rate limits)")
+    rn.add_argument(
+        "--delay",
+        type=_delay_seconds,
+        default=None,
+        metavar="SECONDS",
+        help="pause between sent calls (default: the arm's own, see ARMS)",
+    )
     rn.add_argument("--retry-errors", action="store_true", help="re-run rows that ended in an error")
     a = ap.parse_args(argv)
     if a.cmd == "run":
