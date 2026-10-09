@@ -20,11 +20,17 @@ class ScopeResult(NamedTuple):
     notes: list[str]
 
 
+DEFAULT_GLOBAL_DENY = [
+    r"::",
+]
+
 DEFAULT_SEASON_DENY = [
     r"^EP\d+",
+    r"\(EP\d+\)$",
     r"^Category:",
     r"^File:",
 ]
+
 
 DEFAULT_STRUCTURAL_DENY = [
     r"^Chapter\s+\d+",
@@ -112,6 +118,81 @@ def _parse_arc_rows(wt: str) -> tuple[list[tuple[str, set[int]]], list[str]]:
     return arcs, notes
 
 
+def _extract_table_episode_titles(wt: str) -> set[str]:
+    """Extract episode titles and non-code link targets from wikitext episode tables."""
+    episodes: set[str] = set()
+    if not wt:
+        return episodes
+
+    tables = re.findall(r"(\{\|.*?\|\})", wt, re.DOTALL)
+    for tbl in tables:
+        rows = re.split(r"\n\|-", tbl)
+        title_col_idx = None
+
+        for raw_row in rows:
+            lines = [ln.strip() for ln in raw_row.splitlines() if ln.strip()]
+            if not lines:
+                continue
+
+            # Header row check
+            if any(ln.startswith("!") for ln in lines):
+                header_cells: list[str] = []
+                for ln in lines:
+                    if ln.startswith("!"):
+                        parts = re.split(r"!!", ln[1:])
+                        for p in parts:
+                            if "|" in p:
+                                p = p.split("|")[-1]
+                            header_cells.append(p.strip())
+                for idx, h in enumerate(header_cells):
+                    if re.search(r"title", h, re.IGNORECASE):
+                        title_col_idx = idx
+                        break
+                continue
+
+            # Only process data rows if this table has an episode title column
+            if title_col_idx is None:
+                continue
+
+            # Data row
+            cells: list[str] = []
+            for ln in lines:
+                if ln.startswith("|") and not ln.startswith("|-") and not ln.startswith("|}"):
+                    content = ln[1:]
+                    parts = re.split(r"\|\|", content)
+                    for p in parts:
+                        p_str = p.strip()
+                        # If cell has style/attribute separator: style="..." | text
+                        has_link = "[[" in p_str and "]]" in p_str
+                        pipe_in_link = has_link and p_str.find("[[") < p_str.find("|") < p_str.find("]]")
+                        if "|" in p_str and not pipe_in_link:
+                            pipe_parts = p_str.split("|")
+                            if any(attr in pipe_parts[0] for attr in ("style=", "class=", "rowspan=", "colspan=")):
+                                p_str = "|".join(pipe_parts[1:]).strip()
+                        cells.append(p_str)
+
+            if not cells or len(cells) <= title_col_idx:
+                continue
+
+            # Extract from title column
+            raw_cell = cells[title_col_idx]
+            for m in re.finditer(r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]", raw_cell):
+                episodes.add(m.group(1).strip())
+            clean_text = re.sub(r"\[\[(?:[^\]|#]+\|)?([^\]]*)\]\]", r"\1", raw_cell)
+            clean_text = re.sub(r"'''+|''+|\<[^\>]*\>", "", clean_text).strip()
+            if clean_text:
+                episodes.add(clean_text)
+
+            # In this episode table, also check if epicode cell has a link that is not EP\d+ or number
+            if len(cells) > 0:
+                for m in re.finditer(r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]", cells[0]):
+                    target = m.group(1).strip()
+                    if not re.match(r"^EP\d+$", target) and not re.match(r"^\d+$", target):
+                        episodes.add(target)
+
+    return episodes
+
+
 def resolve_scope(
     cfg: dict | None,
     season: int | str | None = None,
@@ -192,10 +273,11 @@ def resolve_scope(
             links = _extract_links(arc_wt)
             all_titles.update(links)
 
+        deny_patterns = DEFAULT_GLOBAL_DENY + custom_deny
         filtered = {
             normalize_title(t)
             for t in all_titles
-            if normalize_title(t) and not _is_denied(t, custom_deny)
+            if normalize_title(t) and not _is_denied(t, deny_patterns)
         }
         return ScopeResult(titles=filtered, complete=complete, rung=rung, notes=notes)
 
@@ -212,7 +294,7 @@ def resolve_scope(
         except Exception as e:
             return ScopeResult(titles=set(), complete=False, rung=rung, notes=[f"failed to format season_page: {e}"])
 
-        url = f"{wiki}?action=parse&page={urllib.parse.quote(page_title)}&prop=links&format=json"
+        url = f"{wiki}?action=parse&page={urllib.parse.quote(page_title)}&prop=links|wikitext&format=json"
         try:
             resp = fetch_json(url)
         except Exception as e:
@@ -230,11 +312,38 @@ def resolve_scope(
         elif "wikitext" in parse_obj:
             raw_titles = _extract_links(parse_obj["wikitext"].get("*", ""))
 
-        deny_patterns = DEFAULT_SEASON_DENY + custom_deny
+        season_wt = parse_obj.get("wikitext", {}).get("*", "")
+        table_episodes: set[str] = set()
+
+        ep_list_page_cfg = cfg.get("episode_list_page")
+        if ep_list_page_cfg:
+            try:
+                ep_list_page = ep_list_page_cfg.format(season=int(season))
+            except Exception:
+                ep_list_page = str(ep_list_page_cfg)
+            ep_url = f"{wiki}?action=parse&page={urllib.parse.quote(ep_list_page)}&prop=wikitext&format=json"
+            try:
+                ep_resp = fetch_json(ep_url)
+                if ep_resp and "parse" in ep_resp:
+                    ep_wt = ep_resp.get("parse", {}).get("wikitext", {}).get("*", "")
+                    table_episodes.update(_extract_table_episode_titles(ep_wt))
+                else:
+                    err_msg = ep_resp.get("error") if ep_resp else "empty"
+                    notes.append(f"warning: error fetching episode_list_page {ep_list_page}: {err_msg}")
+            except Exception as e:
+                notes.append(f"warning: http error fetching episode_list_page {ep_list_page}: {e}")
+        elif season_wt:
+            table_episodes.update(_extract_table_episode_titles(season_wt))
+
+        deny_patterns = DEFAULT_GLOBAL_DENY + DEFAULT_SEASON_DENY + custom_deny
+        normalized_table_episodes = {normalize_title(t) for t in table_episodes if normalize_title(t)}
+
         filtered = {
             normalize_title(t)
             for t in raw_titles
-            if normalize_title(t) and not _is_denied(t, deny_patterns)
+            if normalize_title(t)
+            and not _is_denied(t, deny_patterns)
+            and normalize_title(t) not in normalized_table_episodes
         }
         return ScopeResult(titles=filtered, complete=True, rung=rung, notes=notes)
 
@@ -280,7 +389,7 @@ def resolve_scope(
                 complete = False
                 notes.append("allpages exceeded 10-page limit (continuation truncated)")
 
-        deny_patterns = DEFAULT_STRUCTURAL_DENY + custom_deny
+        deny_patterns = DEFAULT_GLOBAL_DENY + DEFAULT_STRUCTURAL_DENY + custom_deny
         filtered = {
             normalize_title(t)
             for t in all_raw_titles

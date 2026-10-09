@@ -329,3 +329,144 @@ def test_arc_index_multiple_comma_separated_ranges():
     # Episode 125 matches second range
     res2 = wiki_scope.resolve_scope(cfg, season=6, episode_numbers=[125], http=fake_http)
     assert "Itachi Uchiha" in res2.titles
+
+
+# ---- Tests: Leak 1 (SMW property links containing '::') ---------------------
+
+
+def test_arc_index_drops_smw_double_colon_properties():
+    smw_wt = """== Plot ==
+[[Kakashi Hatake]] fights [[Zabuza Momochi]].
+[[Anime Arc number::1]]
+[[Anime::Boruto]]
+[[Arc number::1]]
+[[Anime::Naruto: Shippūden]]
+"""
+    def fake_http(url):
+        if "Plot" in url:
+            return {"parse": {"wikitext": {"*": NARUTO_INDEX_WIKITEXT}}}
+        return {"parse": {"wikitext": {"*": smw_wt}}}
+
+    cfg = {
+        "rung": "arc_index",
+        "wiki": "https://naruto.fandom.com/api.php",
+        "index_page": "Plot of Naruto",
+    }
+    res = wiki_scope.resolve_scope(cfg, season=1, episode_numbers=[5], http=fake_http)
+    assert "Kakashi Hatake" in res.titles
+    assert "Zabuza Momochi" in res.titles
+    assert "Anime Arc number::1" not in res.titles
+    assert "Anime::Boruto" not in res.titles
+    assert "Arc number::1" not in res.titles
+    assert "Anime::Naruto: Shippūden" not in res.titles
+
+
+def test_season_page_drops_smw_double_colon_properties():
+    links = [
+        {"ns": 0, "*": "Ash Ketchum"},
+        {"ns": 0, "*": "Anime::Boruto"},
+        {"ns": 0, "*": "Arc number::1"},
+    ]
+    def fake_http(url):
+        return {"parse": {"links": links}}
+
+    cfg = {
+        "rung": "season_page",
+        "wiki": "https://bulbapedia.bulbagarden.net/w/api.php",
+        "season_page": "S{season:02d}",
+    }
+    res = wiki_scope.resolve_scope(cfg, season=1, episode_numbers=None, http=fake_http)
+    assert "Ash Ketchum" in res.titles
+    assert "Anime::Boruto" not in res.titles
+    assert "Arc number::1" not in res.titles
+
+
+# ---- Tests: Leak 2 (EP code suffix and episode-list table extraction) -------
+
+
+def test_season_page_drops_titles_ending_with_ep_code():
+    links = [
+        {"ns": 0, "*": "Ash Ketchum"},
+        {"ns": 0, "*": "Anthony (EP029)"},
+        {"ns": 0, "*": "A.J. (EP009)"},
+    ]
+    def fake_http(url):
+        return {"parse": {"links": links}}
+
+    cfg = {
+        "rung": "season_page",
+        "wiki": "https://bulbapedia.bulbagarden.net/w/api.php",
+        "season_page": "S{season:02d}",
+    }
+    res = wiki_scope.resolve_scope(cfg, season=1, episode_numbers=None, http=fake_http)
+    assert "Ash Ketchum" in res.titles
+    assert "Anthony (EP029)" not in res.titles
+    assert "A.J. (EP009)" not in res.titles
+
+
+def test_season_page_drops_titles_from_episode_table_cells():
+    table_wt = """== Episodes ==
+{| class="roundy"
+|-
+! Epicode !! Episode Title !! Number
+|-
+| [[EP001]] || ''Pokémon - I Choose You!'' || 1
+|-
+| [[Holiday Hi-Jynx|*]] || ''Holiday Hi-Jynx'' || 62
+|-
+| [[Snow Way Out!|*]] || ''Snow Way Out!'' || 63
+|}
+"""
+    links = [
+        {"ns": 0, "*": "Ash Ketchum"},
+        {"ns": 0, "*": "Holiday Hi-Jynx"},
+        {"ns": 0, "*": "Snow Way Out!"},
+        {"ns": 0, "*": "Pikachu (Pokémon)"},
+    ]
+    def fake_http(url):
+        return {"parse": {"links": links, "wikitext": {"*": table_wt}}}
+
+    cfg = {
+        "rung": "season_page",
+        "wiki": "https://bulbapedia.bulbagarden.net/w/api.php",
+        "season_page": "S{season:02d}",
+    }
+    res = wiki_scope.resolve_scope(cfg, season=1, episode_numbers=None, http=fake_http)
+    assert "Ash Ketchum" in res.titles
+    assert "Pikachu (Pokémon)" in res.titles
+    assert "Holiday Hi-Jynx" not in res.titles
+    assert "Snow Way Out!" not in res.titles
+
+
+def test_season_page_with_explicit_episode_list_page_cfg():
+    ep_wt = """== List of Episodes ==
+{| class="wikitable"
+|-
+! # !! Title !! Air Date
+|-
+| 1 || [[The First Adventure]] || 2020-01-01
+|-
+| 2 || [[The Second Adventure]] || 2020-01-08
+|}
+"""
+    season_links = [
+        {"ns": 0, "*": "Main Hero"},
+        {"ns": 0, "*": "The First Adventure"},
+        {"ns": 0, "*": "Sidekick"},
+    ]
+    def fake_http(url):
+        if "Episode_List_S01" in url:
+            return {"parse": {"wikitext": {"*": ep_wt}}}
+        return {"parse": {"links": season_links}}
+
+    cfg = {
+        "rung": "season_page",
+        "wiki": "https://example.fandom.com/api.php",
+        "season_page": "Season_{season:02d}",
+        "episode_list_page": "Episode_List_S{season:02d}",
+    }
+    res = wiki_scope.resolve_scope(cfg, season=1, episode_numbers=None, http=fake_http)
+    assert "Main Hero" in res.titles
+    assert "Sidekick" in res.titles
+    assert "The First Adventure" not in res.titles
+
