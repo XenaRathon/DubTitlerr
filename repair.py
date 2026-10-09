@@ -846,22 +846,59 @@ def accept_repair(orig, new, ref, dur, gloss):
     (``invents_name``, below) needs to know what the show's names ARE to tell a real
     correction from a fabricated one, so a caller that cannot say what those names are
     must not be allowed to silently skip the check by omitting the argument."""
+    return rejecting_guard(orig, new, ref, dur, gloss) is None
+
+
+def _accept_punct_case_only() -> bool:
+    """REPAIR_ACCEPT_PUNCT_CASE_ONLY=1 (default off): see rejecting_guard. Read per call."""
+    return os.environ.get("REPAIR_ACCEPT_PUNCT_CASE_ONLY") == "1"
+
+
+def is_punct_case_only(orig, new) -> bool:
+    """``new`` differs from ``orig`` (exactly) but changes no word: only case and/or punctuation."""
+    return bool(new) and new != (orig or "") and unresolved.word_changes(orig, new) == 0
+
+
+def _no_new_layout_fault(new, dur, orig):
+    """``new`` breaks no display-profile rule that ``orig`` did not already break (a rule it already broke may stay broken, even a
+    character worse): the check for an edit that adds or removes only case and punctuation."""
+    before = set(reflow.layout_faults(reflow.wrap_balance((orig or "").replace("\n", " ")), dur))
+    after = set(reflow.layout_faults(reflow.wrap_balance((new or "").replace("\n", " ")), dur))
+    return after <= before
+
+
+def rejecting_guard(orig, new, ref, dur, gloss, punct_case_ok=None):
+    """The name of the FIRST guard that refuses ``new`` for ``orig``, or None when accept_repair admits it. accept_repair is
+    exactly ``rejecting_guard(...) is None``; the name is what the review queue records (key 'guard') so a human, and later
+    measurements, can tell why a proposal was refused:
+
+        empty, unchanged, invents_name, name_part, vouched_name, length_ratio, fits_card, ref_borrow
+
+    ``punct_case_ok`` (default: REPAIR_ACCEPT_PUNCT_CASE_ONLY=1) gives a proposal that changes only case and punctuation two
+    allowances: it is not "unchanged" when the case differs, and fits_card is replaced by "no NEW kind of layout fault". Measured
+    on a real queue, 7 of 100 rejected proposals changed no word, and fits_card refuses an edit that makes an already over-cps
+    card worse in ANY dimension, so one added period on a dense card was refused. Every other guard still applies."""
     if not new:
-        return False
-    if new.lower() == (orig or "").lower():
-        return False  # nothing changed
+        return "empty"
+    if punct_case_ok is None:
+        punct_case_ok = _accept_punct_case_only()
+    special = punct_case_ok and is_punct_case_only(orig, new)
+    if new.lower() == (orig or "").lower() and not special:
+        return "unchanged"  # nothing changed
     if invents_name(orig, new, gloss):
-        return False  # phonetic-name-guard: fabricated proper noun, not a real correction
+        return "invents_name"  # phonetic-name-guard: fabricated proper noun, not a real correction
     if _keep_name_parts() and changes_name_parts(orig, new, gloss):
-        return False  # a name said alone stays alone, a full name stays full
+        return "name_part"  # a name said alone stays alone, a full name stays full
     if not ref and substitutes_a_vouched_name(orig, new, gloss):
-        return False  # S-14: no reference, so no standing to overrule a vouched name
+        return "vouched_name"  # S-14: no reference, so no standing to overrule a vouched name
     ratio = len(new) / max(1, len(orig))
     if not (LEN_RATIO_MIN <= ratio <= LEN_RATIO_MAX):
-        return False  # added or dropped a clause
-    if not fits_card(new, dur, orig):
-        return False  # unreadable/undisplayable on THIS card
-    return len(borrowed_from_ref(orig, new, ref)) < MAX_REF_BORROW
+        return "length_ratio"  # added or dropped a clause
+    if not (_no_new_layout_fault(new, dur, orig) if special else fits_card(new, dur, orig)):
+        return "fits_card"  # unreadable/undisplayable on THIS card
+    if len(borrowed_from_ref(orig, new, ref)) >= MAX_REF_BORROW:
+        return "ref_borrow"
+    return None
 
 
 def llm_ollama(prompt, model=None):
@@ -1184,6 +1221,8 @@ def _process_episode(conf_path):
     rejected_4xx = 0  # request-scoped client errors (llm_openai): no repair for that line, not an outage
     rejected_secondary = 0  # C5: second-pass output refused by the gate
     rejected_name_part = 0  # subset of rejected: the repair added or removed a part of a name
+    dismissed_large_change = 0  # subset of rejected: recorded but kept out of the queue (REPAIR_AUTO_DISMISS_WORDS)
+    accepted_punct_case_only = 0  # repairs admitted only by REPAIR_ACCEPT_PUNCT_CASE_ONLY
     unreachable_secondary = 0  # the second-pass backend call itself failed (first pass stands)
     # The model returned the line verbatim -- the single most common outcome of this stage
     # (568 of 836 targets on the SAO pass). accept_repair refuses it and the `not admitted`
@@ -1391,6 +1430,14 @@ def _process_episode(conf_path):
         # reached with no ruling at all -- which is why that branch needs no ruling guard of
         # its own to avoid re-queueing a settled line.
         admitted = ruling in APPLYING or accept_repair(c["text"], new, ref, dur, gloss)
+        if (
+            admitted
+            and ruling not in APPLYING
+            and _accept_punct_case_only()
+            and is_punct_case_only(c["text"], new)
+            and rejecting_guard(c["text"], new, ref, dur, gloss, punct_case_ok=False) is not None
+        ):
+            accepted_punct_case_only += 1  # admitted only because of REPAIR_ACCEPT_PUNCT_CASE_ONLY
         if not admitted:
             if new and new.lower() != c["text"].lower():
                 rejected += 1  # surfaced in the summary so the guard stays visible
@@ -1403,6 +1450,8 @@ def _process_episode(conf_path):
                     rejected_name_part += 1
                 else:
                     reason = "rejected_guard"
+                dismissed_fields = unresolved.dismissal(c["text"], new)
+                dismissed_large_change += bool(dismissed_fields)
                 unresolved.record(
                     stem,
                     "repair",
@@ -1411,6 +1460,8 @@ def _process_episode(conf_path):
                     proposed_text=new,
                     reference=ref[:120],
                     avg_logprob=c.get("avg_logprob"),
+                    guard=rejecting_guard(c["text"], new, ref, dur, gloss),
+                    **dismissed_fields,
                 )
             else:
                 # `new` is non-empty (the `if not new` above returned), so this is exactly
@@ -1575,6 +1626,8 @@ def _process_episode(conf_path):
         "rejected_4xx": rejected_4xx,  # subset of llm_empty: the provider rejected that one request
         "rejected_guard": rejected,  # model proposed an edit, accept_repair() refused it
         "rejected_name_part": rejected_name_part,  # subset of rejected_guard: it added/removed a name part
+        **({"dismissed_large_change": dismissed_large_change} if unresolved.auto_dismiss_threshold() is not None else {}),
+        **({"accepted_punct_case_only": accepted_punct_case_only} if _accept_punct_case_only() else {}),
         "unreachable_secondary": unreachable_secondary,
         "rejected_secondary": rejected_secondary,  # C5: second pass refused, first pass kept
         "unchanged": unchanged,  # model echoed the line back; nothing proposed, nothing shipped

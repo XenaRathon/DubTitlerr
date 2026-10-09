@@ -318,6 +318,7 @@ def restore(words: list[dict], segments: list[dict], rec=None, stem=None) -> Non
                     proposed_text=new[:300],
                     segments=[a, b],
                     words=n_words,
+                    **unresolved.dismissal(orig, new),
                 )
             if rec is not None and rejected_events < MAX_REJECT_EVENTS:
                 rejected_events += 1

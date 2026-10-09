@@ -44,6 +44,7 @@ episode that otherwise generated correctly. Every entry point returns a bool.
 
 import json
 import os
+import re
 import tempfile
 
 import decisions
@@ -149,14 +150,47 @@ def items(stem: str) -> list:
     return out
 
 
+_WORD = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
+
+
+def word_changes(original: str, proposed: str) -> int:
+    """How many words a proposal changed: words added plus words dropped, as a multiset difference over lower-cased words with
+    punctuation stripped. ONE definition for every caller (repair, punctuation, the tests): case and punctuation alone are 0;
+    letters with accents are letters; a curly apostrophe is a straight one; order does not count. A respelled or split word is a
+    drop plus its additions ('Mobydick' -> 'Moby Dick' is 3)."""
+    import collections
+
+    def words(text: str) -> collections.Counter:
+        return collections.Counter(_WORD.findall((text or "").replace("\u2019", "'").lower()))
+
+    a, b = words(original), words(proposed)
+    return sum((b - a).values()) + sum((a - b).values())
+
+
+def auto_dismiss_threshold():
+    """REPAIR_AUTO_DISMISS_WORDS as an int, or None (off, the default). Anything that is not a whole number >= 0 is off."""
+    raw = (os.environ.get("REPAIR_AUTO_DISMISS_WORDS") or "").strip()
+    return int(raw) if raw.isdecimal() else None
+
+
+def dismissal(original: str, proposed: str) -> dict:
+    """The fields that mark a rejected proposal as dismissed from the review queue: {} while the rule is off or the change is not
+    larger than the threshold. Spread into the record() call, so the entry is ALWAYS written (the audit trail), only marked."""
+    limit = auto_dismiss_threshold()
+    if limit is None:
+        return {}
+    n = word_changes(original, proposed)
+    return {"dismissed": "large_change", "changes": n} if n > limit else {}
+
+
 def pending(stem: str, primary_only: bool = False) -> list:
-    """Unresolved entries; with ``primary_only``, only those worth a human's attention.
+    """Unresolved entries; with ``primary_only``, only those worth a human's attention (and not dismissed as a large change).
 
     The filter lives here, not in the caller, so the review UI and the --review CLI cannot
     disagree about what "the queue" means -- the same reason REASONS is a module constant."""
     out = [e for e in items(stem) if not e.get("resolved")]
     if primary_only:
-        out = [e for e in out if (e.get("stage"), e.get("reason")) in PRIMARY]
+        out = [e for e in out if (e.get("stage"), e.get("reason")) in PRIMARY and not e.get("dismissed")]
     return out
 
 
@@ -456,6 +490,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Review subtitle-quality cases the pipeline could not settle.")
     ap.add_argument("target", help="an episode stem, or a directory to walk")
     ap.add_argument("--review", action="store_true", help="interactive walk (default: list pending and exit)")
+    ap.add_argument("--all", action="store_true", help="also list entries dismissed as large changes (REPAIR_AUTO_DISMISS_WORDS)")
     a = ap.parse_args(argv)
 
     stems = (
@@ -466,9 +501,14 @@ def main(argv=None):
     total = 0
     for stem in stems:
         todo = pending(stem)
+        dismissed = [e for e in todo if e.get("dismissed")]
+        if not a.all:
+            todo = [e for e in todo if not e.get("dismissed")]
         if not todo:
             continue
         print(f"\n=== {os.path.basename(stem)}  ({len(todo)} pending) ===")
+        if dismissed and not a.all:
+            print(f"  ({len(dismissed)} dismissed as large changes: --all shows them)")
         for e in todo:
             idx = items(stem).index(e)
             print(_render(idx, e))

@@ -8,6 +8,17 @@ that shipped since.
 
 ## [Unreleased]
 
+- **A smaller repair review queue (both opt-in).** `REPAIR_AUTO_DISMISS_WORDS=N` (unset = off) marks a rejected repair whose
+  proposal changed more than N words (added plus dropped, case and punctuation ignored) as `dismissed: large_change`. It is still
+  written to the sidecar (the audit trail, with `changes`), but the review page and `unresolved.py` skip it; the page's
+  all-reasons view and `unresolved.py --all` show it, and the repair summary counts `dismissed_large_change`. Measured on a blind
+  sample of 100 rejected Wano repairs judged by two models: with N=6 it dismisses 24 and loses none that either judge would
+  accept (N=4 loses one). **Recommended: N=6.** `REPAIR_ACCEPT_PUNCT_CASE_ONLY=1` lets a proposal that changes only case or
+  punctuation past the "nothing changed" and card-fit guards when it creates no NEW kind of layout fault (7 of the 100 rejected
+  proposals changed no word; the guard was `fits_card`: one added period makes an already over-cps card "worse"); the summary
+  counts `accepted_punct_case_only`. Every other guard still applies. New rejected entries record the `guard` that fired
+  (empty, unchanged, invents_name, name_part, vouched_name, length_ratio, fits_card, ref_borrow).
+
 - **A smaller glossary review queue.** On a One Pace rebuild verify flagged 687 terms, 578 of them `no-match`: nothing to accept or
   reject. `VERIFY_QUEUE_NO_MATCH=0` (default `1`, the old behaviour) leaves such a term out of `flagged`; it is still marked
   verified and counted in the report as `no_match`. `glossary_acquire.py --review` now lists the entries that carry a decision
