@@ -8,6 +8,18 @@ that shipped since.
 
 ## [Unreleased]
 
+- **A smaller glossary review queue.** On a One Pace rebuild verify flagged 687 terms, 578 of them `no-match`: nothing to accept or
+  reject. `VERIFY_QUEUE_NO_MATCH=0` (default `1`, the old behaviour) leaves such a term out of `flagged`; it is still marked
+  verified and counted in the report as `no_match`. `glossary_acquire.py --review` now lists the entries that carry a decision
+  first (respelling-needs-review, common-word, not-in-arc-pages, low-confidence, possessive_floor_crossing, then the rest) and
+  prints one line for the stored `no-match` entries; `--review --all` walks those too. (109 items instead of 687 on that rebuild.)
+  Glossary flags are not shown on the review page, which lists the repair queue only.
+
+  **Recommended profile for a hosted-decision-model rebuild** (nothing here is on by default): `VERIFY_BACKEND=decision`,
+  `VERIFY_WRITE_WHOLE_WORD=1`, `VERIFY_SKIP_COMMON_WORDS=1`, `VERIFY_QUEUE_NO_MATCH=0`, and `VERIFY_ARC_GATE=1` only for a show
+  whose arcs are all covered (`GLOSSARY_ARC_TAGS=1` first; One Pace needs `arc_aliases` / `arc_waived` before the gate can turn
+  on, see the arc entry below).
+
 - **Shows without arc names get a wiki scope (opt-in).** A glossary with a `wiki_scope` block (see `wiki_scope.py` for the shape
   and the Naruto / Pokemon / whole-wiki examples) makes `--tag-arcs` (`GLOSSARY_ARC_TAGS=1`) resolve one scope per library season,
   or one for the whole wiki, and store the titles beside the arc titles under `scope:<rung>:<season or all>`, only when the

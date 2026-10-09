@@ -1035,7 +1035,7 @@ def test_record_decision_reject_clears_a_stale_hard_fix():
 def test_main_review_asks_a_real_question_for_a_legacy_no_canonical_entry(tmp_path, monkeypatch):
     gp = tmp_path / "One Pace.json"
     gp.write_text(json.dumps({"flagged": {"Yuji": "no-match"}}))
-    monkeypatch.setattr("sys.argv", ["glossary_acquire.py", str(gp), str(tmp_path), "--review", "--apply"])
+    monkeypatch.setattr("sys.argv", ["glossary_acquire.py", str(gp), str(tmp_path), "--review", "--all", "--apply"])
     prompts = []
 
     def fake_input(prompt):
@@ -1275,7 +1275,7 @@ def test_c3_main_revert_reports_rather_than_tracebacks_on_a_malformed_glossary(t
 def test_c3_main_review_apply_writes_through_write_json(tmp_path, monkeypatch):
     gp = tmp_path / "One Pace.json"
     gp.write_text(json.dumps({"flagged": {"Yuji": "no-match"}}))
-    monkeypatch.setattr("sys.argv", ["glossary_acquire.py", str(gp), str(tmp_path), "--review", "--apply"])
+    monkeypatch.setattr("sys.argv", ["glossary_acquire.py", str(gp), str(tmp_path), "--review", "--all", "--apply"])
     monkeypatch.setattr("builtins.input", lambda prompt: "y")
     ga.main()
     assert not (tmp_path / "One Pace.json.tmp").exists()

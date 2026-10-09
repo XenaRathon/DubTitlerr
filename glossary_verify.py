@@ -474,6 +474,20 @@ def write_decision(term: str, canon: str, universe) -> str:
     return "write"
 
 
+def queue_no_match() -> bool:
+    """VERIFY_QUEUE_NO_MATCH (default '1', the legacy behaviour): whether a term the model found NO candidate for is put in the
+    review queue (`flagged`). '0' leaves it out: it is still recorded in `verified` and counted in the report (`no_match`), but a
+    human has no candidate to accept or reject, so queueing it only buries the entries that carry a decision (measured on a
+    One Pace rebuild: 578 of 687 flags). Entries already stored stay as they are. Read per call."""
+    return os.environ.get("VERIFY_QUEUE_NO_MATCH", "1") != "0"
+
+
+def is_no_match(adj) -> bool:
+    """The adjudication apply_results would flag 'no-match' (not a high confidence answer, and not low-with-a-candidate)."""
+    conf, canon = (adj or {}).get("confidence", "none"), (adj or {}).get("canonical") or ""
+    return (conf != "high" or not canon) and not (conf == "low" and canon)
+
+
 def apply_results(gloss: dict, results: dict) -> dict:
     """Apply per-term adjudications. Pure; preserves unknown fields (curated hard_fixes,
     initial_prompt, wiki, …) by deep-copying the input.
@@ -530,7 +544,11 @@ def apply_results(gloss: dict, results: dict) -> dict:
                     "canonical": canon,
                 }
         elif conf != "high" or not canon:
-            flagged[term] = "low-confidence" if (conf == "low" and canon) else "no-match"
+            if conf == "low" and canon:
+                flagged[term] = "low-confidence"  # a candidate to accept or reject: a decision
+            elif queue_no_match():
+                flagged[term] = "no-match"
+            # else VERIFY_QUEUE_NO_MATCH=0: the term is verified and counted, but there is nothing to accept or reject
     g["verified"] = sorted(verified)
     if flagged:
         g["flagged"] = flagged
@@ -1351,6 +1369,7 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
         "applied": applied,
         "escalated": len(changed) - applied,
         **({"arc_gate": {"blocked": blocked, "universe": len(universe)}} if universe is not None else {}),
+        **({"no_match": sum(1 for a in results.values() if is_no_match(a))} if not queue_no_match() else {}),
         **({"common_word": _common_word_block(common_word_blocked)} if cw_on else {}),
         "flagged": len(new.get("flagged", {})),
         **({"pending": pending} if pending else {}),

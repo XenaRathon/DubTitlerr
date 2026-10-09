@@ -834,6 +834,31 @@ def review_items(gloss: dict) -> list:
     return out
 
 
+# The order a reviewer should meet flagged entries in: the ones that carry a decision first, most actionable first. Reasons not
+# listed (acquire's own: share-too-close, no-wiki-match, ...) come after these, still before the collapsed no-matches.
+REVIEW_PRIORITY = (
+    "respelling-needs-review",
+    "common-word",
+    "not-in-arc-pages",
+    "low-confidence",
+    "possessive_floor_crossing",
+)
+
+
+def review_groups(gloss: dict) -> tuple[list, list]:
+    """(decisions, no_matches): review_items split for a human. `no-match` entries have no candidate to accept or reject, so
+    they are returned apart (and the CLI collapses them); everything else is ordered by REVIEW_PRIORITY, then reason, then
+    term."""
+    items = review_items(gloss)
+    no_match = [i for i in items if i["reason"] == "no-match"]
+    rank = {r: n for n, r in enumerate(REVIEW_PRIORITY)}
+    decisions = sorted(
+        (i for i in items if i["reason"] != "no-match"),
+        key=lambda i: (rank.get(i["reason"], len(REVIEW_PRIORITY)), i["reason"], i["term"]),
+    )
+    return decisions, no_match
+
+
 # Flags that glossary_verify raises on an EXPANSION it would otherwise have written: accepting one in review writes it.
 WRITE_BLOCKED_REASONS = frozenset({"common-word", "not-in-arc-pages", "respelling-needs-review"})
 
@@ -1209,10 +1234,19 @@ def main():
     ap.add_argument("--wiki", default=None, help="override the wiki API base")
     ap.add_argument("--revert", action="store_true", help="undo previously acquired fixes and exit")
     ap.add_argument("--review", action="store_true", help="walk the pending queue interactively")
+    ap.add_argument(
+        "--all", action="store_true", help="with --review: also walk the 'no-match' entries (collapsed into one line otherwise)"
+    )
     a = ap.parse_args()
     if a.review:
         g = json.load(open(a.glossary, encoding="utf-8"))
-        for item in review_items(g):
+        decisions, no_match = review_groups(g)
+        if no_match and not a.all:
+            log(
+                f"{len(no_match)} no-match terms have no candidate to accept or reject and are not listed here; "
+                "list them with --review --all"
+            )
+        for item in decisions + (no_match if a.all else []):
             log(f"\n{item['term']}  ->  {item['canonical'] or '(no canonical)'}   [{item['reason']}]")
             log(f"  seen {item['variant_count']}x vs canonical {item['canonical_count']}x, bound {item['bound']:.3f}")
             for ln in item["context"]:
