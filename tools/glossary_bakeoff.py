@@ -526,7 +526,10 @@ def _llm_chat_for(arm, cap):
 
 
 ANSWER_FIELDS = ("type", "choice", "probabilities", "confidence", "probability")
-RATE_LIMIT_STREAK = 5
+ERROR_STREAK = 5  # consecutive error rows (rate limits, 5xx, transport errors, anything) that stop the run
+REQUESTS_PER_DECISION_ITEM = 3  # one try plus the client's two retries
+REQUESTS_PER_TEXT_ITEM = 2  # one try plus the single 429 retry
+SPAN_REQUESTS_CAP = 18
 
 
 def _clean_answer(a):
@@ -720,6 +723,38 @@ def _startup_line(arm, stage):
     return f"run: arm={arm.name} ({_arm_setting(arm, 'model')}) sends to {host}: " + "; ".join(parts)
 
 
+def _worst_case_requests(arm, item):
+    """Most requests one item can cost this arm: tries plus retries, Span-01 Lite verify once per candidate."""
+    if arm.kind == "local":
+        return 0
+    if arm.kind == "text":
+        return REQUESTS_PER_TEXT_ITEM
+    if item["stage"] == "verify" and _is_span(arm):
+        return min(len(item.get("candidates", [])) * REQUESTS_PER_DECISION_ITEM, SPAN_REQUESTS_CAP)
+    return REQUESTS_PER_DECISION_ITEM
+
+
+def _request_estimate(arm, items, order, done, retry_errors, reverse):
+    """(items that would be sent, worst-case request count) for this run, before the first call."""
+    n = total = 0
+    for item in items:
+        if item["stage"] == "acquire" and (reverse or (arm.third_party and _quotes(item) is None)):
+            continue
+        if (item["id"], arm.name, order) in done and (not done[(item["id"], arm.name, order)] or not retry_errors):
+            continue
+        if item["stage"] == "verify" and (item.get("no_call") or not item.get("candidates")):
+            continue
+        n += 1
+        total += _worst_case_requests(arm, item)
+    return n, total
+
+
+def _secret_forms(secret):
+    """Every spelling of the key that could reach a results row: raw, JSON-escaped, URL-encoded (both styles)."""
+    forms = {secret, json.dumps(secret)[1:-1], urllib.parse.quote(secret, safe=""), urllib.parse.quote_plus(secret)}
+    return sorted((f for f in forms if f), key=len, reverse=True)  # longest first, so a form is never half-replaced
+
+
 def cmd_run(a):
     arm = ARMS[a.arm]
     items, bad = _load_items(a.items)
@@ -738,10 +773,16 @@ def cmd_run(a):
     delay = arm.delay if a.delay is None else a.delay
     print(_startup_line(arm, a.stage), flush=True)
     done = _load_done(a.out)
+    n_send, worst = _request_estimate(arm, items, order, done, a.retry_errors, a.reverse)
+    head = f"run: request estimate for {arm.name}:"
+    if arm.third_party:
+        print(f"{head} at most {worst} request(s) ({n_send} item(s) to send, worst case with retries)", flush=True)
+    else:
+        print(f"{head} no third-party requests ({n_send} item(s) go to the production llm_chat endpoint)", flush=True)
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     n = {"sent": 0, "local": 0, "resumed": 0, "errors": 0, "no_quotes": 0, "not_applicable": 0}
     handled = streak = 0
-    limited = False
+    limited = limited_429 = False
     secret = repair.clean_api_key(os.environ.get(arm.key_env, "")) if arm.key_env else None
     with open(a.out, "a", encoding="utf-8") as out:
         if out.tell() and not _ends_with_newline(a.out):
@@ -766,13 +807,14 @@ def cmd_run(a):
                 body = run_item(arm, item, order)
                 n["sent"] += 1
                 n["errors"] += 1 if body["error"] else 0
-                streak = streak + 1 if body["error"] and re.search(r"\b429\b", body["error"]) else 0
+                streak = streak + 1 if body["error"] else 0
+                limited_429 = bool(body["error"]) and re.search(r"\b429\b", body["error"]) is not None
             line = json.dumps({"id": item["id"], "arm": arm.name, "order": order, **body}, ensure_ascii=False)
-            if secret and secret in line:
-                line = line.replace(secret, "***")  # defence in depth: nothing a server echoes may carry the key to disk
+            for form in _secret_forms(secret) if secret else ():
+                line = line.replace(form, "***")  # defence in depth: nothing a server echoes may carry the key to disk
             out.write(line + "\n")
             out.flush()
-            if streak >= RATE_LIMIT_STREAK:
+            if streak >= ERROR_STREAK:
                 limited = True
                 break
             handled += 1
@@ -783,7 +825,8 @@ def cmd_run(a):
         f"skipped (no quotes): {n['no_quotes']}, skipped (not applicable): {n['not_applicable']}, bad item lines: {bad}"
     )
     if limited:
-        print(f"run: rate limited, resume later with --retry-errors ({RATE_LIMIT_STREAK} HTTP 429 in a row)", file=sys.stderr)
+        why = "rate limited" if limited_429 else "provider failing"
+        print(f"run: {why}, resume later with --retry-errors ({ERROR_STREAK} failed requests in a row)", file=sys.stderr)
         return 3
     return 0
 

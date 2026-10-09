@@ -982,15 +982,36 @@ def test_a_text_arm_rate_limit_counts_too(tmp_path, monkeypatch):
     assert code == 3 and len(rows) == 5
 
 
-def test_other_errors_never_trip_the_rate_limit_breaker(tmp_path, monkeypatch):
-    """GUARD: passes on the old code."""
-
+def test_five_consecutive_server_errors_trip_the_breaker_with_its_own_message(tmp_path, monkeypatch, capsys):
     def boom(*a, **k):
-        raise dc.DecisionHTTPError(500)
+        raise dc.DecisionHTTPError(503)
 
     monkeypatch.setattr(dc, "decide", boom)
-    code, rows, _ = _run(tmp_path, _many(tmp_path, 8), "jev")
-    assert code == 0 and len(rows) == 8
+    code, rows, _ = _run(tmp_path, _many(tmp_path, 12), "jev")
+    assert code == 3 and len(rows) == 5
+    err = capsys.readouterr().err
+    assert "provider failing, resume later with --retry-errors" in err and "rate limited" not in err
+
+
+@pytest.mark.parametrize("exc", [TimeoutError, OSError, ValueError])
+def test_five_consecutive_transport_errors_trip_it_too(tmp_path, monkeypatch, exc):
+    monkeypatch.setattr(dc, "decide", lambda *a, **k: (_ for _ in ()).throw(exc("x")))
+    code, rows, _ = _run(tmp_path, _many(tmp_path, 12), "jev")
+    assert code == 3 and len(rows) == 5
+
+
+def test_four_errors_then_an_answer_do_not_trip_it(tmp_path, monkeypatch):
+    n = []
+
+    def flaky(*a, **k):
+        n.append(1)
+        if len(n) % 5 == 0:
+            return dc.DecisionResult(answers=_decision_answer_with(), usage={}, latency_s=0.1, model="typesafe/jev")
+        raise dc.DecisionHTTPError(500)
+
+    monkeypatch.setattr(dc, "decide", flaky)
+    code, rows, _ = _run(tmp_path, _many(tmp_path, 12), "jev")
+    assert code == 0 and len(rows) == 12
 
 
 def test_a_resume_after_a_breaker_stop_works_with_retry_errors(tmp_path, monkeypatch):
@@ -1190,3 +1211,82 @@ def test_a_commandcode_quota_429_trips_the_same_breaker_without_leaking_the_key(
     assert code == 3 and len(rows) == 5 and "rate limited, resume later with --retry-errors" in err.err
     assert all(r["error"] == "HTTP 429" for r in rows)
     assert KEY not in outp.read_text(encoding="utf-8") + err.out + err.err
+
+
+# --- round 2d: provider hosts through the override, request estimate, redaction forms ---------------------------------
+
+
+def test_a_url_override_cannot_send_one_providers_key_to_the_others_host(tmp_path, items_file, monkeypatch):
+    monkeypatch.setenv("GLOSSARY_BAKEOFF_JEV_URL", "https://openrouter.ai/api/alpha/decisions")
+    sent = []
+    monkeypatch.setattr(dc.repair, "_post_json", lambda *a, **k: sent.append(a) or {})
+    _, rows, _ = _run(tmp_path, items_file, "jev", "--stage", "verify", "--only", "gold")
+    assert not sent and rows[0]["error"] and "host" in rows[0]["error"] and rows[0]["parsed"] is None
+
+
+def test_the_request_estimate_is_printed_before_the_first_call(tmp_path, items_file, monkeypatch, capsys):
+    order = []
+    monkeypatch.setattr(
+        dc, "decide", lambda *a, **k: order.append("call") or dc.DecisionResult(_decision_answer_with(), {}, 0.1, "typesafe/jev")
+    )
+    monkeypatch.setattr(gb, "_sleep", lambda s: None)
+    real_print = print
+
+    def spy(*a, **k):
+        order.append("print:" + " ".join(str(x) for x in a)[:40])
+        real_print(*a, **k)
+
+    monkeypatch.setattr("builtins.print", spy)
+    _run(tmp_path, items_file, "jev", "--stage", "verify")
+    lines = [o for o in order if o.startswith("print:run: request estimate")]
+    assert lines and order.index(lines[0]) < order.index("call")
+
+
+def test_the_request_estimate_counts_worst_case_requests_per_arm_kind(tmp_path, items_file, monkeypatch, capsys):
+    # items_file verify items: Zoro (2 candidates), Luffy (2), qqq (a no-call control: never sent)
+    def estimate(arm, *extra):
+        _fake_decide(monkeypatch, _decision_answer_with())
+        _fake_openai(monkeypatch, '{"canonical": "Zoro", "confidence": "high"}')
+        _fake_local(monkeypatch, '{"canonical": "Zoro", "confidence": "high"}')
+        _run(tmp_path, items_file, arm, "--stage", "verify", *extra, out=f"{arm}-{len(extra)}.jsonl")
+        out = capsys.readouterr().out
+        return next(line for line in out.splitlines() if line.startswith("run: request estimate"))
+
+    assert "at most 6 request(s)" in estimate("jev")  # 2 sendable items x 3 (one try + 2 retries)
+    assert "at most 4 request(s)" in estimate("longcat-2.0")  # 2 x 2 (one try + one retry)
+    assert "at most 12 request(s)" in estimate("span-01-lite")  # 2 items x (2 candidates x 3)
+    assert "no third-party requests" in estimate("qwen-local")
+
+
+def test_the_estimate_ignores_rows_already_done(tmp_path, items_file, monkeypatch, capsys):
+    _fake_decide(monkeypatch, _decision_answer_with())
+    monkeypatch.setattr(dc, "decide", lambda *a, **k: dc.DecisionResult(_decision_answer_with(), {}, 0.1, "typesafe/jev"))
+    _run(tmp_path, items_file, "jev", "--stage", "verify")
+    capsys.readouterr()
+    _run(tmp_path, items_file, "jev", "--stage", "verify")
+    assert "at most 0 request(s)" in capsys.readouterr().out
+
+
+def test_span_estimates_are_capped_at_eighteen_per_item(tmp_path, monkeypatch, capsys):
+    p = tmp_path / "wide.jsonl"
+    p.write_text(json.dumps(_vitem("Wide", [f"T{i}" for i in range(6)])) + "\n", encoding="utf-8")
+    _fake_decide(monkeypatch, _decision_answer_with())
+    _run(tmp_path, p, "span-01-lite")
+    assert "at most 18 request(s)" in capsys.readouterr().out
+
+
+def test_the_keys_json_escaped_and_url_encoded_forms_are_redacted_too(tmp_path, items_file, monkeypatch):
+    import urllib.parse
+
+    tricky = 'sk-a"b\\c+d/e=f'
+    monkeypatch.setenv("LONGCATAI_API_KEY", tricky)
+    reply = json.dumps(
+        {"canonical": f"{urllib.parse.quote(tricky, safe='')} and {urllib.parse.quote_plus(tricky)}", "confidence": "high"}
+    )
+    _fake_openai(monkeypatch, reply)
+    _, rows, outp = _run(tmp_path, items_file, "longcat-2.0", "--stage", "verify", "--only", "gold")
+    text = outp.read_text(encoding="utf-8")
+    forms = [tricky, json.dumps(tricky)[1:-1], urllib.parse.quote(tricky, safe=""), urllib.parse.quote_plus(tricky)]
+    for form in forms:
+        assert form not in text, form
+    assert "***" in text

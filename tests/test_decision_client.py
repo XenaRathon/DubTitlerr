@@ -431,3 +431,77 @@ def test_a_commandcode_429_with_a_quota_message_is_a_status_only_error_and_never
         cc.close()
     assert str(e.value) == "HTTP 429" and KEY not in repr(e.value) and "cap" not in str(e.value)
     assert len(cc.requests) == 3 and slept == [1.0, 1.0]  # retried twice like any 429, then gave up
+
+
+# --- round 2d: self-consistent answers, strict model ids, provider hosts ---------------------------------------------
+
+
+def test_a_choice_that_contradicts_its_own_probabilities_is_rejected():
+    over = {"choice": "c1", "probabilities": {"c1": 0.1, "c2": 0.8, "none": 0.1}}
+    with pytest.raises(dc.DecisionError, match="probabilit"):
+        dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", post=_post_returning(_choice_resp(**over)))
+    over = {"choice": "c1", "probabilities": {"c2": 0.9, "none": 0.1}}  # the picked option is not even listed
+    with pytest.raises(dc.DecisionError):
+        dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", post=_post_returning(_choice_resp(**over)))
+
+
+def test_a_tie_for_the_top_probability_is_consistent():
+    over = {"choice": "c2", "probabilities": {"c1": 0.45, "c2": 0.45, "none": 0.1}}
+    assert (
+        dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", post=_post_returning(_choice_resp(**over))).answers["pick"]["choice"]
+        == "c2"
+    )
+
+
+@pytest.mark.parametrize(
+    "served", ["typesafe/jev-2", "typesafe/jev-20260917x", "typesafe/jev-2026091", "typesafe/jev-202609171", "typesafe/jev-"]
+)
+def test_only_an_eight_digit_date_suffix_is_accepted(served):
+    with pytest.raises(dc.DecisionError, match="model"):
+        dc.decide(CC_MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", provider="commandcode", post=_post_returning(_cc_ok(model=served)))
+
+
+def test_an_eight_digit_dated_suffix_is_accepted():
+    res = dc.decide(
+        CC_MODEL,
+        {},
+        CHOICE_Q,
+        "TEST_DECISION_KEY",
+        provider="commandcode",
+        post=_post_returning(_cc_ok(model="typesafe/jev-20260917")),
+    )
+    assert res.model == "typesafe/jev-20260917"
+
+
+@pytest.mark.parametrize(
+    "provider,model,url",
+    [
+        (
+            "commandcode",
+            "typesafe/jev",
+            "https://openrouter.ai/api/alpha/decisions",
+        ),  # a CommandCode key must never reach OpenRouter
+        ("openrouter", MODEL, "https://api.commandcode.ai/provider/v1/systemone"),  # ...nor an OpenRouter key CommandCode
+        ("openrouter", MODEL, "https://evil.example/api/alpha/decisions"),
+        ("commandcode", "typesafe/jev", "https://api.commandcode.ai.evil.example/provider/v1/systemone"),
+        ("openrouter", MODEL, "http://user@evil.example/x"),
+    ],
+)
+def test_the_request_host_must_be_the_providers_own(provider, model, url):
+    with pytest.raises(dc.DecisionError, match="host"):
+        dc.decide(
+            model, {}, CHOICE_Q, "TEST_DECISION_KEY", provider=provider, url=url, post=lambda *a, **k: pytest.fail("no request")
+        )
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:9999/x", "http://localhost:9999/x"])
+def test_loopback_is_allowed_for_tests(url):
+    seen = []
+    dc.decide(MODEL, {}, CHOICE_Q, "TEST_DECISION_KEY", url=url, post=_post_returning(_ok(), seen))
+    assert seen[0][0] == url
+
+
+def test_the_default_hosts_are_accepted():
+    """GUARD: passes on the old code."""
+    for provider, model, resp in (("openrouter", MODEL, _ok()), ("commandcode", "typesafe/jev", _cc_ok())):
+        assert dc.decide(model, {}, CHOICE_Q, "TEST_DECISION_KEY", provider=provider, post=_post_returning(resp)).answers

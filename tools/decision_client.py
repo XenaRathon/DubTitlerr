@@ -30,6 +30,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 
 sys.path.insert(0, ".")
@@ -141,14 +142,14 @@ def _find_nonfinite(obj):
 
 def _same_model(requested, served):
     """The served id is the requested one, ignoring case and a ':free' routing tag, or that id plus a dated suffix
-    ('-' and digits only, e.g. typesafe/jev-1.13-20260917)."""
+    ('-' and exactly eight digits, e.g. typesafe/jev-1.13-20260917; typesafe/jev-2 is a different model)."""
 
     def norm(m):
         m = m.strip().casefold()
         return m[: -len(":free")] if m.endswith(":free") else m
 
     req, got = norm(requested), norm(served)
-    return got == req or re.fullmatch(re.escape(req) + r"-\d+", got) is not None
+    return got == req or re.fullmatch(re.escape(req) + r"-\d{8}", got) is not None
 
 
 def validate_response(model, questions, resp):
@@ -181,6 +182,8 @@ def validate_response(model, questions, resp):
                 ok = isinstance(probs, dict) and all(k in q["criteria"] and _is_prob(v) for k, v in probs.items())
                 if not ok or (probs and abs(sum(probs.values()) - 1) > 0.02):
                     raise DecisionError(f"bad response: answer {qid!r} has inconsistent probabilities")
+                if probs and probs.get(choice, -1) < max(probs.values()) - 1e-9:
+                    raise DecisionError(f"bad response: answer {qid!r} picked an option its own probabilities rank lower")
             conf = a.get("confidence")
             if conf is not None and not _is_prob(conf):
                 raise DecisionError(f"bad response: answer {qid!r} has a confidence outside 0..1")
@@ -211,6 +214,13 @@ def decide(
         raise DecisionError(f"unknown provider {provider!r}")
     default_url, allowed = PROVIDERS[provider]
     url = url or default_url
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if (
+        host not in {urllib.parse.urlsplit(default_url).hostname, "127.0.0.1", "localhost"}
+        or "@" in urllib.parse.urlsplit(url).netloc
+    ):
+        # A key goes only to its own provider's host (loopback is for tests), even when the URL came from an env override.
+        raise DecisionError(f"request host {host!r} is not the {provider} host")
     if model not in allowed:
         raise DecisionError(f"model {model!r} is not in the {provider} allowlist")
     if not isinstance(questions, dict) or not questions:
