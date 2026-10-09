@@ -610,6 +610,9 @@ def handle_shared_decide(verdicts: list) -> dict:
             if verdict not in r["offered"]:
                 errors.append({"id": sid, "error": "verdict not offered for this entry"})
                 continue
+            if verdict == "correct" and not str(d.get("text", "")).strip():
+                errors.append({"id": sid, "error": "a correction needs text; the line stays on the page"})
+                continue
             by_show.setdefault(r["show"], []).append((r, verdict, str(d.get("text", ""))))
         saved, ddir = 0, decisions.DECISIONS_DIR
         for show, wanted in by_show.items():
@@ -673,10 +676,19 @@ def handle_decide_batch(stem: str, verdicts: list) -> dict:
                     errors.append({"index": index, "error": "verdict not offered for this entry"})
                     continue
                 text, note = str(d.get("text", "")), str(d.get("note", ""))
-                store = decisions.record(
-                    store, e.get("original_text", ""), e.get("proposed_text", ""), verdict, text=text, note=note
-                )
-                updates.append((index, verdict != "reject", note))
+                if verdict == "correct" and not text.strip():
+                    # Named and left pending: decisions.record would drop it silently, and a queue entry resolved for a verdict
+                    # that does not exist releases an opted-in review hold with no human decision behind it.
+                    errors.append({"index": index, "error": "a correction needs text; the entry stays pending"})
+                    continue
+                orig, prop = e.get("original_text", ""), e.get("proposed_text", "")
+                store = decisions.record(store, orig, prop, verdict, text=text, note=note)
+                stored = decisions.lookup(store, orig, prop)
+                if stored is None:
+                    # Counted as saved only once the verdict is in the store (record() refuses an unusable pair or verdict).
+                    errors.append({"index": index, "error": "the verdict could not be stored; the entry stays pending"})
+                    continue
+                updates.append((index, stored.get("verdict") != "reject", note))
             if not updates:
                 return {"saved": 0, "errors": errors}
             if not decisions.save(store, show, ddir):
