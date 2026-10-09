@@ -75,7 +75,7 @@ import re
 import sys
 import time
 import urllib.parse
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 sys.path.insert(0, ".")
 import acquire_cache  # noqa: E402
@@ -429,6 +429,8 @@ class Arm:
     key_env: str = ""
     extra_body: dict = field(default_factory=dict)
     third_party: bool = True
+    framing: str = "v1"  # "v2" for an `<arm>@v2` name: the post-hoc question framing (see V2_INSTRUCTION)
+    base: str = ""  # for an @v2 arm, the name of the registry entry it was made from
     provider: str = "openrouter"  # decision arms: which decisions API (see decision_client.PROVIDERS)
     delay: float = 0.0  # default pause between calls (seconds); --delay overrides, including with 0
 
@@ -475,9 +477,34 @@ ARMS = {
 }
 NONE_OPTION = "no candidate is the same named entity"
 
+# Framing v2 is a POST-HOC change, made after seeing the v1 results (v1's "same named entity" wording is stricter than
+# production's prompt, where a term may be a short form of a fuller name, and its `none` option made abstention a model choice
+# instead of a confidence-calibrated one). It is reported NEXT TO v1, never instead of it. The wording is frozen.
+V2_SUFFIX = "@v2"
+V2_INSTRUCTION = (
+    'The term "{term}" was mined from the English dub of {show}. It may be a short form, nickname, partial name or '
+    "misspelling of a character, place, technique or item. Choose the wiki title it refers to. A fuller form of the same "
+    "name counts as the same (for example a given name and its full name)."
+)
+V2_SPAN_QUESTION = "Is the output a correct answer to the input?"
+V2_SPAN_CRITERIA = {"true": "the output is the wiki title the term refers to", "false": "it is not"}
+
+
+def resolve_arm(name):
+    """The registry entry for an arm name; `<decision arm>@v2` is that entry with framing v2 (rows carry the full name)."""
+    if name.endswith(V2_SUFFIX):
+        base = ARMS[name[: -len(V2_SUFFIX)]]
+        if base.kind != "decision":
+            raise KeyError(name)
+        return replace(base, name=name, framing="v2", base=base.name)
+    return ARMS[name]
+
+
+ARM_CHOICES = sorted([*ARMS, *(f"{n}{V2_SUFFIX}" for n, a in ARMS.items() if a.kind == "decision")])
+
 
 def _arm_setting(arm, field_name):
-    env = f"GLOSSARY_BAKEOFF_{arm.name.upper().replace('-', '_').replace('.', '_')}_{field_name.upper()}"
+    env = f"GLOSSARY_BAKEOFF_{(arm.base or arm.name).upper().replace('-', '_').replace('.', '_')}_{field_name.upper()}"
     return os.environ.get(env) or getattr(arm, field_name)
 
 
@@ -577,7 +604,56 @@ def _decide(arm, state, questions):
     )
 
 
+def _verify_decision_v2(arm, item, titles):
+    """Framing v2, choice arms: ONE choice over the candidate titles only (no none option). The pick is always a title and
+    its confidence is the answer's own; whether to abstain is decided by tau at score time."""
+    options = {f"c{i}": t for i, t in enumerate(titles, 1)}
+    instruction = V2_INSTRUCTION.format(term=item["term"], show=item["show"])
+    res = _decide(
+        arm,
+        {"show": item["show"], "term": item["term"]},
+        {"pick": {"type": "choice", "instructions": instruction, "criteria": options}},
+    )
+    ans = res.answers["pick"]
+    parsed = {
+        "choice": ans["choice"],
+        "canonical": options[ans["choice"]],
+        "probabilities": ans.get("probabilities"),
+        "confidence": ans.get("confidence"),
+    }
+    return _row({"answer": _clean_answer(ans), "options": options}, parsed, res.latency_s, res.usage, served_model=res.model)
+
+
+def _verify_span_v2(arm, item, titles):
+    """Framing v2, Span-01 Lite: per candidate one noul 'is the output a correct answer to the input?', the input being the
+    frozen instruction and the candidate only in the output. The pick is the best-scoring candidate, whatever its score."""
+    instruction = V2_INSTRUCTION.format(term=item["term"], show=item["show"])
+    q = {"type": "noul", "instructions": V2_SPAN_QUESTION, "criteria": dict(V2_SPAN_CRITERIA)}
+    scores, raws, usage, latency, served = {}, [], {}, 0.0, None
+    for title in titles:
+        state = {"input": [{"role": "user", "content": instruction}], "output": {"role": "assistant", "content": title}}
+        res = _decide(arm, state, {"same": q})
+        served = res.model
+        answer = _clean_answer(res.answers["same"])
+        scores[title] = answer["noul"]
+        raws.append({"title": title, "answer": answer})
+        latency += res.latency_s
+        for k, v in res.usage.items():
+            usage[k] = usage.get(k, 0) + v if isinstance(v, (int, float)) else v
+    best = max(range(len(titles)), key=lambda i: scores[titles[i]])  # ties: the first shown
+    parsed = {
+        "choice": f"c{best + 1}",
+        "canonical": titles[best],
+        "probabilities": None,
+        "confidence": scores[titles[best]],
+        "scores": scores,
+    }
+    return _row(raws, parsed, latency, usage, served_model=served)
+
+
 def _verify_decision(arm, item, titles):
+    if arm.framing == "v2":
+        return _verify_span_v2(arm, item, titles) if _is_span(arm) else _verify_decision_v2(arm, item, titles)
     if _is_span(arm):
         return _verify_span(arm, item, titles)
     options = {f"c{i}": t for i, t in enumerate(titles, 1)}
@@ -722,9 +798,10 @@ def _startup_line(arm, stage):
     parts = []
     if stage in ("verify", "both"):
         parts.append("verify items: show title, mined term, wiki candidate titles")
-    if stage in ("acquire", "both"):
+    if stage in ("acquire", "both") and arm.framing != "v2":
         parts.append("acquire items WITH quotes only: the two spellings and transcript quotes")
-    return f"run: arm={arm.name} ({_arm_setting(arm, 'model')}) sends to {host}: " + "; ".join(parts)
+    note = " [post-hoc framing v2: reported next to v1; no acquire items]" if arm.framing == "v2" else ""
+    return f"run: arm={arm.name} ({_arm_setting(arm, 'model')}) sends to {host}: " + "; ".join(parts) + note
 
 
 def _worst_case_requests(arm, item):
@@ -738,11 +815,19 @@ def _worst_case_requests(arm, item):
     return REQUESTS_PER_DECISION_ITEM
 
 
+def _v2_needs_two_options(arm, item):
+    """A v2 choice question lists only the candidate titles, and a choice needs two options: a single-candidate verify item has
+    nothing to choose between (Span-01 Lite's per-candidate form has no such limit)."""
+    return arm.framing == "v2" and item["stage"] == "verify" and not _is_span(arm) and len(item.get("candidates", [])) == 1
+
+
 def _request_estimate(arm, items, order, done, retry_errors, reverse):
     """(items that would be sent, worst-case request count) for this run, before the first call."""
     n = total = 0
     for item in items:
-        if item["stage"] == "acquire" and (reverse or (arm.third_party and _quotes(item) is None)):
+        if item["stage"] == "acquire" and (reverse or arm.framing == "v2" or (arm.third_party and _quotes(item) is None)):
+            continue
+        if _v2_needs_two_options(arm, item):
             continue
         if (item["id"], arm.name, order) in done and (not done[(item["id"], arm.name, order)] or not retry_errors):
             continue
@@ -760,7 +845,7 @@ def _secret_forms(secret):
 
 
 def cmd_run(a):
-    arm = ARMS[a.arm]
+    arm = resolve_arm(a.arm)
     items, bad = _load_items(a.items)
     if a.stage != "both":
         items = [i for i in items if i["stage"] == a.stage]
@@ -784,7 +869,7 @@ def cmd_run(a):
     else:
         print(f"{head} no third-party requests ({n_send} item(s) go to the production llm_chat endpoint)", flush=True)
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
-    n = {"sent": 0, "local": 0, "resumed": 0, "errors": 0, "no_quotes": 0, "not_applicable": 0}
+    n = {"sent": 0, "local": 0, "resumed": 0, "errors": 0, "no_quotes": 0, "not_applicable": 0, "single": 0}
     handled = streak = 0
     limited = limited_429 = False
     secret = repair.clean_api_key(os.environ.get(arm.key_env, "")) if arm.key_env else None
@@ -793,8 +878,11 @@ def cmd_run(a):
             out.write("\n")  # a crash mid-row left a torn line; do not glue the next row onto it
         for item in items:
             key = (item["id"], arm.name, order)
-            if item["stage"] == "acquire" and a.reverse:
-                n["not_applicable"] += 1  # an acquire pair has no candidate list to reverse
+            if item["stage"] == "acquire" and (a.reverse or arm.framing == "v2"):
+                n["not_applicable"] += 1  # an acquire pair has no candidate list to reverse; v2 changes no acquire question
+                continue
+            if _v2_needs_two_options(arm, item):
+                n["single"] += 1
                 continue
             if item["stage"] == "acquire" and arm.third_party and _quotes(item) is None:
                 n["no_quotes"] += 1  # no quotes yet, and none are invented
@@ -813,7 +901,8 @@ def cmd_run(a):
                 n["errors"] += 1 if body["error"] else 0
                 streak = streak + 1 if body["error"] else 0
                 limited_429 = bool(body["error"]) and re.search(r"\b429\b", body["error"]) is not None
-            line = json.dumps({"id": item["id"], "arm": arm.name, "order": order, **body}, ensure_ascii=False)
+            framing = {"framing": arm.framing} if arm.framing != "v1" else {}  # v1 rows keep their original shape
+            line = json.dumps({"id": item["id"], "arm": arm.name, "order": order, **framing, **body}, ensure_ascii=False)
             for form in _secret_forms(secret) if secret else ():
                 line = line.replace(form, "***")  # defence in depth: nothing a server echoes may carry the key to disk
             out.write(line + "\n")
@@ -826,7 +915,8 @@ def cmd_run(a):
                 print(f"run: {handled}/{len(items)} items, {n['errors']} errors", file=sys.stderr, flush=True)
     print(
         f"run {arm.name} ({order}): sent {n['sent']}, local no-call {n['local']}, resumed {n['resumed']}, errors {n['errors']}, "
-        f"skipped (no quotes): {n['no_quotes']}, skipped (not applicable): {n['not_applicable']}, bad item lines: {bad}"
+        f"skipped (no quotes): {n['no_quotes']}, skipped (not applicable): {n['not_applicable']}, "
+        f"skipped (single candidate, v2 needs two options): {n['single']}, bad item lines: {bad}"
     )
     if limited:
         why = "rate limited" if limited_429 else "provider failing"
@@ -927,7 +1017,12 @@ def main(argv=None):
     bs.add_argument("--show", nargs="+", metavar="SUBSTRING", help="only shows whose name contains one of these (casefolded)")
     rn = sub.add_parser("run", help="put the item set to one arm and append result rows")
     rn.add_argument("--items", required=True, help="items.jsonl from build-set")
-    rn.add_argument("--arm", required=True, choices=sorted(ARMS), help="which model / route to measure")
+    rn.add_argument(
+        "--arm",
+        required=True,
+        choices=ARM_CHOICES,
+        help="which model / route to measure (<decision arm>@v2: the post-hoc v2 framing)",
+    )
     rn.add_argument("--out", required=True, help="results file (appended; resumable)")
     rn.add_argument("--stage", choices=("verify", "acquire", "both"), default="both")
     rn.add_argument(
@@ -996,7 +1091,7 @@ def main(argv=None):
     if a.cmd == "run":
         if not os.path.isfile(a.items):
             ap.error(f"--items: {a.items!r} is not a file")
-        arm = ARMS[a.arm]
+        arm = resolve_arm(a.arm)
         if os.path.realpath(a.out) == os.path.realpath(a.items):
             ap.error("--out must not be the --items file (results would be appended into the item set)")
         if arm.third_party and not os.environ.get(arm.key_env, "").strip():

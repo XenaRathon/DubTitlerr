@@ -33,6 +33,19 @@ import re
 from dataclasses import dataclass
 
 FLOOR_ARM = "always-candidate-1"
+V2_SUFFIX = (
+    "@v2"  # a post-hoc question framing (see glossary_bakeoff.V2_INSTRUCTION): every pick is a title, tau decides abstention
+)
+
+
+def is_v2(arm):
+    return arm.endswith(V2_SUFFIX)
+
+
+def _disp(arm):
+    return f"{arm} (post-hoc framing)" if is_v2(arm) else arm
+
+
 ORDER_LIMIT = 0.05
 MIN_COMMON_N = 100  # common labelled items needed before (a), (b), the matched tau and (d) can be decided
 MIN_COMMON_FRAC = 0.9  # ...and this share of the baseline's labelled items
@@ -136,17 +149,17 @@ def row_pick(row):
     p = row.get("parsed")
     if not isinstance(p, dict):
         return None
-    if "scores" in p and isinstance(p["scores"], dict):  # Span-01 Lite: per-candidate probabilities
+    if "choice" in p:  # a decision arm (framing v2 Span rows also land here: their pick is the best title, tau decides later)
+        title = p.get("canonical") or ""
+        conf = p.get("confidence")
+        return Pick(title, conf=float(conf) if isinstance(conf, (int, float)) and not isinstance(conf, bool) else None)
+    if "scores" in p and isinstance(p["scores"], dict):  # Span-01 Lite, framing v1: per-candidate probabilities
         scored = [(t, _num(v)) for t, v in p["scores"].items()]
         scored = [(t, v) for t, v in scored if v is not None]
         if not scored:
             return None
         best_t, best_v = max(scored, key=lambda tv: tv[1])  # ties: first in the order the candidates were shown
         return Pick(best_t if best_v >= SPAN_PICK_MIN else "", conf=best_v)
-    if "choice" in p:  # a decision arm
-        title = p.get("canonical") or ""
-        conf = p.get("confidence")
-        return Pick(title, conf=float(conf) if isinstance(conf, (int, float)) and not isinstance(conf, bool) else None)
     if "canonical" in p:  # a text arm: production's parse
         word = str(p.get("confidence") or "none").lower()
         title = p["canonical"] or ""
@@ -276,7 +289,14 @@ def _arm_metrics(arm, items_by_id, classes, fwd, rev, arm_rows, tau_step, item_o
         sel = [(it, pk) for it, pk, c in pairs if c == cls]
         if sel:
             out["classes"][cls] = _accuracy(sel)
-    labelled = [(it, pk) for it, pk, c in pairs if c in CLASS_ORDER]
+    v2 = is_v2(arm)
+    if v2 and "negative" in out["classes"]:
+        # A v2 arm can only answer with a title, so "right iff none" is meaningless without a tau: see the operating curve.
+        out["classes"]["negative"] = {
+            "n": out["classes"]["negative"]["n"], "correct": None, "accuracy": None, "wilson": None,
+            "note": "abstention is by confidence: see the operating curve",
+        }  # fmt: skip
+    labelled = [(it, pk) for it, pk, c in pairs if c in CLASS_ORDER and not (v2 and c == "negative")]
     for name, test in (("single", lambda it: len(it["candidates"]) == 1), ("multi", lambda it: len(it["candidates"]) >= 2)):
         out["by_candidates"][name] = _accuracy([(it, pk) for it, pk in labelled if test(it)])
     for it, pk in labelled:
@@ -285,6 +305,7 @@ def _arm_metrics(arm, items_by_id, classes, fwd, rev, arm_rows, tau_step, item_o
     picks = [pk for _, pk, _ in pairs]
     decision = _is_decision(picks)
     out["kind"] = "decision" if decision else "text"
+    out["framing"] = "v2" if v2 else "v1"
     out["hc"] = None if decision else _hc(pairs)
     if not decision:
         out["hc"]["non_trivial"] = _hc(pairs, only=NON_TRIVIAL)
@@ -461,7 +482,7 @@ def _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, presen
             d["n"] += len(ids)
     exp_ids = [i for i in order if i in armp and classes.get(i) in ("expansion_independent", "expansion_incumbent")]
     neg_ids = [i for i in order if i in armp and classes.get(i) == "negative"]
-    if exp_ids and neg_ids:
+    if exp_ids and neg_ids and not is_v2(arm):  # a v2 arm has no tau-free negative accuracy, so no balanced accuracy either
         arm_bal = (
             _accuracy([(items_by_id[i], armp[i]) for i in exp_ids])["accuracy"]
             + _accuracy([(items_by_id[i], armp[i]) for i in neg_ids])["accuracy"]
@@ -607,6 +628,8 @@ def _ci(w):
 
 
 def _cell(c):
+    if c.get("note"):
+        return f"n={c['n']}; {c['note']}"
     return f"{_pct(c['accuracy'])} ({c['correct']}/{c['n']}){_ci(c['wilson'])}" if c["n"] else "n/a (n=0)"
 
 
@@ -631,6 +654,15 @@ def _section_items(rep):
         f"- single-candidate items: {it['single_candidate']}; items with 2+ candidates: {it['multi_candidate']}",
         "- acquire pairs are judged-only: they have no gold, so `score` ignores their result rows (see export-judge)",
         f"- baseline: {base}",
+        *(
+            [
+                "- post-hoc framing: arms ending in @v2 were asked with a question framing chosen AFTER the v1 results "
+                "were seen. They are "
+                "reported next to v1, never instead of it; every v2 pick is a title and abstention is by confidence (tau)."
+            ]
+            if any(is_v2(a) for a in rep["arms"])
+            else []
+        ),
         "",
     ]
 
@@ -641,7 +673,7 @@ def _section_accuracy(names, arms):
     for a in names:
         m = arms[a]
         cells = [_cell(m["classes"][c]) if c in m["classes"] else "n/a (n=0)" for c in CLASS_ORDER]
-        rows.append([a, *cells, _cell(m["by_candidates"]["single"]), _cell(m["by_candidates"]["multi"])])
+        rows.append([_disp(a), *cells, _cell(m["by_candidates"]["single"]), _cell(m["by_candidates"]["multi"])])
     out = [
         "## Accuracy by class",
         "",
@@ -669,12 +701,12 @@ def _section_hc(names, arms):
     for a in names:
         h = arms[a]["hc"]
         if h is None:
-            rows.append([a, "see operating curve", "", "", "", ""])
+            rows.append([_disp(a), "see operating curve", "", "", "", ""])
             continue
         nt = h["non_trivial"]
         rows.append(
             [
-                a,
+                _disp(a),
                 h["accepted"],
                 h["wrong"],
                 f"{_pct(h['false_accept_rate'])} (n={h['accepted']}){_ci(h['false_accept_wilson'])}",
@@ -699,7 +731,7 @@ def _section_curves(names, arms):
         for p in arms[a]["curve"]:
             rate = f"{_pct(p['false_accept_rate'])} ({p['wrong']}/{p['accepted']})"
             rows.append([f"{p['tau']:.2f}", p["accepted"], rate, _pct(p["true_accept_rate"])])
-        out += [f"### {a}", "", *_md_table(["tau", "accepted", "false-accept rate", "true-accept rate"], rows), ""]
+        out += [f"### {_disp(a)}", "", *_md_table(["tau", "accepted", "false-accept rate", "true-accept rate"], rows), ""]
     return out
 
 
@@ -718,15 +750,15 @@ def _section_matched(rep, names, arms):
             continue
         found = True
         if m.get("note"):
-            out.append(f"- {a}: not evaluated: {m['note']}")
+            out.append(f"- {_disp(a)}: not evaluated: {m['note']}")
         elif m["tau"] is None:
             out.append(
-                f"- {a}: no tau reaches the baseline's false-accept rate "
+                f"- {_disp(a)}: no tau reaches the baseline's false-accept rate "
                 f"({_pct(m['baseline_false_accept'])}; n={m['n_common']} common items)"
             )
         else:
             out.append(
-                f"- {a}: tau {m['tau']:.2f}; false-accept {_pct(m['arm_false_accept'])} vs baseline "
+                f"- {_disp(a)}: tau {m['tau']:.2f}; false-accept {_pct(m['arm_false_accept'])} vs baseline "
                 f"{_pct(m['baseline_false_accept'])}; true-accept {_pct(m['arm_true_accept'])} vs baseline "
                 f"{_pct(m['baseline_true_accept'])} (n={m['n_common']} common items)"
             )
@@ -739,7 +771,7 @@ def _section_order(names, arms):
     rows = []
     for a in names:
         o = arms[a]["order"]
-        rows.append([a, o["n"], o["changed"], f"{_pct(o['rate'])}{_ci(o['wilson'])}"])
+        rows.append([_disp(a), o["n"], o["changed"], f"{_pct(o['rate'])}{_ci(o['wilson'])}"])
     intro = "Items with 2+ candidates that have both a forward and a reversed pick."
     return ["## Order sensitivity", "", intro, "", *_md_table(["arm", "n", "pick changed", "rate"], rows), ""]
 
@@ -752,7 +784,7 @@ def _section_failures(names, arms):
         kinds = ", ".join(f"{k}: {n}" for k, n in sorted(f["by_kind"].items())) or "-"
         tokens = ", ".join(f"{k}: {v}" for k, v in sorted(m["tokens"].items())) or "-"
         latency = f"{_fmt(lat['median'], 2)} / {_fmt(lat['p95'], 2)} (n={lat['n']})"
-        rows.append([a, f["n_rows"], f["total"], _pct(f["rate"]), kinds, latency, tokens])
+        rows.append([_disp(a), f["n_rows"], f["total"], _pct(f["rate"]), kinds, latency, tokens])
     header = ["arm", "rows", "failures", "rate", "by kind", "latency median / p95 (s)", "tokens"]
     return ["## Failures, latency, tokens", "", *_md_table(header, rows), ""]
 
@@ -764,9 +796,9 @@ def _section_agreement(rep, names):
         for b in names:
             g = rep["agreement"][a][b]
             cells.append(f"{_pct(_rate(g['agree'], g['n']))} (n={g['n']})")
-        rows.append([a, *cells])
+        rows.append([_disp(a), *cells])
     intro = "Share of items on which two arms' forward picks are the same title (n = items both answered)."
-    return ["## Agreement", "", intro, "", *_md_table(["", *names], rows), ""]
+    return ["## Agreement", "", intro, "", *_md_table(["", *map(_disp, names)], rows), ""]
 
 
 def _state(r):
@@ -826,7 +858,7 @@ def _section_verdicts(rep):
             _rule_cell(r["d"], _d_cell(r["d"])),
             _rule_cell(e, f"{_pct(e['rate'])} (n={e['n']})" if e["n"] else "no rows"),
         ]
-        rows.append([a, *cells, f"**{v['verdict']}**"])
+        rows.append([_disp(a), *cells, f"**{v['verdict']}**"])
     if not rows:
         rows = [["(no arm other than the baseline and the floor)", "", "", "", "", "", ""]]
     return ["## Rule verdicts", "", *intro, *_md_table(["arm", "(a)", "(b)", "(c)", "(d)", "(e)", "verdict"], rows)]

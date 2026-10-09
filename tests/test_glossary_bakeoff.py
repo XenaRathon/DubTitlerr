@@ -1410,3 +1410,180 @@ def test_a_malformed_noul_answer_from_the_server_is_an_error_row_not_a_pick(tmp_
     finally:
         srv.close()
     assert rows[0]["parsed"] is None and "noul" in rows[0]["error"]
+
+
+# =====================================================================================
+# Phase 4: framing v2 for the decision arms (a POST-HOC change, reported next to v1)
+# =====================================================================================
+
+V2_INSTRUCTION = (
+    'The term "{term}" was mined from the English dub of {show}. It may be a short form, nickname, partial name or '
+    "misspelling of a character, place, technique or item. Choose the wiki title it refers to. A fuller form of the same "
+    "name counts as the same (for example a given name and its full name)."
+)
+
+
+def test_at_v2_arms_resolve_to_the_base_entry_with_framing_v2():
+    base = gb.ARMS["mercury-decide"]
+    v2 = gb.resolve_arm("mercury-decide@v2")
+    assert v2.name == "mercury-decide@v2" and v2.framing == "v2" and v2.base == "mercury-decide"
+    assert (v2.model, v2.url, v2.key_env, v2.provider, v2.kind) == (base.model, base.url, base.key_env, base.provider, base.kind)
+    assert gb.resolve_arm("mercury-decide") is base and base.framing == "v1"
+    for name in ("jev@v2", "span-01-lite@v2", "solar-decide-flash@v2", "pplx-decider@v2", "gpt-6-luna-decisions@v2"):
+        assert gb.resolve_arm(name).framing == "v2" and name in gb.ARM_CHOICES
+
+
+@pytest.mark.parametrize("bad", ["longcat-2.0@v2", "qwen-local@v2", "nemotron-super@v2", "nope@v2", "mercury-decide@v3"])
+def test_only_decision_arms_have_a_v2(tmp_path, items_file, bad):
+    with pytest.raises(SystemExit) as e:
+        gb.main(["run", "--items", str(items_file), "--arm", bad, "--out", str(tmp_path / "o.jsonl")])
+    assert e.value.code == 2
+
+
+def test_the_v2_choice_question_is_the_frozen_text_over_the_candidate_titles_only(tmp_path, items_file, monkeypatch):
+    seen = []
+    _fake_decide(monkeypatch, lambda m, s, q: _choice_for(q, "c2", 0.81), seen)
+    _, rows, _ = _run(tmp_path, items_file, "mercury-decide@v2", "--stage", "verify", "--only", "gold")
+    q = seen[0]["questions"]["pick"]
+    assert q["type"] == "choice" and q["criteria"] == {"c1": "Zoro", "c2": "Roronoa Zoro"}  # no `none` option
+    assert q["instructions"] == V2_INSTRUCTION.format(term="Zoro", show="Alpha Show")
+    assert seen[0]["state"] == {"show": "Alpha Show", "term": "Zoro"} and seen[0]["model"] == "inception/mercury-decide:free"
+    r = rows[0]
+    assert r["arm"] == "mercury-decide@v2" and r["framing"] == "v2" and r["order"] == "fwd" and r["error"] is None
+    assert r["parsed"]["canonical"] == "Roronoa Zoro" and r["parsed"]["choice"] == "c2" and r["parsed"]["confidence"] == 0.81
+
+
+def _choice_for(questions, choice, conf):
+    opts = list(questions["pick"]["criteria"])
+    probs = {o: (conf if o == choice else (1 - conf) / (len(opts) - 1)) for o in opts}
+    return {"pick": {"type": "choice", "choice": choice, "probabilities": probs, "confidence": conf}}
+
+
+def test_v2_canonical_is_always_a_title_and_reversed_order_maps_back(tmp_path, items_file, monkeypatch):
+    seen = []
+    _fake_decide(monkeypatch, lambda m, s, q: _choice_for(q, "c1", 0.6), seen)
+    _, rows, _ = _run(tmp_path, items_file, "jev@v2", "--stage", "verify", "--only", "gold", "--reverse")
+    assert list(seen[0]["questions"]["pick"]["criteria"].values()) == ["Roronoa Zoro", "Zoro"]
+    assert rows[0]["order"] == "rev" and rows[0]["parsed"]["canonical"] == "Roronoa Zoro" and rows[0]["arm"] == "jev@v2"
+
+
+def test_v2_skips_single_candidate_items_for_choice_arms_and_says_so(tmp_path, monkeypatch, capsys):
+    p = tmp_path / "items.jsonl"
+    p.write_text(
+        json.dumps(_vitem("Solo", ["Solo"], gold="Solo"))
+        + "\n"
+        + json.dumps(_vitem("Duo", ["Duo", "Duo Jr"], gold="Duo"))
+        + "\n",
+        encoding="utf-8",
+    )
+    seen = []
+    _fake_decide(monkeypatch, lambda m, s, q: _choice_for(q, "c1", 0.9), seen)
+    _, rows, _ = _run(tmp_path, p, "mercury-decide@v2")
+    assert [r["id"] for r in rows] == ["verify:Alpha Show:Duo"] and len(seen) == 1
+    assert "skipped (single candidate" in capsys.readouterr().out
+    _, rows1, _ = _run(tmp_path, p, "mercury-decide", out="v1.jsonl")  # framing v1 still asks the single-candidate item
+    assert len(rows1) == 2
+
+
+def test_v2_runs_no_acquire_items_and_says_so(tmp_path, items_file, monkeypatch, capsys):
+    _fake_decide(monkeypatch, lambda m, s, q: _choice_for(q, "c1", 0.9))
+    _, rows, _ = _run(tmp_path, items_file, "mercury-decide@v2", "--stage", "both")
+    assert rows and all(r["id"].startswith("verify:") for r in rows)
+    assert "skipped (not applicable): 2" in capsys.readouterr().out
+
+
+def test_v2_and_v1_rows_share_one_results_file_without_colliding(tmp_path, items_file, monkeypatch):
+    _fake_decide(monkeypatch, lambda m, s, q: _choice_for(q, "c1", 0.9) if "pick" in q else {})
+    out = tmp_path / "res" / "both.jsonl"
+    for arm in ("mercury-decide", "mercury-decide@v2"):
+        gb.main(["run", "--items", str(items_file), "--arm", arm, "--out", str(out), "--stage", "verify", "--only", "gold"])
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert sorted(r["arm"] for r in rows) == ["mercury-decide", "mercury-decide@v2"]
+    assert "framing" not in next(r for r in rows if r["arm"] == "mercury-decide")  # v1 rows keep their old shape
+    gb.main(
+        [
+            "run",
+            "--items",
+            str(items_file),
+            "--arm",
+            "mercury-decide@v2",
+            "--out",
+            str(out),
+            "--stage",
+            "verify",
+            "--only",
+            "gold",
+        ]
+    )
+    assert len(out.read_text(encoding="utf-8").splitlines()) == 2  # resume skipped the finished v2 row
+
+
+V1_QUESTION = {
+    "type": "choice",
+    "instructions": (
+        'A term was mined from the English dub of "Alpha Show". Pick the candidate wiki page that is the '
+        "SAME named entity as the "
+        'term "Zoro". Choose "none" if no candidate is the same entity.'
+    ),
+    "criteria": {"c1": "Zoro", "c2": "Roronoa Zoro", "none": "no candidate is the same named entity"},
+}
+
+
+def test_v1_framing_is_unchanged_byte_for_byte(tmp_path, items_file, monkeypatch):
+    """GUARD: passes on the old code."""
+    seen = []
+    _fake_decide(monkeypatch, lambda m, s, q: _choice_for(q, "c1", 0.9), seen)
+    _, rows, _ = _run(tmp_path, items_file, "mercury-decide", "--stage", "verify", "--only", "gold")
+    assert seen[0]["questions"] == {"pick": V1_QUESTION} and seen[0]["state"] == {"show": "Alpha Show", "term": "Zoro"}
+    assert set(rows[0]) == {"id", "arm", "order", "raw", "parsed", "latency_s", "usage", "error", "served_model"}
+    assert set(rows[0]["parsed"]) == {"choice", "canonical", "probabilities", "confidence"}
+
+
+def test_span_v2_asks_one_noul_per_candidate_with_the_candidate_only_in_the_output(tmp_path, items_file, monkeypatch):
+    seen = []
+    scores = {"Zoro": 0.06, "Roronoa Zoro": 0.09}  # both far below 0.5, as observed on the real data
+
+    def answer(model, state, questions):
+        return {next(iter(questions)): {"type": "noul", "noul": scores[state["output"]["content"]]}}
+
+    _fake_decide(monkeypatch, answer, seen)
+    _, rows, _ = _run(tmp_path, items_file, "span-01-lite@v2", "--stage", "verify", "--only", "gold")
+    assert len(seen) == 2 and {s["model"] for s in seen} == {"respan/span-01-lite"}
+    q = next(iter(seen[0]["questions"].values()))
+    assert q["type"] == "noul" and q["instructions"] == "Is the output a correct answer to the input?"
+    assert q["criteria"] == {"true": "the output is the wiki title the term refers to", "false": "it is not"}
+    expected_input = V2_INSTRUCTION.format(term="Zoro", show="Alpha Show")
+    assert [s["state"]["input"] for s in seen] == [[{"role": "user", "content": expected_input}]] * 2  # no candidate in the input
+    assert [s["state"]["output"] for s in seen] == [
+        {"role": "assistant", "content": "Zoro"},
+        {"role": "assistant", "content": "Roronoa Zoro"},
+    ]
+    r = rows[0]
+    assert r["arm"] == "span-01-lite@v2" and r["framing"] == "v2"
+    assert r["parsed"]["canonical"] == "Roronoa Zoro" and r["parsed"]["confidence"] == 0.09  # best-scoring, whatever its size
+    assert r["parsed"]["scores"] == scores
+    pick = glossary_score.row_pick(r)
+    assert pick.title == "Roronoa Zoro" and pick.conf == 0.09  # no 0.5 cutoff: abstention is decided by tau at score time
+
+
+def test_the_env_override_for_a_v2_arm_uses_the_base_arms_name(tmp_path, items_file, monkeypatch):
+    srv = _NoulServer(lambda b: 0.5, "typesafe/jev")
+    monkeypatch.setenv("GLOSSARY_BAKEOFF_JEV_URL", srv.url)
+    try:
+        arm = gb.resolve_arm("jev@v2")
+        assert gb._arm_setting(arm, "url") == srv.url
+    finally:
+        srv.close()
+
+
+def test_the_request_estimate_for_a_v2_arm_leaves_out_single_candidate_and_acquire_items(tmp_path, monkeypatch, capsys):
+    p = tmp_path / "est.jsonl"
+    items = (
+        [_vitem("Solo", ["Solo"], gold="Solo")]
+        + [_vitem(f"D{k}", [f"D{k}", f"D{k} Jr"]) for k in range(4)]
+        + [_aitem("A", "B", {"variant": ["x"], "canonical": ["y"]})]
+    )
+    p.write_text("".join(json.dumps(i) + "\n" for i in items), encoding="utf-8")
+    _fake_decide(monkeypatch, lambda m, s, q: _choice_for(q, "c1", 0.9))
+    _run(tmp_path, p, "jev@v2")
+    assert "at most 12 request(s) (4 item(s)" in capsys.readouterr().out  # 4 two-candidate items x 3

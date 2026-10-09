@@ -569,3 +569,47 @@ def test_the_report_shows_the_secondary_all_class_column_and_the_expansion_split
     md = gs.render_markdown(_big_report(tmp_path, _with_rev("qwen-local", _mediocre) + _with_rev("t", _right)))
     verdicts = md.split("## Rule verdicts")[1]
     assert "all classes" in verdicts and "independent" in verdicts and "incumbent" in verdicts and "balanced" in verdicts
+
+
+# ---- v2 (post-hoc framing) arms: every pick is a title, abstention is by confidence ------------------------------------------
+
+
+def _v2(item_id, arm, title, conf, order="fwd"):
+    row = _d(item_id, arm, title, conf, order)
+    row["framing"] = "v2"
+    return row
+
+
+def test_a_v2_arm_with_no_none_answers_is_scored_through_the_tau_sweep(tmp_path):
+    rows = [
+        _v2(IDS["Xa"], "d@v2", "Xa Prime", 0.9),  # right
+        _v2(IDS["Xb"], "d@v2", "Xb Alt", 0.4),  # wrong, low confidence
+        _v2(NEG["Ng1"], "d@v2", "Ng1x", 0.8),  # a negative can only be answered with a title: a false accept if accepted
+        _v2(NEG["Ng2"], "d@v2", "Ng2x", 0.3),
+    ]
+    arm = _report(tmp_path, rows, baseline="d@v2", tau_step=0.25)["arms"]["d@v2"]
+    curve = {round(p["tau"], 2): p for p in arm["curve"]}
+    assert (curve[0.0]["accepted"], curve[0.0]["wrong"]) == (4, 3)
+    assert (curve[0.5]["accepted"], curve[0.5]["wrong"]) == (2, 1)  # Xa right, Ng1x a false accept
+    assert (curve[1.0]["accepted"], curve[1.0]["wrong"]) == (0, 0)
+    assert arm["kind"] == "decision" and arm["framing"] == "v2"
+
+
+def test_negatives_are_never_scored_by_tau_free_accuracy_for_a_v2_arm(tmp_path):
+    rows = [_v2(NEG["Ng1"], "d@v2", "Ng1x", 0.9)]
+    arm = _report(tmp_path, rows, baseline="d@v2")["arms"]["d@v2"]
+    assert arm["classes"]["negative"]["accuracy"] is None and arm["classes"]["negative"]["note"].startswith(
+        "abstention is by confidence"
+    )
+
+
+def test_v2_arms_are_labelled_post_hoc_framing_in_the_report(tmp_path):
+    rows = _perfect("qwen-local") + [_v2(IDS["Xa"], "d@v2", "Xa Prime", 0.9)]
+    md = gs.render_markdown(_report(tmp_path, rows, tau_step=0.25))
+    assert "d@v2 (post-hoc framing)" in md and "post-hoc" in md.split("## Items")[1].split("##")[0]
+
+
+def test_a_v1_arm_is_not_labelled_post_hoc(tmp_path):
+    """GUARD: passes on the old code."""
+    md = gs.render_markdown(_report(tmp_path, _perfect("qwen-local"), baseline="qwen-local"))
+    assert "post-hoc" not in md
