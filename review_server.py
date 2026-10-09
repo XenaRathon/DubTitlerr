@@ -910,6 +910,8 @@ def render_shared() -> str:
         "document.addEventListener('click',function(ev){const r=ev.target;"
         "if(r&&r.type==='radio'&&r.dataset.wasOn){r.checked=false;r.dataset.wasOn='';tally()}});"
         "tally();SV.addEventListener('click',async()=>{const d=chosen();if(!d.length)return;"
+        "if(d.some(x=>x.verdict==='correct'&&!x.text.trim())){"
+        "alert('A correction needs text: type the corrected line, or pick another verdict.');return}"
         "SV.disabled=true;const r=await post('/api/shared',{decisions:d});"
         "if(r.error){alert(r.error);SV.disabled=false;return}"
         "if(r.errors&&r.errors.length){alert('saved '+r.saved+', REFUSED '+r.errors.length+':\\n'+"
@@ -1128,6 +1130,8 @@ def render_page(stem: str = "") -> str:
         "document.addEventListener('click',function(ev){const r=ev.target;"
         "if(r&&r.type==='radio'&&r.dataset.wasOn){r.checked=false;r.dataset.wasOn='';tally()}});"
         "if(SV){tally();SV.addEventListener('click',async()=>{const d=chosen();if(!d.length)return;"
+        "if(d.some(x=>x.verdict==='correct'&&!x.text.trim())){"
+        "alert('A correction needs text: type the corrected line, or pick another verdict.');return}"
         "SV.disabled=true;const r=await post('/api/decide',{stem:STEM,decisions:d});"
         # Errors are NAMED, not counted. A reviewer told "2 refused" cannot tell which two of
         # their thirty verdicts did not land, and a verdict that vanishes quietly is the
