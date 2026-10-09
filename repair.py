@@ -913,7 +913,35 @@ def _lenient_case_change(old, new, sentence_start, single_names, entry_covered):
         return True
     if entry_covered:
         return True
-    return new in single_names and not glossary.is_ordinary_word(new)
+    # Fails closed without a word list: the bundled fallback is 228 words, so 'rain' would look like a name.
+    return new in single_names and glossary.wordlist_status() != "missing" and not glossary.is_ordinary_word(new)
+
+
+def _guard_terminal_punct() -> bool:
+    """REPAIR_GUARD_TERMINAL_PUNCT=1 (default off): see terminal_punct_changed. Read per call."""
+    return os.environ.get("REPAIR_GUARD_TERMINAL_PUNCT") == "1"
+
+
+def _terminal_run(text):
+    """The run of '.', '!', '?' and the ellipsis character that ends ``text`` (closing quotes, brackets and spaces ignored)."""
+    t = (text or "").rstrip(_CLOSERS + " \n\t")
+    end = len(t)
+    while end and t[end - 1] in ".!?\u2026":
+        end -= 1
+    return t[end:]
+
+
+def terminal_punct_changed(orig, new) -> bool:
+    """True when ``new`` changes the KIND of a line's terminal punctuation in a way that changes tone or meaning: it
+    adds or removes a terminal '?' (question <-> statement, '!' <-> '?' included), or turns a trailing ellipsis ('...',
+    '\u2026') into '.' or '!' or the reverse ('Damn...' -> 'Damn!'). Comma <-> period, '.' <-> '!' and '?!' -> '?' are
+    style and pass. Only the END of the line counts. Measured on real accepted repairs this class is about 5 of the 7
+    harmful punctuation changes in a hand-judged 40."""
+    a, b = _terminal_run(orig), _terminal_run(new)
+    if ("?" in a) != ("?" in b):
+        return True
+    ell = lambda r: ".." in r or "\u2026" in r  # noqa: E731
+    return ell(a) != ell(b) and bool(a) and bool(b)
 
 
 def is_punct_case_only(orig, new, gloss=None, prev_text=None) -> bool:
@@ -981,7 +1009,7 @@ def rejecting_guard(orig, new, ref, dur, gloss, punct_case_ok=None, prev_text=No
     exactly ``rejecting_guard(...) is None``; the name is what the review queue records (key 'guard') so a human, and later
     measurements, can tell why a proposal was refused:
 
-        empty, unchanged, invents_name, name_part, vouched_name, length_ratio, fits_card, ref_borrow
+        empty, unchanged, terminal_punct, invents_name, name_part, vouched_name, length_ratio, fits_card, ref_borrow
 
     ``punct_case_ok`` (default: REPAIR_ACCEPT_PUNCT_CASE_ONLY=1) gives a proposal that changes only case and punctuation two
     allowances: it is not "unchanged" when the case differs (only for case changes that cannot change meaning: a sentence start,
@@ -998,6 +1026,8 @@ def rejecting_guard(orig, new, ref, dur, gloss, punct_case_ok=None, prev_text=No
     special = punct_case_ok and is_punct_case_only(orig, new, gloss, prev_text)
     if new.lower() == (orig or "").lower() and not special:
         return "unchanged"  # nothing changed
+    if _guard_terminal_punct() and terminal_punct_changed(orig, new):
+        return "terminal_punct"  # a question became a statement (or the reverse), or an ellipsis became '.'/'!'
     if invents_name(orig, new, gloss):
         return "invents_name"  # phonetic-name-guard: fabricated proper noun, not a real correction
     if _keep_name_parts() and changes_name_parts(orig, new, gloss):
@@ -1401,6 +1431,7 @@ def _process_episode(conf_path):
     transport_retries_at_start = transport_retries_total()
     dismissed_large_change = 0  # subset of rejected: recorded but kept out of the queue (REPAIR_AUTO_DISMISS_WORDS)
     accepted_punct_case_only = 0  # repairs admitted only by REPAIR_ACCEPT_PUNCT_CASE_ONLY
+    rejected_terminal_punct = 0  # subset of rejected: REPAIR_GUARD_TERMINAL_PUNCT refused them
     unreachable_secondary = 0  # the second-pass backend call itself failed (first pass stands)
     # The model returned the line verbatim -- the single most common outcome of this stage
     # (568 of 836 targets on the SAO pass). accept_repair refuses it and the `not admitted`
@@ -1630,6 +1661,8 @@ def _process_episode(conf_path):
                     reason = "rejected_guard"
                 dismissed_fields = unresolved.dismissal(c["text"], new)
                 dismissed_large_change += bool(dismissed_fields)
+                guard_name = rejecting_guard(c["text"], new, ref, dur, gloss, prev_text=prev_text)
+                rejected_terminal_punct += guard_name == "terminal_punct"
                 unresolved.record(
                     stem,
                     "repair",
@@ -1638,7 +1671,7 @@ def _process_episode(conf_path):
                     proposed_text=new,
                     reference=ref[:120],
                     avg_logprob=c.get("avg_logprob"),
-                    guard=rejecting_guard(c["text"], new, ref, dur, gloss, prev_text=prev_text),
+                    guard=guard_name,
                     **dismissed_fields,
                 )
             else:
@@ -1806,6 +1839,7 @@ def _process_episode(conf_path):
         "rejected_name_part": rejected_name_part,  # subset of rejected_guard: it added/removed a name part
         **({"dismissed_large_change": dismissed_large_change} if unresolved.auto_dismiss_threshold() is not None else {}),
         **({"accepted_punct_case_only": accepted_punct_case_only} if _accept_punct_case_only() else {}),
+        **({"rejected_terminal_punct": rejected_terminal_punct} if _guard_terminal_punct() else {}),
         **({"transport_retries": transport_retries_total() - transport_retries_at_start} if _transport_retries() else {}),
         "unreachable_secondary": unreachable_secondary,
         "rejected_secondary": rejected_secondary,  # C5: second pass refused, first pass kept

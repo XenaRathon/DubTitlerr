@@ -12,6 +12,10 @@ GL = glossary.load_dict({"names": ["Kaido", "Monkey D. Luffy"], "phrases": ["Str
 @pytest.fixture(autouse=True)
 def flag(monkeypatch):
     monkeypatch.setenv("REPAIR_ACCEPT_PUNCT_CASE_ONLY", "1")
+    monkeypatch.setattr(
+        glossary, "_ORDINARY", {"us", "march", "turkey"}
+    )  # a word list that is present, whatever this machine has
+    monkeypatch.setattr(glossary, "_ORDINARY_STATUS", "ok")
 
 
 # ---- 1. sequences, not multisets ----------------------------------- ----

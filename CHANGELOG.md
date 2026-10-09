@@ -8,6 +8,14 @@ that shipped since.
 
 ## [Unreleased]
 
+- **`REPAIR_GUARD_TERMINAL_PUNCT=1` (default off) refuses the punctuation changes that change tone or meaning.** A repair that adds or
+  removes a terminal `?` (question <-> statement, `!` <-> `?`), or turns a trailing ellipsis (`...`, `…`) into `.` or `!` or the
+  reverse (`Damn...` -> `Damn!`), is refused with the guard name `terminal_punct`; the summary counts them as
+  `rejected_terminal_punct` while the flag is on. Comma <-> period, `.` <-> `!` and `?!` -> `?` still pass. On the 451 real Wano
+  pairs it would refuse 21 of the 320 repairs the ordinary guards accept (6.6%); a general "no removed or substituted punctuation"
+  guard would refuse about half. Also: the card-initial capital rule is now tested through `repair.process`, and the glossary
+  case rule gives no leniency when the word list is missing (it used to fall back to a 228-word list and let `rain` -> `Rain` ship).
+
 - **Saved review answers are safe to replay.** An answer saved while the glossary was busy is applied only to a term that is still
   flagged; one decided meanwhile is skipped and logged, and `record_decision` leaves an unflagged term alone, so a stale `n` or `y`
   can no longer delete a hard fix or add the term to `known`. Answers are written to `<glossary>.json.review-pending` before the
