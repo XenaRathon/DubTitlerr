@@ -362,10 +362,28 @@ def arc_universe(gloss: dict):
 
 
 def write_decision(term: str, canon: str, universe) -> str:
-    """'write', 'respelling' (flagged: not an expansion / not a whole word) or 'not-in-arc-pages' (flagged: the canonical is not
-    on any arc page of the show). ONE place for apply_results and the report's counts."""
+    """'write', 'respelling', 'common-word', or 'not-in-arc-pages'. ONE place for apply_results and the report's counts.
+
+    Check order:
+      1. Not an expansion (is_expansion / whole-word guard) -> 'respelling'.
+      2. VERIFY_SKIP_COMMON_WORDS=1 AND single token AND glossary.is_english(term):
+         - If the arc gate is on AND the canonical IS in the arc universe, the arc evidence
+           wins and the write proceeds (skip to 3).
+         - Otherwise -> 'common-word' (flagged for review).
+      3. VERIFY_ARC_GATE=1 AND canonical not in the arc universe -> 'not-in-arc-pages'.
+      4. Otherwise -> 'write'."""
     if not auto_writes(term, canon):
         return "respelling"
+    # Common-word guard (opt-in, default off).
+    if os.environ.get("VERIFY_SKIP_COMMON_WORDS") == "1" and " " not in term.strip():
+        import glossary
+
+        if glossary.is_english(term):
+            # Exception: the arc gate is on and the canonical IS in the arc universe.
+            if universe is not None and canon.casefold() in universe:
+                pass  # arc evidence wins — fall through to the arc gate / write
+            else:
+                return "common-word"
     if universe is not None and canon.casefold() not in universe:
         return "not-in-arc-pages"
     return "write"
@@ -949,6 +967,8 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
     decisions = [write_decision(t, results[t]["canonical"], universe) for t in changed]
     applied = decisions.count("write")
     blocked = decisions.count("not-in-arc-pages")
+    common_word_blocked = decisions.count("common-word")
+    cw_on = os.environ.get("VERIFY_SKIP_COMMON_WORDS") == "1"
     return {
         "show": show,
         "wiki": api,
@@ -956,6 +976,7 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
         "applied": applied,
         "escalated": len(changed) - applied,
         **({"arc_gate": {"blocked": blocked, "universe": len(universe)}} if universe is not None else {}),
+        **({"common_word": {"blocked": common_word_blocked}} if cw_on else {}),
         "flagged": len(new.get("flagged", {})),
         **({"pending": pending} if pending else {}),
         **({"note": "stopped"} if stopped else {}),
