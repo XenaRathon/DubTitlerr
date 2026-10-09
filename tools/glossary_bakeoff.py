@@ -525,7 +525,7 @@ def _llm_chat_for(arm, cap):
     return fn
 
 
-ANSWER_FIELDS = ("type", "choice", "probabilities", "confidence", "probability")
+ANSWER_FIELDS = ("type", "choice", "probabilities", "confidence", "probability", "noul")
 ERROR_STREAK = 5  # consecutive error rows (rate limits, 5xx, transport errors, anything) that stop the run
 REQUESTS_PER_DECISION_ITEM = 3  # one try plus the client's two retries
 REQUESTS_PER_TEXT_ITEM = 2  # one try plus the single 429 retry
@@ -616,8 +616,9 @@ def _verify_span(arm, item, titles):
         }
         res = _decide(arm, state, {"same": q})
         served = res.model
-        scores[title] = _clean_answer(res.answers["same"])
-        raws.append({"title": title, "answer": scores[title]})
+        answer = _clean_answer(res.answers["same"])
+        scores[title] = answer["noul"]  # P(this title is the same entity), a float in 0..1; the pick is made at score time
+        raws.append({"title": title, "answer": answer})
         latency += res.latency_s
         for k, v in res.usage.items():
             usage[k] = usage.get(k, 0) + v if isinstance(v, (int, float)) else v
@@ -646,7 +647,10 @@ def _acquire_decision(arm, item):
         state = {"show": item["show"], "spelling_a": a, "spelling_b": b, "quotes_a": qv, "quotes_b": qc}
     res = _decide(arm, state, {"same": q})
     ans = _clean_answer(res.answers["same"])
-    return _row(ans, {"noul": ans}, res.latency_s, res.usage, served_model=res.model)
+    p = ans["noul"]  # P(the two spellings are one entity), a raw float: no threshold is applied here
+    # `confidence` is the probability of the answer given (max of p and 1 - p); acquire is judged-only in score.
+    parsed = {"same_entity": p >= 0.5, "noul": p, "confidence": max(p, 1 - p)}
+    return _row(ans, parsed, res.latency_s, res.usage, served_model=res.model)
 
 
 def run_item(arm, item, order):

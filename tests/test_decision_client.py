@@ -207,9 +207,9 @@ def test_malformed_questions_are_rejected_before_a_request(questions):
 def test_span_01_lite_needs_its_own_state_and_noul_questions():
     span = "respan/span-01-lite"
     seen = []
-    resp = {"model": span, "answers": {"same": 0.32}, "usage": {}}
+    resp = {"model": span, "answers": {"same": {"type": "noul", "noul": 0.32}}, "usage": {}}
     res = dc.decide(span, SPAN_STATE, NOUL_Q, "TEST_DECISION_KEY", post=_post_returning(resp, seen))
-    assert res.answers == {"same": 0.32} and seen[0][1]["state"] == SPAN_STATE
+    assert res.answers == {"same": {"type": "noul", "noul": 0.32}} and seen[0][1]["state"] == SPAN_STATE
     with pytest.raises(dc.DecisionError, match="state"):
         dc.decide(span, {"show": "S"}, NOUL_Q, "TEST_DECISION_KEY", post=lambda *a, **k: pytest.fail("no request"))
     with pytest.raises(dc.DecisionError, match="noul"):
@@ -271,15 +271,6 @@ def test_noul_answers_must_be_a_probability(answer):
     resp = {"model": "respan/span-01-lite", "answers": {"same": answer}, "usage": {}}
     with pytest.raises(dc.DecisionError):
         dc.decide("respan/span-01-lite", SPAN_STATE, NOUL_Q, "TEST_DECISION_KEY", post=_post_returning(resp))
-
-
-@pytest.mark.parametrize("answer", [0.0, 0.32, 1, {"probability": 0.7}])
-def test_noul_answers_that_are_probabilities_are_accepted(answer):
-    resp = {"model": "respan/span-01-lite", "answers": {"same": answer}, "usage": {}}
-    assert (
-        dc.decide("respan/span-01-lite", SPAN_STATE, NOUL_Q, "TEST_DECISION_KEY", post=_post_returning(resp)).answers["same"]
-        == answer
-    )
 
 
 def test_the_served_model_must_be_the_requested_one():
@@ -505,3 +496,74 @@ def test_the_default_hosts_are_accepted():
     """GUARD: passes on the old code."""
     for provider, model, resp in (("openrouter", MODEL, _ok()), ("commandcode", "typesafe/jev", _cc_ok())):
         assert dc.decide(model, {}, CHOICE_Q, "TEST_DECISION_KEY", provider=provider, post=_post_returning(resp)).answers
+
+
+# --- the LIVE noul answer shape (captured 2026-10-08): {"type": "noul", "noul": <float in 0..1>} ----------------------
+
+QNOUL = {"q": {"type": "noul", "instructions": "Same entity?", "criteria": {"true": "yes", "false": "no"}}}
+REAL_NOUL = [
+    # (requested model, provider, served model echoed by the server, the answer as captured)
+    (
+        "inception/mercury-decide:free",
+        "openrouter",
+        "inception/mercury-decide-20260930",
+        {"type": "noul", "noul": 0.9669140186318742},
+    ),
+    ("respan/span-01-lite", "openrouter", "respan/span-01-lite-20260925", {"type": "noul", "noul": 0.11070899}),
+    ("typesafe/jev", "commandcode", "typesafe/jev", {"type": "noul", "noul": 0.79}),
+]
+
+
+def _state_for(model):
+    return SPAN_STATE if model.startswith("respan/") else {"show": "S", "term": "T"}
+
+
+@pytest.mark.parametrize("model,provider,served,answer", REAL_NOUL)
+def test_the_real_captured_noul_answers_are_accepted_with_their_dated_served_ids(model, provider, served, answer):
+    resp = {"model": served, "answers": {"q": answer}, "usage": {"input_tokens": 12, "output_tokens": 1}}
+    res = dc.decide(model, _state_for(model), QNOUL, "TEST_DECISION_KEY", provider=provider, post=_post_returning(resp))
+    assert res.answers["q"]["noul"] == answer["noul"] and res.model == served
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"type": "noul"},  # no `noul` field
+        {"type": "noul", "noul": "0.9"},
+        {"type": "noul", "noul": None},
+        {"type": "noul", "noul": True},
+        {"type": "noul", "noul": 1.5},
+        {"type": "noul", "noul": -0.1},
+        {"type": "noul", "noul": float("nan")},
+        {"type": "noul", "noul": float("inf")},
+        {"type": "noul", "probability": 0.9},  # the old assumed field is not the live one
+        {"type": "choice", "noul": 0.9},
+        {"noul": 0.9},  # no type
+        0.9,  # the bare-number form is gone
+        [0.9],
+        "yes",
+        None,
+    ],
+)
+def test_a_noul_answer_must_be_the_live_shape(answer):
+    resp = {"model": "respan/span-01-lite-20260925", "answers": {"q": answer}, "usage": {}}
+    with pytest.raises(dc.DecisionError):
+        dc.decide("respan/span-01-lite", SPAN_STATE, QNOUL, "TEST_DECISION_KEY", post=_post_returning(resp))
+
+
+def test_extra_fields_in_a_noul_answer_do_not_make_it_invalid():
+    resp = {"model": "respan/span-01-lite-20260925", "answers": {"q": {"type": "noul", "noul": 0.2, "trace": "x"}}, "usage": {}}
+    assert (
+        dc.decide("respan/span-01-lite", SPAN_STATE, QNOUL, "TEST_DECISION_KEY", post=_post_returning(resp)).answers["q"]["noul"]
+        == 0.2
+    )
+
+
+def test_score_answers_keep_their_previous_strict_rule():
+    """GUARD: passes on the old code. The `score` shape was not captured live, so it is not widened."""
+    q = {"s": {"type": "score", "instructions": "How well?", "criteria": {"a": "x", "b": "y"}}}
+    ok = {"model": MODEL, "answers": {"s": 0.5}, "usage": {}}
+    assert dc.decide(MODEL, {}, q, "TEST_DECISION_KEY", post=_post_returning(ok)).answers["s"] == 0.5
+    bad = {"model": MODEL, "answers": {"s": {"type": "noul", "noul": 0.5}}, "usage": {}}
+    with pytest.raises(dc.DecisionError):
+        dc.decide(MODEL, {}, q, "TEST_DECISION_KEY", post=_post_returning(bad))

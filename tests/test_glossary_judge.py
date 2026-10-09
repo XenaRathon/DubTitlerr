@@ -351,3 +351,16 @@ def test_the_import_marks_sole_winners(tmp_path, files):
     _, rows = _import(tmp_path, d, f"{n_z} | best={b} | worst={a}\n")
     sole = {r["arm"]: r["sole_best"] for r in rows if r["item"] == Z}
     assert sole == {"mercury-decide": True, "qwen-local": False, "longcat-2.0": False}
+
+
+def test_acquire_decision_rows_with_the_noul_shape_become_same_or_different(tmp_path, files):
+    items, res = files
+    rows = [json.loads(line) for line in res.read_text(encoding="utf-8").splitlines()]
+    rows = [r for r in rows if r["id"] != AQ]
+    shape = {"same_entity": True, "noul": 0.97, "confidence": 0.97}
+    rows += [_row(AQ, "mercury-decide", shape), _row(AQ, "longcat-2.0", {"same_entity": False, "noul": 0.2, "confidence": 0.8})]
+    res.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    _, md, key, _ = _export(tmp_path, files, stage="acquire", out="acq2", arms=("mercury-decide", "longcat-2.0"))
+    answers = {a["pick"]: a["arms"] for a in key["items"][0]["answers"].values()}
+    assert answers == {"same entity": ["mercury-decide"], "different entities": ["longcat-2.0"]}
+    assert "0.97" not in md and "noul" not in md

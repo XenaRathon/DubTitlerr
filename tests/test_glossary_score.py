@@ -404,3 +404,21 @@ def test_score_bad_arguments_exit_2(tmp_path):
         with pytest.raises(SystemExit) as e:
             gb.main(argv)
         assert e.value.code == 2, argv
+
+
+def test_acquire_rows_are_ignored_by_score_and_stated_to_be_judged_only(tmp_path):
+    acquire_rows = [
+        {
+            "id": "acquire:S:A|B",
+            "arm": "m",
+            "order": "fwd",
+            "raw": {},
+            "latency_s": 0.1,
+            "usage": None,
+            "error": None,
+            "parsed": {"same_entity": True, "noul": 0.9, "confidence": 0.9},
+        },  # fmt: skip
+    ]
+    rep = _report(tmp_path, _perfect("m") + acquire_rows, baseline="m")
+    assert rep["arms"]["m"]["failures"]["n_rows"] == 7 and rep["arms"]["m"]["n_items"] == 7  # nothing from the acquire row
+    assert "acquire pairs are judged-only" in gs.render_markdown(rep)

@@ -187,7 +187,11 @@ def validate_response(model, questions, resp):
             conf = a.get("confidence")
             if conf is not None and not _is_prob(conf):
                 raise DecisionError(f"bad response: answer {qid!r} has a confidence outside 0..1")
-        else:  # noul / score: a bare probability (Span-01 Lite) or an object carrying one
+        elif q["type"] == "noul":
+            # Captured live (Mercury, Span-01 Lite, Jev): {"type": "noul", "noul": <P(true) in 0..1>}. Nothing else is an answer.
+            if not isinstance(a, dict) or a.get("type") != "noul" or not _is_prob(a.get("noul")):
+                raise DecisionError(f"bad response: answer {qid!r} is not a noul answer with a probability in 0..1")
+        else:  # score: its live shape was not captured, so the earlier strict rule stays (a bare number or an object with one)
             value = a.get("probability", a.get("score")) if isinstance(a, dict) else a
             if not _is_prob(value):
                 raise DecisionError(f"bad response: answer {qid!r} is not a probability in 0..1")

@@ -234,6 +234,7 @@ import common  # noqa: E402
 import glossary_acquire as ga  # noqa: E402
 import tools.bakeoff as bakeoff  # noqa: E402
 import tools.decision_client as dc  # noqa: E402
+import tools.glossary_score as glossary_score  # noqa: E402
 
 KEY = "sk-SENTINEL-RUN-KEY-777"
 
@@ -467,7 +468,7 @@ def test_span_01_lite_is_run_per_candidate_as_a_noul_question(tmp_path, items_fi
 
     def answer(model, state, questions):
         title = state["output"]["content"]
-        return {next(iter(questions)): scores[title]}
+        return {next(iter(questions)): {"type": "noul", "noul": scores[title]}}
 
     _fake_decide(monkeypatch, answer, seen)
     _, rows, _ = _run(tmp_path, items_file, "span-01-lite", "--stage", "verify", "--only", "gold")
@@ -1036,10 +1037,10 @@ def test_only_whitelisted_answer_fields_are_stored(tmp_path, items_file, monkeyp
 
 
 def test_whitelisting_also_covers_span_and_noul_answers(tmp_path, items_file, monkeypatch):
-    leaky = {"probability": 0.4, "debug": f"Bearer {KEY}"}
+    leaky = {"type": "noul", "noul": 0.4, "debug": f"Bearer {KEY}"}
     _fake_decide(monkeypatch, lambda m, s, q: {next(iter(q)): leaky})
     _, rows, outp = _run(tmp_path, items_file, "span-01-lite", "--stage", "verify", "--only", "gold")
-    assert rows[0]["raw"][0]["answer"] == {"probability": 0.4} and KEY not in outp.read_text(encoding="utf-8")
+    assert rows[0]["raw"][0]["answer"] == {"type": "noul", "noul": 0.4} and KEY not in outp.read_text(encoding="utf-8")
     _, rows, outp = _run(tmp_path, items_file, "jev", "--stage", "acquire", out="acq.jsonl")
     assert KEY not in outp.read_text(encoding="utf-8")
 
@@ -1074,7 +1075,7 @@ def test_latest_row_per_key_wins(tmp_path, items_file, monkeypatch):
 
 def test_the_span_branch_follows_the_effective_model_not_the_registry_default(tmp_path, items_file, monkeypatch):
     seen = []
-    _fake_decide(monkeypatch, lambda m, s, q: {next(iter(q)): 0.5}, seen)
+    _fake_decide(monkeypatch, lambda m, s, q: {next(iter(q)): {"type": "noul", "noul": 0.5}}, seen)
     monkeypatch.setenv("GLOSSARY_BAKEOFF_JEV_MODEL", "respan/span-01-lite")
     _run(tmp_path, items_file, "jev", "--stage", "verify", "--only", "gold")
     assert seen and all(next(iter(s["questions"].values()))["type"] == "noul" for s in seen)
@@ -1290,3 +1291,122 @@ def test_the_keys_json_escaped_and_url_encoded_forms_are_redacted_too(tmp_path, 
     for form in forms:
         assert form not in text, form
     assert "***" in text
+
+
+# --- the live noul shape through the harness (fake servers return the captured shape) ----------------------------------
+
+SPAN_SERVED = "respan/span-01-lite-20260925"
+
+
+class _NoulServer:
+    """127.0.0.1 stand-in for a decisions endpoint: answers every question with the captured noul shape."""
+
+    def __init__(self, noul_for, served, leak=False):
+        outer = self
+        self.requests = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length))
+                outer.requests.append({"auth": self.headers.get("Authorization"), "body": body})
+                answers = {}
+                for qid in body["questions"]:
+                    answer = {"type": "noul", "noul": noul_for(body)}
+                    if leak:
+                        answer["debug"] = f"Authorization: {self.headers.get('Authorization')}"
+                    answers[qid] = answer
+                payload = json.dumps(
+                    {"model": served, "answers": answers, "usage": {"input_tokens": 9, "output_tokens": 1}}
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.srv.server_port}/api/alpha/decisions"
+
+    def close(self):
+        self.srv.shutdown()
+
+
+def test_span_01_lite_per_candidate_end_to_end_with_the_real_shape(tmp_path, items_file, monkeypatch):
+    srv = _NoulServer(lambda b: {"Zoro": 0.93, "Roronoa Zoro": 0.11}[b["state"]["output"]["content"]], SPAN_SERVED, leak=True)
+    monkeypatch.setenv("GLOSSARY_BAKEOFF_SPAN_01_LITE_URL", srv.url)
+    try:
+        _, rows, outp = _run(tmp_path, items_file, "span-01-lite", "--stage", "verify", "--only", "gold")
+    finally:
+        srv.close()
+    assert len(srv.requests) == 2 and all(r["auth"] == f"Bearer {KEY}" for r in srv.requests)
+    row = rows[0]
+    assert row["error"] is None and row["parsed"] == {"scores": {"Zoro": 0.93, "Roronoa Zoro": 0.11}}
+    assert row["served_model"] == SPAN_SERVED and row["usage"] == {"input_tokens": 18, "output_tokens": 2}
+    assert row["raw"][0]["answer"] == {"type": "noul", "noul": 0.93}  # whitelisted: the echoed debug field is gone
+    assert KEY not in outp.read_text(encoding="utf-8")
+    pick = glossary_score.row_pick(row)  # the scorer's rule: best-scoring candidate if its noul >= 0.5
+    assert pick.title == "Zoro" and pick.conf == 0.93
+
+
+def test_span_01_lite_below_half_is_a_none_pick(tmp_path, items_file, monkeypatch):
+    srv = _NoulServer(lambda b: 0.11, SPAN_SERVED)
+    monkeypatch.setenv("GLOSSARY_BAKEOFF_SPAN_01_LITE_URL", srv.url)
+    try:
+        _, rows, _ = _run(tmp_path, items_file, "span-01-lite", "--stage", "verify", "--only", "gold")
+    finally:
+        srv.close()
+    assert glossary_score.row_pick(rows[0]).title == ""
+
+
+@pytest.mark.parametrize(
+    "arm,env,served,noul,same",
+    [
+        ("mercury-decide", "MERCURY_DECIDE", "inception/mercury-decide-20260930", 0.9669140186318742, True),
+        ("span-01-lite", "SPAN_01_LITE", SPAN_SERVED, 0.11070899, False),
+        ("jev", "JEV", "typesafe/jev", 0.79, True),
+        ("jev", "JEV", "typesafe/jev", 0.5, True),  # the boundary: >= 0.5 is "same entity"
+        ("jev", "JEV", "typesafe/jev", 0.4999, False),
+    ],
+)
+def test_acquire_rows_store_the_raw_noul_and_a_same_entity_flag_with_no_threshold(
+    tmp_path, items_file, monkeypatch, arm, env, served, noul, same
+):
+    srv = _NoulServer(lambda b: noul, served, leak=True)
+    monkeypatch.setenv(f"GLOSSARY_BAKEOFF_{env}_URL", srv.url)
+    try:
+        _, rows, outp = _run(tmp_path, items_file, arm, "--stage", "acquire")
+    finally:
+        srv.close()
+    assert [r["id"] for r in rows] == ["acquire:Alpha Show:Nammi|Nami"]  # the quote-less pair is not sent to a third party
+    r = rows[0]
+    assert r["error"] is None and r["parsed"]["noul"] == noul and r["parsed"]["same_entity"] is same
+    assert r["parsed"]["confidence"] == pytest.approx(max(noul, 1 - noul))
+    assert r["served_model"] == served and r["raw"] == {"type": "noul", "noul": noul}
+    assert KEY not in outp.read_text(encoding="utf-8")
+
+
+def test_the_noul_path_never_writes_the_key_even_when_the_server_echoes_the_authorization_header(
+    tmp_path, items_file, monkeypatch, capsys
+):
+    srv = _NoulServer(lambda b: 0.7, "typesafe/jev", leak=True)
+    monkeypatch.setenv("GLOSSARY_BAKEOFF_JEV_URL", srv.url)
+    try:
+        _, _, outp = _run(tmp_path, items_file, "jev", "--stage", "acquire")
+    finally:
+        srv.close()
+    seen = capsys.readouterr()
+    assert KEY not in outp.read_text(encoding="utf-8") + seen.out + seen.err
+
+
+def test_a_malformed_noul_answer_from_the_server_is_an_error_row_not_a_pick(tmp_path, items_file, monkeypatch):
+    srv = _NoulServer(lambda b: 1.7, "typesafe/jev")  # out of range
+    monkeypatch.setenv("GLOSSARY_BAKEOFF_JEV_URL", srv.url)
+    try:
+        _, rows, _ = _run(tmp_path, items_file, "jev", "--stage", "acquire")
+    finally:
+        srv.close()
+    assert rows[0]["parsed"] is None and "noul" in rows[0]["error"]

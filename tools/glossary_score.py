@@ -509,6 +509,7 @@ def _section_items(rep):
         f"{it['expansion_incumbent']} incumbent-derived; negatives: {it['negative']}",
         f"- ambiguous / no gold (excluded from accuracy): {it['ambiguous']}",
         f"- single-candidate items: {it['single_candidate']}; items with 2+ candidates: {it['multi_candidate']}",
+        "- acquire pairs are judged-only: they have no gold, so `score` ignores their result rows (see export-judge)",
         f"- baseline: {base}",
         "",
     ]
