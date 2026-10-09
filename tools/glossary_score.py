@@ -38,6 +38,8 @@ import re
 from dataclasses import dataclass
 
 FLOOR_ARM = "always-candidate-1"
+HEURISTIC_ARM = "expansion-heuristic"  # the string rule: needs no model, and the expansion gold is derivable from strings
+FLOOR_ARMS = (FLOOR_ARM, HEURISTIC_ARM)
 V2_SUFFIX = (
     "@v2"  # a post-hoc question framing (see glossary_bakeoff.V2_INSTRUCTION): every pick is a title, tau decides abstention
 )
@@ -208,7 +210,7 @@ def item_class(item):
 def _accept(item):
     if item.get("negative"):
         return set()
-    return {a.casefold() for a in (item.get("gold_accept") or [item["gold"]])}
+    return {a.casefold() for a in (item.get("gold_accept") or [item.get("gold")]) if isinstance(a, str)}
 
 
 def correct(item, pick):
@@ -420,6 +422,31 @@ def _floor_picks(items, classes):
     return {it["id"]: Pick(it["candidates"][0]["title"], conf=1.0, word="high") for it in items if classes[it["id"]] is not None}
 
 
+def _whole_word(term, title):
+    return re.search(r"(?<!\w)" + re.escape(term.casefold()) + r"(?!\w)", title.casefold()) is not None
+
+
+def heuristic_pick(item):
+    """The second floor, from the item alone and independent of the candidate order: among the candidates sorted by title, the
+    first that is a whole-word `is_expansion` of the term; else the title equal to the term; else none. Every pick is 'high'.
+    The expansion gold is defined by the same test (is_expansion + whole word + curated), so this rule reproduces it."""
+    import tools.glossary_consequences as gc
+
+    term = item["term"]
+    titles = sorted(c["title"] for c in item["candidates"])
+    for t in titles:
+        if t.casefold() != term.casefold() and _whole_word(term, t) and gc._expansion(term, t):
+            return Pick(t, conf=1.0, word="high")
+    for t in titles:
+        if t.casefold() == term.casefold():
+            return Pick(t, conf=1.0, word="high")
+    return Pick("", word="none")
+
+
+def _heuristic_picks(items, classes):
+    return {it["id"]: heuristic_pick(it) for it in items if classes[it["id"]] is not None}
+
+
 def _common_pairs(items_by_id, classes, a, b, order):
     return [(items_by_id[i], a.get(i), classes[i]) for i in order if i in a and i in b and classes.get(i) is not None], [
         (items_by_id[i], b.get(i), classes[i]) for i in order if i in a and i in b and classes.get(i) is not None
@@ -488,15 +515,16 @@ def build_report(items, rows, baseline="qwen-local", tau_step=0.05, judged=None)
                 picks[arm][ordr][rid] = row_pick(row)
             if ordr == "fwd":
                 fwd_rows[arm][rid] = row
-    floor = _floor_picks(items, classes)
+    floors = {FLOOR_ARM: _floor_picks(items, classes), HEURISTIC_ARM: _heuristic_picks(items, classes)}
 
     arms = {}
     for arm in sorted(by_arm):
         arms[arm] = _arm_metrics(
             arm, items_by_id, classes, picks[arm]["fwd"], picks[arm]["rev"], arm_rows[arm], tau_step, order, fwd_rows[arm]
         )
-    arms[FLOOR_ARM] = _arm_metrics(FLOOR_ARM, items_by_id, classes, floor, {}, [], tau_step, order)
-    fwd_all = {a: picks[a]["fwd"] for a in picks} | {FLOOR_ARM: floor}
+    for floor_name, floor_picks in floors.items():
+        arms[floor_name] = _arm_metrics(floor_name, items_by_id, classes, floor_picks, {}, [], tau_step, order)
+    fwd_all = {a: picks[a]["fwd"] for a in picks} | floors
 
     names = list(arms)
     agreement = {a: {} for a in names}
@@ -520,9 +548,9 @@ def build_report(items, rows, baseline="qwen-local", tau_step=0.05, judged=None)
         "judged": judged_table(judged) if judged is not None else None,
     }
     for arm in arms:
-        if arm == FLOOR_ARM or arm == baseline:
+        if arm in FLOOR_ARMS or arm == baseline:
             continue
-        v = _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, present, floor, tau_step, totals)
+        v = _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, present, floors, tau_step, totals)
         report["verdicts"][arm] = v
         if arms[arm]["kind"] == "decision":
             arms[arm]["matched"] = v.get("matched")
@@ -605,14 +633,16 @@ def _held_out(arm_nt, base_nt, taus, base_tau):
     return out
 
 
-def _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, present, floor, tau_step, totals):
+def _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, present, floors, tau_step, totals):
     """The five rules for one arm. Each rule is ok True / False, or None when it cannot be evaluated (INCOMPLETE).
 
     Rules (a), (b), (d) and the matched tau are decided on the common NON-TRIVIAL items (expansions + negatives), INCOMPLETE
     below the sample-size floor, (a) and (b) also for a failed baseline, one that made no writes, or one that has not run the
     negatives. (a) is the wrong-write rate, (b) the good-write rate (see glossary_consequences). (c) and (e) have their own sample
     floors. A rule that holds only within noise is ok True with within_noise set ("not demonstrated"); a failure within noise
-    reads "FAIL (within noise)". The overall verdict is INCOMPLETE while any rule is below its floor."""
+    reads "FAIL (within noise)". The overall verdict is FAIL when any rule fails outside noise above its own floor, else
+    INCOMPLETE
+    while any rule is below its floor, else FAIL for a noisy fail, INCOMPLETE for a missing result."""
     import tools.glossary_consequences as gc
 
     a = report["arms"][arm]
@@ -663,8 +693,15 @@ def _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, presen
             notes.append(f"the baseline has run only {ran} of {neg_total} negatives (need 90%)")
     floor_blocked = bool(notes)
 
-    # (d) beats always-candidate-1 on the POOLED expansion classes; the per-class split is reporting only
-    d = {"ok": None, "classes": {}, "n": 0}
+    # (d) beats the STRONGER of the two floors on the POOLED expansion classes; the per-class split is reporting only
+    exp_ids = [i for i in order if i in armp and classes.get(i) in ("expansion_independent", "expansion_incumbent")]
+    neg_ids = [i for i in order if i in armp and classes.get(i) == "negative"]
+    floor_accs = {
+        name: _accuracy([(items_by_id[i], fp.get(i)) for i in exp_ids]) for name, fp in floors.items()
+    }  # a floor arm with no pick for an item counts a miss
+    floor_name = max(floors, key=lambda n: floor_accs[n]["accuracy"]) if exp_ids else FLOOR_ARM  # a tie keeps the first floor
+    floor = floors[floor_name]
+    d = {"ok": None, "classes": {}, "n": len(exp_ids), "floor_arm": floor_name}
     for cls in ("expansion_independent", "expansion_incumbent"):
         ids = [i for i in order if i in armp and classes.get(i) == cls]
         if ids:
@@ -676,13 +713,15 @@ def _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, presen
                 "floor": floor_acc["accuracy"],
                 "within_noise": _overlap(arm_acc["wilson"], floor_acc["wilson"]),
             }
-    exp_ids = [i for i in order if i in armp and classes.get(i) in ("expansion_independent", "expansion_incumbent")]
-    d["n"] = len(exp_ids)
     if exp_ids:
         arm_acc = _accuracy([(items_by_id[i], armp[i]) for i in exp_ids])
-        floor_acc = _accuracy([(items_by_id[i], floor.get(i)) for i in exp_ids])
-        d.update(arm=arm_acc["accuracy"], floor=floor_acc["accuracy"], pooled_n=len(exp_ids))
-    neg_ids = [i for i in order if i in armp and classes.get(i) == "negative"]
+        floor_acc = floor_accs[floor_name]
+        d.update(
+            arm=arm_acc["accuracy"],
+            floor=floor_acc["accuracy"],
+            pooled_n=len(exp_ids),
+            floors={n: a["accuracy"] for n, a in floor_accs.items()},
+        )
     if exp_ids and neg_ids and not a["abstains_by_confidence"]:
         arm_bal = (d["arm"] + _accuracy([(items_by_id[i], armp[i]) for i in neg_ids])["accuracy"]) / 2
         floor_bal = (d["floor"] + _accuracy([(items_by_id[i], floor.get(i)) for i in neg_ids])["accuracy"]) / 2
@@ -692,12 +731,13 @@ def _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, presen
     elif not exp_ids:
         d.update(ok=False, note="no expansion items were run")
     else:
-        # `>=` is "no worse than the floor"; the intervals decide whether it is demonstrated. A perfect floor cannot be beaten.
+        # `>=` is "no worse than the stronger floor"; the intervals decide whether it is demonstrated.
+        # A perfect floor cannot be beaten.
         d["ok"] = d["arm"] >= d["floor"]
         d["within_noise"] = _overlap(arm_acc["wilson"], floor_acc["wilson"])
         if d["floor"] == 1.0:
             d["within_noise"] = True
-            d["note"] = "the floor is already perfect on the expansion items, so it cannot be beaten"
+            d["note"] = f"the floor ({floor_name}) is already perfect on the expansion items, so it cannot be beaten"
     rules["d"] = d
 
     if present:
@@ -749,7 +789,12 @@ def _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, presen
             rules["a"], rules["b"] = _rules_ab(at, bt, len(nt_ids), secondary, a["kind"] == "decision", out["matched"])
     oks = [r["ok"] for r in rules.values()]
     noisy = any(r["ok"] and r.get("within_noise") for r in rules.values())
-    if any(r.get("below_floor") for r in rules.values()):
+    # A rule that fails outside noise, on a sample above its own floor, settles the verdict: more data elsewhere cannot rescue
+    # it. A floor shortfall outranks only noisy or missing results.
+    decisive = [r for r in rules.values() if r["ok"] is False and not r.get("within_noise") and not r.get("below_floor")]
+    if decisive:
+        out["verdict"] = "FAIL"
+    elif any(r.get("below_floor") for r in rules.values()):
         out["verdict"] = "INCOMPLETE"
     elif any(o is False for o in oks):
         out["verdict"] = "FAIL"
@@ -894,13 +939,18 @@ def _review(t):
 
 
 def _consequence_rows(label, t):
+    review = t["review"]
+    load = "; ".join(f"{c.replace('expansion_', 'exp-')} {v['per_100']:.0f}/100" for c, v in review.items()) or "-"
+    recorded = sum(v["recorded"] for v in review.values())
     return [
         label,
-        f"{t['good']}",
+        t["good_expansion"],
+        t["good_exact"],
         _wl(t),
         _gl(t),
         _missed(t),
-        _review(t),
+        load,
+        recorded,
         t["harmful_flags"],
         f"{t['exact']['correct']}/{t['exact']['n']}" if t["exact"]["n"] else "-",
     ]
@@ -909,23 +959,27 @@ def _consequence_rows(label, t):
 def _section_consequences(names, arms):
     intro = (
         "What actually lands in the glossary, the way `glossary_verify.apply_results` acts on an answer: a high-confidence "
-        "expansion of the term is WRITTEN (a good write if it is in the accepted set, otherwise a wrong "
-        "write); a high-confidence "
-        "respelling is flagged for review; low confidence and no answer are flagged; the term itself writes "
-        "nothing. The synthetic "
-        "negatives have every expansion candidate removed, so a wrong pick there is review time, never a wrong write unless the "
-        "arm invents an expansion. Decision arms are shown at their matched tau and at tau 0.50 and 0.80, "
-        "over the items the arm ran."
+        "expansion of the term is WRITTEN (a good write if it is in the accepted set, otherwise a wrong write); a "
+        "high-confidence "
+        "respelling (including a case-only change) is flagged for review; low confidence and no answer are recorded as flags; "
+        "the term itself, spelled exactly, writes nothing. Good writes are split by scope: **on expansion items** is the gain "
+        "and the numerator of the good-write rate; **on exact controls** is right but not a gain. Review load is the "
+        "respelling flags per 100 items of each class (the only flag put to a human reviewer); low-confidence and no-match "
+        "flags are shown separately as recorded flags. The synthetic negatives have every expansion candidate removed, so a "
+        "wrong pick there is review time, never a wrong write unless the arm invents an expansion. Decision arms are shown at "
+        "their matched tau and at tau 0.50 and 0.80, over the items the arm ran."
     )
     header = [
         "arm",
-        "good writes",
+        "good writes (expansion items)",
+        "good writes (exact controls, not a gain)",
         "wrong-write rate",
         "good-write rate (expansion gold)",
         "missed writes",
-        "review load",
+        "review load (respelling flags per 100)",
+        "recorded flags (low / no-match)",
         "harmful flags",
-        "exact controls right",
+        "exact controls right (at this tau)",
     ]
     rows = []
     for a in names:
@@ -1004,6 +1058,11 @@ def _section_curves(names, arms):
     return out
 
 
+def _nw(rate):
+    """A wrong-write rate, or "no writes" when the half had none (the rate is undefined, not zero)."""
+    return "no writes" if rate is None else _pct(rate)
+
+
 def _section_matched(rep, names, arms):
     out = [
         "## Matched operating point",
@@ -1040,7 +1099,7 @@ def _section_matched(rep, names, arms):
         if ho.get("tau_a") is not None and "arm_wrong_write_rate_b" in ho:
             out.append(
                 f"  - held-out: tau {ho['tau_a']:.2f} chosen on {ho['n_a']} items, scored on the other {ho['n_b']}: wrong-write "
-                f"{_pct(ho['arm_wrong_write_rate_b'])} vs baseline {_pct(ho['baseline_wrong_write_rate_b'])}; good-write "
+                f"{_nw(ho['arm_wrong_write_rate_b'])} vs baseline {_nw(ho['baseline_wrong_write_rate_b'])}; good-write "
                 f"{_pct(ho['arm_good_write_rate_b'])} vs baseline {_pct(ho['baseline_good_write_rate_b'])}"
             )
         elif ho:
@@ -1157,7 +1216,7 @@ def _d_cell(d):
     if d["ok"] is None or not d["classes"]:
         return d.get("note") or "-"
     names = {"expansion_independent": "independent", "expansion_incumbent": "incumbent-derived"}
-    parts = [f"pooled {_pct(d['arm'])} vs floor {_pct(d['floor'])} (n={d['pooled_n']})"]
+    parts = [f"pooled {_pct(d['arm'])} vs {d['floor_arm']} {_pct(d['floor'])} (n={d['pooled_n']})"]
     parts += [f"{names[c]} {_pct(v['arm'])} vs floor {_pct(v['floor'])} (n={v['n']})" for c, v in d["classes"].items()]
     if "balanced" in d:
         parts.append(f"balanced accuracy {_pct(d['balanced']['arm'])} vs floor {_pct(d['balanced']['floor'])}")
@@ -1168,7 +1227,8 @@ def _section_verdicts(rep):
     intro = (
         "(a) WRONG-WRITE rate (wrong writes / writes, as `apply_results` would make them) <= baseline's; (b) GOOD-WRITE rate "
         "(good writes / expansion-gold items) at the matched tau >= baseline's; (c) order sensitivity <= 5%; (d) beats "
-        "always-candidate-1 on the expansion items pooled (the per-class split is reporting only; `>=` is no worse, "
+        "the stronger of always-candidate-1 and expansion-heuristic on the expansion items pooled (the per-class split is "
+        "reporting only; `>=` is no worse, "
         "overlapping intervals are not demonstrated; balanced accuracy shown); (e) failure rate <= 2%. Rules "
         "(a), (b) and (d) are "
         "decided on the non-trivial items (expansions + negatives); the all-class figure is secondary and the exact controls "
@@ -1180,7 +1240,9 @@ def _section_verdicts(rep):
         "**INCOMPLETE** a rule could not be evaluated, or a rule is below its sample-size floor (rules a, b, d: 90% of the item "
         "set's non-trivial items, of each expansion class and of the negatives, plus "
         f"{MIN_COMMON_N} common labelled items; rule c: {MIN_REVERSED_PAIRS} reversed pairs; rule e: {MIN_COMMON_N} requests): "
-        "a floor shortfall outranks a FAIL. No winner is declared.",
+        "a floor shortfall outranks only a noisy or missing result: a rule that fails outside noise on a sample above its own "
+        "floor "
+        "makes the verdict FAIL whatever else is short. No winner is declared.",
         "",
     )
     rows = []
@@ -1228,12 +1290,19 @@ def _section_judged(rep):
 
 def render_markdown(rep):
     arms = rep["arms"]
-    names = [*(a for a in arms if a != FLOOR_ARM), FLOOR_ARM]
+    names = [*(a for a in arms if a not in FLOOR_ARMS), *FLOOR_ARMS]
     head = [
         "# Glossary bake-off: verify-stage scores",
         "",
         "Offline scoring of `run` results against the item set. Rates show n and a Wilson 95% interval. "
         "No winner is declared; the verdict table applies the maintainer's rules.",
+        "",
+        "**Read the expansion results with this in mind:** the expansion gold is string-derivable (it is defined with "
+        "`is_expansion`, a whole-word match and curation), and `expansion-heuristic` below is a five-line rule that needs no "
+        "model. On expansions the bake-off can therefore only show that a model is no worse than a string rule, not better. A "
+        "model earns its place on the negatives, the exact controls and the blind-judged disagreements. The two floor arms "
+        "(`always-candidate-1`, `expansion-heuristic`) are single points, so they appear in the accuracy, consequences and "
+        "false-accept tables and have no operating curve; rule (d) is measured against the stronger of them.",
         "",
     ]
     parts = [

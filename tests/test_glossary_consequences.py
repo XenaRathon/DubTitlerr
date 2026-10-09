@@ -2,7 +2,6 @@
 
 Synthetic items only. The classification is checked against production by running apply_results on the same adjudications."""
 
-
 import pytest
 
 import glossary_verify as gv
@@ -151,8 +150,8 @@ def test_review_load_per_100_items_by_class_and_harmful_flags():
     t = gc.tally(_pairs(*specs))
     assert t["harmful_flags"] == 1
     assert t["exact"] == {"n": 4, "correct": 1, "wrong_writes": 1}
-    assert t["review"]["exact"] == {"n": 4, "flagged": 2, "per_100": 50.0}
-    assert t["review"]["negative"] == {"n": 2, "flagged": 1, "per_100": 50.0}
+    assert t["review"]["exact"] == {"n": 4, "flagged": 1, "recorded": 1, "per_100": 25.0}
+    assert t["review"]["negative"] == {"n": 2, "flagged": 0, "recorded": 1, "per_100": 0.0}
     assert t["wrong"] == 2 and t["writes"] == 2  # E1 Jr and N1x
 
 

@@ -45,8 +45,8 @@ def classify(item, pick, tau=None):
         return "flag_nomatch"
     if not pick.high(tau):
         return "flag_low" if pick.word != "none" else "flag_nomatch"
-    if title.casefold() == item["term"].casefold():
-        return "nothing"
+    if title == item["term"]:
+        return "nothing"  # EXACT equality, as apply_results compares: a case-only difference is a respelling flag in production
     if not _expansion(item["term"], title):
         return "flag_respelling"
     accepted = not item.get("negative") and title.casefold() in glossary_score._accept(item)
@@ -68,7 +68,7 @@ MISSED_KEY = {
 def tally(pairs, tau=None):
     """Consequence counts over [(item, pick-or-None, class)]; ambiguous / no-call items are ignored by the caller."""
     t = {
-        "good": 0, "good_expansion": 0, "wrong": 0, "n_expansion": 0, "harmful_flags": 0,
+        "good": 0, "good_expansion": 0, "good_exact": 0, "wrong": 0, "n_expansion": 0, "harmful_flags": 0,
         "exact": {"n": 0, "correct": 0, "wrong_writes": 0},
         "missed": dict.fromkeys(MISSED_KEY.values(), 0),
         "review": {}, "n": 0,
@@ -79,12 +79,14 @@ def tally(pairs, tau=None):
             continue
         t["n"] += 1
         outcome = classify(item, pick, tau)
-        r = review.setdefault(cls, {"n": 0, "flagged": 0})
+        r = review.setdefault(cls, {"n": 0, "flagged": 0, "recorded": 0})
         r["n"] += 1
-        r["flagged"] += outcome in FLAGS
+        r["flagged"] += outcome == "flag_respelling"  # the one flag a human reviews (glossary_acquire --review)
+        r["recorded"] += outcome in ("flag_low", "flag_nomatch")  # recorded in the glossary's flagged map, not put to a reviewer
         if outcome == "good_write":
             t["good"] += 1
             t["good_expansion"] += cls in EXPANSION_CLASSES
+            t["good_exact"] += cls == "exact"  # right, but not a gain: the term was already correct
         elif outcome == "wrong_write":
             t["wrong"] += 1
         if cls == "exact":

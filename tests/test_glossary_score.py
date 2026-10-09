@@ -427,7 +427,8 @@ def _big_items():
         items.append(_item(f"E{k}", [f"E{k}", f"E{k} Jr"], f"E{k}", "exact"))
     for cls_name, incumbent in (("I", False), ("N", True)):
         for k in range(20):
-            titles = [f"{cls_name}{k} Prime", f"{cls_name}{k} Zed"] if k < 5 else [f"{cls_name}{k} Zed", f"{cls_name}{k} Prime"]
+            other = f"{cls_name}{k} " + ("Abe" if k % 2 else "Zed")  # "Abe" sorts before "Prime": a string rule misses those
+            titles = [f"{cls_name}{k} Prime", other] if k < 5 else [other, f"{cls_name}{k} Prime"]
             items.append(_item(f"{cls_name}{k}", titles, f"{cls_name}{k} Prime", "expansion", incumbent=incumbent))
     for k in range(60):
         items.append(_item(f"G{k}", [f"G{k}x", f"G{k}y"], negative=True))
@@ -562,10 +563,12 @@ def test_rule_d_reports_the_two_expansion_classes_separately_and_balanced_accura
     d = _big_report(tmp_path, _with_rev("qwen-local", _mediocre) + _with_rev("t", _right))["verdicts"]["t"]["rules"]["d"]
     assert set(d["classes"]) == {"expansion_independent", "expansion_incumbent"}
     assert d["classes"]["expansion_independent"]["n"] == 20 and d["classes"]["expansion_incumbent"]["n"] == 20
+    # the stronger floor here is the string rule (right on the even-numbered items), not candidate 1 (right on 5 of 20)
+    assert d["floor_arm"] == "expansion-heuristic"
     assert d["classes"]["expansion_independent"]["arm"] == 1.0 and d["classes"]["expansion_independent"][
         "floor"
-    ] == pytest.approx(0.25)
-    assert d["balanced"]["arm"] == 1.0 and d["balanced"]["floor"] == pytest.approx((0.25 + 0.0) / 2)
+    ] == pytest.approx(0.5)
+    assert d["balanced"]["arm"] == 1.0 and d["balanced"]["floor"] == pytest.approx((0.5 + 1.0) / 2)
 
 
 def test_the_report_shows_the_secondary_all_class_column_and_the_expansion_split(tmp_path):
@@ -623,11 +626,13 @@ def test_a_v1_arm_is_not_labelled_post_hoc(tmp_path):
 # =====================================================================================
 
 
-def _big_items_n(n_exact, n_exp, n_neg):
+def _big_items_n(n_exact, n_exp, n_neg, mixed=False):
+    """``mixed``: odd-numbered expansions have a distractor that sorts before the gold, so a string rule misses them."""
     items = [_item(f"E{k}", [f"E{k}", f"E{k} Jr"], f"E{k}", "exact") for k in range(n_exact)]
     for cls_name, incumbent in (("I", False), ("N", True)):
         for k in range(n_exp):
-            titles = [f"{cls_name}{k} Prime", f"{cls_name}{k} Zed"] if k < 5 else [f"{cls_name}{k} Zed", f"{cls_name}{k} Prime"]
+            other = f"{cls_name}{k} " + ("Abe" if mixed and k % 2 else "Zed")
+            titles = [f"{cls_name}{k} Prime", other] if k < 5 else [other, f"{cls_name}{k} Prime"]
             items.append(_item(f"{cls_name}{k}", titles, f"{cls_name}{k} Prime", "expansion", incumbent=incumbent))
     items += [_item(f"G{k}", [f"G{k}x", f"G{k}y"], negative=True) for k in range(n_neg)]
     return items
@@ -748,9 +753,7 @@ def test_a_perfect_arm_passes_d_even_when_the_floor_is_already_perfect_on_a_clas
 
 
 def test_an_arm_equal_to_the_floor_is_no_worse_but_not_demonstrated(tmp_path):
-    rows = _with_rev("qwen-local", _mediocre) + _with_rev(
-        "t", lambda it: it["candidates"][0]["title"] if not it.get("negative") else ""
-    )
+    rows = _with_rev("qwen-local", _mediocre) + _with_rev("t", lambda it: gs.heuristic_pick(it).title)
     d = _big_report(tmp_path, rows)["verdicts"]["t"]["rules"]["d"]
     assert d["ok"] is True and d["within_noise"] is True  # `>=`: not a FAIL; the intervals overlap: not demonstrated
 
@@ -934,3 +937,165 @@ def test_accepted_answer_choices_are_collapsed_to_counts(tmp_path):
     assert m["accept_counts"] == {"exact": 0, "expansion": 1}
     md = gs.render_markdown(_report(tmp_path, rows, baseline="m"))
     assert "Ex2 Jr" not in md  # no title list in the report
+
+
+# =====================================================================================
+# Phase 5b: the string-rule floor, case-exact classification, scope-labelled consequences, verdict precedence, review load
+# =====================================================================================
+
+
+def test_the_expansion_heuristic_picks_a_whole_word_expansion_then_the_exact_title_then_none():
+    h = gs.heuristic_pick
+    exp = _item("Zoro", ["Zoro", "Roronoa Zoro"], "Zoro", "exact")
+    assert h(exp).title == "Roronoa Zoro" and h(exp).word == "high"  # an expansion beats the equal title
+    assert h(_item("Zoro", ["Zoro", "Zorro"], "Zoro", "exact")).title == "Zoro"  # no expansion: the equal title
+    none = h(_item("Zoro", ["Zorro", "Zora"], negative=True))
+    assert none.title == "" and none.word == "none"
+
+
+def test_the_expansion_heuristic_needs_a_whole_word_and_ignores_the_candidate_order():
+    assert (
+        gs.heuristic_pick(_item("Zoro", ["Zoroaster", "Zorro"], negative=True)).title == ""
+    )  # is_expansion says yes; not a word
+    assert gs.heuristic_pick(_item("Ace", ["Pace", "Ace"], "Ace", "exact")).title == "Ace"
+    a = _item("Zoro", ["Roronoa Zoro", "Zoro Jr"], "Roronoa Zoro", "expansion")
+    b = _item("Zoro", ["Zoro Jr", "Roronoa Zoro"], "Roronoa Zoro", "expansion")
+    assert gs.heuristic_pick(a).title == gs.heuristic_pick(b).title == "Roronoa Zoro"  # sorted by title
+
+
+def test_both_floor_arms_are_in_every_table_and_never_get_a_verdict(tmp_path):
+    rep = _big_report(tmp_path, _with_rev("qwen-local", _mediocre) + _with_rev("t", _right))
+    assert {"always-candidate-1", "expansion-heuristic"} <= set(rep["arms"])
+    assert "expansion-heuristic" not in rep["verdicts"] and "always-candidate-1" not in rep["verdicts"]
+    md = gs.render_markdown(rep)
+    for section in ("## Accuracy by class", "## Consequences", "## High-confidence false accepts"):
+        assert "expansion-heuristic" in md.split(section)[1].split("\n## ")[0], section
+
+
+def test_the_report_header_says_expansion_gold_is_string_derivable(tmp_path):
+    md = gs.render_markdown(_big_report(tmp_path, _with_rev("qwen-local", _mediocre) + _with_rev("t", _right)))
+    head = md.split("## Items")[0]
+    assert "string-derivable" in head and "no worse than a string rule" in head and "negatives" in head
+
+
+def test_a_model_that_only_equals_a_perfect_string_rule_is_not_demonstrated_not_pass(tmp_path):
+    items = _big_items_n(20, 15, 50)  # the heuristic is perfect on every expansion here
+    pick = lambda it: gs.heuristic_pick(it).title  # noqa: E731
+    rows = _both_orders(items, "qwen-local", _mediocre) + _both_orders(items, "t", pick)
+    rep = _report_for(tmp_path, items, rows)
+    d = rep["verdicts"]["t"]["rules"]["d"]
+    assert rep["arms"]["expansion-heuristic"]["classes"]["expansion_independent"]["accuracy"] == 1.0
+    assert d["floor_arm"] == "expansion-heuristic" and d["ok"] is True and d["within_noise"] is True
+    assert rep["verdicts"]["t"]["verdict"] == "NOT DEMONSTRATED"
+
+
+def test_rule_d_is_measured_against_the_stronger_floor(tmp_path):
+    items = _big_items_n(20, 15, 50, mixed=True)  # the heuristic misses the odd ones; candidate 1 misses most of the rest
+    rows = _both_orders(items, "qwen-local", _mediocre) + _both_orders(items, "t", _right)
+    d = _report_for(tmp_path, items, rows)["verdicts"]["t"]["rules"]["d"]
+    heur = _report_for(tmp_path / "h", items, rows) if (tmp_path / "h").mkdir() is None else None
+    floors = d["floors"]
+    assert set(floors) == {"always-candidate-1", "expansion-heuristic"}
+    assert d["floor"] == max(floors.values()) and floors[d["floor_arm"]] == d["floor"]
+    assert d["ok"] is True and heur["verdicts"]["t"]["verdict"] == "PASS"
+
+
+# ---- classification: "nothing" only for the EXACT term -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("term,canon", [("Zoro", "zoro"), ("Zoro", "ZORO"), ("Straw Hat", "straw hat"), ("Ace", "ace")])
+def test_a_case_only_canonical_is_a_respelling_flag_not_nothing(term, canon):
+    import tools.glossary_consequences as gc
+
+    item = _item(term, [term, canon], term, "exact")
+    assert gc.classify(item, gs.Pick(canon, word="high")) == "flag_respelling"
+    assert gc.classify(item, gs.Pick(term, word="high")) == "nothing"
+    t = gc.tally([(item, gs.Pick(canon, word="high"), "exact")])
+    assert t["harmful_flags"] == 1 and t["exact"]["correct"] == 0
+
+
+def test_classify_survives_an_item_without_a_gold():
+    import tools.glossary_consequences as gc
+
+    item = {"id": "x", "term": "Zoro", "candidates": [{"title": "Roronoa Zoro"}], "gold": None}
+    assert gc.classify(item, gs.Pick("Roronoa Zoro", word="high")) == "wrong_write"
+
+
+# ---- the consequences table: scope-labelled good writes -----
+
+
+def test_good_writes_are_split_into_expansion_items_and_exact_controls():
+    import tools.glossary_consequences as gc
+
+    exact = _item("Zoro", ["Zoro", "Roronoa Zoro"], "Zoro", "exact", accept=["Zoro", "Roronoa Zoro"])
+    exp = _item("Doffy", ["Doffy Prime", "Doffy Abe"], "Doffy Prime", "expansion")
+    pairs = [
+        (exact, gs.Pick("Roronoa Zoro", word="high"), "exact"),  # an accepted expansion on a control: right, but not a gain
+        (exp, gs.Pick("Doffy Prime", word="high"), "expansion_independent"),
+    ]
+    t = gc.tally(pairs)
+    assert (t["good"], t["good_expansion"], t["good_exact"]) == (2, 1, 1)
+
+
+def test_the_consequences_table_has_one_good_writes_column_per_scope_and_labels_the_tau(tmp_path):
+    rep = _big_report(
+        tmp_path,
+        _with_rev("qwen-local", _mediocre)
+        + _with_rev("d", lambda it: "")
+        + [_d(it["id"], "d2", _right(it) or "", 0.9) for it in BIG],
+    )
+    section = gs.render_markdown(rep).split("## Consequences")[1].split("\n## ")[0]
+    assert "good writes (expansion items)" in section and "good writes (exact controls, not a gain)" in section
+    assert "exact controls right (at this tau)" in section and "| good writes |" not in section
+
+
+# ---- verdict precedence -----
+
+
+def test_a_decisive_fail_outranks_a_floor_shortfall_elsewhere(tmp_path):
+    items = _big_items_n(60, 30, 140)  # 260 items, all with two candidates
+    base = _both_orders(items[:100], "qwen-local", _mediocre)  # the baseline ran 100: (a), (b), (d) are below their floors
+
+    def flip(it):  # 25 of the 260 reversed answers change: 9.6%, interval entirely above 5%
+        if int(it["term"][1:]) % 11:
+            return _right(it)
+        return (
+            it["candidates"][0]["title"]
+            if it.get("negative")
+            else [c["title"] for c in it["candidates"] if c["title"] != it["gold"]][0]
+        )
+
+    arm = _rows_for(items, "t", _right) + _rows_for(items, "t", flip, order="rev")
+    v = _report_for(tmp_path, items, base + arm)["verdicts"]["t"]
+    c = v["rules"]["c"]
+    assert c["ok"] is False and not c.get("within_noise") and not c.get("below_floor") and c["n"] >= 100
+    assert v["rules"]["a"].get("below_floor") and v["verdict"] == "FAIL"
+
+
+def test_a_floor_shortfall_still_outranks_a_noisy_fail_and_missing_results(tmp_path):
+    items = _big_items_n(20, 15, 50)
+    base = _both_orders(items, "qwen-local", _mediocre)
+    arm = _rows_for(items, "t", _right) + _rows_for(items, "t", _right, order="rev")[:40]  # (c) below its floor, nothing failing
+    assert _report_for(tmp_path, items, base + arm)["verdicts"]["t"]["verdict"] == "INCOMPLETE"
+
+
+# ---- review load -----
+
+
+def test_review_load_counts_respelling_flags_only_and_the_other_flags_are_recorded():
+    import tools.glossary_consequences as gc
+
+    exacts = [_item(f"E{k}", [f"E{k}", f"E{k} Jr"], f"E{k}", "exact") for k in range(4)]
+    negs = [_item(f"N{k}", [f"N{k}x", f"N{k}y"], negative=True) for k in range(2)]
+    pairs = [
+        (exacts[0], gs.Pick("E0", word="high"), "exact"),  # nothing
+        (exacts[1], gs.Pick("Q1", word="high"), "exact"),  # respelling: a human reviews it
+        (exacts[2], gs.Pick("E2", word="low"), "exact"),  # recorded, not reviewed
+        (exacts[3], gs.Pick("", word="none"), "exact"),  # recorded, not reviewed
+        (negs[0], gs.Pick("", word="none"), "negative"),  # the right answer: costs nobody anything
+        (negs[1], gs.Pick("N1x", word="low"), "negative"),
+    ]
+    t = gc.tally(pairs)
+    assert t["review"]["exact"] == {"n": 4, "flagged": 1, "recorded": 2, "per_100": 25.0}
+    assert t["review"]["negative"] == {"n": 2, "flagged": 0, "recorded": 2, "per_100": 0.0}
+    assert t["harmful_flags"] == 1
