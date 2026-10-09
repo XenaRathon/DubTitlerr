@@ -443,7 +443,8 @@ def build_prompt(asr, sub, gloss, prev_text="", next_text="", arc=None, episode=
     names = _glossary_terms(gloss, arc, episode)
     head = "You fix speech-recognition errors in one English-dub subtitle line.\n"
     name_line = (f"Reference spellings (VERIFICATION ONLY - this is NOT a list of names to insert): {names}.\n") if names else ""
-    # Only with reference spellings to refer to AND the name-part check on (REPAIR_KEEP_NAME_PARTS=1): the rule and the check
+    # Only with reference spellings to refer to AND the name-part check on (REPAIR_KEEP_NAME_PARTS, default on): the rule and
+    # the check
     # switch on together, so a feature that is off costs no prompt change (and no stale human verdicts).
     parts_rule = (
         "- Write each name exactly as the line says it: a given name or surname said alone stays alone, and a full "
@@ -740,13 +741,14 @@ def substitutes_a_vouched_name(orig, new, gloss):
 # OFF until there is a live measurement. The replay over the 728 Wano cues had no long forms in its cue context, so it measured
 # nothing either way; the live glossary has no multi-word NAMES at all (verify writes long forms into phrases), so with this on
 # the check also judges mined phrases like 'Grand Line' and 'Devil Fruit'. To measure: repair the Wano episodes with the rebuilt
-# glossary once on, once off, and judge the rejected_name_part cues. REPAIR_KEEP_NAME_PARTS=1 turns it on.
-KEEP_NAME_PARTS_DEFAULT = "0"
+# glossary once on, once off, and judge the rejected_name_part cues. REPAIR_KEEP_NAME_PARTS=0 turns it off (the maintainer
+# decided on 2026-10-09 that it is on by default).
+KEEP_NAME_PARTS_DEFAULT = "1"
 
 
 def _keep_name_parts():
-    """REPAIR_KEEP_NAME_PARTS=1 turns the name-part check on, =0 off; unset: off (KEEP_NAME_PARTS_DEFAULT). Read per call."""
-    return os.environ.get("REPAIR_KEEP_NAME_PARTS", KEEP_NAME_PARTS_DEFAULT) == "1"
+    """REPAIR_KEEP_NAME_PARTS=0 turns the name-part check off; unset: on (KEEP_NAME_PARTS_DEFAULT). Read per call."""
+    return os.environ.get("REPAIR_KEEP_NAME_PARTS", KEEP_NAME_PARTS_DEFAULT) != "0"
 
 
 def _name_tokens(text):
@@ -1110,9 +1112,9 @@ def transport_retries_total():
 
 
 def _transport_retries():
-    """REPAIR_TRANSPORT_RETRIES (default 0 = the legacy single attempt, clamped 0..5; garbage -> 0), read per call.
-    Recommended 2: one transient OSError cost a Wano episode a line."""
-    return env_int("REPAIR_TRANSPORT_RETRIES", 0, lo=0, hi=5)
+    """REPAIR_TRANSPORT_RETRIES (default 2, clamped 0..5; garbage -> 2; 0 = the legacy single attempt), read per call.
+    One transient OSError cost a Wano episode a line."""
+    return env_int("REPAIR_TRANSPORT_RETRIES", 2, lo=0, hi=5)
 
 
 def _is_transport_error(e):

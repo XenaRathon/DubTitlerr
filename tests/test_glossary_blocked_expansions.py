@@ -79,7 +79,7 @@ def test_a_one_token_spelling_fix_is_always_queued_even_if_is_expansion_says_exp
 def test_a_same_token_common_word_block_is_queued_too(monkeypatch):
     """Without the whole-word guard a common word can be 'expanded' into one token (Castle -> Castles): not droppable."""
     monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "1")
-    monkeypatch.delenv("VERIFY_WRITE_WHOLE_WORD", raising=False)
+    monkeypatch.setenv("VERIFY_WRITE_WHOLE_WORD", "0")
     monkeypatch.setattr(glossary, "_ORDINARY", {"castle"})
     monkeypatch.setenv("VERIFY_QUEUE_BLOCKED_EXPANSIONS", "0")
     out = apply({"Castle": "Castles", "Castle Rock": "Hancock Castle Rock"})

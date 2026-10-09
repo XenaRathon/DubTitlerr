@@ -49,8 +49,9 @@ def script(monkeypatch, *outcomes):
     return calls
 
 
-def test_by_default_a_transport_error_is_one_attempt_and_unreachable(env, monkeypatch):
-    """GUARD (passes on the old code): legacy behaviour is byte-identical with the variable unset."""
+def test_with_0_a_transport_error_is_one_attempt_and_unreachable(env, monkeypatch):
+    """Legacy: REPAIR_TRANSPORT_RETRIES=0 (the default is 2 since phase 27) is the single attempt."""
+    monkeypatch.setenv("REPAIR_TRANSPORT_RETRIES", "0")
     calls = script(monkeypatch, ConnectionResetError("reset"), OK)
     assert repair.llm_openai("P", None) == repair.LLM_UNREACHABLE
     assert len(calls) == 1 and env == []
@@ -132,7 +133,7 @@ def test_a_soft_stop_ends_the_retries(env, monkeypatch):
 
 
 def test_the_budget_is_clamped(env, monkeypatch):
-    for raw, expect in (("2", 2), ("9", 5), ("-1", 0), ("lots", 0), ("", 0)):
+    for raw, expect in (("2", 2), ("9", 5), ("-1", 0), ("lots", 2), ("", 2)):
         monkeypatch.setenv("REPAIR_TRANSPORT_RETRIES", raw)
         assert repair._transport_retries() == expect, raw
 
@@ -175,6 +176,7 @@ def test_the_summary_reports_transport_retries_only_when_the_budget_is_set(tmp_p
         repair.process(conf)
         return json.load(open(stem + ".dubtitles.repair-summary.json"))
 
+    monkeypatch.setenv("REPAIR_TRANSPORT_RETRIES", "0")
     off = run("off")
     assert "transport_retries" not in off and off["unreachable"] == 1  # the legacy single attempt
     monkeypatch.setenv("REPAIR_TRANSPORT_RETRIES", "2")

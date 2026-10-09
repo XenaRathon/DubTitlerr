@@ -331,17 +331,18 @@ def auto_writes(term: str, canon: str) -> bool:
     """Whether a high-confidence ``canon`` for ``term`` is WRITTEN (True) or flagged for review (False).
 
     By default that is glossary_acquire.is_expansion alone. is_expansion is a substring rule, so it also writes
-    near-respellings: 'Usop' -> 'Usopp', 'Burn' -> 'Coburn'. VERIFY_WRITE_WHOLE_WORD=1 (default off) additionally
-    requires the term to be a whole word (token-wise, casefolded) of the canonical, which is how the bake-off's expansion gold
-    is defined; anything else is flagged 'respelling-needs-review' like any non-expansion. A term with fewer than two letters
-    ('D', '3', 'G-5') never passes under this guard: it is flagged for review, never lost (the term itself stays in the glossary
-    and the reviewer can accept the write). 'Dr. K' has three letters and is not held back. Read per call."""
+    near-respellings: 'Usop' -> 'Usopp', 'Burn' -> 'Coburn'. VERIFY_WRITE_WHOLE_WORD (default ON; =0 restores the substring
+    rule) additionally requires the term to be a whole word (token-wise, casefolded) of the canonical, which is how the
+    bake-off's expansion gold is defined; anything else is flagged 'respelling-needs-review' like any non-expansion. A term
+    with fewer than two letters ('D', '3', 'G-5') never passes under this guard: it is flagged for review, never lost (the
+    term itself stays in the glossary and the reviewer can accept the write). 'Dr. K' has three letters and is not held
+    back. Read per call."""
     # Imported at call time, NOT at module scope: glossary_acquire imports this module (a hard cycle otherwise).
     from glossary_acquire import is_expansion
 
     if not is_expansion(term, canon):
         return False
-    return os.environ.get("VERIFY_WRITE_WHOLE_WORD", "") != "1" or _whole_word(term, canon)
+    return os.environ.get("VERIFY_WRITE_WHOLE_WORD", "1") == "0" or _whole_word(term, canon)
 
 
 _gate_noop_logged = False
@@ -445,12 +446,18 @@ def _common_word_block(blocked: int) -> dict:
     return block
 
 
+def skip_common_words() -> bool:
+    """VERIFY_SKIP_COMMON_WORDS (default ON, '0' turns the common-word guard off). Read per call."""
+    return os.environ.get("VERIFY_SKIP_COMMON_WORDS", "1") != "0"
+
+
 def write_decision(term: str, canon: str, universe) -> str:
     """'write', 'respelling', 'common-word', or 'not-in-arc-pages'. ONE place for apply_results and the report's counts.
 
     Check order:
       1. Not an expansion (is_expansion / whole-word guard) -> 'respelling'.
-      2. VERIFY_SKIP_COMMON_WORDS=1 AND the term is a single token AND the word list spells it in LOWERCASE
+      2. skip_common_words() (VERIFY_SKIP_COMMON_WORDS, default ON) AND the term is a single token AND the word list spells it
+         in LOWERCASE
          (glossary.is_ordinary_word: 'castle', 'government' yes; 'Hancock', 'Rayleigh', which wamerican spells capitalised,
          no) -> 'common-word', flagged for review, nothing deleted (a reviewer's 'y' in glossary_acquire --review writes it).
          The one exception is VERIFY_COMMON_WORD_ARC_RESCUE=1 (default off, and it needs VERIFY_ARC_GATE=1: the universe
@@ -460,8 +467,8 @@ def write_decision(term: str, canon: str, universe) -> str:
       4. Otherwise -> 'write'."""
     if not auto_writes(term, canon):
         return "respelling"
-    # Common-word guard (opt-in, default off).
-    if os.environ.get("VERIFY_SKIP_COMMON_WORDS") == "1" and " " not in term.strip():
+    # Common-word guard (default on, VERIFY_SKIP_COMMON_WORDS=0 turns it off).
+    if skip_common_words() and " " not in term.strip():
         import glossary
 
         if glossary.is_ordinary_word(term):
@@ -504,11 +511,11 @@ def blocked_kind(term: str, canon: str, decision: str) -> str:
 
 
 def queue_no_match() -> bool:
-    """VERIFY_QUEUE_NO_MATCH (default '1', the legacy behaviour): whether a term the model found NO candidate for is put in the
-    review queue (`flagged`). '0' leaves it out: it is still recorded in `verified` and counted in the report (`no_match`), but a
-    human has no candidate to accept or reject, so queueing it only buries the entries that carry a decision (measured on a
-    One Pace rebuild: 578 of 687 flags). Entries already stored stay as they are. Read per call."""
-    return os.environ.get("VERIFY_QUEUE_NO_MATCH", "1") != "0"
+    """VERIFY_QUEUE_NO_MATCH (default '0'; '1' is the legacy behaviour): whether a term the model found NO candidate for is put in
+    the review queue (`flagged`). '0' (the default) leaves it out: it is still recorded in `verified` and counted in the report
+    (`no_match`), but a human has no candidate to accept or reject, so queueing it only buries the entries that carry a
+    decision (measured on a One Pace rebuild: 578 of 687 flags). Entries already stored stay as they are. Read per call."""
+    return os.environ.get("VERIFY_QUEUE_NO_MATCH", "0") == "1"
 
 
 def is_no_match(adj) -> bool:
@@ -1505,7 +1512,7 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
     applied = decisions.count("write")
     blocked = decisions.count("not-in-arc-pages")
     common_word_blocked = decisions.count("common-word")
-    cw_on = os.environ.get("VERIFY_SKIP_COMMON_WORDS") == "1"
+    cw_on = skip_common_words()
     return {
         "show": show,
         "wiki": api,

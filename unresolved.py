@@ -168,13 +168,18 @@ def word_changes(original: str, proposed: str) -> int:
 
 
 _WARNED_THRESHOLDS: set = set()
+DEFAULT_DISMISS_WORDS = 6
 
 
 def auto_dismiss_threshold():
-    """REPAIR_AUTO_DISMISS_WORDS as an int, or None (off, the default). Anything that is not a whole number >= 0 is off, and a
-    value that is set but unusable ('abc', '4.0', '-1') is logged once so it is not mistaken for 'on'. 0 means any word change
-    dismisses."""
+    """REPAIR_AUTO_DISMISS_WORDS as an int, or None (off). Unset or empty: DEFAULT_DISMISS_WORDS (6). 'off' (any case) turns it
+    off. Any other value that is not a whole number >= 0 is off too, and one that is set but unusable ('abc', '4.0', '-1') is
+    logged once so it is not mistaken for 'on'. 0 means any word change dismisses."""
     raw = (os.environ.get("REPAIR_AUTO_DISMISS_WORDS") or "").strip()
+    if not raw:
+        return DEFAULT_DISMISS_WORDS
+    if raw.lower() == "off":
+        return None
     if raw.isdecimal():
         return int(raw)
     if raw and raw not in _WARNED_THRESHOLDS:

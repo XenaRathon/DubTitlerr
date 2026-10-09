@@ -316,7 +316,7 @@ def test_the_missing_config_message_names_no_other_stages_variables(monkeypatch,
 @pytest.mark.parametrize("term,canon", [("Usop", "Usopp"), ("Burn", "Coburn"), ("Zoro", "Zoroaster")])
 def test_by_default_a_substring_expansion_is_written_as_before(monkeypatch, term, canon):
     """GUARD (passes on the old code): is_expansion's substring rule writes near-respellings. Default behaviour is unchanged."""
-    monkeypatch.delenv("VERIFY_WRITE_WHOLE_WORD", raising=False)
+    monkeypatch.setenv("VERIFY_WRITE_WHOLE_WORD", "0")
     g = {"show": "S", "names": [term], "phrases": [], "hard_fixes": {}}
     new = gv.apply_results(g, {term: {"canonical": canon, "confidence": "high", "dub_note": ""}})
     assert canon in new["names"] and "flagged" not in new
@@ -359,7 +359,7 @@ def test_verify_counts_applied_the_way_it_writes(monkeypatch, tmp_path):
     monkeypatch.setattr(gv, "llm_chat", lambda *a, **k: '{"canonical": "Usopp", "confidence": "high", "dub_note": ""}')
     path = tmp_path / "g.json"
     path.write_text('{"show": "S", "names": ["Usop"], "phrases": [], "hard_fixes": {}, "initial_prompt": "P"}')
-    monkeypatch.delenv("VERIFY_WRITE_WHOLE_WORD", raising=False)
+    monkeypatch.setenv("VERIFY_WRITE_WHOLE_WORD", "0")
     assert gv.verify(str(path))["applied"] == 1
     path.write_text('{"show": "S", "names": ["Usop"], "phrases": [], "hard_fixes": {}, "initial_prompt": "P"}')
     monkeypatch.setenv("VERIFY_WRITE_WHOLE_WORD", "1")

@@ -22,16 +22,18 @@ RESULTS = {"Nobody": NO_MATCH, "Lowly": LOW, "Zoro": HIGH_RESP}
 # ---- apply_results --------------------------------------- ----
 
 
-def test_by_default_a_no_match_is_queued_as_before(monkeypatch):
-    """GUARD (passes on the old code): legacy behaviour is byte-identical with the variable unset or '1'."""
-    for value in (None, "1"):
-        if value is None:
-            monkeypatch.delenv("VERIFY_QUEUE_NO_MATCH", raising=False)
-        else:
-            monkeypatch.setenv("VERIFY_QUEUE_NO_MATCH", value)
-        out = gv.apply_results(base(names=["Zoro", "Nobody", "Lowly"]), RESULTS)
-        assert out["flagged"]["Nobody"] == "no-match" and out["flagged"]["Lowly"] == "low-confidence"
-        assert out["verified"] == ["Lowly", "Nobody", "Zoro"]
+def test_with_the_variable_set_to_1_a_no_match_is_queued_as_before(monkeypatch):
+    """Legacy: VERIFY_QUEUE_NO_MATCH=1 restores queueing (the default is 0 since phase 27)."""
+    monkeypatch.setenv("VERIFY_QUEUE_NO_MATCH", "1")
+    out = gv.apply_results(base(names=["Zoro", "Nobody", "Lowly"]), RESULTS)
+    assert out["flagged"]["Nobody"] == "no-match" and out["flagged"]["Lowly"] == "low-confidence"
+    assert out["verified"] == ["Lowly", "Nobody", "Zoro"]
+
+
+def test_by_default_a_no_match_is_verified_but_not_queued(monkeypatch):
+    monkeypatch.delenv("VERIFY_QUEUE_NO_MATCH", raising=False)
+    out = gv.apply_results(base(names=["Zoro", "Nobody", "Lowly"]), RESULTS)
+    assert "Nobody" in out["verified"] and "Nobody" not in out["flagged"]
 
 
 def test_with_the_queue_off_a_no_match_is_verified_but_not_flagged(monkeypatch):
@@ -79,9 +81,9 @@ def _verify(tmp_path, monkeypatch):
 
 
 def test_the_report_counts_no_matches_only_when_the_queue_is_off(tmp_path, monkeypatch):
+    monkeypatch.setenv("VERIFY_QUEUE_NO_MATCH", "1")
+    assert "no_match" not in _verify(tmp_path, monkeypatch)  # the legacy report shape
     monkeypatch.delenv("VERIFY_QUEUE_NO_MATCH", raising=False)
-    assert "no_match" not in _verify(tmp_path, monkeypatch)  # default report shape unchanged
-    monkeypatch.setenv("VERIFY_QUEUE_NO_MATCH", "0")
     rep = _verify(tmp_path, monkeypatch)
     assert rep["no_match"] == 1 and rep["flagged"] == 2  # Nobody not queued; Lowly and Zoro are
 
@@ -175,7 +177,7 @@ def test_an_answered_decision_is_recorded_and_the_summary_count_follows(tmp_path
 def test_low_confidence_without_a_candidate_is_a_no_match(monkeypatch):
     """Legacy rule: 'low-confidence' needs a canonical; a 'low' with none is a 'no-match'."""
     adj = {"canonical": "", "confidence": "low"}
-    monkeypatch.delenv("VERIFY_QUEUE_NO_MATCH", raising=False)
+    monkeypatch.setenv("VERIFY_QUEUE_NO_MATCH", "1")
     assert gv.apply_results(base(names=["X"]), {"X": adj})["flagged"]["X"] == "no-match"
     monkeypatch.setenv("VERIFY_QUEUE_NO_MATCH", "0")
     assert "flagged" not in gv.apply_results(base(names=["X"]), {"X": adj})

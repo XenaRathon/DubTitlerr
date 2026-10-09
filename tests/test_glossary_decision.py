@@ -204,7 +204,8 @@ def test_a_high_respelling_pick_is_flagged_not_written(decision):
     assert new["names"] == ["Zoro"] and new["flagged"]["Zoro"] == {"reason": "respelling-needs-review", "canonical": "Zorro"}
 
 
-def test_low_and_none_picks_are_flagged(decision):
+def test_low_and_none_picks_are_flagged(decision, monkeypatch):
+    monkeypatch.setenv("VERIFY_QUEUE_NO_MATCH", "1")  # the queue is off by default since phase 27
     new = None
     for ans, reason in ((choice_answer("c1", 0.2), "low-confidence"), (choice_answer("none", 0.9), "no-match")):
         decision(lambda q, b, a=ans: a)
@@ -338,6 +339,8 @@ def test_a_legacy_backend_prints_and_reports_nothing_extra(tmp_path, monkeypatch
     monkeypatch.setattr(gv, "llm_chat", lambda *a, **k: '{"canonical": "Roronoa Zoro", "confidence": "high", "dub_note": ""}')
     path = tmp_path / "g.json"
     path.write_text(json.dumps({"show": "S", "names": ["Zoro"], "phrases": [], "hard_fixes": {}, "initial_prompt": "P"}))
+    monkeypatch.setenv("VERIFY_QUEUE_NO_MATCH", "1")  # the default (0) adds a no_match count; the common-word guard a block
+    monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "0")
     rep = gv.verify(str(path))
     assert set(rep) == {"show", "wiki", "checked", "applied", "escalated", "flagged"}
     out = capsys.readouterr().out

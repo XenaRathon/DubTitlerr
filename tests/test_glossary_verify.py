@@ -78,7 +78,8 @@ def test_apply_is_idempotent_on_a_second_run():
     assert twice["names"] == ["Doflamingo"]
 
 
-def test_apply_flags_low_and_no_match_without_changing():
+def test_apply_flags_low_and_no_match_without_changing(monkeypatch):
+    monkeypatch.setenv("VERIFY_QUEUE_NO_MATCH", "1")
     g = gl(names=["Krieg", "Blarg"])
     res = {
         "Krieg": {"canonical": "Don Krieg", "confidence": "low", "dub_note": ""},

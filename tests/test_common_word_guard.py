@@ -48,9 +48,10 @@ def _gloss(**extra):
 # ---- guard OFF (default): byte-identical behaviour ---------------------------
 
 
-def test_guard_off_by_default_english_word_is_written():
-    """GUARD: with VERIFY_SKIP_COMMON_WORDS unset, a single English word expansion is written
-    exactly as before — the default is byte-identical."""
+def test_guard_set_to_0_writes_an_english_word_expansion_as_before(monkeypatch):
+    """Legacy: with VERIFY_SKIP_COMMON_WORDS=0 (the guard is on by default since phase 27), a single English word expansion is
+    written exactly as before."""
+    monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "0")
     g = _gloss(names=["Government"])
     new = gv.apply_results(g, {"Government": high("World Government")})
     assert "World Government" in new["phrases"]
@@ -58,7 +59,7 @@ def test_guard_off_by_default_english_word_is_written():
 
 
 def test_guard_off_explicitly(monkeypatch):
-    monkeypatch.delenv("VERIFY_SKIP_COMMON_WORDS", raising=False)
+    monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "0")
     g = _gloss(names=["Castle"])
     new = gv.apply_results(g, {"Castle": high("Drum Castle")})
     assert "Drum Castle" in new["phrases"]
@@ -178,7 +179,7 @@ def test_verify_report_counts_common_word_blocked(monkeypatch, tmp_path):
 
 def test_verify_report_has_no_common_word_key_when_guard_off(monkeypatch, tmp_path):
     """GUARD: default report shape has no common_word key."""
-    monkeypatch.delenv("VERIFY_SKIP_COMMON_WORDS", raising=False)
+    monkeypatch.setenv("VERIFY_SKIP_COMMON_WORDS", "0")
     gloss = _gloss(names=["Government", "Momonosuke"])
     path = tmp_path / "g.json"
     path.write_text(json.dumps(gloss))

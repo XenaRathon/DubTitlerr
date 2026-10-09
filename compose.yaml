@@ -58,6 +58,32 @@ services:
       REPAIR_MODEL: qwen3-4b-instruct
       REPAIR_LLAMACPP_URL: http://host.docker.internal:8090/v1/chat/completions
 
+      # --- optional flags (CHANGELOG.md, "Optional flags"). Only variables listed in
+      # this block reach the container. The values below are the DECIDED DEFAULTS
+      # (2026-10-09): they apply when the line stays commented out. Uncomment a
+      # line only to change it; set "0" (or the noted off value) for the old behaviour.
+      # If the cron host runs these stages, give it the same values.
+      #
+      # on by default (glossary verify / acquire):
+      # VERIFY_WRITE_WHOLE_WORD: "1" # "0": also auto-write near-respellings (Usop -> Usopp)
+      # VERIFY_SKIP_COMMON_WORDS: "1" # "0": write ordinary one-word terms; needs the wamerican word list (WORDLIST_PATH)
+      # VERIFY_QUEUE_NO_MATCH: "0" # "1": queue terms the model found no candidate for
+      # VERIFY_QUEUE_BLOCKED_EXPANSIONS: "1" # "0": do not queue a blocked longer expansion
+      # on by default (repair):
+      # REPAIR_KEEP_NAME_PARTS: "1" # "0": no name-part check and no prompt rule
+      # REPAIR_AUTO_DISMISS_WORDS: "6" # "off": never dismiss; a whole number sets the word-change limit
+      # REPAIR_TRANSPORT_RETRIES: "2" # "0": single attempt (openai backend only; 0 to 5)
+      # off by default (opt in):
+      # VERIFY_ARC_GATE: "1"
+      # VERIFY_COMMON_WORD_ARC_RESCUE: "1" # needs VERIFY_ARC_GATE=1
+      # REPAIR_ACCEPT_PUNCT_CASE_ONLY: "1"
+      # REPAIR_GUARD_TERMINAL_PUNCT: "1"
+      # VERIFY_REFUSE_EXIT: "1"
+      # GLOSSARY_ARC_TAGS: "1"
+      # The decision model is NOT enabled here. To use it: VERIFY_BACKEND: decision,
+      # VERIFY_DECISION_MODEL: typesafe/jev and COMMANDCODE_API_KEY (the key itself via .env).
+      # VERIFY_BACKEND: decision
+
       # --- Plex refresh (optional — blank skips it) ---
       PLEX_URL: ${PLEX_URL:-}
       PLEX_TOKEN: ${PLEX_TOKEN:-}

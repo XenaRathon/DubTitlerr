@@ -2216,6 +2216,9 @@ def test_a_changed_proposal_supersedes_the_pending_one_for_that_line(tmp_path, m
     a worklist that shrinks (`unresolved.resolve`'s docstring), and what the model proposed
     before is exactly the evidence for whether the gate is drifting."""
     stem, conf_path = _one_target(tmp_path, "ep_superseded")
+    # The test is about queue supersession; its second proposal ("Spandam there") is a contrived hard fix the name-part check
+    # (on by default since phase 27) would refuse, so the check is set back off here.
+    monkeypatch.setenv("REPAIR_KEEP_NAME_PARTS", "0")
     monkeypatch.setattr(repair, "find_video", lambda s: str(tmp_path / "ep_superseded.mkv"))
     monkeypatch.setattr(repair, "dialogue_intervals", lambda video: [(0.0, 1.0, "the official sub")])
     monkeypatch.setattr(decisions, "decisions_for", lambda *a, **k: ({}, "Show"))

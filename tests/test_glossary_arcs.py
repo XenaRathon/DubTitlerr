@@ -346,7 +346,7 @@ def test_two_letters_are_enough_and_the_default_is_unchanged(monkeypatch):
     g = {"show": "S", "names": ["Jo", "D"], "phrases": [], "hard_fixes": {}}
     monkeypatch.setenv("VERIFY_WRITE_WHOLE_WORD", "1")
     assert "Jo March" in gv.apply_results(g, {"Jo": high("Jo March")})["phrases"]
-    monkeypatch.delenv("VERIFY_WRITE_WHOLE_WORD")  # GUARD: off by default, a one-letter term is written as before
+    monkeypatch.setenv("VERIFY_WRITE_WHOLE_WORD", "0")  # GUARD: off by default, a one-letter term is written as before
     assert "Monkey D. Luffy" in gv.apply_results(g, {"D": high("Monkey D. Luffy")})["phrases"]
 
 

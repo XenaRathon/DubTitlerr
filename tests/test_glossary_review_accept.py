@@ -62,8 +62,9 @@ def test_accepting_a_flagged_expansion_writes_it_like_apply_results(monkeypatch,
 def test_the_written_form_is_the_one_apply_results_writes(monkeypatch, reason):
     g, term, canon = flagged_by(monkeypatch, reason)
     written = ga.record_decision(g, term, accept=True)
-    for var in ("VERIFY_SKIP_COMMON_WORDS", "VERIFY_ARC_GATE", "VERIFY_WRITE_WHOLE_WORD"):
-        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("VERIFY_ARC_GATE", raising=False)
+    for var in ("VERIFY_SKIP_COMMON_WORDS", "VERIFY_WRITE_WHOLE_WORD"):
+        monkeypatch.setenv(var, "0")
     reference = gv.apply_results(base(names=[term]), {term: high(canon)})  # the ungated write
     assert written["names"] == reference["names"] and written["phrases"] == reference["phrases"]
 

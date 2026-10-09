@@ -88,8 +88,11 @@ def test_a_wrong_pick_on_a_negative_that_is_not_an_expansion_is_review_load_not_
         (NEG, high("Nilox"), {"canonical": "Nilox", "confidence": "high"}),
     ],
 )
-def test_the_classification_agrees_with_what_production_does(item, pick, adjudication):
-    """Same adjudication through glossary_verify.apply_results: the same written / flagged outcome."""
+def test_the_classification_agrees_with_what_production_does(monkeypatch, item, pick, adjudication):
+    """Same adjudication through glossary_verify.apply_results: the same written / flagged outcome. classify mirrors the legacy
+    substring rule and the queued no-match, so the two phase-27 defaults are set back to it here."""
+    monkeypatch.setenv("VERIFY_WRITE_WHOLE_WORD", "0")
+    monkeypatch.setenv("VERIFY_QUEUE_NO_MATCH", "1")
     gloss = {"names": [item["term"]], "phrases": []}
     new = gv.apply_results(gloss, {item["term"]: adjudication})
     written = [n for n in new["names"] + new["phrases"] if n != item["term"]]

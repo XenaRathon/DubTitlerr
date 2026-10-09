@@ -43,14 +43,14 @@ def test_word_changes(a, b, n):
 
 def test_the_threshold_comes_from_the_environment(monkeypatch):
     monkeypatch.delenv("REPAIR_AUTO_DISMISS_WORDS", raising=False)
-    assert unresolved.auto_dismiss_threshold() is None
-    for raw, expect in (("6", 6), (" 4 ", 4), ("0", 0), ("", None), ("many", None), ("-1", None), ("2.5", None)):
+    assert unresolved.auto_dismiss_threshold() == 6
+    for raw, expect in (("6", 6), (" 4 ", 4), ("0", 0), ("", 6), ("off", None), ("many", None), ("-1", None), ("2.5", None)):
         monkeypatch.setenv("REPAIR_AUTO_DISMISS_WORDS", raw)
         assert unresolved.auto_dismiss_threshold() == expect, raw
 
 
 def test_dismissal_is_empty_when_off_or_not_over_the_threshold(monkeypatch):
-    monkeypatch.delenv("REPAIR_AUTO_DISMISS_WORDS", raising=False)
+    monkeypatch.setenv("REPAIR_AUTO_DISMISS_WORDS", "off")
     assert unresolved.dismissal("a b c", "x y z q r s t") == {}
     monkeypatch.setenv("REPAIR_AUTO_DISMISS_WORDS", "4")
     assert unresolved.dismissal("a b c", "a b d") == {}  # 2 changes
@@ -136,9 +136,9 @@ BIG = "the old line has few words"  # 6 words
 HUGE = "a completely different sentence that adds many brand new words to the card here"  # length ratio > 1.5
 
 
-def test_by_default_nothing_is_dismissed_and_the_summary_has_no_new_key(tmp_path, monkeypatch):
-    """GUARD (passes on the old code)."""
-    monkeypatch.delenv("REPAIR_AUTO_DISMISS_WORDS", raising=False)
+def test_when_off_nothing_is_dismissed_and_the_summary_has_no_new_key(tmp_path, monkeypatch):
+    """Legacy: REPAIR_AUTO_DISMISS_WORDS=off (the default is 6 since phase 27)."""
+    monkeypatch.setenv("REPAIR_AUTO_DISMISS_WORDS", "off")
     stem, summary = _episode(tmp_path, monkeypatch, BIG, HUGE)
     (entry,) = unresolved.items(stem)
     assert entry["reason"] == "rejected_guard" and "dismissed" not in entry and "dismissed_large_change" not in summary

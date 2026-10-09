@@ -30,7 +30,8 @@ def base(**extra):
         {},
     ],
 )
-def test_a_malformed_adjudication_is_a_no_match_and_never_a_write_or_a_crash(adj):
+def test_a_malformed_adjudication_is_a_no_match_and_never_a_write_or_a_crash(monkeypatch, adj):
+    monkeypatch.setenv("VERIFY_QUEUE_NO_MATCH", "1")  # the queue is off by default since phase 27
     out = gv.apply_results(base(), {"Zoro": adj})
     assert "Roronoa Zoro" not in out["names"] + out["phrases"]
     assert out["flagged"]["Zoro"] == "no-match" and "Zoro" in out["verified"]

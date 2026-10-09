@@ -85,9 +85,9 @@ def test_an_unrelated_edit_next_to_a_bare_name_is_fine(keep):
     assert accept("Momonosuke is going to wano now", "Momonosuke is going to Wano now.")
 
 
-def test_the_check_is_off_unless_asked_so_the_default_ships_what_it_did_before(monkeypatch):
-    """GUARD (passes on the old code): without REPAIR_KEEP_NAME_PARTS nothing changes."""
-    monkeypatch.delenv("REPAIR_KEEP_NAME_PARTS", raising=False)
+def test_with_the_flag_set_to_0_the_check_ships_what_it_did_before(monkeypatch):
+    """Legacy: REPAIR_KEEP_NAME_PARTS=0 (the check is on by default since phase 27) restores the old behaviour."""
+    monkeypatch.setenv("REPAIR_KEEP_NAME_PARTS", "0")
     assert accept("Momonosuke is going to Wano.", "Kouzuki Momonosuke is going to Wano.")
 
 
@@ -151,12 +151,12 @@ def test_without_the_flag_the_summary_key_is_zero(tmp_path, monkeypatch):
     assert summary["rejected_name_part"] == 0 and summary["repaired"] == 1
 
 
-def test_the_check_is_opt_in_until_a_live_measurement_exists(monkeypatch):
+def test_the_check_is_on_by_default_and_0_turns_it_off(monkeypatch):
     monkeypatch.delenv("REPAIR_KEEP_NAME_PARTS", raising=False)
-    assert repair.KEEP_NAME_PARTS_DEFAULT == "0"
-    assert accept("Momonosuke is going to Wano.", "Kouzuki Momonosuke is going to Wano.")  # the default ships it
-    monkeypatch.setenv("REPAIR_KEEP_NAME_PARTS", "1")
-    assert not accept("Momonosuke is going to Wano.", "Kouzuki Momonosuke is going to Wano.")
+    assert repair.KEEP_NAME_PARTS_DEFAULT == "1"
+    assert not accept("Momonosuke is going to Wano.", "Kouzuki Momonosuke is going to Wano.")  # the default refuses it
+    monkeypatch.setenv("REPAIR_KEEP_NAME_PARTS", "0")
+    assert accept("Momonosuke is going to Wano.", "Kouzuki Momonosuke is going to Wano.")
 
 
 # ---- review findings: phrases, grown replaces, possessives, unrelated names ----------------------------------------------------
@@ -225,13 +225,13 @@ def test_a_name_part_refusal_is_in_the_review_queue_and_can_be_forced(tmp_path):
     assert [e["reason"] for e in unresolved.pending(stem, primary_only=True)] == ["rejected_name_part"]
 
 
-def test_the_prompt_rule_switches_on_with_the_check_and_not_before(monkeypatch):
-    """With the flag unset a glossary prompt is byte-identical to the one before phase 9 (no stale verdicts for a feature that
-    is off); the rule and the check go on together."""
-    monkeypatch.delenv("REPAIR_KEEP_NAME_PARTS", raising=False)
+def test_the_prompt_rule_goes_with_the_check(monkeypatch):
+    """With REPAIR_KEEP_NAME_PARTS=0 a glossary prompt is byte-identical to the one before phase 9; unset (the default since
+    phase 27) it carries the rule, which is the ONLY difference. The rule and the check go on together."""
+    monkeypatch.setenv("REPAIR_KEEP_NAME_PARTS", "0")
     off = repair.build_prompt("asr line", "", gl())
     assert "exactly as the line says it" not in off
-    monkeypatch.setenv("REPAIR_KEEP_NAME_PARTS", "1")
+    monkeypatch.delenv("REPAIR_KEEP_NAME_PARTS", raising=False)
     on = repair.build_prompt("asr line", "", gl())
     assert "exactly as the line says it" in on
     rule = on.index("- Write each name exactly")
