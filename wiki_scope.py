@@ -2,6 +2,44 @@
 
 Resolves the wiki page titles ("spelling universe") for a show/season when the show
 has no arc names in its metadata (e.g. Naruto, Pokemon, single-season shows).
+
+glossary_verify.tag_arcs (GLOSSARY_ARC_TAGS=1) calls it for a glossary that carries a ``wiki_scope`` block, one scope per
+library season (arc_index, season_page) or one for the whole show (whole_wiki), and stores the titles in the glossary's
+``arc_titles`` / ``arc_coverage`` under the key ``scope:<rung>:<season or all>``. Only COMPLETE results are stored.
+
+The ``wiki_scope`` block (all keys optional except ``rung`` and ``wiki``; ``wiki`` must be an https api.php on fandom.com,
+bulbapedia.bulbagarden.net or a host listed in WIKI_HOST_ALLOW):
+
+    rung             arc_index | season_page | whole_wiki
+    wiki             the api.php URL
+    deny             extra regexes; a title matching one is dropped (on top of the built-in lists)
+    -- arc_index: an index page with a table per part (arc, chapters, episodes) --
+    index_page       the page holding the tables (default "Plot of Naruto")
+    part             the level-2 heading of the table to read ("Part I"); needed when the page has several parts, because each
+                     part numbers its own episodes from 1 (without it the result is incomplete, never a merge)
+    season_parts     {"1": "Part I", "2": "Part II"}: the part per library season, overriding ``part``
+    season_offsets   {"2": 32}: added to a library episode number to get the number in the table (Shippuden season 2 episode 5
+                     is row 37 of the Part II table)
+    arc_column       header text of the arc column (default: a header with "Arc", else "Title"/"Name")
+    episode_column   header text of the episode column (default: Episode(s), Ep, Ep., Eps, Anime)
+    -- season_page: one wiki page per season --
+    season_page      page-title format, "{season:02d}" or "{season}" replaced by the season number (default "S{season:02d}")
+    episode_list_page  optional page (same format) whose episode table titles are dropped from the season page's links
+
+Examples (documentation only; they belong in a show's own glossary file, never in code):
+
+    Naruto (Part I)   {"rung": "arc_index", "wiki": "https://naruto.fandom.com/api.php",
+                       "index_page": "Plot of Naruto", "part": "Part I"}
+    Naruto Shippuden  {"rung": "arc_index", "wiki": "https://naruto.fandom.com/api.php", "index_page": "Plot of Naruto",
+                       "part": "Part II", "season_offsets": {"2": 32, "3": 53}}
+    Pokemon           {"rung": "season_page", "wiki": "https://bulbapedia.bulbagarden.net/w/api.php",
+                       "season_page": "S{season:02d}"}
+    Marriagetoxin     {"rung": "whole_wiki", "wiki": "https://marriagetoxin.fandom.com/api.php"}
+    Chainsmoker Cat   {"rung": "whole_wiki", "wiki": "https://chainsmoker-cat.fandom.com/api.php"}
+
+Library layout: arc_index and season_page need the season (and, for arc_index, the episode numbers) from an SxxExx tag in the
+video file names; files without one get no scope (see glossary_verify.scopes_in_show). A whole_wiki scope tags no names and is
+left out of the verify gate's universe (it would contain every page verify can propose).
 """
 
 from __future__ import annotations

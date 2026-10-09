@@ -179,3 +179,18 @@ def test_episode_column_and_arc_column_overrides():
     assert wiki_scope._parse_arc_rows(wt)[0] == []
     arcs, _n, _p = wiki_scope._parse_arc_rows(wt, arc_column="Saga", episode_column="Aired")
     assert arcs == [("The Saga", {4, 5})]
+
+
+def test_the_documented_examples_are_valid_configs():
+    """The example block in the module docstring is parsed, so a typo in the documentation fails here."""
+    import json
+    import re
+
+    doc = wiki_scope.__doc__
+    block = doc.split("Examples (documentation only")[1].split("Library layout")[0]
+    examples = re.findall(r"(\{.*?\})(?=\n\s*\n|\n    [A-Z]|\Z)", re.sub(r"\n\s{20,}", " ", block), re.S)
+    assert len(examples) == 5
+    for ex in examples:
+        cfg_ = json.loads(ex)
+        assert cfg_["rung"] in ("arc_index", "season_page", "whole_wiki")
+        assert wiki_scope._validate_wiki_url(cfg_["wiki"])[0]
