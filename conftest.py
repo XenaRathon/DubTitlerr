@@ -20,3 +20,11 @@ def _fresh_word_list_cache(monkeypatch):
 
     monkeypatch.setattr(glossary, "_ORDINARY", None)
     monkeypatch.setattr(glossary, "_ORDINARY_STATUS", None)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_wiki_cache(monkeypatch, tmp_path):
+    """glossary_verify keeps its adjudication journal and wiki title cache under CACHE_DIR; no test may touch a real one."""
+    import glossary_verify
+
+    monkeypatch.setattr(glossary_verify, "CACHE_DIR", str(tmp_path / "wiki_cache"))

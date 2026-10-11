@@ -278,7 +278,8 @@ def test_fallback_local_uses_the_local_model_and_says_so(decision, monkeypatch, 
         lambda prompt, **kw: seen.append(kw) or '{"canonical": "Roronoa Zoro", "confidence": "high", "dub_note": ""}',
     )
     out = gv.adjudicate("Zoro", TITLES, "S")
-    assert out == {"canonical": "Roronoa Zoro", "confidence": "high", "dub_note": ""}
+    # The fallback's answer is marked so the journal never remembers it as the decision model's.
+    assert out == {"canonical": "Roronoa Zoro", "confidence": "high", "dub_note": "", "fallback": True}
     assert seen[0]["backend"] in gv.LEGACY_BACKENDS and "openai_url" not in seen[0]
     assert gd.counters() == {"calls": 1, "ok": 0, "failures": 1, "fallbacks": 1, "pending": 0}
     assert "falling back to the local model" in capsys.readouterr().out
@@ -304,6 +305,7 @@ def test_a_different_served_model_is_a_failure(decision):
 
 
 def test_counters_are_per_run_and_the_summary_is_one_line(decision, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("VERIFY_NO_JOURNAL", "1")  # this test counts provider calls per run; a journal would answer the rerun
     decision(lambda q, b: choice_answer("c1", 0.9))
     monkeypatch.setattr(gv, "resolve_wiki", lambda show, override=None: "https://x.fandom.com/api.php")
     monkeypatch.setattr(gv, "fetch_titles", lambda api, show: TITLES)

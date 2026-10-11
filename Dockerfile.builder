@@ -80,7 +80,7 @@ WORKDIR /app
 # existing library without this in the image.
 COPY generate.py reflow.py glossary.py glossary_verify.py glossary_acquire.py hallucination.py ordering.py common.py common_words.txt \
      repair.py dub_signs_merge.py mux.py plex_refresh.py mine_glossary.py recreate_srt.py merge_pass.sh card_split.py \
-     qc.py punctuation.py unresolved.py decisions.py review_apply.py review_server.py watch_queue.py acquire_cache.py decision_client.py glossary_decision.py glossary_lock.py wiki_scope.py gen_loop.sh container_run.sh /app/
+     qc.py punctuation.py unresolved.py decisions.py review_apply.py review_server.py watch_queue.py acquire_cache.py adjudication_journal.py decision_client.py glossary_decision.py glossary_lock.py wiki_scope.py gen_loop.sh container_run.sh /app/
 COPY data/ /app/data/
 COPY shell/ /app/shell/
 COPY --from=review-ui /ui/dist/ /app/web/dist/

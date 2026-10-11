@@ -31,6 +31,7 @@ import time
 import urllib.parse
 import urllib.request
 
+import adjudication_journal
 import common
 from common import llm_chat, stop_requested
 
@@ -321,6 +322,82 @@ def parse_adjudication(text: str) -> dict:
     return {"canonical": d.get("canonical", "") or "", "confidence": conf, "dub_note": str(d.get("dub_note", "") or "")}
 
 
+# ---- the journal (adjudication_journal.py): what an answer depended on, and the call that remembers it
+# -----------------------------
+
+# Bump on a DELIBERATE change to what a stored answer would mean; the digest of the rendered templates below also
+# changes by itself
+# when a prompt is edited, so an edit cannot be forgotten.
+PROMPT_VERSION = "1"
+
+
+def prompt_version(kind: str) -> str:
+    """PROMPT_VERSION plus a digest of the prompt template for ``kind`` ('pick' here; acquire adds 'pair')."""
+    if kind == "pair":
+        import glossary_acquire
+
+        sample = glossary_acquire.build_merge_prompt("VARIANT", "CANONICAL", ["CTX-V"], ["CTX-C"], "SHOW")
+    else:
+        sample = build_adjudication_prompt("TERM", ["CAND"], "SHOW")
+    return f"{PROMPT_VERSION}:{adjudication_journal.digest(sample)[:8]}"
+
+
+def backend_identity(backend: str | None, kind: str) -> dict:
+    """The part of an answer's provenance that names WHO answered: backend, model and (for the decision model) its threshold."""
+    b = backend or VERIFY_BACKEND
+    ident: dict = {"backend": b}
+    if b == "decision":
+        import glossary_decision
+
+        s = glossary_decision.settings()
+        ident.update(model=s.model, tau=s.acquire_tau if kind == "pair" else s.tau)
+    else:
+        ident["model"] = llm_settings(b).get("model", "")
+    return ident
+
+
+def journal_enabled(stage: str) -> bool:
+    flag = "VERIFY_NO_JOURNAL" if stage == "verify" else "ACQUIRE_NO_CACHE"
+    return not os.environ.get(flag)
+
+
+def open_verify_journal(show: str):
+    """The verify stage's journal for ``show`` (under WIKI_CACHE_DIR), or None with VERIFY_NO_JOURNAL=1."""
+    if not journal_enabled("verify"):
+        return None
+    name = re.sub(r"[^A-Za-z0-9]+", "_", show) + ".verify.journal.jsonl"
+    return adjudication_journal.Journal(os.path.join(CACHE_DIR, name), "verify")
+
+
+def adjudicate_journaled(term: str, cands: list[str], show: str, journal, backend: str | None = None) -> dict | None:
+    """adjudicate(), but a completed answer is read from / written to ``journal`` (None = no journal). A term with no
+    candidates is
+    never asked, so never journaled. The call is made exactly as before (``backend`` only when it differs from VERIFY_BACKEND)."""
+
+    def ask():
+        if backend in (None, VERIFY_BACKEND):
+            return adjudicate(term, cands, show)
+        return adjudicate(term, cands, show, backend=backend)
+
+    if journal is None or not cands:
+        return ask()
+    key = adjudication_journal.pick_key(term)
+    prov = {
+        "stage": "pick",
+        "show": show,
+        "term": term,
+        "cands": adjudication_journal.digest(cands),
+        "prompt": prompt_version("pick"),
+        **backend_identity(backend, "pick"),
+    }
+    hit = journal.lookup(key, prov)
+    if hit is not None:
+        return hit
+    adj = ask()
+    journal.record(key, prov, adj)  # refuses None, "unavailable" and a local fallback's answer
+    return adj
+
+
 def adjudicate(term: str, cands: list[str], show: str, backend: str | None = None) -> dict | None:
     """LLM pick -> {'canonical': str, 'confidence': 'high'|'low'|'none', 'dub_note': str}. ``backend`` defaults to VERIFY_BACKEND;
     acquire passes acquire_backend().
@@ -336,17 +413,24 @@ def adjudicate(term: str, cands: list[str], show: str, backend: str | None = Non
     if backend == "decision":
         import glossary_decision
 
+        # The local fallback's answer is marked: it must never be remembered as if the decision model had given it.
         return glossary_decision.adjudicate_verify(
-            term, cands, show, local=lambda: _adjudicate_llm(term, cands, show, local_backend())
+            term, cands, show, local=lambda: {**_adjudicate_llm(term, cands, show, local_backend()), "fallback": True}
         )  # None = left pending (a failed call with VERIFY_DECISION_FALLBACK=none)
     return _adjudicate_llm(term, cands, show, backend)
 
 
 def _adjudicate_llm(term: str, cands: list[str], show: str, backend: str) -> dict:
     out = llm_chat(build_adjudication_prompt(term, cands, show), **llm_settings(backend))
+    # "unavailable" = no real answer (the backend returned nothing, or nothing a JSON object could be found in). It
+    # still reads as a
+    # no-match to apply_results, exactly as before; the flag only keeps it out of the journal so it stays retryable.
     if not out:
-        return {"canonical": "", "confidence": "none", "dub_note": ""}
-    return parse_adjudication(out)
+        return {"canonical": "", "confidence": "none", "dub_note": "", "unavailable": True}
+    parsed = parse_adjudication(out)
+    if not re.search(r"\{.*\}", out, re.S):
+        parsed["unavailable"] = True
+    return parsed
 
 
 def _shape_list(names: list, phrases: list, term: str) -> list:
@@ -1515,10 +1599,14 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
     # so a term is either fully adjudicated or skipped. Skipped terms are left out of `results`
     # and therefore stay pending (apply_results marks every term in it as verified); the next
     # sweep picks them up. Everything completed is written once, atomically, below.
+    # Each completed answer goes to the journal the moment it exists (adjudication_journal), so a kill loses only the call in
+    # flight; a rerun reuses them and asks only what is left. Skipped when VERIFY_NO_JOURNAL=1.
+    journal = open_verify_journal(show)
+
     def _one(t):
         if stop_requested():
             return _STOPPED
-        return adjudicate(t, candidates(t, titles), show)
+        return adjudicate_journaled(t, candidates(t, titles), show, journal)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count()) as ex:
         adjudications = list(ex.map(_one, terms))
@@ -1551,6 +1639,8 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
         except OSError:
             pass
         return {**rep, "wiki": api, "note": f"write-failed: {e}"}
+    if journal is not None and not stopped:
+        journal.compact()  # a clean apply: latest line per key, nothing older than the journal's age limit
     # Count what ACTUALLY happened, not what was proposed. Before 2026-08-21 every
     # high-confidence changed term was written straight into names/phrases, so "proposed"
     # and "applied" were the same number. They no longer are: a respelling is escalated,
