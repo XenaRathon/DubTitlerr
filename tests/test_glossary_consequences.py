@@ -184,3 +184,54 @@ def test_the_held_out_split_is_deterministic_and_roughly_even():
     ids = [f"verify:S:T{k}" for k in range(400)]
     a = [i for i in ids if gc.half(i) == 0]
     assert a == [i for i in ids if gc.half(i) == 0] and 150 < len(a) < 250
+
+
+# ---- production-policy mode ----------------------------------------------------------------------------------
+
+
+def test_production_policy_term_whole_word_accepted():
+    item = _item("Zoro", ["Roronoa Zoro"], "Roronoa Zoro", "expansion")
+    assert gc.classify(item, high("Roronoa Zoro"), policy="production") == "good_write"
+
+
+def test_production_policy_substring_only_match_refused():
+    item = _item("Usop", ["Usopp"], "Usopp", "expansion")
+    # Substring is an expansion under the legacy rule, but fails whole-word guard under production policy
+    assert gc.classify(item, high("Usopp"), policy="legacy") == "good_write"
+    assert gc.classify(item, high("Usopp"), policy="production") == "flag_respelling"
+
+
+def test_production_policy_common_word_refused(monkeypatch):
+    import glossary
+
+    monkeypatch.setattr(glossary, "_ORDINARY", {"castle", "government"})
+    item = _item("Castle", ["Castle Rock"], "Castle Rock", "expansion")
+    assert gc.classify(item, high("Castle Rock"), policy="legacy") == "good_write"
+    assert gc.classify(item, high("Castle Rock"), policy="production") == "flag_common_word"
+
+
+def test_production_policy_guard_flags_off_changes_prediction(monkeypatch):
+    item = _item("Usop", ["Usopp"], "Usopp", "expansion")
+    assert gc.classify(item, high("Usopp"), policy="production") == "flag_respelling"
+    monkeypatch.setenv("VERIFY_WRITE_WHOLE_WORD", "0")
+    assert gc.classify(item, high("Usopp"), policy="production") == "good_write"
+
+
+def test_production_policy_per_outcome_counts_and_legacy_label():
+    item_exp = _item("Zoro", ["Roronoa Zoro"], "Roronoa Zoro", "expansion")
+    item_sub = _item("Usop", ["Usopp"], "Usopp", "expansion")
+    item_neg = _item("Nilo", ["Nilox"], negative=True)
+    pairs = [
+        (item_exp, high("Roronoa Zoro"), "expansion_independent"),  # WRITTEN (right)
+        (item_sub, high("Usopp"), "expansion_independent"),         # QUEUED (right candidate held for review)
+        (item_neg, NONE, "negative"),                               # RECORDED-NOT-QUEUED (right, none on neg)
+    ]
+    t_prod = gc.tally(pairs, policy="production")
+    assert t_prod["mode"] == "PRODUCTION"
+    assert t_prod["outcomes"]["WRITTEN"] == {"total": 1, "right": 1, "wrong": 0}
+    assert t_prod["outcomes"]["QUEUED"] == {"total": 1, "right": 1, "wrong": 0}
+    assert t_prod["outcomes"]["RECORDED-NOT-QUEUED"] == {"total": 1, "right": 1, "wrong": 0}
+
+    t_leg = gc.tally(pairs, policy="legacy")
+    assert t_leg["mode"] == "LEGACY"
+
