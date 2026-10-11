@@ -361,12 +361,13 @@ def journal_enabled(stage: str) -> bool:
     return not os.environ.get(flag)
 
 
-def open_verify_journal(show: str):
-    """The verify stage's journal for ``show`` (under WIKI_CACHE_DIR), or None with VERIFY_NO_JOURNAL=1."""
+def open_verify_journal(show: str, read: bool = True):
+    """The verify stage's journal for ``show`` (under WIKI_CACHE_DIR), or None with VERIFY_NO_JOURNAL=1. ``read=False`` (--force)
+    never serves a stored answer but still writes the fresh ones."""
     if not journal_enabled("verify"):
         return None
     name = re.sub(r"[^A-Za-z0-9]+", "_", show) + ".verify.journal.jsonl"
-    return adjudication_journal.Journal(os.path.join(CACHE_DIR, name), "verify")
+    return adjudication_journal.Journal(os.path.join(CACHE_DIR, name), "verify", read=read)
 
 
 def adjudicate_journaled(term: str, cands: list[str], show: str, journal, backend: str | None = None) -> dict | None:
@@ -1601,7 +1602,7 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
     # sweep picks them up. Everything completed is written once, atomically, below.
     # Each completed answer goes to the journal the moment it exists (adjudication_journal), so a kill loses only the call in
     # flight; a rerun reuses them and asks only what is left. Skipped when VERIFY_NO_JOURNAL=1.
-    journal = open_verify_journal(show)
+    journal = open_verify_journal(show, read=not force)  # --force asks again; its fresh answers still replace the stored ones
 
     def _one(t):
         if stop_requested():
@@ -1673,7 +1674,12 @@ def main():
     ap = argparse.ArgumentParser(description="Wiki-verify a DubTitlerr glossary.")
     ap.add_argument("glossary", help="path to <show>.json")
     ap.add_argument("--wiki", help="override wiki URL/api.php")
-    ap.add_argument("--force", action="store_true", help="re-verify all terms (ignore 'verified')")
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="re-verify all terms (ignore 'verified') and ask the model again: the adjudication journal is not read, "
+        "but the fresh answers are written to it",
+    )
     ap.add_argument(
         "--tag-arcs",
         metavar="SHOW_DIR",

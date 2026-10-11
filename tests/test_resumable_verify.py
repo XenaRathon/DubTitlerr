@@ -42,11 +42,11 @@ def run(tmp_path, monkeypatch):
     monkeypatch.setattr(gv, "llm_chat", fake_llm)
     path = tmp_path / "S.json"
 
-    def go(force=True):
-        if not path.exists():
-            path.write_text(
-                json.dumps({"show": "S", "names": list(TERMS), "phrases": [], "wiki": "https://example.fandom.com/api.php"})
-            )
+    def go(force=False):
+        # Every run starts from the same pending glossary; --force (which bypasses the journal's reads) is exercised explicitly.
+        path.write_text(
+            json.dumps({"show": "S", "names": list(TERMS), "phrases": [], "wiki": "https://example.fandom.com/api.php"})
+        )
         return gv.verify(str(path), force=force)
 
     go.state, go.path, go.tmp = state, path, tmp_path
@@ -63,7 +63,7 @@ def test_a_rerun_reuses_every_completed_adjudication_and_gives_identical_output(
     n = len(run.state["calls"])
     assert n == len(TERMS)
     glossary_after_first = run.path.read_bytes()
-    second = run()  # --force: every term is pending again
+    second = run()  # the same pending glossary again
     assert len(run.state["calls"]) == n, "no model call on the rerun"
     assert second == first and run.path.read_bytes() == glossary_after_first
 
@@ -210,7 +210,7 @@ def llm(prompt, **kw):
     term = prompt.split('Term as transcribed/mined: "')[1].split('"')[0]
     return json.dumps({"canonical": ANSWERS[term], "confidence": "high", "dub_note": ""})
 gv.llm_chat = llm
-rep = gv.verify(gloss, force=True)
+rep = gv.verify(gloss, force=False)
 print(json.dumps({"report": rep, "calls": n["calls"]}))
 """.replace("__TITLES__", repr(TITLES)).replace("__ANSWERS__", repr(ANSWERS))
 
@@ -253,3 +253,32 @@ def test_killed_mid_run_then_restarted_equals_an_uninterrupted_run(tmp_path):
     assert out["calls"] == len(TERMS) - 3, "only the unfinished terms were asked again"
     assert out["report"] == clean_out["report"]
     assert gloss.read_bytes() == clean_gloss.read_bytes()
+
+
+# ---- follow-up: --force bypasses the journal's reads --------------------------------------------------------------------
+
+
+def test_force_asks_the_model_again_and_the_fresh_answers_replace_the_journalled_ones(run):
+    run()
+    base = len(run.state["calls"])
+    old = {e["key"]: e["result"]["canonical"] for e in journal_lines(run)}
+    run.state["llm"] = lambda prompt: json.dumps({"canonical": "Zorro", "confidence": "high", "dub_note": ""})
+    run(force=True)
+    assert len(run.state["calls"]) == base + len(TERMS), "no journal read under --force"
+    new = {e["key"]: e["result"]["canonical"] for e in journal_lines(run)}
+    assert set(new) == set(old) and set(new.values()) == {"Zorro"} != set(old.values())
+    assert len(journal_lines(run)) == len(TERMS), "compaction kept the latest line per key"
+
+
+def test_force_still_writes_so_a_later_plain_run_reuses_the_forced_answers(run):
+    run(force=True)
+    n = len(run.state["calls"])
+    run()
+    assert len(run.state["calls"]) == n
+
+
+def test_the_cli_help_says_force_bypasses_the_journal(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["glossary_verify", "--help"])
+    with pytest.raises(SystemExit):
+        gv.main()
+    assert "journal" in capsys.readouterr().out

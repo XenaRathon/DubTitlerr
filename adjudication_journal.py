@@ -80,8 +80,9 @@ def _flock(path: str, exclusive: bool):
 class Journal:
     """One stage's journal for one show. Never raises."""
 
-    def __init__(self, path: str, stage: str, clock=time.time, max_age_days: float = MAX_AGE_DAYS):
+    def __init__(self, path: str, stage: str, clock=time.time, max_age_days: float = MAX_AGE_DAYS, read: bool = True):
         self.path, self.stage, self.clock, self.max_age = path, stage, clock, max_age_days * 86400
+        self.read = read  # False: lookup() never serves a stored answer (a forced re-evaluation); record() still writes
         self._lock = threading.Lock()
         self._broken = False
         self._entries: dict[str, dict] = {}
@@ -139,6 +140,8 @@ class Journal:
     def lookup(self, key: str, prov: dict) -> dict | None:
         """The remembered result for ``key``, only if it was computed from exactly ``prov``; else None (a miss, never
         an error)."""
+        if not self.read:
+            return None
         with self._lock:
             e = self._entries.get(key)
         if e is None or e["prov"] != prov:

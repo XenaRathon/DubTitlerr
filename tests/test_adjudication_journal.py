@@ -158,3 +158,13 @@ def test_compaction_leaves_no_temp_files_and_a_live_appender_is_not_lost(tmp_pat
     j.record("after", PROV, RESULT)
     assert sorted(p.name for p in tmp_path.iterdir() if p.suffix == ".tmp") == []
     assert len(make(tmp_path)) == 6
+
+
+def test_a_journal_opened_without_reads_never_serves_but_still_writes_and_replaces(tmp_path):
+    """--force: the stored answer is not served, the fresh one is written and wins on the next normal open."""
+    make(tmp_path).record("k", PROV, {**RESULT, "canonical": "Old"})
+    forced = make(tmp_path, read=False)
+    assert forced.lookup("k", PROV) is None
+    forced.record("k", PROV, {**RESULT, "canonical": "New"})
+    assert forced.lookup("k", PROV) is None
+    assert make(tmp_path).lookup("k", PROV)["canonical"] == "New"
