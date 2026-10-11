@@ -39,9 +39,37 @@ The `0.0.0.0` bind above is a **deliberate choice**, not an oversight: it was co
 correct default at sprint 010's opening (v0.2.0 hardening) alongside the auth-hardening work
 in this section, on the same trusted-LAN assumption stated at the top of this section.
 
+## Review workspace audio previews
+
+The optional `/review` workspace serves an inert public application shell; library data
+and `/api/audio` require the same token as verdict writes. The workspace holds its token
+in tab-scoped `sessionStorage` and sends it as a header, never in a URL. Sign out clears
+the workspace token but does not revoke the server token or sign out the classic page.
+
+Audio previews decode short clips from allow-listed episodes in memory, capped at 20
+seconds, with two concurrent extraction slots and bounded probe/decode timeouts. They
+select English-tagged non-commentary audio and reject media paths outside the configured
+roots. No whole-file media-serving endpoint is provided. Responses are marked `no-store`.
+The configured `REVIEW_AUTH=off` opt-out also disables audio authorization; do not expose
+that mode outside a trusted network. See [workspace security details](docs/review-workspace.md#authentication-and-media-safety).
+
+## Optional password login for the review workspace
+
+The review token is, and stays, the credential every route checks. `REVIEW_USERNAME` with
+`REVIEW_PASSWORD` or `REVIEW_PASSWORD_FILE` adds `POST /api/login`, which returns that token
+to someone who knows the password; unset (or empty, or half set) it does not exist. Both
+fields are compared in constant time, failures are throttled in memory (five in five
+minutes, then 429 for 60 s per client address) and the password is never logged. The login
+route accepts only small JSON bodies. Use a strong password: the lockout allows 5 guesses per
+minute per client address. Behind a reverse proxy all clients share one address, so repeated
+bad guesses lock password login for everyone for 60 seconds while the token still works. **Over plain HTTP the password is sent in clear
+text**: use it on a trusted LAN or behind TLS. It is a convenience for fetching the token,
+not an additional protection, and `REVIEW_AUTH=off` still disables everything.
+
 ## Scope
 
 This tool transcribes audio you already have and merges subtitle tracks you already have.
-It does not fetch, host, or proxy media, and does not phone home. The per-show glossaries
+It does not fetch external media or phone home. Authenticated reviewers can request the
+short local audio previews described above; it does not serve whole media files. The per-show glossaries
 and dubtitle repositories it publishes to are separate, explicitly public projects — see
 their own repositories for their content policies.

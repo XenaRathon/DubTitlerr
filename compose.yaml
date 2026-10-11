@@ -99,6 +99,11 @@ services:
       # at startup (printed to the log, also readable at /config/review_token) ---
       REVIEW_TOKEN: ${REVIEW_TOKEN:-}
       REVIEW_AUTH: ${REVIEW_AUTH:-}
+      # Optional human login in front of the token (the token stays the credential; it needs
+      # both a username and a password, and over plain http the password travels in clear
+      # text: trusted LAN or TLS only). Uncomment to enable.
+      # REVIEW_USERNAME: ${REVIEW_USERNAME:-}
+      # REVIEW_PASSWORD_FILE: /config/review_password # read once at start; or REVIEW_PASSWORD
 
       # --- ownership of what it writes ---
       MEDIA_UID: ${MEDIA_UID:-1000}

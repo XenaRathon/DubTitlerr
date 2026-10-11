@@ -2,6 +2,13 @@
 # Plex refresh) as one long-running, restart-safe service. Built FROM subgen for the exact
 # CUDA / faster-whisper / ctranslate2 stack already proven on the 1060 (Pascal) + driver 550.
 # DockHand can't build images -> build on the host and reference fasc/dubtitle-builder:latest.
+FROM node:24-alpine AS review-ui
+WORKDIR /ui
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run check && npm run build
+
 FROM mccloud/subgen:2026.06.2
 
 # subgen ships python3 + ffmpeg but no pip; bootstrap pip to add pysubs2 (for the merge step)
@@ -76,6 +83,7 @@ COPY generate.py reflow.py glossary.py glossary_verify.py glossary_acquire.py ha
      qc.py punctuation.py unresolved.py decisions.py review_apply.py review_server.py watch_queue.py acquire_cache.py decision_client.py glossary_decision.py glossary_lock.py wiki_scope.py gen_loop.sh container_run.sh /app/
 COPY data/ /app/data/
 COPY shell/ /app/shell/
+COPY --from=review-ui /ui/dist/ /app/web/dist/
 # tools/ ships for the same reason recreate_srt.py does: recover_dub_srt.py rebuilds the
 # srt from the already-muxed Dubtitles track, which is the only way to regenerate an
 # episode whose conf.json is gone without sending it back through Whisper.

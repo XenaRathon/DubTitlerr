@@ -51,6 +51,29 @@ jobs:
       # (line-length, rule selection, the *.md exclude), so "." is the honest argument.
       - run: ruff check .
 
+  review-ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with: { python-version: "3.13" }
+      - run: pip install pysubs2 jellyfish
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: npm ci
+        working-directory: web
+      - run: npm run format:check && npm run check && npm test && npm run build
+        working-directory: web
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: npm run test:browser
+        working-directory: web
+
   osv-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 10

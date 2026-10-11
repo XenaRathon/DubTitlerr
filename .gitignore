@@ -6,6 +6,12 @@ __pycache__/
 .coverage
 htmlcov/
 
+# Svelte review workspace build and browser-test output
+web/node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/
+
 # Pipeline artifacts (per-episode sidecars/stamps written into the media tree, never
 # meant to be committed to this repo -- see specs/v2-models-ops/spec.md, Phase B).
 *.eng.dubtitles.srt

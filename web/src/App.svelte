@@ -1,0 +1,981 @@
+<script lang="ts">
+  import { onMount, tick, untrack } from 'svelte';
+  import {
+    AudioLines,
+    BookOpen,
+    Check,
+    ChevronLeft,
+    ChevronRight,
+    CircleHelp,
+    ClipboardCheck,
+    ExternalLink,
+    Filter,
+    GitCompareArrows,
+    Inbox,
+    Layers,
+    LoaderCircle,
+    LockKeyhole,
+    LogOut,
+    Menu,
+    Play,
+    RefreshCw,
+    Save,
+    Search,
+    ShieldCheck,
+    Sparkles,
+    X,
+  } from '@lucide/svelte';
+  import type { Draft, Entry, Episode, SaveResult, Shared, Verdict } from './types';
+  import { blank, diffParts, nextOpenIndex, riskLabels, timecode, verdictLabels } from './review';
+
+  type View = 'inbox' | 'shared';
+  let view = $state<View>('inbox');
+  let token = $state('');
+  let username = $state('');
+  let password = $state('');
+  // The server says whether a username/password login sits in front of the token; the token field is always available.
+  let passwordLogin = $state(false);
+  let useToken = $state(false);
+  let authenticated = $state(false);
+  let authenticating = $state(false);
+  let loading = $state(false);
+  let saving = $state(false);
+  let message = $state('');
+  let error = $state('');
+  let episodes = $state<Episode[]>([]);
+  let selected = $state<Episode | null>(null);
+  let entries = $state<Entry[]>([]);
+  let shared = $state<Shared[]>([]);
+  let drafts = $state<Record<string, Draft>>({});
+  let activeId = $state('');
+  let query = $state('');
+  let lineQuery = $state('');
+  let show = $state('all');
+  let showRefused = $state(false);
+  let risk = $state('all');
+  let order = $state('risk');
+  let showHelp = $state(false);
+  let mobileNav = $state(false);
+  let health = $state('Unknown');
+  let audioUrl = $state('');
+  let audioLoading = $state(false);
+  let audioError = $state('');
+  let occurrence = $state(0);
+  let player = $state<HTMLAudioElement>();
+  let correction = $state<HTMLTextAreaElement>();
+  let helpDialog = $state<HTMLDialogElement>();
+  $effect(() => {
+    if (showHelp && helpDialog && !helpDialog.open) helpDialog.showModal();
+  });
+  let audioRequest = 0;
+  let lastEvidenceId = '';
+  // Filters can change the active question without clicking Next. Never keep another line's clip on screen.
+  $effect(() => {
+    const id = current?.id ?? '';
+    if (id !== lastEvidenceId) {
+      untrack(stopAudio);
+      lastEvidenceId = id;
+    }
+  });
+
+  const staged = $derived(Object.keys(drafts).length);
+  const admitted = $derived(episodes.reduce((n, ep) => n + ep.admitted, 0));
+  const refused = $derived(episodes.reduce((n, ep) => n + ep.refused, 0));
+  const shows = $derived([...new Set(episodes.map((ep) => ep.show))].sort());
+  const filteredEpisodes = $derived(
+    episodes.filter(
+      (ep) =>
+        (showRefused || ep.admitted > 0) &&
+        (show === 'all' || ep.show === show) &&
+        `${ep.show} ${ep.name} ${ep.season}`.toLowerCase().includes(query.toLowerCase()),
+    ),
+  );
+  const visible = $derived.by(() => {
+    const rows: (Entry | Shared)[] = view === 'shared' ? shared : entries;
+    return rows
+      .filter(
+        (e) =>
+          (risk === 'all' || e.risk === risk) &&
+          `${e.original_text} ${e.proposed_text}`.toLowerCase().includes(lineQuery.toLowerCase()),
+      )
+      .slice()
+      .sort((a, b) => {
+        if (order === 'time' && 'starts' in a && 'starts' in b)
+          return (a.starts[0] ?? Infinity) - (b.starts[0] ?? Infinity);
+        if (order === 'repeated' && 'episodes' in a && 'episodes' in b) return b.episodes - a.episodes;
+        const stage = (e: Entry | Shared) => ('stage' in e && e.stage !== 'repair_applied' ? 1 : 0);
+        const ranks = { words: 0, substitution: 1, punctuation: 2 };
+        return stage(a) - stage(b) || ranks[a.risk] - ranks[b.risk];
+      });
+  });
+  const current = $derived(visible.find((e) => e.id === activeId) ?? visible[0]);
+  const activeIndex = $derived(current ? visible.findIndex((e) => e.id === current.id) : -1);
+  const draft = $derived(current ? drafts[current.id] : undefined);
+  const remaining = $derived(visible.filter((e) => !drafts[e.id]).length);
+
+  async function api<T>(path: string, body?: object): Promise<T> {
+    const res = await fetch(path, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'X-Review-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    if (res.status === 401) {
+      authenticated = false;
+      forgetToken(); // a refused token must not linger in memory or storage and block the next sign-in
+      throw new Error('Access token not accepted. Your staged choices are still held in this tab.');
+    }
+    const result = await res.json();
+    if (!res.ok || result.error) throw new Error(result.error || `Request failed (${res.status})`);
+    return result as T;
+  }
+  function forgetToken() {
+    token = '';
+    try {
+      sessionStorage.removeItem('dubtitlerr_review_token');
+    } catch {
+      /* storage unavailable; the memory copy is cleared */
+    }
+  }
+  function report(exc: unknown) {
+    error = exc instanceof Error ? exc.message : 'Request failed. Please try again.';
+  }
+  async function loadIndex() {
+    episodes = (await api<{ episodes: Episode[] }>('/api/episodes')).episodes;
+  }
+  async function passwordSignIn() {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.token) {
+      const wait = res.status === 429 && data.retry_after ? ` Try again in ${data.retry_after} s.` : '';
+      throw new Error((data.error || `Sign-in failed (${res.status})`) + wait);
+    }
+    token = data.token;
+    password = '';
+  }
+  // `restore` is the page-load attempt with a token kept from earlier; every explicit submit in password mode signs in with the
+  // typed credentials, whatever token the tab holds.
+  async function login(restore = false) {
+    authenticating = true;
+    error = '';
+    try {
+      if (!restore && passwordLogin && !useToken) await passwordSignIn();
+      await loadIndex();
+      authenticated = true;
+      try {
+        sessionStorage.setItem('dubtitlerr_review_token', token);
+      } catch {
+        /* storage unavailable; token stays in memory */
+      }
+      try {
+        const res = await fetch('/healthz');
+        const data = await res.json();
+        health = data.ok ? 'Healthy' : 'Needs attention';
+      } catch {
+        health = 'Unknown';
+      }
+      if (view === 'shared') shared = (await api<{ pairs: Shared[] }>('/api/shared')).pairs;
+      else if (selected) await loadEpisode(selected);
+    } catch (exc) {
+      report(exc);
+    } finally {
+      authenticating = false;
+    }
+  }
+  function stopAudio() {
+    audioRequest++;
+    player?.pause();
+    if (audioUrl) URL.revokeObjectURL(audioUrl);
+    audioUrl = '';
+    audioError = '';
+    audioLoading = false;
+    occurrence = 0;
+  }
+  function discardOK() {
+    return !staged || window.confirm('Discard your unsaved review choices? Nothing has been saved yet.');
+  }
+  async function navigate(next: View) {
+    if (next === view) {
+      mobileNav = false;
+      return;
+    }
+    if (saving || loading || !discardOK()) return;
+    drafts = {};
+    stopAudio();
+    view = next;
+    activeId = '';
+    lineQuery = '';
+    risk = 'all';
+    mobileNav = false;
+    message = '';
+    error = '';
+    if (next === 'shared') {
+      loading = true;
+      try {
+        shared = (await api<{ pairs: Shared[] }>('/api/shared')).pairs;
+        order = 'repeated';
+      } catch (exc) {
+        report(exc);
+      } finally {
+        loading = false;
+      }
+    } else if (next === 'inbox') {
+      loading = true;
+      try {
+        await loadIndex();
+        if (selected) await loadEpisode(selected);
+      } catch (exc) {
+        report(exc);
+      } finally {
+        loading = false;
+      }
+    }
+  }
+  async function loadEpisode(ep: Episode) {
+    const data = await api<{ entries: Entry[]; name: string }>(
+      '/api/episode?stem=' + encodeURIComponent(ep.stem),
+    );
+    entries = data.entries;
+    selected = ep;
+    activeId = entries[0]?.id ?? '';
+  }
+  async function selectEpisode(ep: Episode) {
+    if (saving || loading || !discardOK()) return;
+    loading = true;
+    error = '';
+    message = '';
+    drafts = {};
+    stopAudio();
+    try {
+      await loadEpisode(ep);
+      order = 'risk';
+      lineQuery = '';
+      risk = 'all';
+    } catch (exc) {
+      report(exc);
+    } finally {
+      loading = false;
+    }
+  }
+  function activate(id: string) {
+    if (id !== current?.id) stopAudio();
+    activeId = id;
+  }
+  function move(delta: number) {
+    if (visible.length) activate(visible[(activeIndex + delta + visible.length) % visible.length].id);
+  }
+  function choose(verdict: Verdict) {
+    if (!current || saving || !current.offered.includes(verdict)) return;
+    drafts[current.id] = {
+      verdict,
+      text: drafts[current.id]?.text ?? current.proposed_text ?? '',
+      note: drafts[current.id]?.note ?? '',
+    };
+    if (verdict === 'correct') void tick().then(() => correction?.focus());
+    else {
+      // Triage flow: a staged verdict moves on to the next line with no choice yet. Stays put at the end.
+      const ids = visible.map((e) => e.id);
+      const next = nextOpenIndex(ids, (id) => !!drafts[id], activeIndex);
+      if (next !== activeIndex) activate(ids[next]);
+    }
+  }
+  function editDraft(field: 'text' | 'note', value: string) {
+    if (current && drafts[current.id]) drafts[current.id][field] = value;
+  }
+  function clearChoice() {
+    if (current && !saving) delete drafts[current.id];
+  }
+  async function save() {
+    if (!staged || saving || loading) return;
+    const rows = view === 'shared' ? shared : entries;
+    const wanted = rows.filter((e) => drafts[e.id]);
+    if (wanted.some((e) => drafts[e.id].verdict === 'correct' && blank(drafts[e.id].text))) {
+      error = 'A correction needs visible text. Fill it in or clear that choice.';
+      return;
+    }
+    if (
+      wanted.some((e) => drafts[e.id].verdict === 'force') &&
+      !window.confirm(
+        'Override the repair guard for the selected lines? Check the audio before saving an override.',
+      )
+    )
+      return;
+    saving = true;
+    error = '';
+    message = '';
+    try {
+      const decisions = wanted.map((e) => ({
+        ...drafts[e.id],
+        id: e.id,
+        ...('index' in e ? { index: e.index } : {}),
+      }));
+      const result = await api<SaveResult>(
+        view === 'shared' ? '/api/shared' : '/api/decide',
+        view === 'shared' ? { decisions } : { stem: selected?.stem, decisions },
+      );
+      // Refresh from the authoritative store. On partial success, only questions that disappeared lose their drafts.
+      if (view === 'shared') shared = (await api<{ pairs: Shared[] }>('/api/shared')).pairs;
+      else if (selected) await loadEpisode(selected);
+      const live = new Set((view === 'shared' ? shared : entries).map((e) => e.id));
+      for (const id of Object.keys(drafts)) if (!live.has(id)) delete drafts[id];
+      message = `${result.saved} choice${result.saved === 1 ? '' : 's'} saved. ${result.warning ?? 'Apply is a separate step; media was not rewritten.'}`;
+      if (result.errors?.length) error = result.errors.map((e) => e.error).join(' · ');
+      stopAudio();
+      await loadIndex();
+    } catch (exc) {
+      report(exc);
+    } finally {
+      saving = false;
+    }
+  }
+  async function refresh() {
+    if (saving || loading || !discardOK()) return;
+    drafts = {};
+    loading = true;
+    error = '';
+    stopAudio();
+    try {
+      await loadIndex();
+      if (view === 'shared') shared = (await api<{ pairs: Shared[] }>('/api/shared')).pairs;
+      else if (selected) await loadEpisode(selected);
+      message = 'Review data refreshed. New episodes appear after server discovery completes.';
+    } catch (exc) {
+      report(exc);
+    } finally {
+      loading = false;
+    }
+  }
+  async function apply() {
+    if (!selected || saving || loading) return;
+    if (staged) {
+      error = 'Save or clear your staged choices before applying saved decisions.';
+      return;
+    }
+    if (
+      !window.confirm(
+        'Apply saved decisions to this episode? This rebuilds subtitles and queues a remux of the media file.',
+      )
+    )
+      return;
+    saving = true;
+    error = '';
+    try {
+      const result = await api<{ changed: number }>('/api/apply', { stem: selected.stem });
+      message = result.changed
+        ? `${result.changed} matching card(s); subtitles rebuilt and remux queued.`
+        : 'No matching saved decisions to apply.';
+    } catch (exc) {
+      report(exc);
+    } finally {
+      saving = false;
+    }
+  }
+  async function playClip() {
+    if (!current || !('index' in current) || !selected) return;
+    if (audioUrl && player) {
+      if (player.paused) {
+        player.currentTime = 0;
+        void player.play().catch(report);
+      } else player.pause();
+      return;
+    }
+    audioLoading = true;
+    audioError = '';
+    const requestId = ++audioRequest;
+    try {
+      const params = new URLSearchParams({
+        stem: selected.stem,
+        index: String(current.index),
+        id: current.id,
+        occurrence: String(occurrence),
+      });
+      const res = await fetch('/api/audio?' + params, { headers: { 'X-Review-Token': token } });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Audio preview failed');
+      }
+      const blob = await res.blob();
+      if (requestId !== audioRequest) return;
+      audioUrl = URL.createObjectURL(blob);
+      await tick();
+      await player?.play();
+    } catch (exc) {
+      if (requestId === audioRequest) audioError = exc instanceof Error ? exc.message : 'Audio unavailable';
+    } finally {
+      if (requestId === audioRequest) audioLoading = false;
+    }
+  }
+  function keydown(e: KeyboardEvent) {
+    const input =
+      e.target instanceof HTMLElement &&
+      (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A', 'AUDIO'].includes(e.target.tagName) ||
+        e.target.isContentEditable);
+    if ((e.ctrlKey || e.metaKey) && e.key === 's' && authenticated) {
+      e.preventDefault();
+      void save();
+      return;
+    }
+    if (input || showHelp || !authenticated || saving || loading) return;
+    const key = e.key.toLowerCase();
+    if (key === 'j' || key === 'arrowdown') {
+      e.preventDefault();
+      move(1);
+    }
+    if (key === 'k' || key === 'arrowup') {
+      e.preventDefault();
+      move(-1);
+    }
+    if (key === 'a') choose('accept');
+    if (key === 'r') choose('reject');
+    if (key === 'c') choose('correct');
+    if (key === 'escape') clearChoice();
+    if (key === ' ') {
+      e.preventDefault();
+      void playClip();
+    }
+    if (key === '?') showHelp = !showHelp;
+  }
+  function beforeUnload(e: BeforeUnloadEvent) {
+    if (staged) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  }
+  function logout() {
+    if (saving || loading || !discardOK()) return;
+    stopAudio();
+    drafts = {};
+    entries = [];
+    shared = [];
+    episodes = [];
+    selected = null;
+    authenticated = false;
+    token = '';
+    username = '';
+    password = '';
+    message = '';
+    error = '';
+    try {
+      sessionStorage.removeItem('dubtitlerr_review_token');
+    } catch {
+      /* memory token already cleared */
+    }
+  }
+  onMount(() => {
+    try {
+      token = sessionStorage.getItem('dubtitlerr_review_token') ?? '';
+    } catch {
+      /* storage is optional */
+    }
+    fetch('/api/auth-mode')
+      .then((r) => r.json())
+      .then((d) => (passwordLogin = d.password_login === true))
+      .catch(() => (passwordLogin = false));
+    if (token) void login(true);
+    return stopAudio;
+  });
+</script>
+
+<svelte:window onkeydown={keydown} onbeforeunload={beforeUnload} />
+
+<div class="app-shell">
+  <aside class:mobile-open={mobileNav} class="sidebar">
+    <a class="brand" href="/review"
+      ><div class="brand-icon"><AudioLines size={24} /></div>
+      <span>DubTitlerr<small>THE DUB. EVERY WORD.</small></span></a
+    >
+    <div class="nav-label">WORKSPACE</div>
+    <nav aria-label="Primary navigation">
+      <button
+        class:nav-active={view === 'inbox'}
+        onclick={() => navigate('inbox')}
+        disabled={!authenticated || saving || loading}
+        ><Inbox size={19} />Review inbox<span class="nav-count">{authenticated ? episodes.length : '—'}</span
+        ></button
+      >
+      <button
+        class:nav-active={view === 'shared'}
+        onclick={() => navigate('shared')}
+        disabled={!authenticated || saving || loading}><Layers size={19} />Shared lines</button
+      >
+    </nav>
+    <div class="sidebar-tip">
+      <ShieldCheck size={22} /><strong>Human in the loop</strong>
+      <p>Hear the dub. Check the change. Your verdict keeps the meaning intact.</p>
+    </div>
+    <div class="sidebar-bottom">
+      <a href="/" class="classic-link"><ExternalLink size={15} />Classic review</a>
+      <div class="version-line"><span class="status-dot"></span>Review workspace <span>v0.1</span></div>
+    </div>
+  </aside>
+
+  <div class="main-shell">
+    <header class="topbar">
+      <div class="breadcrumb">
+        <button
+          class="icon-button mobile-menu"
+          aria-label="Toggle navigation"
+          onclick={() => (mobileNav = !mobileNav)}><Menu size={20} /></button
+        ><span>Workspace</span><ChevronRight size={14} /><strong
+          >{view === 'shared' ? 'Shared lines' : 'Human review'}</strong
+        >
+      </div>
+      <div class="topbar-actions">
+        <span class="health"
+          ><span class:warning={health !== 'Healthy'} class="status-dot"></span>{authenticated
+            ? health
+            : 'Token protected'}</span
+        ><button class="icon-button" aria-label="Keyboard shortcuts" onclick={() => (showHelp = !showHelp)}
+          ><CircleHelp size={19} /></button
+        >{#if authenticated}<button
+            class="icon-button"
+            aria-label="Sign out"
+            onclick={logout}
+            disabled={saving}><LogOut size={18} /></button
+          >{/if}
+      </div>
+    </header>
+
+    <main>
+      {#if !authenticated}
+        <section class="login-panel">
+          <form
+            class="login-form"
+            onsubmit={(e) => {
+              e.preventDefault();
+              void login();
+            }}
+          >
+            <div class="login-lock"><LockKeyhole size={24} /></div>
+            <h1>Open your review workspace</h1>
+            {#if passwordLogin && !useToken}
+              <p>Sign in with the review username and password.</p>
+              <label for="username">Username</label><input
+                id="username"
+                name="username"
+                type="text"
+                bind:value={username}
+                autocomplete="username"
+                autocapitalize="none"
+                spellcheck="false"
+              />
+              <label for="password">Password</label><input
+                id="password"
+                name="password"
+                type="password"
+                bind:value={password}
+                autocomplete="current-password"
+              />
+              <button
+                type="button"
+                class="link-button"
+                onclick={() => {
+                  useToken = true;
+                  error = '';
+                }}>Use a token instead</button
+              >
+            {:else}
+              <p>Use the review token from your container log or <code>review_token</code> file.</p>
+              <label for="access-token">Access token</label><input
+                id="access-token"
+                type="password"
+                bind:value={token}
+                placeholder="Paste your review token"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              {#if passwordLogin}<button
+                  type="button"
+                  class="link-button"
+                  onclick={() => {
+                    useToken = false;
+                    error = '';
+                  }}>Use username and password instead</button
+                >{/if}
+            {/if}
+            <button class="primary" disabled={authenticating}
+              >{#if authenticating}<LoaderCircle class="spin" size={17} />{:else}<ChevronRight
+                  size={17}
+                />{/if}{authenticating
+                ? 'Opening workspace…'
+                : passwordLogin && !useToken
+                  ? 'Sign in'
+                  : 'Unlock workspace'}</button
+            >{#if error}<p class="inline-error" role="alert">{error}</p>{/if}<small
+              ><ShieldCheck size={14} />Kept in this browser tab only. No external services.</small
+            >
+          </form>
+        </section>
+      {:else}
+        <section class="page-heading">
+          <div>
+            <div class="eyebrow">QUALITY CONTROL / HUMAN REVIEW</div>
+            <h1>
+              {view === 'shared' ? 'One decision. Many episodes.' : 'A second set of eyes.'}
+            </h1>
+            <p>
+              {view === 'shared'
+                ? 'Review repeated text pairs once. Saved verdicts settle the same pair show-wide.'
+                : 'Turn uncertain repairs into subtitles you can trust.'}
+            </p>
+          </div>
+          <button class="secondary" onclick={refresh} disabled={loading || saving}
+            ><RefreshCw size={16} class={loading ? 'spin' : ''} />Refresh queue</button
+          >
+        </section>
+        {#if message}<div class="notice success" role="status">
+            <Check size={18} /><span>{message}</span><button
+              class="icon-button"
+              aria-label="Dismiss message"
+              onclick={() => (message = '')}><X size={16} /></button
+            >
+          </div>{/if}
+        {#if error}<div class="notice failure" role="alert">
+            <ShieldCheck size={18} /><span>{error}</span><button
+              class="icon-button"
+              aria-label="Dismiss error"
+              onclick={() => (error = '')}><X size={16} /></button
+            >
+          </div>{/if}
+
+        <section class="stats" aria-label="Review statistics">
+          <article>
+            <span class="stat-icon purple"><ClipboardCheck size={22} /></span>
+            <div>
+              <span>Admitted repairs</span><strong>{admitted.toLocaleString()}</strong><small
+                >Meaning still needs a human check</small
+              >
+            </div>
+          </article>
+          <article>
+            <span class="stat-icon teal"><Inbox size={22} /></span>
+            <div>
+              <span>Episodes to review</span><strong>{episodes.length.toLocaleString()}</strong><small
+                >Across {shows.length} show{shows.length === 1 ? '' : 's'}</small
+              >
+            </div>
+          </article>
+          <article>
+            <span class="stat-icon amber"><ShieldCheck size={22} /></span>
+            <div>
+              <span>Guard refusals</span><strong>{refused.toLocaleString()}</strong><small
+                >Original ASR retained; optional audit</small
+              >
+            </div>
+          </article>
+          <article>
+            <span class="stat-icon purple"><Save size={22} /></span>
+            <div>
+              <span>Staged choices</span><strong>{staged}</strong><small>Not saved until you say so</small>
+            </div>
+          </article>
+        </section>
+        <div class="workspace" class:shared-workspace={view === 'shared'}>
+          {#if view === 'inbox'}
+            <section class="episode-panel" aria-label="Episode inbox">
+              <div class="panel-title">
+                <h2>Review inbox</h2>
+                <span class="badge neutral">{filteredEpisodes.length}</span>
+              </div>
+              <label class="search-field"
+                ><Search size={16} /><input
+                  aria-label="Search episodes"
+                  bind:value={query}
+                  placeholder="Search shows or episodes…"
+                /></label
+              ><select class="show-select" aria-label="Filter by show" bind:value={show}
+                ><option value="all">All shows</option>{#each shows as name}<option value={name}
+                    >{name}</option
+                  >{/each}</select
+              ><label class="toggle"
+                ><input type="checkbox" bind:checked={showRefused} /><span>Include refusal-only episodes</span
+                ></label
+              >
+              <div class="episode-list">
+                {#each filteredEpisodes as ep}<button
+                    class="episode"
+                    class:selected={selected?.stem === ep.stem}
+                    onclick={() => selectEpisode(ep)}
+                    disabled={saving || loading}
+                    ><span class="show-art">{ep.show.substring(0, 2).toUpperCase()}</span><span
+                      class="episode-copy"
+                      ><strong>{ep.show}</strong><span>{ep.name}</span><small
+                        >{ep.season} · {ep.admitted} admitted · {ep.refused} refused</small
+                      ></span
+                    ><ChevronRight size={15} /></button
+                  >{:else}<div class="empty-small">
+                    <Inbox size={28} />
+                    <p>No episodes match.</p>
+                    <small>Try another filter or include guard refusals.</small>
+                  </div>{/each}
+              </div>
+              <div class="panel-footer">
+                <span class="status-dot"></span>Admitted changes first. No auto-approval.
+              </div>
+            </section>
+          {/if}
+          <section class="review-panel" aria-label="Review editor">
+            <div class="review-title">
+              <div>
+                <span class="eyebrow"
+                  >{view === 'shared' ? 'SHARED REPAIRS' : (selected?.show ?? 'READY WHEN YOU ARE')}</span
+                >
+                <h2>
+                  {view === 'shared' ? 'Clear the repeat questions' : (selected?.name ?? 'Choose an episode')}
+                </h2>
+              </div>
+              {#if view === 'inbox' && selected}<span class="badge neutral">{selected.season}</span>{/if}
+            </div>
+            {#if loading}<div class="empty-state">
+                <LoaderCircle size={32} class="spin" />
+                <h3>Loading review evidence…</h3>
+                <p>Large media libraries can take a moment to discover.</p>
+              </div>
+            {:else if view === 'inbox' && !selected}<div class="empty-state">
+                <div class="empty-art"><GitCompareArrows size={40} /></div>
+                <h3>Good subtitles start with a listen.</h3>
+                <p>
+                  Choose an episode from the inbox to compare repairs,<br />hear the original dub, and stage
+                  your verdicts.
+                </p>
+                <span class="badge teal">Save first. Apply separately.</span>
+              </div>
+            {:else}
+              <div class="review-toolbar">
+                <label class="search-field"
+                  ><Search size={15} /><input
+                    aria-label="Search review lines"
+                    bind:value={lineQuery}
+                    placeholder="Find a line…"
+                  /></label
+                ><label class="filter-control"
+                  ><Filter size={14} /><select aria-label="Filter by risk" bind:value={risk}
+                    ><option value="all">All changes</option><option value="words"
+                      >Added / dropped words</option
+                    ><option value="substitution">Substitutions</option><option value="punctuation"
+                      >Punctuation / case</option
+                    ></select
+                  ></label
+                ><select aria-label="Sort review lines" bind:value={order}
+                  ><option value="risk">Risk first</option>{#if view === 'shared'}<option value="repeated"
+                      >Most repeated</option
+                    >{:else}<option value="time">Time order</option>{/if}</select
+                >
+              </div>
+              {#if current}
+                <div class="line-strip" aria-label="Review lines">
+                  {#each visible as e, i}<button
+                      class:active={current.id === e.id}
+                      class:decided={!!drafts[e.id]}
+                      onclick={() => activate(e.id)}
+                      aria-label={`Review line ${i + 1}${drafts[e.id] ? ', staged' : ''}`}
+                      aria-pressed={current.id === e.id}
+                      >{#if drafts[e.id]}<Check size={13} />{:else}{i + 1}{/if}</button
+                    >{/each}
+                </div>
+                <div class="evidence" data-testid="evidence">
+                  <div class="card-meta">
+                    <div>
+                      <span class="badge {current.risk === 'punctuation' ? 'neutral' : 'purple'}"
+                        >{riskLabels[current.risk]}</span
+                      >{#if 'stage' in current}<span
+                          class="badge {current.stage === 'repair_applied' ? 'teal' : 'amber'}"
+                          >{current.stage === 'repair_applied' ? 'Admitted repair' : 'Guard refused'}</span
+                        >{:else}<span class="badge teal">{current.episodes} episodes</span>{/if}
+                    </div>
+                    <span class="muted">{activeIndex + 1} / {visible.length}</span>
+                  </div>
+                  {#if 'show' in current}<div class="shared-show">{current.show}</div>{/if}
+                  {#if 'starts' in current && current.starts.length}<div class="audio-row">
+                      <button class="listen" onclick={playClip} disabled={audioLoading}
+                        >{#if audioLoading}<LoaderCircle size={17} class="spin" />{:else}<Play
+                            size={17}
+                          />{/if}{audioLoading ? 'Preparing clip…' : 'Listen to dub'}<kbd>Space</kbd></button
+                      ><span class="timecode"
+                        >{timecode(current.starts[occurrence] ?? current.starts[0])}</span
+                      >{#if current.starts.length > 1}<select
+                          aria-label="Audio occurrence"
+                          value={occurrence}
+                          onchange={(e) => {
+                            stopAudio();
+                            occurrence = Number(e.currentTarget.value);
+                          }}
+                          >{#each current.starts as start, i}<option value={i}
+                              >Occurrence {i + 1} · {timecode(start)}</option
+                            >{/each}</select
+                        >{/if}<small>Up to 20s · English track</small>
+                    </div>{/if}
+                  {#if audioUrl}<audio
+                      bind:this={player}
+                      src={audioUrl}
+                      controls
+                      preload="none"
+                      aria-label="English dub preview"
+                    ></audio>{/if}{#if audioError}<p class="inline-error" role="alert">{audioError}</p>{/if}
+                  {#if 'context' in current && current.context[occurrence]}<div class="context-line">
+                      <span>BEFORE</span>{current.context[occurrence].before.join(' ') || 'Start of episode'}
+                    </div>{/if}
+                  <div class="diff-grid">
+                    <div class="diff-box original">
+                      <div class="diff-label"><span class="tiny-dot"></span>ORIGINAL ASR</div>
+                      <p>
+                        {#each diffParts(current.original_text, current.proposed_text, 'original') as part}{#if part.removed}<del
+                              >{part.value}</del
+                            >{:else}{part.value}{/if}{/each}
+                      </p>
+                    </div>
+                    <div class="diff-box proposed">
+                      <div class="diff-label"><Sparkles size={13} />PROPOSED REPAIR</div>
+                      <p>
+                        {#each diffParts(current.original_text, current.proposed_text, 'proposed') as part}{#if part.added}<ins
+                              >{part.value}</ins
+                            >{:else}{part.value}{/if}{/each}
+                      </p>
+                    </div>
+                  </div>
+                  {#if 'context' in current && current.context[occurrence]}<div class="context-line">
+                      <span>AFTER</span>{current.context[occurrence].after.join(' ') || 'End of episode'}
+                    </div>{/if}
+                  {#if current.reference}<div class="reference">
+                      <BookOpen size={16} />
+                      <div>
+                        <strong>Subtitle reference</strong>
+                        <p>{current.reference}</p>
+                        <small>A different translation, not the answer. Follow the dub audio.</small>
+                      </div>
+                    </div>{:else if 'permanent' in current && current.permanent}<div
+                      class="reference no-reference"
+                    >
+                      <ShieldCheck size={17} />
+                      <div>
+                        <strong>No subtitle anchor</strong>
+                        <p>Check the audio carefully. This change has no independent fansub reference.</p>
+                      </div>
+                    </div>{/if}
+                  <div class="decision-heading">
+                    <h3>Your verdict</h3>
+                    <span>{draft ? 'Choice staged, not saved' : 'Nothing selected yet'}</span>
+                  </div>
+                  <div class="verdicts">
+                    {#each current.offered as verdict}<button
+                        class:chosen={draft?.verdict === verdict}
+                        class="verdict {verdict}"
+                        onclick={() => choose(verdict)}
+                        disabled={saving}
+                        aria-pressed={draft?.verdict === verdict}
+                        >{#if verdict === 'accept'}<Check
+                            size={17}
+                          />{:else if verdict === 'reject'}<ShieldCheck
+                            size={17}
+                          />{:else if verdict === 'force'}<LockKeyhole size={17} />{:else}<ClipboardCheck
+                            size={17}
+                          />{/if}{verdictLabels[verdict]}<kbd
+                          >{verdict === 'accept'
+                            ? 'A'
+                            : verdict === 'reject'
+                              ? 'R'
+                              : verdict === 'correct'
+                                ? 'C'
+                                : '!'}</kbd
+                        ></button
+                      >{/each}
+                  </div>
+                  {#if draft?.verdict === 'correct'}<label class="correction-label" for="correction"
+                      >Corrected subtitle</label
+                    ><textarea
+                      id="correction"
+                      bind:this={correction}
+                      value={draft.text}
+                      oninput={(e) => editDraft('text', e.currentTarget.value)}
+                      rows="3"
+                      disabled={saving}
+                      placeholder="Write what the dub actually says…"></textarea>{/if}
+                  {#if draft}<div class="draft-tools">
+                      {#if view === 'inbox'}<input
+                          aria-label="Review note"
+                          value={draft.note}
+                          oninput={(e) => editDraft('note', e.currentTarget.value)}
+                          placeholder="Optional note for the audit trail"
+                          disabled={saving}
+                        />{/if}<button class="text-button" onclick={clearChoice} disabled={saving}
+                        ><X size={14} />Clear choice</button
+                      >
+                    </div>{/if}
+                  <div class="card-navigation">
+                    <button class="secondary" onclick={() => move(-1)} disabled={visible.length < 2}
+                      ><ChevronLeft size={16} />Previous<kbd>K</kbd></button
+                    ><span>{remaining} of {visible.length} unstaged</span><button
+                      class="secondary"
+                      onclick={() => move(1)}
+                      disabled={visible.length < 2}>Next line<kbd>J</kbd><ChevronRight size={16} /></button
+                    >
+                  </div>
+                </div>
+              {:else}<div class="empty-state">
+                  <div class="empty-art"><Check size={36} /></div>
+                  <h3>{lineQuery || risk !== 'all' ? 'No matching changes' : 'This queue is clear.'}</h3>
+                  <p>
+                    {lineQuery || risk !== 'all'
+                      ? 'Try another search or risk filter.'
+                      : 'No undecided repairs remain in this view.'}
+                  </p>
+                </div>{/if}
+            {/if}
+            <footer class="save-bar">
+              <div>
+                <span class="save-count">{staged}</span>
+                <div>
+                  <strong>choices staged</strong><small
+                    >Saving records verdicts. Applying queues a remux.</small
+                  >
+                </div>
+              </div>
+              <div>
+                {#if view === 'inbox' && selected}<button
+                    class="secondary apply-button"
+                    onclick={apply}
+                    disabled={saving || loading}>Apply saved decisions</button
+                  >{/if}<button class="primary" onclick={save} disabled={!staged || saving || loading}
+                  >{#if saving}<LoaderCircle size={16} class="spin" />{:else}<Save size={16} />{/if}{saving
+                    ? 'Working…'
+                    : `Save ${staged || ''} choice${staged === 1 ? '' : 's'}`}<kbd>⌘ / Ctrl S</kbd></button
+                >
+              </div>
+            </footer>
+          </section>
+        </div>
+        <div class="workspace-footnote">
+          <ShieldCheck size={14} /><span
+            >Human decisions are show-wide. Review the exact wording; a saved verdict may settle the same line
+            in other episodes.</span
+          ><button class="text-button" onclick={() => (showHelp = true)}
+            >Keyboard shortcuts <kbd>?</kbd></button
+          >
+        </div>
+      {/if}
+    </main>
+  </div>
+</div>
+
+{#if showHelp}<dialog
+    bind:this={helpDialog}
+    class="help-panel"
+    aria-labelledby="help-title"
+    onclose={() => (showHelp = false)}
+  >
+    <div class="panel-title">
+      <h2 id="help-title">Keep your hands on the keyboard</h2>
+      <button class="icon-button" aria-label="Close keyboard shortcuts" onclick={() => (showHelp = false)}
+        ><X size={20} /></button
+      >
+    </div>
+    <p>Shortcuts work outside form controls. Choices are staged, never auto-saved.</p>
+    {#each [['J / ↓', 'Next line'], ['K / ↑', 'Previous line'], ['A', 'Keep repair (when offered)'], ['R', 'Keep original'], ['C', 'Write correction'], ['Space', 'Play / pause dub preview'], ['Escape', 'Clear current choice'], ['Ctrl / ⌘ S', 'Save staged choices']] as item}<div
+        class="shortcut-row"
+      >
+        <span>{item[1]}</span><kbd>{item[0]}</kbd>
+      </div>{/each}<button class="primary" onclick={() => (showHelp = false)}>Back to review</button>
+  </dialog>{/if}

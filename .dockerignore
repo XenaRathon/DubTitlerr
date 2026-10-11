@@ -1,0 +1,14 @@
+.git
+.venv
+**/__pycache__
+.pytest_cache
+.ruff_cache
+.claude
+.freebuff
+.env
+.env.*
+!.env.example
+web/node_modules
+web/dist
+web/test-results
+web/playwright-report

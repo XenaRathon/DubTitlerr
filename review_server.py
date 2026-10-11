@@ -36,6 +36,12 @@ Env:
   REVIEW_TOKEN   see above
   DECISIONS_DIR  default /config/decisions   (the token lives beside it)
   MERGE_ROOTS    default /data/Media/Anime Library  (colon list; the only stems accepted)
+  REVIEW_USERNAME, REVIEW_PASSWORD, REVIEW_PASSWORD_FILE
+                 optional human login (POST /api/login) that hands out the same token to
+                 someone who knows the password. The token stays the one credential every other
+                 route checks. Both a username and a password (or a password file, read once at
+                 start, one trailing newline stripped) are needed; an empty or half-set pair
+                 means login is NOT configured (the route answers 404), never "open".
 """
 
 import hashlib
@@ -43,12 +49,16 @@ import html
 import http.cookies
 import http.server
 import json
+import math
 import os
+import re
 import secrets
 import string
+import subprocess
 import tempfile
 import threading
 import time
+from pathlib import Path
 from urllib.parse import quote
 
 import common
@@ -59,6 +69,10 @@ from common import log
 from decisions import show_for
 
 REVIEW_PORT = int(os.environ.get("REVIEW_PORT", "8842"))
+UI_DIST = Path(__file__).resolve().parent / "web" / "dist"
+_AUDIO_SLOTS = threading.BoundedSemaphore(2)
+AUDIO_MAX_SECONDS = 20
+
 
 
 # Beside DECISIONS_DIR rather than inside it: that directory is the artifact a user may
@@ -435,12 +449,19 @@ def _triage_key(e: dict) -> tuple:
     )
 
 
+def entry_id(entry: dict) -> str:
+    """Identity of the exact question, independent of its position in a rewritten queue."""
+    fields = [entry.get(k, "") for k in ("stage", "reason", "original_text", "proposed_text")]
+    return hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode()).hexdigest()[:24]
+
+
 def _decorate(stem: str, e: dict, index: int, starts: dict, context: dict | None = None) -> dict:
     """One queue entry as the page needs it: its own index, what may be done to it, whether
     doing it is reversible, what the repair changed, where in the episode to hear it, and
     the cards either side of it."""
     d = dict(e)
     d["index"] = index
+    d["id"] = entry_id(e)
     d["risk"] = risk_class(e.get("original_text", ""), e.get("proposed_text", ""))
     # DERIVED, not stored: repair.py records no timing on an accepted repair. Every card the
     # line appears on, because duplicate-pair suppression makes repeats a single entry.
@@ -623,7 +644,7 @@ def handle_shared_decide(verdicts: list) -> dict:
                 if not decisions.save(store, show, ddir):
                     # Named per show, not swallowed: with two shows on the page one store
                     # can fail while the other lands, and the reviewer must know which.
-                    errors.append({"pair": None, "error": f"the decisions for {show} could not be saved"})
+                    errors.append({"id": None, "error": f"the decisions for {show} could not be saved"})
                     continue
                 saved += len(wanted)
     return {"saved": saved, "errors": errors}
@@ -670,6 +691,13 @@ def handle_decide_batch(stem: str, verdicts: list) -> dict:
                     errors.append({"index": index, "error": "no such entry"})
                     continue
                 e = items[index]
+                # New workspace sends an identity as well as the legacy index. Never let a stale tab approve a new row.
+                if "id" in d and (
+                    d["id"] != entry_id(e) or e.get("resolved")
+                    or not unresolved.undecided([e], store) or not unresolved.live_only(ep, [e])
+                ):
+                    errors.append({"index": index, "error": "stale review entry; reload this episode"})
+                    continue
                 # Enforced here, not merely rendered: a client is not a trust boundary, and
                 # `force` on an accepted entry would be an unlabelled bypass of the gate.
                 if verdict not in OFFERED.get((str(e.get("stage", "")), str(e.get("reason", ""))), DEFAULT_OFFERED):
@@ -690,7 +718,7 @@ def handle_decide_batch(stem: str, verdicts: list) -> dict:
                     continue
                 updates.append((index, stored.get("verdict") != "reject", note))
             if not updates:
-                return {"saved": 0, "errors": errors}
+                return {"saved": 0, "show": show, "errors": errors, "queue_cleared": False}
             if not decisions.save(store, show, ddir):
                 # Reported as NOT saved rather than swallowed: a review that silently
                 # discards the human's decisions is worse than one that errors, because
@@ -737,12 +765,210 @@ def handle_apply(stem: str) -> dict:
 # token), so every test drives it directly and no socket is ever opened in the suite.
 
 
-def route(method: str, path: str, body: dict, token) -> tuple:
-    """(status, payload) for one request."""
+# Routes answered without a token, besides the /review document and its assets. EXPLICIT, so adding one is a visible edit and
+# a test (tests/test_review_login.py) compares this list with the code. Everything else under /api needs the token.
+OPEN_ROUTES = (("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login"))
+LOGIN_MAX_BODY = 4096  # a username and a password; the generic POST cap (1 MiB) is far too generous for an unauthenticated route
+
+
+class LoginThrottle:
+    """Per-client failure counter for /api/login, in memory, with an injectable clock.
+
+    After ``max_fail`` consecutive failures inside ``window`` seconds the client is locked out for ``lockout`` seconds (the
+    answer is 429 with Retry-After, and the credentials are not even compared); a success forgets the client. At most ``cap``
+    addresses are tracked: a flood of distinct addresses evicts the OLDEST, so memory is bounded and a real client's record is
+    only lost to a newer flood, which only ever helps the attacker by resetting their own counter."""
+
+    def __init__(self, clock=time.monotonic, max_fail=5, window=300.0, lockout=60.0, cap=1024):
+        from collections import OrderedDict
+
+        self.clock, self.max_fail, self.window, self.lockout, self.cap = clock, max_fail, window, lockout, cap
+        self._seen: OrderedDict[str, dict] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def __len__(self):
+        return len(self._seen)
+
+    def tracked(self, addr: str) -> bool:
+        return addr in self._seen
+
+    def retry_after(self, addr: str) -> int:
+        """Seconds until ``addr`` may try again; 0 when it may try now."""
+        with self._lock:
+            rec = self._seen.get(addr)
+            wait = (rec["locked_until"] - self.clock()) if rec else 0
+            return max(0, math.ceil(wait)) if wait > 0 else 0
+
+    def failure(self, addr: str) -> None:
+        with self._lock:
+            now = self.clock()
+            rec = self._seen.pop(addr, None)
+            if rec is None or now - rec["first"] > self.window:
+                rec = {"fails": 0, "first": now, "locked_until": 0.0}
+            rec["fails"] += 1
+            if rec["fails"] >= self.max_fail:
+                rec["locked_until"], rec["fails"], rec["first"] = now + self.lockout, 0, now
+            self._seen[addr] = rec  # re-inserted last: the newest
+            while len(self._seen) > self.cap:
+                self._seen.popitem(last=False)
+
+    def success(self, addr: str) -> None:
+        with self._lock:
+            self._seen.pop(addr, None)
+
+
+_THROTTLE = LoginThrottle()
+_LOGIN = None  # (username bytes, password bytes) once configure_login() found a usable pair, else None
+
+
+def configure_login(env=None) -> bool:
+    """Read REVIEW_USERNAME / REVIEW_PASSWORD (or REVIEW_PASSWORD_FILE) once. True when password login is on.
+
+    A password file wins over REVIEW_PASSWORD and is read ONCE; one trailing newline is stripped, nothing else. An empty username
+    or password, one half set, or an unreadable file means login is NOT configured (and says why in the log): an empty secret must
+    never become an open door. The password itself is never logged."""
+    global _LOGIN
+    env = os.environ if env is None else env
+    _LOGIN = None
+    user, pw, pw_file = env.get("REVIEW_USERNAME"), env.get("REVIEW_PASSWORD"), env.get("REVIEW_PASSWORD_FILE")
+    if user is None and pw is None and not pw_file:
+        return False
+    if pw_file:
+        try:
+            with open(pw_file, "rb") as f:
+                raw = f.read()
+        except OSError as e:
+            log(f"review server: password login NOT configured: REVIEW_PASSWORD_FILE unreadable ({e.__class__.__name__})")
+            return False
+        pw = raw.decode("utf-8", "replace")
+        pw = pw[:-2] if pw.endswith("\r\n") else pw[:-1] if pw.endswith("\n") else pw
+    if not user or not pw:
+        log("review server: password login NOT configured: it needs a non-empty REVIEW_USERNAME and a non-empty password")
+        return False
+    _LOGIN = (user.encode("utf-8"), pw.encode("utf-8"))
+    log("review server: password login is on (the token stays the credential; serve this over a trusted LAN or TLS)")
+    return True
+
+
+def handle_login(body: dict, client: str = "") -> tuple:
+    """POST /api/login: the token, for someone who knows the configured username and password."""
+    if _LOGIN is None:
+        return 404, {"error": "no such route"}
+    wait = _THROTTLE.retry_after(client)
+    if wait:
+        log("review server: password login throttled")
+        return 429, {"error": "too many failed logins; wait before trying again", "retry_after": wait}
+    user, pw = body.get("username"), body.get("password")
+    # Both fields ALWAYS compared, as bytes, and combined with & (not `and`): no early exit tells a caller whether the username
+    # was right. A non-string is just a wrong answer (compared as empty).
+    ok_user = secrets.compare_digest((user if isinstance(user, str) else "").encode("utf-8"), _LOGIN[0])
+    ok_pass = secrets.compare_digest((pw if isinstance(pw, str) else "").encode("utf-8"), _LOGIN[1])
+    if ok_user & ok_pass:
+        _THROTTLE.success(client)
+        return 200, {"token": resolve_token()}
+    _THROTTLE.failure(client)
+    log("review server: password login refused")  # the same line for a wrong username and a wrong password
+    return 401, {"error": "wrong username or password"}
+
+
+def workspace_asset(path: str) -> tuple:
+    """Serve only the inert SPA document and Vite's flat asset directory, never arbitrary files."""
+    if path in ("/review", "/review/", "/review/index.html"):
+        target = UI_DIST / "index.html"
+    elif re.fullmatch(r"/review/assets/[A-Za-z0-9_.-]+\.(?:js|css|woff2|svg)", path):
+        target = UI_DIST / "assets" / path.rsplit("/", 1)[1]
+    else:
+        return 404, {"error": "no such asset"}
+    if not target.resolve().is_relative_to(UI_DIST.resolve()):
+        return 404, {"error": "no such asset"}
+    try:
+        return 200, target.read_bytes()
+    except OSError:
+        return 503 if target.name == "index.html" else 404, {
+            "error": "Review workspace not built. Run npm ci && npm run build in web/. The classic review page is at /."
+        }
+
+
+def preview_audio(body: dict) -> tuple:
+    """Short, on-demand English audio evidence. Cue bounds come from the known episode, never the client."""
+    stem = _resolve(str(body.get("stem", "")))
+    if stem is None:
+        return 404, {"error": "unknown episode"}
+    try:
+        index, occurrence = int(body.get("index", "")), int(body.get("occurrence", "0"))
+        if index < 0 or occurrence < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return 400, {"error": "invalid parameter: index and occurrence must be non-negative integers"}
+    try:
+        entries = unresolved.items(stem)
+        entry = entries[index]
+        if body.get("id") != entry_id(entry):
+            return 409, {"error": "stale review entry; reload this episode"}
+        conf_path = Path(stem + CONF_SUFFIX)
+        if not any(conf_path.resolve().is_relative_to(Path(root).resolve()) for root in ROOTS):
+            return 404, {"error": "episode evidence unavailable"}
+        with conf_path.open(encoding="utf-8") as f:
+            cards = json.load(f)
+        if not isinstance(cards, list) or not isinstance(entry, dict):
+            raise ValueError
+        matches = [c for c in cards if isinstance(c, dict)
+                   and decisions.key(c.get("text", "")) == decisions.key(entry.get("original_text", ""))]
+        card = matches[occurrence]
+        start, end = float(card["start"]), float(card["end"])
+        if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start:
+            raise ValueError
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return 400, {"error": "no playable card for this occurrence"}
+    video = common.find_video(stem)
+    if not video or not any(Path(video).resolve().is_relative_to(Path(root).resolve()) for root in ROOTS):
+        return 404, {"error": "episode media unavailable"}
+    if not _AUDIO_SLOTS.acquire(blocking=False):
+        return 429, {"error": "audio preview busy; try again shortly"}
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_streams", "-of", "json", video],
+            capture_output=True, timeout=10, check=True, stdin=subprocess.DEVNULL,
+        )
+        info = json.loads(probe.stdout)
+        streams = info.get("streams", []) if isinstance(info, dict) else []
+        audio = [s for s in streams if isinstance(s, dict) and s.get("codec_type") == "audio"
+                 and isinstance(s.get("tags", {}), dict)
+                 and str(s.get("tags", {}).get("language", "")).lower() in ("eng", "en")
+                 and "commentary" not in str(s.get("tags", {}).get("title", "")).lower()]
+        if not audio:
+            return 422, {"error": "no English dialogue audio track"}
+        offset = max(0, start - 1.5)
+        duration = min(AUDIO_MAX_SECONDS, end + 1.5 - offset)
+        result = subprocess.run(
+            ["ffmpeg", "-nostdin", "-v", "error", "-ss", str(offset), "-i", video,
+             "-map", f"0:{int(audio[0]['index'])}", "-t", str(duration), "-vn", "-ac", "1", "-ar", "16000",
+             "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"],
+            capture_output=True, timeout=30, check=True, stdin=subprocess.DEVNULL,
+        )
+        if not result.stdout.startswith(b"RIFF") or len(result.stdout) <= 44:
+            return 502, {"error": "audio extraction produced no clip"}
+        return 200, result.stdout
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        return 502, {"error": "audio preview unavailable; check the media and ffmpeg"}
+    finally:
+        _AUDIO_SLOTS.release()
+
+
+def route(method: str, path: str, body: dict, token, client: str = "") -> tuple:
+    """(status, payload) for one request. ``client`` is the peer address, used only to throttle /api/login."""
+    if method == "GET" and (path == "/review" or path.startswith("/review/")):
+        return workspace_asset(path)
     if method == "GET" and path == "/healthz":
         return handle_healthz()
+    if method == "GET" and path == "/api/auth-mode":
+        return 200, {"password_login": _LOGIN is not None}
+    if method == "POST" and path == "/api/login":
+        return handle_login(body, client)
     if not authorised(method, token, path):
         return 401, {"error": "a token is required"}
+    if method == "GET" and path == "/api/audio":
+        return preview_audio(body)
     if method == "GET" and path == "/api/episodes":
         return 200, handle_index()
     if method == "GET" and path == "/api/episode":
@@ -1233,6 +1459,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # 30s is long for a review POST (a verdict is a few hundred bytes) and short for a drip.
     timeout = 30
 
+    def _client(self) -> str:
+        """The peer address (throttle key); empty when the transport has none."""
+        return (getattr(self, "client_address", None) or ("",))[0]
+
     def _send(self, status, payload, ctype="application/json"):
         raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
         self.send_response(status)
@@ -1243,6 +1473,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
+        if status == 429 and isinstance(payload, dict) and payload.get("retry_after"):
+            self.send_header("Retry-After", str(int(payload["retry_after"])))
+        if self.path.split("?", 1)[0].startswith("/review"):
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; "
+                             "img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; "
+                             "object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -1267,8 +1504,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             status, payload = handle_healthz()
             return self._send(status, payload)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
-        status, payload = route("GET", u.path, q, presented)
-        self._send(status, payload)
+        status, payload = route("GET", u.path, q, presented, client=self._client())
+        ctype = "application/json"
+        if isinstance(payload, bytes):
+            if u.path == "/api/audio":
+                ctype = "audio/wav"
+            else:
+                ctype = {".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
+                         ".woff2": "font/woff2"}.get(Path(u.path).suffix, "text/html; charset=utf-8")
+        self._send(status, payload, ctype)
 
     def do_POST(self):
         # The body is read BEFORE authorised() runs, so this bound is what stands between an
@@ -1285,13 +1529,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(411, {"error": "a valid Content-Length is required"})
         if n > 1 << 20:
             return self._send(413, {"error": "body too large"})
+        if self.path.split("?", 1)[0] == "/api/login":
+            # Unauthenticated, so stricter than the other POSTs: JSON only, and a few KiB at most.
+            if n > LOGIN_MAX_BODY:
+                return self._send(413, {"error": "body too large"})
+            if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+                return self._send(415, {"error": "application/json is required"})
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
             body = {}
         if not isinstance(body, dict):
             body = {}
-        status, payload = route("POST", self.path, body, self.headers.get(TOKEN_HEADER) or _cookie_token(self.headers))
+        status, payload = route(
+            "POST",
+            self.path,
+            body,
+            self.headers.get(TOKEN_HEADER) or _cookie_token(self.headers),
+            client=self._client(),
+        )
         self._send(status, payload)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 - the base class names it this
@@ -1401,6 +1657,7 @@ def serve(port: int = 0):
         raise SystemExit(2)
     resolve_token()  # generates and prints the VALUE on first start, before anything is served
     announce_token()  # and on every start, says where to find it
+    configure_login()  # the optional username/password in front of the token
     srv = BoundedHTTPServer((REVIEW_BIND, port or REVIEW_PORT), Handler)
     log(f"review server: listening on {REVIEW_BIND}:{port or REVIEW_PORT}")
     # Started BEFORE serve_forever and as a daemon: the port must open immediately either
