@@ -255,35 +255,6 @@ def test_killed_mid_run_then_restarted_equals_an_uninterrupted_run(tmp_path):
     assert gloss.read_bytes() == clean_gloss.read_bytes()
 
 
-# ---- follow-up: --force bypasses the journal's reads --------------------------------------------------------------------
-
-
-def test_force_asks_the_model_again_and_the_fresh_answers_replace_the_journalled_ones(run):
-    run()
-    base = len(run.state["calls"])
-    old = {e["key"]: e["result"]["canonical"] for e in journal_lines(run)}
-    run.state["llm"] = lambda prompt: json.dumps({"canonical": "Zorro", "confidence": "high", "dub_note": ""})
-    run(force=True)
-    assert len(run.state["calls"]) == base + len(TERMS), "no journal read under --force"
-    new = {e["key"]: e["result"]["canonical"] for e in journal_lines(run)}
-    assert set(new) == set(old) and set(new.values()) == {"Zorro"} != set(old.values())
-    assert len(journal_lines(run)) == len(TERMS), "compaction kept the latest line per key"
-
-
-def test_force_still_writes_so_a_later_plain_run_reuses_the_forced_answers(run):
-    run(force=True)
-    n = len(run.state["calls"])
-    run()
-    assert len(run.state["calls"]) == n
-
-
-def test_the_cli_help_says_force_bypasses_the_journal(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["glossary_verify", "--help"])
-    with pytest.raises(SystemExit):
-        gv.main()
-    assert "journal" in capsys.readouterr().out
-
-
 # ---- follow-up: an undecodable reply is unavailable ----------------------------------------------------------------------------
 
 
@@ -315,3 +286,76 @@ def test_an_undecodable_reply_gives_the_same_glossary_as_before_the_journal(run,
     adj = gv._adjudicate_llm("Zoro", ["Zorro"], "S", "llamacpp")
     assert adj["unavailable"] is True and adj["confidence"] == "none" and adj["canonical"] == ""
     assert gv.clean_adjudication(adj) == ({"canonical": "", "confidence": "none"}, False)
+
+
+# ---- follow-up: what a stored answer depends on -------------------------------------------------------------------------
+
+
+def test_the_server_url_is_part_of_the_provenance_but_max_tokens_is_not(run, monkeypatch):
+    run()
+    base = len(run.state["calls"])
+    monkeypatch.setattr(gv, "VERIFY_MAX_TOKENS", 16)
+    run()
+    assert len(run.state["calls"]) == base, "max_tokens is an operational dial, not a different question"
+    monkeypatch.setattr(gv, "VERIFY_LLAMACPP_URL", "http://another-server:8094/v1/chat/completions")
+    run()
+    assert len(run.state["calls"]) == base + len(TERMS), "another server may hold another model"
+
+
+def test_each_keyed_input_changes_the_identity(monkeypatch):
+    for k in ("VERIFY_OPENAI_URL", "VERIFY_OPENAI_EXTRA_BODY", "VERIFY_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("VERIFY_OPENAI_URL", "https://a.example/v1/chat/completions")
+    monkeypatch.setenv("VERIFY_MODEL", "m")
+    monkeypatch.setenv("VERIFY_OPENAI_KEY_ENV", "SECRET_VAR")
+    monkeypatch.setenv("SECRET_VAR", "sk-super-secret-value")
+    base = gv.backend_identity("openai", "pick")
+    assert "sk-super-secret-value" not in json.dumps(base)
+    monkeypatch.setenv("VERIFY_OPENAI_URL", "https://b.example/v1/chat/completions")
+    assert gv.backend_identity("openai", "pick") != base
+    monkeypatch.setenv("VERIFY_OPENAI_URL", "https://a.example/v1/chat/completions")
+    monkeypatch.setenv("VERIFY_OPENAI_EXTRA_BODY", '{"reasoning": "high"}')
+    assert gv.backend_identity("openai", "pick") != base
+    monkeypatch.delenv("VERIFY_OPENAI_EXTRA_BODY")
+    monkeypatch.setattr(gv, "VERIFY_MAX_TOKENS", 7)
+    assert gv.backend_identity("openai", "pick") == base, "max_tokens is not keyed"
+
+
+def test_the_decision_client_version_is_part_of_the_identity(monkeypatch):
+    monkeypatch.setenv("VERIFY_DECISION_MODEL", "inception/mercury-decide:free")
+    base = gv.backend_identity("decision", "pick")
+    assert base["client"] == gd.DECISION_CLIENT_VERSION
+    monkeypatch.setattr(gd, "DECISION_CLIENT_VERSION", "next")
+    assert gv.backend_identity("decision", "pick") != base
+    monkeypatch.setenv("VERIFY_DECISION_URL", "https://elsewhere.example/decisions")
+    monkeypatch.setattr(gd, "DECISION_CLIENT_VERSION", base["client"])
+    assert gv.backend_identity("decision", "pick") != base
+
+
+# ---- follow-up: --force bypasses the journal's reads --------------------------------------------------------------------
+
+
+def test_force_asks_the_model_again_and_the_fresh_answers_replace_the_journalled_ones(run):
+    run()
+    base = len(run.state["calls"])
+    old = {e["key"]: e["result"]["canonical"] for e in journal_lines(run)}
+    run.state["llm"] = lambda prompt: json.dumps({"canonical": "Zorro", "confidence": "high", "dub_note": ""})
+    run(force=True)
+    assert len(run.state["calls"]) == base + len(TERMS), "no journal read under --force"
+    new = {e["key"]: e["result"]["canonical"] for e in journal_lines(run)}
+    assert set(new) == set(old) and set(new.values()) == {"Zorro"} != set(old.values())
+    assert len(journal_lines(run)) == len(TERMS), "compaction kept the latest line per key"
+
+
+def test_force_still_writes_so_a_later_plain_run_reuses_the_forced_answers(run):
+    run(force=True)
+    n = len(run.state["calls"])
+    run()
+    assert len(run.state["calls"]) == n
+
+
+def test_the_cli_help_says_force_bypasses_the_journal(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["glossary_verify", "--help"])
+    with pytest.raises(SystemExit):
+        gv.main()
+    assert "journal" in capsys.readouterr().out

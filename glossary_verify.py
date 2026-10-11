@@ -358,9 +358,21 @@ def backend_identity(backend: str | None, kind: str) -> dict:
         import glossary_decision
 
         s = glossary_decision.settings()
-        ident.update(model=s.model, tau=s.acquire_tau if kind == "pair" else s.tau)
+        ident.update(
+            model=s.model,
+            tau=s.acquire_tau if kind == "pair" else s.tau,
+            client=glossary_decision.DECISION_CLIENT_VERSION,  # bumped whenever its prompts or scoring change
+            url=adjudication_journal.digest(s.url or s.provider),
+        )
     else:
-        ident["model"] = llm_settings(b).get("model", "")
+        kw = llm_settings(b)
+        ident["model"] = kw.get("model", "")
+        # WHICH server answered: llama.cpp ignores the model name (one GGUF is loaded), so the URL is what names it. Hashed with
+        # the rest; never a key. max_tokens is deliberately not keyed (an operational dial: a truncated reply is "unavailable").
+        url = kw.get("openai_url") if b == "openai" else kw.get("llamacpp_url") if b == "llamacpp" else kw.get("ollama_url")
+        ident["url"] = adjudication_journal.digest(url or "")
+        if b == "openai":
+            ident["extra_body"] = adjudication_journal.digest(kw.get("openai_extra_body") or "")
     return ident
 
 

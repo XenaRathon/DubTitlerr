@@ -136,6 +136,11 @@ def _count(env, name, default, lo, hi):
     return value
 
 
+# Bump when the decision questions, their framing or the way an answer is scored change: the adjudication journal keys on it, so
+# a stored decision-model answer is never served across such a change.
+DECISION_CLIENT_VERSION = "1"
+
+
 def settings(env=None):
     """The decision settings from the environment (defaults above); ConfigError when one is unusable."""
     env = os.environ if env is None else env
