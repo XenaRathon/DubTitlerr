@@ -300,7 +300,11 @@ def build_adjudication_prompt(term: str, cands: list[str], show: str) -> str:
 
 
 def parse_adjudication(text: str) -> dict:
-    """Parse the LLM's JSON reply (tolerating surrounding prose) into a normalized adjudication."""
+    """Parse the LLM's JSON reply (tolerating surrounding prose) into an adjudication.
+
+    The decoded ``canonical`` and ``confidence`` are passed through with their JSON types: a list or number there is malformed
+    data, and clean_adjudication (which every consumer runs, and which counts the repair) turns it into a no-match. Coercing it
+    with str() here used to hand clean_adjudication a plausible-looking string such as "['Zoro', 'Bogus']"."""
     none = {"canonical": "", "confidence": "none", "dub_note": ""}
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
@@ -309,10 +313,12 @@ def parse_adjudication(text: str) -> dict:
         d = json.loads(m.group(0))
     except ValueError:
         return none
-    conf = str(d.get("confidence", "none")).lower()
-    if conf not in ("high", "low", "none"):
-        conf = "low"
-    return {"canonical": str(d.get("canonical", "") or ""), "confidence": conf, "dub_note": str(d.get("dub_note", "") or "")}
+    conf = d.get("confidence", "none")
+    if isinstance(conf, str):
+        conf = conf.lower()
+        if conf not in ("high", "low", "none"):
+            conf = "low"
+    return {"canonical": d.get("canonical", "") or "", "confidence": conf, "dub_note": str(d.get("dub_note", "") or "")}
 
 
 def adjudicate(term: str, cands: list[str], show: str, backend: str | None = None) -> dict | None:
