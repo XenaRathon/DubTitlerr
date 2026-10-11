@@ -1064,3 +1064,30 @@ def test_events_match_drawings_near_positions_deduped():
     s = pysubs2.SSAEvent(start=0, end=2000, style="Signs", text=r"{\p1\pos(110,110)}m 0 0 l 9 0 9 9")
     assert dsm._events_match(p, s)
 
+
+# --- Item 2 fix: song events matching, scripts & language hints ---------------
+
+
+def test_song_events_secondary_english_translation_kept_when_primary_is_romaji():
+    p = pysubs2.SSAEvent(start=0, end=3000, style="OP Romaji", text=r"{\k20}kimi{\k20}no")
+    s = pysubs2.SSAEvent(start=0, end=3000, style="OP English", text=r"{\an8}Your name")
+    assert not dsm._events_match(p, s)
+
+
+def test_song_events_different_lyrics_same_time_kept():
+    p = pysubs2.SSAEvent(start=0, end=3000, style="OP Romaji", text=r"{\k20}kimi")
+    s = pysubs2.SSAEvent(start=0, end=3000, style="OP-Romaji", text=r"{\k20}sora")
+    assert not dsm._events_match(p, s)
+
+
+def test_song_events_kanji_vs_latin_kept():
+    p = pysubs2.SSAEvent(start=0, end=3000, style="OP", text=r"{\k20}君の")
+    s = pysubs2.SSAEvent(start=0, end=3000, style="OP", text=r"{\k20}kimino")
+    assert not dsm._events_match(p, s)
+
+
+def test_song_events_same_romaji_different_syllable_splits_deduped():
+    p = pysubs2.SSAEvent(start=0, end=3000, style="OP Romaji", text=r"{\k20}ki{\k20}mi")
+    s = pysubs2.SSAEvent(start=200, end=3200, style="OP-Romaji", text=r"{\k40}kimi")
+    assert dsm._events_match(p, s)
+

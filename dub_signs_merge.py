@@ -32,6 +32,7 @@ Idempotent. Env: MERGE_ROOTS (colon list), DUB_SUFFIX, MEDIA_UID/GID, SUB_LANGS
 Requires ffmpeg/ffprobe + pysubs2.  Built with help of Claude (Anthropic).
 """
 
+import difflib
 import json
 import os
 import re
@@ -322,6 +323,41 @@ def _song_family(style):
     return None
 
 
+def _is_cjk_or_hangul(text):
+    for ch in text:
+        cp = ord(ch)
+        if (
+            0x3040 <= cp <= 0x309F
+            or 0x30A0 <= cp <= 0x30FF
+            or 0x4E00 <= cp <= 0x9FFF
+            or 0x3400 <= cp <= 0x4DBF
+            or 0xAC00 <= cp <= 0xD7AF
+            or 0x1100 <= cp <= 0x11FF
+        ):
+            return True
+    return False
+
+
+def _is_latin(text):
+    for ch in text:
+        if "a" <= ch.lower() <= "z":
+            return True
+    return False
+
+
+def _song_lang_hint(style):
+    if not style:
+        return None
+    s = style.lower()
+    if re.search(r"romaji|romanized|roma", s):
+        return "romaji"
+    if re.search(r"english|translation|trans|eng", s):
+        return "english"
+    if re.search(r"kanji|japanese|jap|nihongo", s):
+        return "kanji"
+    return None
+
+
 def _normalize_sign_plaintext(text):
     t = re.sub(r"\{[^}]*\}", "", text or "")
     t = re.sub(r"\\[Nnh]", "", t)
@@ -354,14 +390,33 @@ def _events_match(p, s, play_res=None):
         if overlap < 0.5 * min_dur:
             return False
 
-    both_karaoke = bool(KARAOKE.search(p.text)) and bool(KARAOKE.search(s.text))
     fam_p = _song_family(p.style)
     fam_s = _song_family(s.style)
-    same_family = fam_p is not None and fam_p == fam_s
     is_song_p = bool(KARAOKE.search(p.text)) or (fam_p is not None)
     is_song_s = bool(KARAOKE.search(s.text)) or (fam_s is not None)
     if is_song_p or is_song_s:
-        return both_karaoke or same_family
+        if not (is_song_p and is_song_s):
+            return False
+        if fam_p and fam_s and fam_p != fam_s:
+            return False
+        hint_p = _song_lang_hint(p.style)
+        hint_s = _song_lang_hint(s.style)
+        if hint_p and hint_s and hint_p != hint_s:
+            return False
+        norm_p = _normalize_sign_plaintext(p.text)
+        norm_s = _normalize_sign_plaintext(s.text)
+        if not norm_p and not norm_s:
+            return True
+        if not norm_p or not norm_s:
+            return False
+        cjk_p = _is_cjk_or_hangul(norm_p)
+        cjk_s = _is_cjk_or_hangul(norm_s)
+        lat_p = _is_latin(norm_p)
+        lat_s = _is_latin(norm_s)
+        if (cjk_p and lat_s) or (lat_p and cjk_s):
+            return False
+        ratio = difflib.SequenceMatcher(None, norm_p, norm_s).ratio()
+        return ratio >= 0.75
 
     draw_p = bool(DRAWING_TAG.search(p.text or ""))
     draw_s = bool(DRAWING_TAG.search(s.text or ""))
