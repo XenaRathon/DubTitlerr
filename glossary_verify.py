@@ -660,7 +660,8 @@ def apply_results(gloss: dict, results: dict) -> dict:
                 }
         elif conf != "high" or not canon:
             if conf == "low" and canon:
-                flagged[term] = "low-confidence"  # a candidate to accept or reject: a decision
+                # A candidate to accept or reject: a decision, so it keeps the candidate (older files hold the bare string).
+                flagged[term] = {"reason": "low-confidence", "canonical": canon}
             elif queue_no_match():
                 flagged[term] = "no-match"
             # else VERIFY_QUEUE_NO_MATCH=0: the term is verified and counted, but there is nothing to accept or reject

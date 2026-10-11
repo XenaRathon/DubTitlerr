@@ -212,7 +212,8 @@ def test_low_and_none_picks_are_flagged(decision, monkeypatch):
         decision(lambda q, b, a=ans: a)
         adj = gv.adjudicate("Zoro", TITLES, "S")
         new = gv.apply_results({"show": "S", "names": ["Zoro"], "phrases": [], "hard_fixes": {}}, {"Zoro": adj})
-        assert new["flagged"]["Zoro"] == reason
+        flag = new["flagged"]["Zoro"]
+        assert (flag["reason"] if isinstance(flag, dict) else flag) == reason
 
 
 PROP = {

@@ -26,7 +26,7 @@ def test_with_the_variable_set_to_1_a_no_match_is_queued_as_before(monkeypatch):
     """Legacy: VERIFY_QUEUE_NO_MATCH=1 restores queueing (the default is 0 since phase 27)."""
     monkeypatch.setenv("VERIFY_QUEUE_NO_MATCH", "1")
     out = gv.apply_results(base(names=["Zoro", "Nobody", "Lowly"]), RESULTS)
-    assert out["flagged"]["Nobody"] == "no-match" and out["flagged"]["Lowly"] == "low-confidence"
+    assert out["flagged"]["Nobody"] == "no-match" and out["flagged"]["Lowly"]["reason"] == "low-confidence"
     assert out["verified"] == ["Lowly", "Nobody", "Zoro"]
 
 
@@ -40,7 +40,7 @@ def test_with_the_queue_off_a_no_match_is_verified_but_not_flagged(monkeypatch):
     monkeypatch.setenv("VERIFY_QUEUE_NO_MATCH", "0")
     out = gv.apply_results(base(names=["Zoro", "Nobody", "Lowly"]), RESULTS)
     assert "Nobody" in out["verified"] and "Nobody" not in out["flagged"]
-    assert out["flagged"]["Lowly"] == "low-confidence"  # a candidate to accept or reject: still a decision
+    assert out["flagged"]["Lowly"]["reason"] == "low-confidence"  # a candidate to accept or reject: still a decision
     assert out["flagged"]["Zoro"]["reason"] == "respelling-needs-review"
 
 

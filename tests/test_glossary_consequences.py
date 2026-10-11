@@ -103,7 +103,7 @@ def test_the_classification_agrees_with_what_production_does(monkeypatch, item, 
     elif outcome == "flag_respelling":
         assert not written and flagged["reason"] == "respelling-needs-review"
     elif outcome == "flag_low":
-        assert not written and flagged == "low-confidence"
+        assert not written and flagged["reason"] == "low-confidence"
     elif outcome == "flag_nomatch":
         assert not written and flagged == "no-match"
     else:  # nothing: no write, no flag

@@ -112,7 +112,7 @@ def test_a_written_expansion_is_unaffected(guards, monkeypatch):
 def test_low_confidence_and_no_match_are_not_this_flags_business(guards, monkeypatch):
     monkeypatch.setenv("VERIFY_QUEUE_BLOCKED_EXPANSIONS", "0")
     out = gv.apply_results(base(names=["A"]), {"A": {"canonical": "Alpha", "confidence": "low"}})
-    assert out["flagged"]["A"] == "low-confidence"
+    assert out["flagged"]["A"]["reason"] == "low-confidence"
 
 
 # ---- the report ---------------------------------------------------- ----

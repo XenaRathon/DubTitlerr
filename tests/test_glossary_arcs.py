@@ -301,9 +301,8 @@ def test_the_gate_applies_only_to_writes_not_to_respelling_flags_or_low_confiden
             "Momonosuke": {"canonical": "Kaido", "confidence": "low"},
         },
     )
-    assert (
-        new["flagged"]["Government"]["reason"] == "respelling-needs-review" and new["flagged"]["Momonosuke"] == "low-confidence"
-    )
+    assert new["flagged"]["Government"]["reason"] == "respelling-needs-review"
+    assert new["flagged"]["Momonosuke"]["reason"] == "low-confidence"
 
 
 def _verify_run(tmp_path, monkeypatch, gloss):
