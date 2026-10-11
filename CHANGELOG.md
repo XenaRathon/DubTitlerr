@@ -72,6 +72,10 @@ pins both the new default and the `0`/old value.
   The guard blocks far fewer wrong writes on the bundled list (6 of 119 instead of 99), so install `wamerican` or set `WORDLIST_PATH`.
 - **Stored no-match flags stay.** `VERIFY_QUEUE_NO_MATCH=0` only stops NEW no-match entries: the 1,702 already stored across 11 glossaries
   (One Pace 982) stay in the queue. `glossary_acquire.py <glossary> <showdir> --review --prune-no-match` clears them.
+- **A re-verify that affirms a term keeps its earlier proposal in the queue.** `verify --force` revisits verified terms; if the new
+  answer is the term itself, an older `respelling-needs-review` flag for it (say `Raftel -> Ratel`) is left in the review queue, not
+  cleared, so accepting it later would still write that hard fix. This is deliberate for now (a fresh answer must not erase another
+  stage's evidence), but the queue does not show the conflict; check the term before accepting an old flag after a forced re-verify.
 - **More respellings are flagged.** `VERIFY_WRITE_WHOLE_WORD` on means a canonical that only contains the term as a substring (`Usop` -> `Usopp`)
   is flagged `respelling-needs-review` instead of written, so the review queue gains those entries and the written count falls.
 - **`tools/glossary_consequences.py` still scores with the substring rule** (the bake-off tooling is not production); the common-word guard is not
