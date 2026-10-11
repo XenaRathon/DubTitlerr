@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import adjudication_journal as aj
@@ -84,7 +85,7 @@ def test_a_torn_last_line_is_skipped_and_the_next_append_starts_on_its_own_line(
 
 def test_garbage_lines_and_foreign_stages_are_skipped(tmp_path):
     p = tmp_path / "j.jsonl"
-    good = {"v": 1, "stage": "verify", "key": "k", "prov": PROV, "result": RESULT, "at": 1.0}
+    good = {"v": 1, "stage": "verify", "key": "k", "prov": PROV, "result": RESULT, "at": time.time()}
     p.write_text(
         "not json\n"
         + json.dumps({**good, "stage": "acquire", "key": "x"})
@@ -168,3 +169,28 @@ def test_a_journal_opened_without_reads_never_serves_but_still_writes_and_replac
     forced.record("k", PROV, {**RESULT, "canonical": "New"})
     assert forced.lookup("k", PROV) is None
     assert make(tmp_path).lookup("k", PROV)["canonical"] == "New"
+
+
+def test_lookup_does_not_serve_an_entry_older_than_the_age_limit(tmp_path):
+    """The 30-day limit applied only in compact() (after a successful --apply), so dry runs served expired answers forever."""
+    clock = Clock()
+    j = make(tmp_path, clock)
+    j.record("k", PROV, RESULT)
+    day = 86400
+    clock.now += 30 * day
+    assert j.lookup("k", PROV) == RESULT, "exactly 30 days old: still served"
+    assert make(tmp_path, clock).lookup("k", PROV) == RESULT
+    clock.now += 1
+    assert j.lookup("k", PROV) is None, "30 days and a second: expired"
+    assert make(tmp_path, clock).lookup("k", PROV) is None, "also for a journal loaded fresh from disk"
+    assert len(lines(j.path)) == 1, "ignored, not deleted"
+
+
+def test_lookup_and_compact_agree_on_what_is_expired(tmp_path):
+    clock = Clock()
+    j = make(tmp_path, clock)
+    j.record("k", PROV, RESULT)
+    clock.now += 30 * 86400
+    assert j.compact() == 1 and j.lookup("k", PROV) == RESULT
+    clock.now += 1
+    assert j.compact() == 0 and j.lookup("k", PROV) is None

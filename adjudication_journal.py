@@ -146,6 +146,9 @@ class Journal:
             e = self._entries.get(key)
         if e is None or e["prov"] != prov:
             return None
+        at = e.get("at")
+        if not isinstance(at, (int, float)) or self.clock() - at > self.max_age:
+            return None  # expired (same rule as compact(): kept up to and including the limit); ignored, not deleted
         return dict(e["result"])
 
     # ---- writing -------------------------------------------------------------------------------------------------------
