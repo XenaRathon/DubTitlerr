@@ -44,6 +44,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import time
@@ -510,6 +511,29 @@ def _finalize(tmp, dst):
 RECOVERY_SUFFIX = ".dubtitles.mux-recovery"
 
 
+def temp_path(stem: str) -> str:
+    """Generate a unique per-run temp path in the same directory as stem.
+
+    Includes process id and random token to prevent collision across concurrent writers,
+    ending with .muxtmp.mkv to match existing sweeps and recovery logic.
+    """
+    return f"{stem}.{os.getpid()}.{secrets.token_hex(4)}.muxtmp.mkv"
+
+
+def _source_unchanged(orig: str, st: os.stat_result) -> bool:
+    """True if orig exists and has identical size, mtime, inode, and device as st."""
+    try:
+        curr = os.stat(orig)
+    except OSError:
+        return False
+    return (
+        curr.st_size == st.st_size
+        and curr.st_mtime == st.st_mtime
+        and curr.st_ino == st.st_ino
+        and curr.st_dev == st.st_dev
+    )
+
+
 def process(orig, apply):
     stem, ext = os.path.splitext(orig)
     marker = stem + RECOVERY_SUFFIX
@@ -555,7 +579,7 @@ def process(orig, apply):
     if not has_room(_free_bytes(orig), os.path.getsize(orig)):
         log("  skip (low disk):", os.path.basename(orig))
         return "skip-no-room"
-    out = stem + ".muxtmp.mkv"
+    out = temp_path(stem)
     final = stem + ".mkv"  # every episode ends as an mkv
     cmd, dropped = build_cmd(identify(orig), orig, src, out)
     if not apply:
@@ -571,6 +595,15 @@ def process(orig, apply):
                 os.remove(out)
             write_stage(stem, "mux", "build-error", f"verify:{res}")
             return "verify-" + res
+        if not _source_unchanged(orig, st):
+            if os.path.exists(out):
+                try:
+                    os.remove(out)
+                except OSError:
+                    pass
+            log(f"  ERROR: {os.path.basename(orig)} changed during mux — aborting replace")
+            write_stage(stem, "mux", "refused", "source-changed")
+            return "refused"
         os.chown(out, st.st_uid or MEDIA_UID, st.st_gid or MEDIA_GID)
         try:
             # Stamp BEFORE the rename, from the temp file: write_stamp stats the path it
@@ -596,6 +629,20 @@ def process(orig, apply):
             )
             write_stage(stem, "mux", "unwritable", str(e))
             return "stamp-write-failed"
+        if not _source_unchanged(orig, st):
+            if stamped:
+                try:
+                    os.remove(stamp)
+                except OSError:
+                    pass
+            if os.path.exists(out):
+                try:
+                    os.remove(out)
+                except OSError:
+                    pass
+            log(f"  ERROR: {os.path.basename(orig)} changed during mux — aborting replace")
+            write_stage(stem, "mux", "refused", "source-changed")
+            return "refused"
         _finalize(out, final)  # write the muxed mkv
         stamped = False  # renamed: the stamp is now valid, keep it whatever follows
         # The stamp is written: the episode IS done. Cleanup failures from here on must not
