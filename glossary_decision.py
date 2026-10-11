@@ -54,6 +54,12 @@ FALLBACKS = ("none", "local")
 # ---- the v1 questions (shared with tools/glossary_bakeoff.py) ---------------------------------------------------------------
 
 
+# Bump when the question wording or the _pick_confidence scoring changes:
+# it invalidates journaled decision answers (adjudication_journal keys on it), so none is
+# served across such a change.
+DECISION_CLIENT_VERSION = "1"
+
+
 def verify_question(show, term, titles):
     """(state, questions, options) for one verify item: options maps c1.. to the candidate titles, in the order given."""
     options = {f"c{i}": t for i, t in enumerate(titles, 1)}
@@ -134,11 +140,6 @@ def _count(env, name, default, lo, hi):
     if not lo <= value <= hi:
         raise ConfigError(f"{name} must be a whole number between {lo} and {hi}")
     return value
-
-
-# Bump when the decision questions, their framing or the way an answer is scored change: the adjudication journal keys on it, so
-# a stored decision-model answer is never served across such a change.
-DECISION_CLIENT_VERSION = "1"
 
 
 def settings(env=None):
