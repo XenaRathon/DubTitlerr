@@ -59,6 +59,7 @@ SAFE_FONTS = {
     "Roboto",
 }
 SAFE_FONTS_LOWER = {f.lower() for f in SAFE_FONTS}
+DEFAULT_DUB_FONT = "Trebuchet MS"
 
 _STYLE_WORDS = {
     "regular",
@@ -168,7 +169,7 @@ def _track_dialogue_font(track):
 
 def resolve_dialogue_font(video, loaded_tracks, primary_track):
     if not fansub_font_enabled():
-        return "Arial"
+        return DEFAULT_DUB_FONT
 
     candidate_font = None
     if primary_track:
@@ -181,7 +182,7 @@ def resolve_dialogue_font(video, loaded_tracks, primary_track):
                     break
 
     if not candidate_font:
-        return "Arial"
+        return DEFAULT_DUB_FONT
 
     attachments = list_attachment_filenames(video)
     norm_font = _normalize_font_token(candidate_font)
@@ -199,8 +200,8 @@ def resolve_dialogue_font(video, loaded_tracks, primary_track):
     if candidate_font.lower() in SAFE_FONTS_LOWER:
         return candidate_font
 
-    log(f"  font '{candidate_font}' not attached and not in safe set — falling back to Arial")
-    return "Arial"
+    log(f"  font '{candidate_font}' not attached and not in safe set — falling back to {DEFAULT_DUB_FONT}")
+    return DEFAULT_DUB_FONT
 
 ROOTS = os.environ.get("MERGE_ROOTS", "/data/Media/Anime Library").split(":")
 SUFFIX = os.environ.get("DUB_SUFFIX", ".eng.dubtitles.srt")
