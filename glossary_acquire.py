@@ -1410,9 +1410,13 @@ def main():
         return
     if a.review:
         n_saved = len(_read_pending(a.glossary))
-        if n_saved:
+        if n_saved and a.apply:
             log(f"{n_saved} answers from an earlier --review were saved while the glossary was busy: applying them first")
             _commit_answers(a.glossary, [])
+        elif n_saved:
+            # Read-only: replaying them would write the glossary and delete the file while reporting written:false.
+            plural = "s" if n_saved != 1 else ""
+            log(f"{n_saved} saved answer{plural} from an earlier --review kept, not applied: add --apply to apply them")
         g = json.load(open(a.glossary, encoding="utf-8"))
         answers = []  # (term, accept) in order; applied to the FRESH file at the end, not to this stale copy
         decisions, no_match = review_groups(g)
@@ -1449,6 +1453,8 @@ def main():
                 g = json.load(open(a.glossary, encoding="utf-8"))  # report what is ON DISK
             if saved := _read_pending(a.glossary):
                 summary["saved"] = len(saved)
+        elif n_saved:
+            summary["saved"] = n_saved  # a dry run applied none of them and deleted none
         summary["pending"] = len(g.get("flagged", {}))
         log(json.dumps(summary))
         return
