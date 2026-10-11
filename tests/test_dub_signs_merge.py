@@ -1037,3 +1037,30 @@ def test_fansub_font_opt_out(tmp_path, monkeypatch):
     res = pysubs2.load(out_ass)
     assert res.styles["Dubtitles"].fontname == "Trebuchet MS"
 
+
+# --- Item 1 fix: drawing vs clipped text & drawing proximity ------------------
+
+
+def test_events_match_clipped_text_different_content_kept():
+    p = pysubs2.SSAEvent(start=0, end=2000, style="Sign", text=r"{\pos(5,5)\clip(0,0,300,80)}LIBRARY")
+    s = pysubs2.SSAEvent(start=0, end=2000, style="Signs", text=r"{\pos(800,400)\clip(600,300,900,500)}CAFE")
+    assert not dsm._events_match(p, s)
+
+
+def test_events_match_drawing_vs_clipped_text_kept():
+    p = pysubs2.SSAEvent(start=0, end=5000, style="Sign", text=r"{\p1}m 0 0 l 100 0 100 100")
+    s = pysubs2.SSAEvent(start=1000, end=3000, style="Signs", text=r"{\pos(800,400)\clip(600,300,900,500)}EXIT")
+    assert not dsm._events_match(p, s)
+
+
+def test_events_match_drawings_distant_positions_kept():
+    p = pysubs2.SSAEvent(start=0, end=2000, style="Sign", text=r"{\p1\pos(10,10)}m 0 0 l 9 0 9 9")
+    s = pysubs2.SSAEvent(start=0, end=2000, style="Signs", text=r"{\p1\pos(900,600)}m 0 0 l 5 0 2 7")
+    assert not dsm._events_match(p, s)
+
+
+def test_events_match_drawings_near_positions_deduped():
+    p = pysubs2.SSAEvent(start=0, end=2000, style="Sign", text=r"{\p1\pos(100,100)}m 0 0 l 9 0 9 9")
+    s = pysubs2.SSAEvent(start=0, end=2000, style="Signs", text=r"{\p1\pos(110,110)}m 0 0 l 9 0 9 9")
+    assert dsm._events_match(p, s)
+

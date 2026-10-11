@@ -208,7 +208,9 @@ SUFFIX = os.environ.get("DUB_SUFFIX", ".eng.dubtitles.srt")
 SUB_LANGS = set(os.environ.get("SUB_LANGS", "eng,en,und,").split(","))
 
 KARAOKE = re.compile(r"\\[kK][fo]?\d")
-HAS_DRAWING = re.compile(r"\\p\d|\\clip|\\iclip")
+DRAWING_TAG = re.compile(r"\\p[1-9]")
+CLIP_TAG = re.compile(r"\\i?clip\(")
+HAS_DRAWING = DRAWING_TAG
 ANIMATED = re.compile(r"\\t\(|\\fade?\(|\\move\(")
 POSITIONED = re.compile(r"\\(?:pos|move)\(|\\an[134567 89]")
 # KEEP the Japanese romaji karaoke (top) + signs/credits + the fansub's own English song
@@ -254,12 +256,12 @@ def keep_event(ev):
     if SONG_FAMILY_STYLE.search(style):  # Opening-/ED<N>- sibling, any language -> keep
         return True
     t = ev.text
-    tagged = bool(KARAOKE.search(t) or HAS_DRAWING.search(t) or POSITIONED.search(t) or ANIMATED.search(t))
+    tagged = bool(KARAOKE.search(t) or DRAWING_TAG.search(t) or CLIP_TAG.search(t) or POSITIONED.search(t) or ANIMATED.search(t))
     if WEAK_DROP_STYLE.search(style) and not tagged:  # a style-name GUESS, only when nothing else says otherwise
         return False
     if KARAOKE.search(t):  # Japanese romaji karaoke (top) -> keep
         return True
-    if HAS_DRAWING.search(t):  # vector-drawn sign (\p/\clip/\iclip) -> keep
+    if DRAWING_TAG.search(t) or CLIP_TAG.search(t):  # vector-drawn sign or clipped sign -> keep
         return True
     if POSITIONED.search(t) or ANIMATED.search(t):  # positioned/animated sign -> keep
         return True  # (ANIMATED's \move overlaps POSITIONED; merged into one check)
@@ -326,6 +328,13 @@ def _normalize_sign_plaintext(text):
     return "".join(ch for ch in t.lower() if ch.isalnum())
 
 
+def _get_pos(text):
+    m = re.search(r"\\pos\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)", text or "")
+    if m:
+        return float(m.group(1)), float(m.group(2))
+    return None
+
+
 # debt: cross-track dedup matches by time overlap and normalized text/type without comparing
 # spatial coordinates (\pos(x, y) / clip rects). If two distinct identical signs appear at the
 # same time in different positions (e.g. two simultaneous character nametags reading "Staff"),
@@ -333,7 +342,7 @@ def _normalize_sign_plaintext(text):
 # event will be dropped as a duplicate of the primary's. Distinguishing co-occurring identical
 # signs/drawings requires coordinate-space bounding-box comparison (deferred to V3 coordinate
 # transform work).
-def _events_match(p, s):
+def _events_match(p, s, play_res=None):
     dur_p = max(0, p.end - p.start)
     dur_s = max(0, s.end - s.start)
     min_dur = min(dur_p, dur_s)
@@ -354,10 +363,19 @@ def _events_match(p, s):
     if is_song_p or is_song_s:
         return both_karaoke or same_family
 
-    draw_p = bool(HAS_DRAWING.search(p.text))
-    draw_s = bool(HAS_DRAWING.search(s.text))
+    draw_p = bool(DRAWING_TAG.search(p.text or ""))
+    draw_s = bool(DRAWING_TAG.search(s.text or ""))
     if draw_p or draw_s:
-        return draw_p and draw_s
+        if not (draw_p and draw_s):
+            return False
+        pos_p = _get_pos(p.text)
+        pos_s = _get_pos(s.text)
+        if pos_p and pos_s:
+            pw, ph = play_res if play_res else (1280, 720)
+            dx = abs(pos_p[0] - pos_s[0])
+            dy = abs(pos_p[1] - pos_s[1])
+            return (dx <= 0.20 * pw) and (dy <= 0.20 * ph)
+        return True
 
     norm_p = _normalize_sign_plaintext(p.text)
     norm_s = _normalize_sign_plaintext(s.text)
