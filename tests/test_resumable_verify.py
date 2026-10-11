@@ -282,3 +282,36 @@ def test_the_cli_help_says_force_bypasses_the_journal(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         gv.main()
     assert "journal" in capsys.readouterr().out
+
+
+# ---- follow-up: an undecodable reply is unavailable ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "{canonical: Zoro}",  # braces, not JSON
+        "I think {it is Zoro} but not sure",
+        '{"canonical": "Zo',  # truncated
+        "{not json at all}",
+    ],
+)
+def test_an_undecodable_reply_is_unavailable_never_journaled_and_retried(run, reply):
+    run.state["llm"] = lambda prompt: reply
+    run()
+    assert journal_lines(run) == [], reply
+    run.state["llm"] = globals()["reply"]
+    run()
+    assert len(journal_lines(run)) == len(TERMS)
+
+
+def test_an_undecodable_reply_gives_the_same_glossary_as_before_the_journal(run, monkeypatch):
+    """For the run itself it is still a plain no-match: only the journaling and the 'unavailable' flag differ."""
+    monkeypatch.setenv("VERIFY_QUEUE_NO_MATCH", "1")
+    run.state["llm"] = lambda prompt: "{canonical: Zoro}"
+    run(force=False)
+    flagged = json.loads(run.path.read_text()).get("flagged", {})
+    assert set(flagged) == set(TERMS) and set(flagged.values()) == {"no-match"}
+    adj = gv._adjudicate_llm("Zoro", ["Zorro"], "S", "llamacpp")
+    assert adj["unavailable"] is True and adj["confidence"] == "none" and adj["canonical"] == ""
+    assert gv.clean_adjudication(adj) == ({"canonical": "", "confidence": "none"}, False)

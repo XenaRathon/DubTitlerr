@@ -300,8 +300,11 @@ def build_adjudication_prompt(term: str, cands: list[str], show: str) -> str:
     )
 
 
-def parse_adjudication(text: str) -> dict:
-    """Parse the LLM's JSON reply (tolerating surrounding prose) into an adjudication.
+def parse_adjudication_checked(text: str) -> tuple[dict, bool]:
+    """(adjudication, decoded): the parsed reply, and whether a JSON object could actually be found AND decoded in it.
+
+    When ``decoded`` is False (no braces, or braces around something that is not JSON) the adjudication is the plain no-match it
+    always was, so a run behaves as before; the flag lets the caller keep it out of the journal as "unavailable".
 
     The decoded ``canonical`` and ``confidence`` are passed through with their JSON types: a list or number there is malformed
     data, and clean_adjudication (which every consumer runs, and which counts the repair) turns it into a no-match. Coercing it
@@ -309,17 +312,22 @@ def parse_adjudication(text: str) -> dict:
     none = {"canonical": "", "confidence": "none", "dub_note": ""}
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
-        return none
+        return none, False
     try:
         d = json.loads(m.group(0))
     except ValueError:
-        return none
+        return none, False
     conf = d.get("confidence", "none")
     if isinstance(conf, str):
         conf = conf.lower()
         if conf not in ("high", "low", "none"):
             conf = "low"
-    return {"canonical": d.get("canonical", "") or "", "confidence": conf, "dub_note": str(d.get("dub_note", "") or "")}
+    return {"canonical": d.get("canonical", "") or "", "confidence": conf, "dub_note": str(d.get("dub_note", "") or "")}, True
+
+
+def parse_adjudication(text: str) -> dict:
+    """Parse the LLM's JSON reply (tolerating surrounding prose) into an adjudication; see parse_adjudication_checked."""
+    return parse_adjudication_checked(text)[0]
 
 
 # ---- the journal (adjudication_journal.py): what an answer depended on, and the call that remembers it
@@ -428,8 +436,8 @@ def _adjudicate_llm(term: str, cands: list[str], show: str, backend: str) -> dic
     # no-match to apply_results, exactly as before; the flag only keeps it out of the journal so it stays retryable.
     if not out:
         return {"canonical": "", "confidence": "none", "dub_note": "", "unavailable": True}
-    parsed = parse_adjudication(out)
-    if not re.search(r"\{.*\}", out, re.S):
+    parsed, decoded = parse_adjudication_checked(out)
+    if not decoded:  # nothing a JSON object could be decoded from: retryable, never journaled (still a no-match for this run)
         parsed["unavailable"] = True
     return parsed
 
