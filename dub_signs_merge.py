@@ -32,6 +32,7 @@ Idempotent. Env: MERGE_ROOTS (colon list), DUB_SUFFIX, MEDIA_UID/GID, SUB_LANGS
 Requires ffmpeg/ffprobe + pysubs2.  Built with help of Claude (Anthropic).
 """
 
+import bisect
 import difflib
 import json
 import os
@@ -514,6 +515,14 @@ def build(video, dub_srt, out_ass):
         base.events.extend(primary_track["kept_events"])
         kept = list(primary_track["kept_events"])
 
+        sorted_primary = sorted(primary_track["kept_events"], key=lambda e: e.start)
+        primary_starts = [e.start for e in sorted_primary]
+        max_primary_dur = max((e.end - e.start for e in sorted_primary), default=0)
+        max_primary_dur = max(0, max_primary_dur)
+        play_w = int(base.info.get("PlayResX") or 1280)
+        play_h = int(base.info.get("PlayResY") or 720)
+        play_res = (play_w, play_h)
+
         for track in loaded_tracks:
             if track is primary_track:
                 continue
@@ -522,7 +531,10 @@ def build(video, dub_srt, out_ass):
             dropped_count = 0
             surviving_events = []
             for ev in track["kept_events"]:
-                if any(_events_match(p_ev, ev) for p_ev in primary_track["kept_events"]):
+                left_idx = bisect.bisect_left(primary_starts, ev.start - max_primary_dur)
+                right_idx = bisect.bisect_right(primary_starts, ev.end)
+                candidates = sorted_primary[left_idx:right_idx]
+                if any(_events_match(p_ev, ev, play_res) for p_ev in candidates):
                     dropped_count += 1
                 else:
                     surviving_events.append(ev)

@@ -1091,3 +1091,56 @@ def test_song_events_same_romaji_different_syllable_splits_deduped():
     s = pysubs2.SSAEvent(start=200, end=3200, style="OP-Romaji", text=r"{\k40}kimi")
     assert dsm._events_match(p, s)
 
+
+# --- Item 3 fix: bisect window performance bound ------------------------------
+
+
+def test_cross_track_dedup_perf_bounded(tmp_path, monkeypatch):
+    import time
+
+    def tr(off):
+        return [
+            pysubs2.SSAEvent(
+                start=i * 600 + off,
+                end=i * 600 + off + 1500,
+                style="Signs",
+                text=f"{{\\pos(100,100)}}SIGN {i}",
+            )
+            for i in range(2000)
+        ]
+
+    t0 = pysubs2.SSAFile()
+    t0.styles["Signs"] = pysubs2.SSAStyle()
+    t0.events = tr(0)
+    t1 = pysubs2.SSAFile()
+    t1.styles["Signs"] = pysubs2.SSAStyle()
+    t1.events = tr(100)
+
+    calls = 0
+    orig_match = dsm._events_match
+
+    def counting_match(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return orig_match(*args, **kwargs)
+
+    monkeypatch.setattr(dsm, "_events_match", counting_match)
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0, 1])
+
+    def extract_fake(video, idx, out_path):
+        (t0 if idx == 0 else t1).save(out_path)
+        return True
+
+    monkeypatch.setattr(dsm, "extract", extract_fake)
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nDub\n\n", encoding="utf-8")
+    out_ass = str(tmp_path / "out.ass")
+
+    t_start = time.perf_counter()
+    status, signs, dub = dsm.build("fake.mkv", str(dub_srt), out_ass)
+    elapsed = time.perf_counter() - t_start
+
+    assert status == "ok"
+    assert calls < 50_000, f"too many checks: {calls} (quadratic scan not using bisect window)"
+    assert elapsed < 3.0, f"took too long: {elapsed:.2f}s"
+
