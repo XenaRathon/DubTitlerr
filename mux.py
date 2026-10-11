@@ -601,6 +601,8 @@ def process(orig, apply):
                     os.remove(out)
                 except OSError:
                     pass
+            if stamp_valid(read_stamp(stamp), orig):
+                return "already-muxed"
             log(f"  ERROR: {os.path.basename(orig)} changed during mux — aborting replace")
             write_stage(stem, "mux", "refused", "source-changed")
             return "refused"
@@ -640,6 +642,8 @@ def process(orig, apply):
                     os.remove(out)
                 except OSError:
                     pass
+            if stamp_valid(read_stamp(stamp), orig):
+                return "already-muxed"
             log(f"  ERROR: {os.path.basename(orig)} changed during mux — aborting replace")
             write_stage(stem, "mux", "refused", "source-changed")
             return "refused"

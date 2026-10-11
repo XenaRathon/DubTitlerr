@@ -1414,3 +1414,70 @@ def test_source_changed_mid_mux_is_not_overwritten(tmp_path, monkeypatch, capsys
     out = capsys.readouterr().out
     assert "changed during mux" in out or "changed" in out
 
+
+def test_two_concurrent_mux_runs_loser_returns_already_muxed(tmp_path, monkeypatch):
+    import common
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+
+    first_call = True
+
+    def simulate_concurrent_winner(cmd, **kw):
+        nonlocal first_call
+        out_path = cmd[cmd.index("-o") + 1]
+        with open(out_path, "wb") as f:
+            f.write(b"muxed-complete-payload")
+        if first_call:
+            first_call = False
+            # Simulate a concurrent winner completing during this run's mkvmerge
+            v.write_bytes(b"winner-muxed-payload")
+            stamp_path = stem + mux.STAMP_SUFFIX
+            mux.write_stamp(stamp_path, str(v))
+            common.write_stage(stem, "mux", "ok")
+
+    monkeypatch.setattr(mux.subprocess, "run", simulate_concurrent_winner)
+
+    outcome = mux.process(str(v), apply=True)
+    assert outcome == "already-muxed"
+    assert common.read_stages(stem)["mux"]["outcome"] == "ok"
+    assert mux.stamp_valid(mux.read_stamp(stem + mux.STAMP_SUFFIX), str(v))
+
+
+def test_two_concurrent_mux_runs_both_outcomes_muxed_and_already_muxed(tmp_path, monkeypatch):
+    import concurrent.futures
+    import threading
+    import time
+
+    import common
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    lock = threading.Lock()
+    order = []
+    second_started = threading.Event()
+
+    def slow_mkvmerge(cmd, **kw):
+        out_path = cmd[cmd.index("-o") + 1]
+        with open(out_path, "wb") as f:
+            f.write(b"muxed-complete-payload")
+        with lock:
+            order.append(out_path)
+            is_first = len(order) == 1
+        if is_first:
+            second_started.wait(timeout=2.0)
+            time.sleep(0.05)
+        else:
+            second_started.set()
+
+    monkeypatch.setattr(mux.subprocess, "run", slow_mkvmerge)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        f1 = ex.submit(mux.process, str(v), True)
+        f2 = ex.submit(mux.process, str(v), True)
+        outs = {f1.result(), f2.result()}
+
+    assert outs == {"muxed", "already-muxed"}
+    assert common.read_stages(stem)["mux"]["outcome"] == "ok"
+    assert mux.stamp_valid(mux.read_stamp(stem + mux.STAMP_SUFFIX), str(v))
+
+
+
