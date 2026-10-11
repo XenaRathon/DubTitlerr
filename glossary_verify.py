@@ -1059,7 +1059,8 @@ REDIRECT_MAX_CHUNKS = 20  # 50 titles per call: an arc beyond 1,000 links leaves
 
 def redirect_targets(wiki_api: str, titles) -> tuple[dict[str, str], bool]:
     """({title: redirect target}, complete) for the titles that are redirects: one call per chunk of <=50, at most
-    REDIRECT_MAX_CHUNKS. A chunk that fails is skipped and the flag turns False; the caller keeps the plain titles either way."""
+    REDIRECT_MAX_CHUNKS. A chunk that fails or answers with an API error is skipped and the flag turns False; so does a title list
+    longer than the cap reads. The caller keeps the plain titles either way."""
     items = sorted(titles)
     out: dict[str, str] = {}
     complete = len(items) <= REDIRECT_MAX_CHUNKS * 50
@@ -1070,7 +1071,14 @@ def redirect_targets(wiki_api: str, titles) -> tuple[dict[str, str], bool]:
         except Exception:
             complete = False
             continue
-        for r in resp.get("query", {}).get("redirects", []):
+        # A MediaWiki API error arrives as HTTP 200 with an `error` object and no `query`: that chunk did not come back, whatever
+        # an empty redirect list would have meant. A reply that is not an object, or whose `query` is not one, is malformed too.
+        # (A reply with a query and no `redirects` is the valid "nothing redirects".)
+        query = resp.get("query", {}) if isinstance(resp, dict) and "error" not in resp else None
+        if not isinstance(query, dict):
+            complete = False
+            continue
+        for r in query.get("redirects", []):
             if r.get("from") and r.get("to"):
                 out[r["from"]] = r["to"]
     return out, complete

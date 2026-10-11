@@ -625,6 +625,8 @@ def test_whole_wiki_page_cap_sets_complete_false():
 
 def test_arc_index_parser_chapter_column_first_and_skips_character_tables():
     def fake_http(url):
+        if "redirects=1" in url:  # nothing redirects (an API error here would now be incomplete evidence)
+            return {"query": {"redirects": []}}
         if "Plot" in url:
             return {"parse": {"wikitext": {"*": PLOT_WITH_CHAPTERS_FIRST}}}
         for name, wt in ARC_PAGES_FIXTURE.items():
@@ -671,6 +673,8 @@ def test_bad_config_or_input_returns_result_without_raising():
 
 def test_arc_page_normalised_links_and_non_ns0_dropped():
     def fake_http(url):
+        if "redirects=1" in url:  # the redirect step: nothing redirects (an API error here would now be incomplete evidence)
+            return {"query": {"redirects": []}}
         if "Plot" in url:
             return {"parse": {"wikitext": {"*": PLOT_WITH_CHAPTERS_FIRST}}}
         if "Prologue" in url:
@@ -846,6 +850,8 @@ def test_season_page_drops_non_ns0_links():
 
 def test_range_last_episode_included():
     def fake_http(url):
+        if "redirects=1" in url:  # the redirect step: nothing redirects (an API error here would now be incomplete evidence)
+            return {"query": {"redirects": []}}
         if "Plot" in url:
             return {"parse": {"wikitext": {"*": PLOT_WITH_CHAPTERS_FIRST}}}
         if "Prologue" in url:
