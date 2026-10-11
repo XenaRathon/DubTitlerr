@@ -868,6 +868,30 @@ def review_groups(gloss: dict) -> tuple[list, list]:
 WRITE_BLOCKED_REASONS = frozenset({"common-word", "not-in-arc-pages", "respelling-needs-review", "expansion-guarded"})
 
 
+def accept_effect(term: str, meta) -> str:
+    """What a human 'y' on this flag does: 'hard_fix' (every ``term`` in the show is rewritten to the canonical), 'additive' (the
+    canonical is added as a name or phrase; the term stays), 'refused' (an unsafe canonical, kept flagged) or 'none' (no
+    canonical).
+    ONE place, so record_decision and the review prompt cannot disagree about it.
+
+    A respelling-needs-review flag whose canonical has the same number of tokens (Usop -> Usopp) is a spelling fix, but only for a
+    term that is NOT an ordinary English word by the same check the common-word guard uses: 'Burn' -> 'Coburn' also lands here (a
+    substring match flagged before the common-word guard looks) and a hard fix would rewrite every "burn" in the show. Real short
+    names (Kid, Law, Gin) are not in the word list as lowercase entries, so a letter-count rule is not used."""
+    meta = {"reason": meta} if isinstance(meta, str) else (meta or {})
+    canon = meta.get("canonical", "")
+    if not canon:
+        return "none"
+    normal = normalize_title(canon) == canon
+    expansion = is_expansion(term, canon)
+    respelling = meta.get("reason") == "respelling-needs-review" and len(canon.split()) == len(term.split())
+    if normal and (not expansion or (respelling and not glossary.is_ordinary_word(term))):
+        return "hard_fix"
+    if meta.get("reason") in WRITE_BLOCKED_REASONS and expansion:
+        return "additive"
+    return "refused"
+
+
 def record_decision(gloss: dict, term: str, accept: bool) -> dict:
     """Apply one human decision and drop the term from the queue for good, in exactly one state.
 
@@ -888,11 +912,14 @@ def record_decision(gloss: dict, term: str, accept: bool) -> dict:
         meta = {"reason": meta}
     meta = meta or {}
     canon = meta.get("canonical", "")
+    effect = accept_effect(term, meta) if accept else "none"
     # A respelling is not only what is_expansion refuses: the whole-word guard flags 'Usop' -> 'Usopp' (a substring match, so an
     # "expansion" to is_expansion) as respelling-needs-review. Same number of tokens, different letters: a human's yes on it is a
-    # spelling fix and must reach hard_fixes, or the runtime leaves 'Usop' exactly as spoken. A longer canonical stays additive.
-    respelling = meta.get("reason") == "respelling-needs-review" and len(canon.split()) == len(term.split())
-    if accept and canon and (not is_expansion(term, canon) or respelling) and normalize_title(canon) == canon:
+    # spelling fix and must reach hard_fixes, or the runtime leaves 'Usop' exactly as spoken. A longer canonical stays additive,
+    # and so does an ordinary English word (see accept_effect).
+    if effect == "additive" and meta.get("reason") == "respelling-needs-review" and len(canon.split()) == len(term.split()):
+        log(f"kept {term!r} -> {canon!r} additive: {term!r} is an ordinary English word (a hard fix would rewrite all of them)")
+    if effect == "hard_fix":
         g.setdefault("hard_fixes", {})[term] = canon
         g.setdefault("acquired", {})[term] = {
             "canonical": canon,
@@ -905,7 +932,7 @@ def record_decision(gloss: dict, term: str, accept: bool) -> dict:
         }
         g["known"] = sorted(set(g.get("known", [])) - {term})
         g.get("flagged", {}).pop(term, None)
-    elif accept and canon and meta.get("reason") in WRITE_BLOCKED_REASONS and is_expansion(term, canon):
+    elif effect == "additive":
         # verify's apply_results would have WRITTEN this expansion; a guard flagged it instead (the common-word guard, the
         # arc gate, the whole-word guard). A human 'y' puts it where apply_results puts a write -- additive, the term stays.
         dest = glossary_verify._shape_list(g.setdefault("names", []), g.setdefault("phrases", []), canon)
@@ -1450,6 +1477,11 @@ def main():
             for ln in item["context"]:
                 log(f"    | {ln}")
             if item["canonical"]:
+                effect = accept_effect(item["term"], item)
+                if effect == "hard_fix":
+                    log(f"  y rewrites every \"{item['term']}\" in this show")
+                elif effect == "additive":
+                    log("  y adds it as a name only")
                 ans = input("  accept this fix? [y/N/q] ").strip().lower()
                 if ans == "q":
                     break
