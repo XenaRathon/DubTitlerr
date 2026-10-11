@@ -85,8 +85,9 @@ pins both the new default and the `0`/old value.
   - **Lifetime:** a stored answer is served for 30 days; compaction drops older lines.
   - **Busting a bad stored answer:** `glossary_verify.py --force` asks the model again for every term (the journal is not read; the
     fresh answers replace the old ones). `VERIFY_NO_JOURNAL=1` / `ACQUIRE_NO_CACHE=1` neither read nor write it. Or delete the
-    file: `<WIKI_CACHE_DIR>/<show, non-alphanumerics as _>.verify.journal.jsonl` for verify, `<glossary without .json>.acquire.journal.jsonl`
-    next to the glossary for acquire.
+    file: `<WIKI_CACHE_DIR>/<show, non-alphanumerics as _>.verify.journal.jsonl` for verify. For acquire delete BOTH
+    `<glossary without .json>.acquire.journal.jsonl` AND the older `<glossary without .json>.acquire-cache.json` next to it (or set
+    `ACQUIRE_NO_CACHE=1`): `escalate()` consults that older cache before the journal, so an old cache shadows a fresher journal.
   - **Wiki drift:** the candidate list is keyed by the TITLES offered, so a wiki edit that keeps every title identical (a changed
     redirect target or page body) can serve an older answer until it ages out or someone runs `--force`.
 - **A re-verify that affirms a term keeps its earlier proposal in the queue.** `verify --force` revisits verified terms; if the new

@@ -414,6 +414,14 @@ class StopRequested(Exception):
         self.step, self.done, self.unit = step, done, unit
 
 
+# Stored adjudications live in TWO places and the older one wins; the help and the CHANGELOG say how to clear them.
+BUST_HELP = (
+    "Stored answers: pair adjudications are remembered in <glossary>.acquire-cache.json (the older cache, consulted FIRST, so it "
+    "shadows the journal) and every completed adjudication in <glossary>.acquire.journal.jsonl. To re-ask the model, delete BOTH "
+    "files or set ACQUIRE_NO_CACHE=1 (which neither reads nor writes either)."
+)
+
+
 def open_journal(gloss_path: str):
     """The acquire stage's adjudication journal for this glossary (beside acquire_cache), or None with ACQUIRE_NO_CACHE=1."""
     if not glossary_verify.journal_enabled("acquire"):
@@ -449,6 +457,9 @@ def escalate(proposals: list, ctx: dict, show: str, cache: dict | None = None, j
     `cache`, if given, memoises the LLM call per (variant, canonical) pair -- see
     acquire_cache's module docstring for why the PAIR's adjudication is cached and not the
     proposal's final verdict. Mutated in place; the caller owns saving it.
+
+    Clearing stored answers: delete BOTH <glossary>.acquire-cache.json and <glossary>.acquire.journal.jsonl, or set
+    ACQUIRE_NO_CACHE=1. The cache above is consulted BEFORE the journal, so an old cache shadows a fresher journal.
 
     `journal` (adjudication_journal), if given, makes each completed pair answer durable the moment it exists and serves a
     previous run's answer when its provenance (both context lists, model, prompt, threshold) is unchanged; unlike `cache` it
@@ -1484,7 +1495,10 @@ def _prune_cli(a) -> None:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Acquire proper nouns from a show's own output + its wiki.")
+    ap = argparse.ArgumentParser(
+        description="Acquire proper nouns from a show's own output + its wiki.",
+        epilog=BUST_HELP,
+    )
     ap.add_argument("glossary", help="path to <show>.json")
     ap.add_argument("show_dir", help="the show's media directory")
     ap.add_argument("--apply", action="store_true", help="write changes (default: dry run)")

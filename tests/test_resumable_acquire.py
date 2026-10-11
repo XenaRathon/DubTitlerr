@@ -261,3 +261,12 @@ def test_killed_mid_escalation_then_restarted_equals_an_uninterrupted_run(tmp_pa
     assert out["calls"] == len(PAIRS) - 3, "only the unfinished pairs were asked again"
     assert out["report"] == clean_out["report"]
     assert gloss.read_bytes() == clean_gloss.read_bytes()
+
+
+def test_the_help_says_how_to_bust_both_stored_answers(monkeypatch, capsys):
+    """escalate() consults the older <glossary>.acquire-cache.json BEFORE the journal, so an old cache shadows it."""
+    monkeypatch.setattr(sys, "argv", ["glossary_acquire", "--help"])
+    with pytest.raises(SystemExit):
+        ga.main()
+    out = "".join(capsys.readouterr().out.split())  # argparse wraps the epilog, even inside a file name
+    assert "acquire-cache.json" in out and "acquire.journal.jsonl" in out and "ACQUIRE_NO_CACHE=1" in out
