@@ -71,3 +71,20 @@ def test_a_read_only_review_does_not_rename_a_bad_file(tmp_path, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda *a: "q")
     ga.main()
     assert p.exists() and not Path(str(p) + ".bad").exists()
+
+
+def test_a_second_bad_file_does_not_overwrite_the_first_set_aside(tmp_path):
+    """Reviewer repro: file 1 went to .bad, then a second malformed file replaced it, losing file 1's answers."""
+    first = {"answers": [["Zolo", "false", "Zoro"]]}
+    path, p = pending(tmp_path, first)
+    assert ga._read_pending(str(path)) == []
+    second = {"answers": [[]]}
+    p.write_text(json.dumps(second))
+    assert ga._read_pending(str(path)) == []
+    p.write_text("{torn")
+    assert ga._read_pending(str(path)) == []
+    kept = sorted(f.name for f in tmp_path.iterdir() if ".review-pending.bad" in f.name)  # .bad, .bad.1, .bad.2
+    assert len(kept) == 3, kept
+    contents = [(tmp_path / n).read_text() for n in kept]
+    assert json.dumps(first) in contents and json.dumps(second) in contents and "{torn" in contents
+    assert str(p) + ".bad" in [str(tmp_path / n) for n in kept], "the first keeps the plain .bad name"

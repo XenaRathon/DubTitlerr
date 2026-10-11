@@ -1337,9 +1337,14 @@ def _read_pending(gloss_path: str, quarantine: bool = True) -> list:
         return [list(r) for r in rows]
     except (OSError, ValueError, KeyError, TypeError):
         if quarantine:
-            log(f"the saved review answers in {path} are unreadable or malformed; set aside as {path}.bad")
+            aside = path + ".bad"
+            n = 0
+            while os.path.exists(aside):  # never overwrite an earlier set-aside file: .bad, .bad.1, .bad.2, ...
+                n += 1
+                aside = f"{path}.bad.{n}"
+            log(f"the saved review answers in {path} are unreadable or malformed; set aside as {aside}")
             with contextlib.suppress(OSError):
-                os.replace(path, path + ".bad")
+                os.replace(path, aside)
         else:
             log(f"the saved review answers in {path} are unreadable or malformed; left in place (read-only run)")
         return []
