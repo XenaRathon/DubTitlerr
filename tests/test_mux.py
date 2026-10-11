@@ -1507,5 +1507,55 @@ def test_race_interleaving_second_check_keeps_winner_stamp(tmp_path, monkeypatch
     assert common.read_stages(stem)["mux"]["outcome"] == "ok"
 
 
+def test_process_cleans_up_old_unique_temps_for_stem(tmp_path, monkeypatch):
+    import time
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    now = time.time()
+    seven_hours_ago = now - 7 * 3600
+    one_hour_ago = now - 1 * 3600
+
+    old_temp = tmp_path / "ep.1234.abcdef12.muxtmp.mkv"
+    old_temp.write_bytes(b"old-partial")
+    os.utime(old_temp, (seven_hours_ago, seven_hours_ago))
+
+    fresh_temp = tmp_path / "ep.5678.12345678.muxtmp.mkv"
+    fresh_temp.write_bytes(b"fresh-in-progress")
+    os.utime(fresh_temp, (one_hour_ago, one_hour_ago))
+
+    other_temp = tmp_path / "other_ep.9999.deadbeef.muxtmp.mkv"
+    other_temp.write_bytes(b"other-old")
+    os.utime(other_temp, (seven_hours_ago, seven_hours_ago))
+
+    unrelated = tmp_path / "notes.txt"
+    unrelated.write_text("hello")
+
+    mux.process(str(v), apply=True)
+
+    assert not old_temp.exists(), "old temp of same stem must be removed"
+    assert fresh_temp.exists(), "fresh temp of same stem must be kept"
+    assert other_temp.exists(), "temp of another stem must be kept"
+    assert unrelated.exists(), "unrelated file must be kept"
+
+
+def test_process_keeps_old_unique_temp_when_recovery_marker_exists(tmp_path, monkeypatch):
+    import time
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    seven_hours_ago = time.time() - 7 * 3600
+
+    rec_temp = tmp_path / "ep.1234.abcdef12.muxtmp.mkv"
+    rec_temp.write_bytes(b"recovered-bytes")
+    os.utime(rec_temp, (seven_hours_ago, seven_hours_ago))
+
+    marker = tmp_path / ("ep" + mux.RECOVERY_SUFFIX)
+    marker.write_text("{}")
+
+    mux.process(str(v), apply=True)
+
+    assert rec_temp.exists(), "temp with recovery marker must be kept"
+
+
+
 
 

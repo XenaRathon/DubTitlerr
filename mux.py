@@ -534,6 +534,34 @@ def _source_unchanged(orig: str, st: os.stat_result) -> bool:
     )
 
 
+def cleanup_old_temps(stem: str, now: float | None = None) -> None:
+    """Delete leftover temp files for this stem older than 6 hours without a recovery marker.
+
+    Matches <stem>.<pid>.<hex>.muxtmp.mkv. No PID liveness check is performed as container
+    isolation and NFS make remote/recycled PIDs unreliable.
+    """
+    marker = stem + RECOVERY_SUFFIX
+    if os.path.exists(marker):
+        return
+    dirname = os.path.dirname(stem) or "."
+    base = os.path.basename(stem)
+    pattern = re.compile(r"^" + re.escape(base) + r"\.\d+\.[0-9a-fA-F]+\.muxtmp\.mkv$")
+    current_time = time.time() if now is None else now
+    try:
+        entries = os.listdir(dirname)
+    except OSError:
+        return
+    for name in entries:
+        if pattern.match(name):
+            full_path = os.path.join(dirname, name)
+            try:
+                st = os.stat(full_path)
+                if (current_time - st.st_mtime) > 6 * 3600:
+                    os.remove(full_path)
+            except OSError:
+                pass
+
+
 def process(orig, apply):
     stem, ext = os.path.splitext(orig)
     marker = stem + RECOVERY_SUFFIX
@@ -548,6 +576,8 @@ def process(orig, apply):
             except OSError:
                 pass
         return "recovery-pending"
+    if apply:
+        cleanup_old_temps(stem)
     stamp = stem + STAMP_SUFFIX
     src = sub_source(stem)
     if src is None:
