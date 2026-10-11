@@ -143,14 +143,71 @@ def _overlaps_any(start, end, spans):
     return any(start < s_end and end > s_start for s_start, s_end in spans)
 
 
+def cross_track_dedup_enabled():
+    val = os.environ.get("SIGNS_CROSS_TRACK_DEDUP", "1").strip().lower()
+    return val not in {"0", "no", "false", "off"}
+
+
+def _song_family(style):
+    if not style:
+        return None
+    s = style.strip()
+    if re.match(r"^(?:opening|op\d*)(?:[\s_-]|$)", s, re.I):
+        return "op"
+    if re.match(r"^(?:ending|ed\d*)(?:[\s_-]|$)", s, re.I):
+        return "ed"
+    return None
+
+
+def _normalize_sign_plaintext(text):
+    t = re.sub(r"\{[^}]*\}", "", text or "")
+    t = re.sub(r"\\[Nnh]", "", t)
+    return "".join(ch for ch in t.lower() if ch.isalnum())
+
+
+# debt: cross-track dedup matches by time overlap and normalized text/type without comparing
+# spatial coordinates (\pos(x, y) / clip rects). If two distinct identical signs appear at the
+# same time in different positions (e.g. two simultaneous character nametags reading "Staff"),
+# or two concurrent independent vector drawings share a time window, the secondary track's
+# event will be dropped as a duplicate of the primary's. Distinguishing co-occurring identical
+# signs/drawings requires coordinate-space bounding-box comparison (deferred to V3 coordinate
+# transform work).
+def _events_match(p, s):
+    dur_p = max(0, p.end - p.start)
+    dur_s = max(0, s.end - s.start)
+    min_dur = min(dur_p, dur_s)
+    if min_dur <= 0:
+        if p.start != s.start:
+            return False
+    else:
+        overlap = max(0, min(p.end, s.end) - max(p.start, s.start))
+        if overlap < 0.5 * min_dur:
+            return False
+
+    both_karaoke = bool(KARAOKE.search(p.text)) and bool(KARAOKE.search(s.text))
+    fam_p = _song_family(p.style)
+    fam_s = _song_family(s.style)
+    same_family = fam_p is not None and fam_p == fam_s
+    is_song_p = bool(KARAOKE.search(p.text)) or (fam_p is not None)
+    is_song_s = bool(KARAOKE.search(s.text)) or (fam_s is not None)
+    if is_song_p or is_song_s:
+        return both_karaoke or same_family
+
+    draw_p = bool(HAS_DRAWING.search(p.text))
+    draw_s = bool(HAS_DRAWING.search(s.text))
+    if draw_p or draw_s:
+        return draw_p and draw_s
+
+    norm_p = _normalize_sign_plaintext(p.text)
+    norm_s = _normalize_sign_plaintext(s.text)
+    return norm_p == norm_s
+
+
 def build(video, dub_srt, out_ass):
-    base = None  # the merged ScriptInfo/styles canvas
-    kept = []  # (event, source_style_name)
-    seen = set()
-    base_ws = None  # D3: base track's WrapStyle, for cross-track comparison
-    resolutions = []  # D5: (PlayResX, PlayResY) per source track, for mismatch warning
-    failed_streams = 0  # streams that would not extract/load
-    for _n, idx in enumerate(signs_sub_streams(video, SUB_LANGS)):
+    loaded_tracks = []
+    resolutions = []
+    failed_streams = 0
+    for idx in signs_sub_streams(video, SUB_LANGS):
         with tempfile.TemporaryDirectory() as td:
             ex = os.path.join(td, "s.ass")
             if not extract(video, idx, ex):
@@ -162,46 +219,91 @@ def build(video, dub_srt, out_ass):
                 log("  load fail", idx, e)
                 failed_streams += 1
                 continue
-        src_events = list(subs.events)  # snapshot BEFORE any clearing (base may alias subs)
-        resolutions.append((subs.info.get("PlayResX"), subs.info.get("PlayResY")))  # D5
-        if base is None:
-            base = subs
-            base.events = []
-            base.info["ScaledBorderAndShadow"] = "yes"  # D4: consistent cross-player rendering
-            base_ws = base.info.get("WrapStyle")  # D3
-        else:
-            track_ws = subs.info.get("WrapStyle")  # D3
-            if track_ws != base_ws:
-                log(f"WrapStyle differs: base={base_ws} track={track_ws} — using base")
-            for sname, sty in subs.styles.items():  # carry styles from later tracks
-                if sname in base.styles:
-                    existing = base.styles[sname]  # D1: flag conflicting redefinitions
-                    if existing.fontname != sty.fontname or existing.fontsize != sty.fontsize:
-                        log(f"  style conflict: '{sname}' — font/size differ, using first definition")
-                else:
-                    base.styles[sname] = sty
+        src_events = list(subs.events)
+        resolutions.append((subs.info.get("PlayResX"), subs.info.get("PlayResY")))
+        seen_intra = set()
+        kept_events = []
         for ev in src_events:
             if not keep_event(ev):
                 continue
-            # Dedup on the FULL override text and the layer, not the plaintext: a
-            # typeset sign is often several stacked events sharing \pos, style, timing
-            # and plaintext, differing only in tags (a black backing copy supplying the
-            # stroke, plus the visible copy that \t()s its fill to white). Keying on
-            # plaintext collapsed those to the first — the black one — so credits and
-            # captions rendered solid black. Byte-identical events (the same sign
-            # carried by both the full track and the signs/songs track) still collapse.
             key = (int(ev.start), int(ev.end), ev.style, ev.layer, ev.text)
-            if key in seen:
+            if key in seen_intra:
                 continue
-            seen.add(key)
-            base.events.append(ev)
-            kept.append(ev)
-    if base is None:
-        # Nothing loaded. If streams existed but none could be read we do NOT know the
-        # episode is signs-free, so fail closed rather than ship the dialogue-only srt.
+            seen_intra.add(key)
+            kept_events.append(ev)
+        loaded_tracks.append({
+            "idx": idx,
+            "subs": subs,
+            "src_events": src_events,
+            "kept_events": kept_events,
+            "ws": subs.info.get("WrapStyle"),
+        })
+
+    if not loaded_tracks:
         return ("extract-failed" if failed_streams else "no-signs"), 0, 0
-    if len(set(resolutions)) > 1:  # D5: warn only — no coordinate transform (deferred to V3)
+
+    if len(set(resolutions)) > 1:
         log("WARNING: resolution mismatch between subtitle tracks — signs may be mispositioned")
+
+    if not cross_track_dedup_enabled():
+        base = loaded_tracks[0]["subs"]
+        base.events = []
+        base.info["ScaledBorderAndShadow"] = "yes"
+        base_ws = loaded_tracks[0]["ws"]
+        seen = set()
+        kept = []
+        for t in loaded_tracks:
+            if t is not loaded_tracks[0]:
+                if t["ws"] != base_ws:
+                    log(f"WrapStyle differs: base={base_ws} track={t['ws']} — using base")
+                for sname, sty in t["subs"].styles.items():
+                    if sname in base.styles:
+                        existing = base.styles[sname]
+                        if existing.fontname != sty.fontname or existing.fontsize != sty.fontsize:
+                            log(f"  style conflict: '{sname}' — font/size differ, using first definition")
+                    else:
+                        base.styles[sname] = sty
+            for ev in t["kept_events"]:
+                key = (int(ev.start), int(ev.end), ev.style, ev.layer, ev.text)
+                if key in seen:
+                    continue
+                seen.add(key)
+                base.events.append(ev)
+                kept.append(ev)
+    else:
+        primary_track = max(loaded_tracks, key=lambda t: len(t["kept_events"]))
+        base = primary_track["subs"]
+        base.events = []
+        base.info["ScaledBorderAndShadow"] = "yes"
+        base_ws = primary_track["ws"]
+        base.events.extend(primary_track["kept_events"])
+        kept = list(primary_track["kept_events"])
+
+        for track in loaded_tracks:
+            if track is primary_track:
+                continue
+            if track["ws"] != base_ws:
+                log(f"WrapStyle differs: base={base_ws} track={track['ws']} — using base")
+            dropped_count = 0
+            surviving_events = []
+            for ev in track["kept_events"]:
+                if any(_events_match(p_ev, ev) for p_ev in primary_track["kept_events"]):
+                    dropped_count += 1
+                else:
+                    surviving_events.append(ev)
+            log(f"  cross-track dedup: dropped {dropped_count} duplicate event(s) from stream {track['idx']}")
+            base.events.extend(surviving_events)
+            kept.extend(surviving_events)
+            surviving_styles = {ev.style for ev in surviving_events if ev.style}
+            for sname in surviving_styles:
+                if sname in track["subs"].styles:
+                    sty = track["subs"].styles[sname]
+                    if sname in base.styles:
+                        existing = base.styles[sname]
+                        if existing.fontname != sty.fontname or existing.fontsize != sty.fontsize:
+                            log(f"  style conflict: '{sname}' — font/size differ, using first definition")
+                    else:
+                        base.styles[sname] = sty
     # bottom dub dialogue style
     #
     # PlayResY is NOT a font scalar: it is the coordinate space every value in the script is

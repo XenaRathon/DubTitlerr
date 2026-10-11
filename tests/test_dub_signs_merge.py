@@ -774,3 +774,149 @@ def test_narration_over_an_opening_is_dropped_known_ceiling(tmp_path, monkeypatc
 
     assert status == "ok"
     assert dub == 1, "the narration is dropped with the song span -- documented, not desired"
+
+
+# --- Item 1: cross-track de-duplication --------------------------------------
+
+
+def test_cross_track_dedup_two_groups_same_sign(tmp_path, monkeypatch, capsys):
+    track0 = _sign_track(style_name="Sign1", fontname="FontA", fontsize=35.0, text="Tokyo Tower")
+    track0.events[0].text = r"{\pos(100,200)\fs35}Tokyo Tower"
+    track0.events[0].start = 1000
+    track0.events[0].end = 3000
+
+    track1 = _sign_track(style_name="Sign2", fontname="FontB", fontsize=45.0, text="Tokyo Tower")
+    track1.events[0].text = r"{\pos(120,210)\fs45\c&H00FFFF&}Tokyo Tower"
+    track1.events[0].start = 1100
+    track1.events[0].end = 2900
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 1
+    res = pysubs2.load(out_ass)
+    sign_events = [e for e in res.events if e.style != "Dubtitles"]
+    assert len(sign_events) == 1
+    assert sign_events[0].text == r"{\pos(100,200)\fs35}Tokyo Tower"
+    assert "cross-track dedup: dropped 1 duplicate event(s) from stream 1" in capsys.readouterr().out
+    assert "Sign2" not in res.styles
+
+
+def test_cross_track_dedup_same_song_karaoke(tmp_path, monkeypatch):
+    track0 = pysubs2.SSAFile()
+    track0.styles["Opening-Romaji"] = pysubs2.SSAStyle()
+    track0.events = [
+        pysubs2.SSAEvent(start=1000, end=4000, style="Opening-Romaji", text=r"{\k50}la{\k50}la"),
+    ]
+
+    track1 = pysubs2.SSAFile()
+    track1.styles["OP"] = pysubs2.SSAStyle()
+    track1.events = [
+        pysubs2.SSAEvent(start=1200, end=3800, style="OP", text=r"{\k40}la{\k60}la"),
+    ]
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 1
+    res = pysubs2.load(out_ass)
+    sign_events = [e for e in res.events if e.style != "Dubtitles"]
+    assert len(sign_events) == 1
+    assert sign_events[0].text == r"{\k50}la{\k50}la"
+
+
+def test_cross_track_dedup_sign_only_in_second_track_kept(tmp_path, monkeypatch):
+    track0 = _sign_track(style_name="Sign0", text="Common Sign")
+    track0.events[0].start = 1000
+    track0.events[0].end = 3000
+    ev_extra0 = pysubs2.SSAEvent(start=8000, end=9000, style="Sign0", text=r"{\pos(10,10)}Track 0 Extra")
+    track0.events.append(ev_extra0)
+
+    track1 = _sign_track(style_name="Sign1", text="Common Sign")
+    track1.events[0].start = 1000
+    track1.events[0].end = 3000
+    ev_unique = pysubs2.SSAEvent(start=5000, end=7000, style="UniqueSign", text=r"{\pos(50,50)}Unique Second Track Sign")
+    track1.styles["UniqueSign"] = pysubs2.SSAStyle(fontname="UniqueFont")
+    track1.events.append(ev_unique)
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 3
+    res = pysubs2.load(out_ass)
+    texts = [e.plaintext.strip() for e in res.events if e.style != "Dubtitles"]
+    assert "Unique Second Track Sign" in texts
+    assert "Common Sign" in texts
+    assert "Track 0 Extra" in texts
+    assert "UniqueSign" in res.styles
+
+
+def test_cross_track_dedup_two_stacked_events_inside_one_track_both_kept(tmp_path, monkeypatch):
+    track0 = _layered_track()
+    track1 = pysubs2.SSAFile()
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 2
+    res = pysubs2.load(out_ass)
+    sign_events = [e for e in res.events if e.style != "Dubtitles"]
+    assert len(sign_events) == 2
+
+
+def test_cross_track_dedup_non_overlapping_repeats_both_kept(tmp_path, monkeypatch):
+    track0 = _sign_track(style_name="Sign0", text="Repeated Sign")
+    track0.events[0].start = 1000
+    track0.events[0].end = 2000
+
+    track1 = _sign_track(style_name="Sign1", text="Repeated Sign")
+    track1.events[0].start = 5000
+    track1.events[0].end = 6000
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 2
+    res = pysubs2.load(out_ass)
+    sign_events = [e for e in res.events if e.style != "Dubtitles"]
+    assert len(sign_events) == 2
+
+
+def test_cross_track_dedup_opt_out(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIGNS_CROSS_TRACK_DEDUP", "0")
+    track0 = _sign_track(style_name="Sign1", text="Tokyo Tower")
+    track0.events[0].text = r"{\pos(100,200)}Tokyo Tower"
+    track0.events[0].start = 1000
+    track0.events[0].end = 3000
+
+    track1 = _sign_track(style_name="Sign2", text="Tokyo Tower")
+    track1.events[0].text = r"{\pos(120,210)}Tokyo Tower"
+    track1.events[0].start = 1100
+    track1.events[0].end = 2900
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 2
+    res = pysubs2.load(out_ass)
+    sign_events = [e for e in res.events if e.style != "Dubtitles"]
+    assert len(sign_events) == 2
+
+
+def test_single_track_releases_byte_identical_output(tmp_path, monkeypatch):
+    track0 = _song_track()
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:10,000 --> 00:00:12,000\nDub line\n\n", encoding="utf-8")
+
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out_path: track0.save(out_path) or True)
+
+    out_default = str(tmp_path / "out_default.ass")
+    out_legacy = str(tmp_path / "out_legacy.ass")
+
+    monkeypatch.setenv("SIGNS_CROSS_TRACK_DEDUP", "1")
+    monkeypatch.setenv("DUB_FANSUB_FONT", "0")
+    s1, signs1, dub1 = dsm.build("fake.mkv", str(dub_srt), out_default)
+
+    monkeypatch.setenv("SIGNS_CROSS_TRACK_DEDUP", "0")
+    s2, signs2, dub2 = dsm.build("fake.mkv", str(dub_srt), out_legacy)
+
+    assert s1 == s2 == "ok"
+    assert signs1 == signs2
+    assert dub1 == dub2
+    assert open(out_default, "rb").read() == open(out_legacy, "rb").read()
+
