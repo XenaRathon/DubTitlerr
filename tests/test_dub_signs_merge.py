@@ -1224,3 +1224,47 @@ def test_font_attachment_matching_unidirectional_and_unicode(tmp_path, monkeypat
     assert resolve_font("ＭＳ ゴシック", ["ＭＳ ゴシック.ttf"]) == "ＭＳ ゴシック"
 
 
+# --- Item 6: Z-order & style collisions ---------------------------------------
+
+
+def test_secondary_sign_layer_preserved_and_style_conflict_logged(tmp_path, monkeypatch, capsys):
+    track0 = pysubs2.SSAFile()
+    track0.styles["Sign"] = pysubs2.SSAStyle(fontname="Arial", fontsize=40.0)
+    track0.styles["OtherSign"] = pysubs2.SSAStyle(fontname="Arial", fontsize=30.0)
+    track0.events = [
+        pysubs2.SSAEvent(start=1000, end=3000, style="Sign", layer=1, text=r"{\pos(100,200)}Primary Banner"),
+        pysubs2.SSAEvent(start=5000, end=7000, style="OtherSign", layer=1, text=r"{\pos(100,400)}Primary Sign 2"),
+    ]
+
+    track1 = pysubs2.SSAFile()
+    track1.styles["Sign"] = pysubs2.SSAStyle(fontname="Comic Sans MS", fontsize=50.0)
+    track1.styles["OtherSign"] = pysubs2.SSAStyle(fontname="Impact", fontsize=60.0)
+    track1.events = [
+        # Surviving secondary sign at the SAME time interval (1000-3000), higher layer (layer 2)
+        pysubs2.SSAEvent(start=1000, end=3000, style="Sign", layer=2, text=r"{\pos(400,200)}Secondary Text"),
+        # Duplicate secondary sign at 5000-7000 that gets dropped by dedup
+        pysubs2.SSAEvent(start=5000, end=7000, style="OtherSign", layer=1, text=r"{\pos(100,400)}Primary Sign 2"),
+    ]
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 3  # 2 primary + 1 surviving secondary
+    res = pysubs2.load(out_ass)
+
+    sec_ev = [e for e in res.events if "Secondary Text" in e.text][0]
+    pri_ev = [e for e in res.events if "Primary Banner" in e.text][0]
+    dub_ev = [e for e in res.events if e.style == "Dubtitles"][0]
+
+    # Dubtitles is on layer 0; signs are shifted up by 1 layer
+    assert dub_ev.layer == 0
+    assert pri_ev.layer == 2
+    assert sec_ev.layer == 3
+    assert sec_ev.layer > pri_ev.layer > dub_ev.layer
+
+    out = capsys.readouterr().out
+    # Style collision logged for surviving secondary event's colliding style 'Sign'
+    assert out.count("style conflict: 'Sign' — font/size differ, using first definition") == 1
+    # Dropped secondary event's style 'OtherSign' should NOT trigger a style conflict log
+    assert "style conflict: 'OtherSign'" not in out
+
+
