@@ -632,7 +632,7 @@ def process(orig, apply):
             write_stage(stem, "mux", "unwritable", str(e))
             return "stamp-write-failed"
         if not _source_unchanged(orig, st):
-            if stamped:
+            if stamped and not stamp_valid(read_stamp(stamp), orig):
                 try:
                     os.remove(stamp)
                 except OSError:

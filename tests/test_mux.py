@@ -1480,4 +1480,32 @@ def test_two_concurrent_mux_runs_both_outcomes_muxed_and_already_muxed(tmp_path,
     assert mux.stamp_valid(mux.read_stamp(stem + mux.STAMP_SUFFIX), str(v))
 
 
+def test_race_interleaving_second_check_keeps_winner_stamp(tmp_path, monkeypatch):
+    import common
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    real_write_stamp = mux.write_stamp
+    calls = {"count": 0}
+
+    def hooked_write_stamp(stamp_path, out_path, **kw):
+        calls["count"] += 1
+        res = real_write_stamp(stamp_path, out_path, **kw)
+        if calls["count"] == 1:
+            mux._IDENTIFY_CACHE.clear()
+            # Run A to completion while B is inside write_stamp
+            outcome_a = mux.process(str(v), apply=True)
+            assert outcome_a == "muxed"
+        return res
+
+    monkeypatch.setattr(mux, "write_stamp", hooked_write_stamp)
+
+    outcome_b = mux.process(str(v), apply=True)
+    assert outcome_b == "already-muxed"
+    stamp_path = stem + mux.STAMP_SUFFIX
+    assert os.path.exists(stamp_path)
+    assert mux.stamp_valid(mux.read_stamp(stamp_path), str(v))
+    assert common.read_stages(stem)["mux"]["outcome"] == "ok"
+
+
+
 
