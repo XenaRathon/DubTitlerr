@@ -60,14 +60,14 @@ NONE = P("", word="none")
     ],
 )
 def test_the_classification_follows_apply_results(item, pick, outcome):
-    assert gc.classify(item, pick) == outcome
+    assert gc.classify(item, pick, policy="legacy") == outcome
 
 
 def test_decision_arms_are_high_confidence_at_or_above_tau():
-    assert gc.classify(EXP, P("Doffy Prime", conf=0.7), tau=0.7) == "good_write"
-    assert gc.classify(EXP, P("Doffy Prime", conf=0.69), tau=0.7) == "flag_low"
-    assert gc.classify(NEG, P("Nilox", conf=0.95), tau=0.5) == "wrong_write"
-    assert gc.classify(NEG, P("Nilox", conf=0.3), tau=0.5) == "flag_low"  # not written: only review load
+    assert gc.classify(EXP, P("Doffy Prime", conf=0.7), tau=0.7, policy="legacy") == "good_write"
+    assert gc.classify(EXP, P("Doffy Prime", conf=0.69), tau=0.7, policy="legacy") == "flag_low"
+    assert gc.classify(NEG, P("Nilox", conf=0.95), tau=0.5, policy="legacy") == "wrong_write"
+    assert gc.classify(NEG, P("Nilox", conf=0.3), tau=0.5, policy="legacy") == "flag_low"  # not written: only review load
 
 
 def test_a_wrong_pick_on_a_negative_that_is_not_an_expansion_is_review_load_not_a_wrong_write():
@@ -131,7 +131,7 @@ def test_good_wrong_and_missed_writes_are_counted_with_the_missed_breakdown():
         high("X5"),  # missed: picked the term itself
         None,  # missed: failed
     ]
-    t = gc.tally(_pairs(*zip(exps, picks, strict=True)))
+    t = gc.tally(_pairs(*zip(exps, picks, strict=True)), policy="legacy")
     assert (t["good_expansion"], t["wrong"], t["writes"]) == (1, 1, 2)
     assert t["n_expansion"] == 7 and t["good_write_rate"] == pytest.approx(1 / 7)
     assert t["wrong_write_rate"] == pytest.approx(1 / 2) and t["wrong_write_wilson"][0] < 0.5 < t["wrong_write_wilson"][1]
@@ -150,7 +150,7 @@ def test_review_load_per_100_items_by_class_and_harmful_flags():
         (negs[0], NONE),  # expected flag
         (negs[1], high("N1x")),  # wrong write
     ]
-    t = gc.tally(_pairs(*specs))
+    t = gc.tally(_pairs(*specs), policy="legacy")
     assert t["harmful_flags"] == 1
     assert t["exact"] == {"n": 4, "correct": 1, "wrong_writes": 1}
     assert t["review"]["exact"] == {"n": 4, "flagged": 1, "recorded": 1, "per_100": 25.0}
@@ -175,9 +175,9 @@ def test_tally_at_a_tau_for_a_decision_arm():
     exps = [_item(f"X{k}", [f"X{k} Prime", f"X{k} Zed"], f"X{k} Prime", "expansion") for k in range(3)]
     picks = [P("X0 Prime", conf=0.9), P("X1 Zed", conf=0.6), P("X2 Prime", conf=0.3)]
     pairs = _pairs(*zip(exps, picks, strict=True))
-    assert (gc.tally(pairs, tau=0.0)["writes"], gc.tally(pairs, tau=0.0)["wrong"]) == (3, 1)
-    assert (gc.tally(pairs, tau=0.5)["writes"], gc.tally(pairs, tau=0.5)["wrong"]) == (2, 1)
-    assert (gc.tally(pairs, tau=0.8)["writes"], gc.tally(pairs, tau=0.8)["wrong"]) == (1, 0)
+    assert (gc.tally(pairs, tau=0.0, policy="legacy")["writes"], gc.tally(pairs, tau=0.0, policy="legacy")["wrong"]) == (3, 1)
+    assert (gc.tally(pairs, tau=0.5, policy="legacy")["writes"], gc.tally(pairs, tau=0.5, policy="legacy")["wrong"]) == (2, 1)
+    assert (gc.tally(pairs, tau=0.8, policy="legacy")["writes"], gc.tally(pairs, tau=0.8, policy="legacy")["wrong"]) == (1, 0)
 
 
 def test_the_held_out_split_is_deterministic_and_roughly_even():
@@ -234,4 +234,82 @@ def test_production_policy_per_outcome_counts_and_legacy_label():
 
     t_leg = gc.tally(pairs, policy="legacy")
     assert t_leg["mode"] == "LEGACY"
+
+
+def test_classify_defaults_to_production_policy():
+    item = _item("Usop", ["Usopp"], "Usopp", "expansion")
+    # By default without policy keyword, production policy is used
+    assert gc.classify(item, high("Usopp")) == "flag_respelling"
+    # Legacy policy remains reachable explicitly
+    assert gc.classify(item, high("Usopp"), policy="legacy") == "good_write"
+
+
+def test_tally_defaults_to_production_policy():
+    item = _item("Usop", ["Usopp"], "Usopp", "expansion")
+    # By default without policy keyword, production policy is used
+    t = gc.tally([(item, high("Usopp"), "expansion_independent")])
+    assert t["mode"] == "PRODUCTION"
+    assert t["policy"] == "production"
+    # Legacy policy remains reachable explicitly
+    t_leg = gc.tally([(item, high("Usopp"), "expansion_independent")], policy="legacy")
+    assert t_leg["mode"] == "LEGACY"
+    assert t_leg["policy"] == "legacy"
+
+
+def test_cli_policy_flag():
+    # Default without flag should be production
+    p_default = gc.parse_args([])
+    assert p_default.policy == "production"
+
+    # Explicit production
+    p_prod = gc.parse_args(["--policy", "production"])
+    assert p_prod.policy == "production"
+
+    # Explicit legacy
+    p_leg = gc.parse_args(["--policy", "legacy"])
+    assert p_leg.policy == "legacy"
+
+
+def test_glossary_score_passes_policy_and_labels_mode():
+    rep_default = gs.build_report([], {})
+    assert rep_default["policy"] == "production"
+    assert rep_default["mode"] == "PRODUCTION"
+    assert "(PRODUCTION)" in gs.render_markdown(rep_default)
+
+    rep_leg = gs.build_report([], {}, policy="legacy")
+    assert rep_leg["policy"] == "legacy"
+    assert rep_leg["mode"] == "LEGACY"
+    assert "(LEGACY)" in gs.render_markdown(rep_leg)
+
+
+def test_glossary_bakeoff_score_policy_flag(monkeypatch, tmp_path):
+    import tools.glossary_bakeoff as gb
+
+    called_policy = []
+
+    def mock_build_report(items, rows, baseline, tau_step, judged, policy="production"):
+        called_policy.append(policy)
+        return {"arms": {}, "policy": policy, "mode": "PRODUCTION" if policy == "production" else "LEGACY"}
+
+    monkeypatch.setattr(gs, "build_report", mock_build_report)
+    monkeypatch.setattr(gs, "render_markdown", lambda r: f"Report {r.get('mode')}\n")
+
+    items_f = tmp_path / "items.jsonl"
+    items_f.write_text("")
+    res_f = tmp_path / "res.jsonl"
+    res_f.write_text("")
+
+    # Default score policy is production
+    gb.main(["score", "--items", str(items_f), "--results", str(res_f)])
+    assert called_policy[-1] == "production"
+
+    # Explicit legacy policy
+    gb.main(["score", "--items", str(items_f), "--results", str(res_f), "--policy", "legacy"])
+    assert called_policy[-1] == "legacy"
+
+    # Explicit production policy
+    gb.main(["score", "--items", str(items_f), "--results", str(res_f), "--policy", "production"])
+    assert called_policy[-1] == "production"
+
+
 

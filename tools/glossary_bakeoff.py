@@ -915,7 +915,8 @@ def cmd_score(a):
     items = glossary_score.load_items(a.items)
     rows = glossary_score.load_results(a.results)
     judged = glossary_score.load_judged(a.judged) if a.judged else None
-    report = glossary_score.build_report(items, rows, a.baseline, a.tau_step, judged)
+    policy = getattr(a, "policy", "production")
+    report = glossary_score.build_report(items, rows, a.baseline, a.tau_step, judged, policy=policy)
     text = glossary_score.render_markdown(report)
     try:
         if a.out:
@@ -1037,6 +1038,12 @@ def main(argv=None):
     sc.add_argument("--baseline", default="qwen-local", help="the arm every other arm is compared with")
     sc.add_argument(
         "--tau-step", type=float, default=0.05, metavar="STEP", help="confidence-threshold step for the sweep (0 < STEP <= 1)"
+    )
+    sc.add_argument(
+        "--policy",
+        choices=("production", "legacy"),
+        default="production",
+        help="scoring policy: 'production' mirrors real write guards (default), 'legacy' uses substring expansion rule",
     )
     sc.add_argument("--judged", metavar="FILE", help="judged.jsonl from import-judge: adds the blind-judged headline table")
     ex = sub.add_parser("export-judge", help="write a blind judging set for the items where the chosen arms disagree")

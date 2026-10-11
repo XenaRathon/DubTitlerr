@@ -331,7 +331,7 @@ def _calibration(items_by_id, labelled, fwd_rows):
     return out
 
 
-def _arm_metrics(arm, items_by_id, classes, fwd, rev, arm_rows, tau_step, item_order, fwd_rows=None):
+def _arm_metrics(arm, items_by_id, classes, fwd, rev, arm_rows, tau_step, item_order, fwd_rows=None, policy="production"):
     """Everything about one arm, over the items it ran."""
     ids = [i for i in item_order if i in fwd and classes.get(i) is not None]  # items with a forward row
     pairs = [(items_by_id[i], fwd[i], classes[i]) for i in ids]
@@ -371,7 +371,7 @@ def _arm_metrics(arm, items_by_id, classes, fwd, rev, arm_rows, tau_step, item_o
         nt_pairs = [p for p in pairs if p[2] in NON_TRIVIAL]
         out["curve_nt"] = []
         for t, legacy in zip(_taus(tau_step), out["curve"], strict=True):
-            c = gc.tally(nt_pairs, tau=t)
+            c = gc.tally(nt_pairs, tau=t, policy=policy)
             out["curve_nt"].append(
                 {
                     "tau": t,
@@ -386,7 +386,7 @@ def _arm_metrics(arm, items_by_id, classes, fwd, rev, arm_rows, tau_step, item_o
     else:
         import tools.glossary_consequences as gc
 
-        out["consequences"] = gc.tally(pairs)
+        out["consequences"] = gc.tally(pairs, policy=policy)
     # order sensitivity: items with >= 2 candidates that have both a forward and a reverse pick
     n = changed = 0
     for i in ids:
@@ -482,7 +482,7 @@ def judged_table(rows):
     return table
 
 
-def build_report(items, rows, baseline="qwen-local", tau_step=0.05, judged=None):
+def build_report(items, rows, baseline="qwen-local", tau_step=0.05, judged=None, policy="production"):
     import tools.glossary_consequences as gc
 
     items_by_id = {i["id"]: i for i in items}
@@ -520,10 +520,21 @@ def build_report(items, rows, baseline="qwen-local", tau_step=0.05, judged=None)
     arms = {}
     for arm in sorted(by_arm):
         arms[arm] = _arm_metrics(
-            arm, items_by_id, classes, picks[arm]["fwd"], picks[arm]["rev"], arm_rows[arm], tau_step, order, fwd_rows[arm]
+            arm,
+            items_by_id,
+            classes,
+            picks[arm]["fwd"],
+            picks[arm]["rev"],
+            arm_rows[arm],
+            tau_step,
+            order,
+            fwd_rows[arm],
+            policy=policy,
         )
     for floor_name, floor_picks in floors.items():
-        arms[floor_name] = _arm_metrics(floor_name, items_by_id, classes, floor_picks, {}, [], tau_step, order)
+        arms[floor_name] = _arm_metrics(
+            floor_name, items_by_id, classes, floor_picks, {}, [], tau_step, order, policy=policy
+        )
     fwd_all = {a: picks[a]["fwd"] for a in picks} | floors
 
     names = list(arms)
@@ -546,11 +557,15 @@ def build_report(items, rows, baseline="qwen-local", tau_step=0.05, judged=None)
         "agreement": agreement,
         "verdicts": {},
         "judged": judged_table(judged) if judged is not None else None,
+        "policy": policy,
+        "mode": "PRODUCTION" if policy == "production" else "LEGACY",
     }
     for arm in arms:
         if arm in FLOOR_ARMS or arm == baseline:
             continue
-        v = _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, present, floors, tau_step, totals)
+        v = _verdict(
+            arm, report, items_by_id, classes, fwd_all, order, baseline, present, floors, tau_step, totals, policy=policy
+        )
         report["verdicts"][arm] = v
         if arms[arm]["kind"] == "decision":
             arms[arm]["matched"] = v.get("matched")
@@ -562,9 +577,9 @@ def build_report(items, rows, baseline="qwen-local", tau_step=0.05, judged=None)
         points = {}
         matched = m.get("matched") or {}
         if matched.get("tau") is not None:
-            points["matched"] = {"tau": matched["tau"], **gc.tally(labelled, tau=matched["tau"])}
+            points["matched"] = {"tau": matched["tau"], **gc.tally(labelled, tau=matched["tau"], policy=policy)}
         for t in (0.5, 0.8):
-            points[f"{t:.2f}"] = {"tau": t, **gc.tally(labelled, tau=t)}
+            points[f"{t:.2f}"] = {"tau": t, **gc.tally(labelled, tau=t, policy=policy)}
         m["consequence_points"] = points
     return report
 
@@ -597,32 +612,32 @@ def _coverage_notes(classes, order, armp, base, totals):
     return common_all, common_nt, parts
 
 
-def _best_tau(nt_pairs, taus, base_rate):
+def _best_tau(nt_pairs, taus, base_rate, policy="production"):
     """The smallest tau whose wrong-write rate is defined (at least one write) and not above the baseline's."""
     import tools.glossary_consequences as gc
 
     for tau in taus:
-        t = gc.tally(nt_pairs, tau=tau)
+        t = gc.tally(nt_pairs, tau=tau, policy=policy)
         if t["writes"] and t["wrong_write_rate"] <= base_rate:
             return tau, t
     return None, None
 
 
-def _held_out(arm_nt, base_nt, taus, base_tau):
+def _held_out(arm_nt, base_nt, taus, base_tau, policy="production"):
     """Pick tau on half of the common items (a seeded split by item id) and report both rates on the OTHER half."""
     import tools.glossary_consequences as gc
 
     a = [p for p in arm_nt if gc.half(p[0]["id"]) == 0]
     b = [p for p in arm_nt if gc.half(p[0]["id"]) == 1]
     out = {"n_a": len(a), "n_b": len(b), "tau_a": None}
-    base_a = gc.tally([p for p in base_nt if gc.half(p[0]["id"]) == 0], tau=base_tau)
+    base_a = gc.tally([p for p in base_nt if gc.half(p[0]["id"]) == 0], tau=base_tau, policy=policy)
     if not a or not b or base_a["wrong_write_rate"] is None:
         return out
-    tau, _ = _best_tau(a, taus, base_a["wrong_write_rate"])
+    tau, _ = _best_tau(a, taus, base_a["wrong_write_rate"], policy=policy)
     out["tau_a"] = tau
     if tau is not None:
-        arm_b = gc.tally(b, tau=tau)
-        base_b = gc.tally([p for p in base_nt if gc.half(p[0]["id"]) == 1], tau=base_tau)
+        arm_b = gc.tally(b, tau=tau, policy=policy)
+        base_b = gc.tally([p for p in base_nt if gc.half(p[0]["id"]) == 1], tau=base_tau, policy=policy)
         out.update(
             arm_wrong_write_rate_b=arm_b["wrong_write_rate"],
             arm_good_write_rate_b=arm_b["good_write_rate"],
@@ -633,7 +648,7 @@ def _held_out(arm_nt, base_nt, taus, base_tau):
     return out
 
 
-def _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, present, floors, tau_step, totals):
+def _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, present, floors, tau_step, totals, policy="production"):
     """The five rules for one arm. Each rule is ok True / False, or None when it cannot be evaluated (INCOMPLETE).
 
     Rules (a), (b), (d) and the matched tau are decided on the common NON-TRIVIAL items (expansions + negatives), INCOMPLETE
@@ -754,7 +769,7 @@ def _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, presen
             )
         arm_nt = [(items_by_id[i], armp[i], classes[i]) for i in nt_ids]
         base_nt = [(items_by_id[i], base[i], classes[i]) for i in nt_ids]
-        bt = gc.tally(base_nt, tau=base_tau)
+        bt = gc.tally(base_nt, tau=base_tau, policy=policy)
         if nt_ids and bt["writes"] == 0 and not notes:
             notes.append("the baseline made no writes, so its wrong-write rate is undefined")
         if not nt_ids:
@@ -768,8 +783,8 @@ def _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, presen
             all_base = [(items_by_id[i], base[i], classes[i]) for i in common_all]
             taus = _taus(tau_step)
             if a["kind"] == "decision":
-                tau, at = _best_tau(arm_nt, taus, bt["wrong_write_rate"])
-                ever = any(gc.tally(arm_nt, tau=t)["writes"] for t in taus)
+                tau, at = _best_tau(arm_nt, taus, bt["wrong_write_rate"], policy=policy)
+                ever = any(gc.tally(arm_nt, tau=t, policy=policy)["writes"] for t in taus)
                 out["matched"] = {
                     "tau": tau,
                     "n_common": len(nt_ids),
@@ -778,13 +793,13 @@ def _verdict(arm, report, items_by_id, classes, fwd_all, order, baseline, presen
                     "arm_wrong_write_rate": at["wrong_write_rate"] if at else None,
                     "arm_good_write_rate": at["good_write_rate"] if at else None,
                     "ever_writes": ever,
-                    "held_out": _held_out(arm_nt, base_nt, taus, base_tau),
+                    "held_out": _held_out(arm_nt, base_nt, taus, base_tau, policy=policy),
                 }
                 if at is None and not ever:
-                    at = gc.tally(arm_nt, tau=1.0)
+                    at = gc.tally(arm_nt, tau=1.0, policy=policy)
                     at["writes"] = 0
             else:
-                tau, at = None, gc.tally(arm_nt)
+                tau, at = None, gc.tally(arm_nt, policy=policy)
             sec_arm = _hc(all_arm, tau=tau)
             sec_base = _hc(all_base, tau=base_tau)
             secondary = {"n": len(common_all), "arm": sec_arm["false_accept_rate"], "baseline": sec_base["false_accept_rate"]}
@@ -1293,8 +1308,9 @@ def _section_judged(rep):
 def render_markdown(rep):
     arms = rep["arms"]
     names = [*(a for a in arms if a not in FLOOR_ARMS), *FLOOR_ARMS]
+    mode = rep.get("mode") or ("PRODUCTION" if rep.get("policy") == "production" else "LEGACY")
     head = [
-        "# Glossary bake-off: verify-stage scores",
+        f"# Glossary bake-off: verify-stage scores ({mode})",
         "",
         "Offline scoring of `run` results against the item set. Rates show n and a Wilson 95% interval. "
         "No winner is declared; the verdict table applies the maintainer's rules.",

@@ -96,7 +96,7 @@ pins both the new default and the `0`/old value.
   stage's evidence), but the queue does not show the conflict; check the term before accepting an old flag after a forced re-verify.
 - **More respellings are flagged.** `VERIFY_WRITE_WHOLE_WORD` on means a canonical that only contains the term as a substring (`Usop` -> `Usopp`)
   is flagged `respelling-needs-review` instead of written, so the review queue gains those entries and the written count falls.
-- **`tools/glossary_consequences.py` adds a production-policy mode** (`policy="production"`) calling the real guard path (`glossary_verify.write_decision` / `apply_results`) and reporting per-outcome counts (`WRITTEN`, `QUEUED`, `RECORDED-NOT-QUEUED`), while keeping the old substring rule available as `LEGACY`.
+- **`tools/glossary_consequences.py` defaults to production-policy mode** (`classify()` and `tally()` default to `policy="production"`, calling the real guard path `glossary_verify.write_decision` / `apply_results` and reporting per-outcome counts `WRITTEN`, `QUEUED`, `RECORDED-NOT-QUEUED`), while keeping the old substring rule reachable with `policy="legacy"`. Added `--policy {production,legacy}` CLI flags in `glossary_consequences.py` and `glossary_bakeoff.py score`, passed through in `glossary_score.py` and labeled in markdown output.
 
 Combinations to avoid:
 

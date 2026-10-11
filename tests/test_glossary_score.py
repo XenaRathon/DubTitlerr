@@ -90,9 +90,13 @@ def _perfect(arm, text=True, conf=1.0):
     ]  # fmt: skip
 
 
-def _report(tmp_path, rows, baseline="qwen-local", tau_step=0.25, items=ITEMS):
+def _report(tmp_path, rows, baseline="qwen-local", tau_step=0.25, items=ITEMS, policy="legacy"):
     return gs.build_report(
-        gs.load_items(str(_write_items(tmp_path, items))), gs.load_results([str(_write_rows(tmp_path, rows))]), baseline, tau_step
+        gs.load_items(str(_write_items(tmp_path, items))),
+        gs.load_results([str(_write_rows(tmp_path, rows))]),
+        baseline,
+        tau_step,
+        policy=policy,
     )
 
 
@@ -646,9 +650,13 @@ def _rows_for(items, arm, picker, order="fwd", conf="high"):
     return out
 
 
-def _report_for(tmp_path, items, rows, baseline="qwen-local", tau_step=0.25):
+def _report_for(tmp_path, items, rows, baseline="qwen-local", tau_step=0.25, policy="legacy"):
     return gs.build_report(
-        gs.load_items(str(_write_items(tmp_path, items))), gs.load_results([str(_write_rows(tmp_path, rows))]), baseline, tau_step
+        gs.load_items(str(_write_items(tmp_path, items))),
+        gs.load_results([str(_write_rows(tmp_path, rows))]),
+        baseline,
+        tau_step,
+        policy=policy,
     )
 
 
@@ -1095,7 +1103,7 @@ def test_review_load_counts_respelling_flags_only_and_the_other_flags_are_record
         (negs[0], gs.Pick("", word="none"), "negative"),  # the right answer: costs nobody anything
         (negs[1], gs.Pick("N1x", word="low"), "negative"),
     ]
-    t = gc.tally(pairs)
+    t = gc.tally(pairs, policy="legacy")
     assert t["review"]["exact"] == {"n": 4, "flagged": 1, "recorded": 2, "per_100": 25.0}
     assert t["review"]["negative"] == {"n": 2, "flagged": 0, "recorded": 2, "per_100": 0.0}
     assert t["harmful_flags"] == 1

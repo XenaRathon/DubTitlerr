@@ -27,6 +27,7 @@ RECORDED-NOT-QUEUED, nothing, and failure.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 
 import tools.glossary_score as glossary_score
@@ -45,7 +46,7 @@ def _expansion(term, title):
     return _is_expansion(term, title)
 
 
-def classify(item, pick, tau=None, policy="legacy", universe=None, mode=None):
+def classify(item, pick, tau=None, policy="production", universe=None, mode=None):
     """good_write | wrong_write | nothing | flag_respelling | flag_common_word | flag_not_in_arc | flag_low | flag_nomatch
     | failure.
 
@@ -130,7 +131,7 @@ MISSED_KEY = {
 }
 
 
-def tally(pairs, tau=None, policy="legacy", universe=None, mode=None):
+def tally(pairs, tau=None, policy="production", universe=None, mode=None):
     """Consequence counts over [(item, pick-or-None, class)]; ambiguous / no-call items are ignored by the caller.
 
     policy can be 'production' (mirrors real production guards) or 'legacy' (the old plain substring expansion rule).
@@ -138,13 +139,12 @@ def tally(pairs, tau=None, policy="legacy", universe=None, mode=None):
     if mode is not None:
         policy = mode
     mode_label = "LEGACY" if policy == "legacy" else "PRODUCTION"
-    missed_map = LEGACY_MISSED_KEY if policy == "legacy" else MISSED_KEY
     t = {
         "mode": mode_label,
         "policy": policy,
         "good": 0, "good_expansion": 0, "good_exact": 0, "wrong": 0, "n_expansion": 0, "harmful_flags": 0,
         "exact": {"n": 0, "correct": 0, "wrong_writes": 0},
-        "missed": dict.fromkeys(missed_map.values(), 0),
+        "missed": dict.fromkeys(LEGACY_MISSED_KEY.values(), 0),
         "review": {}, "n": 0,
         "outcomes": {
             "WRITTEN": {"total": 0, "right": 0, "wrong": 0},
@@ -203,7 +203,8 @@ def tally(pairs, tau=None, policy="legacy", universe=None, mode=None):
         if cls in EXPANSION_CLASSES:
             t["n_expansion"] += 1
             if outcome != "good_write":
-                t["missed"][MISSED_KEY[outcome]] += 1
+                mk = MISSED_KEY.get(outcome, outcome)
+                t["missed"][mk] = t["missed"].get(mk, 0) + 1
 
     t["writes"] = t["good"] + t["wrong"]
     t["wrong_write_rate"] = glossary_score._rate(t["wrong"], t["writes"])
@@ -227,4 +228,30 @@ HELD_OUT_SEED = "heldout-v1"
 def half(item_id):
     """0 or 1: a deterministic split of the items by a hash of their id (tau is chosen on half 0, then checked on half 1)."""
     return hashlib.sha256(f"{HELD_OUT_SEED}|{item_id}".encode()).digest()[0] & 1
+
+
+def parse_args(argv=None):
+    ap = argparse.ArgumentParser(description="Evaluate glossary verify consequences under production or legacy policy.")
+    ap.add_argument(
+        "--policy",
+        choices=["production", "legacy"],
+        default="production",
+        help="Evaluation policy (default: production)",
+    )
+    ap.add_argument("--items", help="items.jsonl from build-set")
+    ap.add_argument("--results", nargs="*", help="result files from run")
+    return ap.parse_args(argv)
+
+
+def main(argv=None):
+    a = parse_args(argv)
+    print(f"Policy: {a.policy}")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main())
+
 
