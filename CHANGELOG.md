@@ -77,10 +77,18 @@ pins both the new default and the `0`/old value.
   `<glossary>.acquire.journal.jsonl` beside the glossary) as soon as it exists: one fsynced line each, safe against two writers and
   a torn last line. A rerun reuses them without calling the model and asks only what is left, and its report and glossary equal an
   uninterrupted run's. Each line records what the answer depended on (show, term, candidate-list or context hashes, backend, model,
-  prompt version, decision threshold); a line whose inputs changed is ignored, not deleted. Unavailable answers, failed decision
-  calls and the local fallback's answers are never journaled. A clean apply compacts the file (latest line per key, nothing older
-  than 30 days). `VERIFY_NO_JOURNAL=1` / `ACQUIRE_NO_CACHE=1` re-evaluate everything. The `decision` counters in a resumed
-  run count only the calls it actually made.
+  prompt version, the server URL (hashed; never a key), the openai `extra_body`, and for the decision model its threshold and
+  `DECISION_CLIENT_VERSION`); a line whose inputs changed is ignored, not deleted. `max_tokens` is not part of it. Unavailable
+  answers (nothing returned, or a reply no JSON could be decoded from), failed decision calls and the local fallback's answers are
+  never journaled. A clean apply compacts the file (latest line per key). The `decision` counters in a resumed run count only the
+  calls it actually made.
+  - **Lifetime:** a stored answer is served for 30 days; compaction drops older lines.
+  - **Busting a bad stored answer:** `glossary_verify.py --force` asks the model again for every term (the journal is not read; the
+    fresh answers replace the old ones). `VERIFY_NO_JOURNAL=1` / `ACQUIRE_NO_CACHE=1` neither read nor write it. Or delete the
+    file: `<WIKI_CACHE_DIR>/<show, non-alphanumerics as _>.verify.journal.jsonl` for verify, `<glossary without .json>.acquire.journal.jsonl`
+    next to the glossary for acquire.
+  - **Wiki drift:** the candidate list is keyed by the TITLES offered, so a wiki edit that keeps every title identical (a changed
+    redirect target or page body) can serve an older answer until it ages out or someone runs `--force`.
 - **A re-verify that affirms a term keeps its earlier proposal in the queue.** `verify --force` revisits verified terms; if the new
   answer is the term itself, an older `respelling-needs-review` flag for it (say `Raftel -> Ratel`) is left in the review queue, not
   cleared, so accepting it later would still write that hard fix. This is deliberate for now (a fresh answer must not erase another
