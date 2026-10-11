@@ -38,9 +38,9 @@ def flagged_by(monkeypatch, reason):
             arc_titles={"Wano": ["Kaido"]},
             arc_coverage={a: {"titles": len(t), "redirects": True} for a, t in {"Wano": ["Kaido"]}.items()},
         )
-    else:  # respelling-needs-review, from the whole-word guard
+    else:  # respelling-needs-review, from the whole-word guard: a LONGER form (a same-length one is a hard fix, see F6)
         monkeypatch.setenv("VERIFY_WRITE_WHOLE_WORD", "1")
-        term, canon = "Usop", "Usopp"
+        term, canon = "D", "Monkey D. Luffy"
         g = base(names=[term])
     out = gv.apply_results(g, {term: high(canon)})
     assert out["flagged"][term]["reason"] == reason and canon not in out["names"] + out["phrases"]

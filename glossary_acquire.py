@@ -888,7 +888,11 @@ def record_decision(gloss: dict, term: str, accept: bool) -> dict:
         meta = {"reason": meta}
     meta = meta or {}
     canon = meta.get("canonical", "")
-    if accept and canon and not is_expansion(term, canon) and normalize_title(canon) == canon:
+    # A respelling is not only what is_expansion refuses: the whole-word guard flags 'Usop' -> 'Usopp' (a substring match, so an
+    # "expansion" to is_expansion) as respelling-needs-review. Same number of tokens, different letters: a human's yes on it is a
+    # spelling fix and must reach hard_fixes, or the runtime leaves 'Usop' exactly as spoken. A longer canonical stays additive.
+    respelling = meta.get("reason") == "respelling-needs-review" and len(canon.split()) == len(term.split())
+    if accept and canon and (not is_expansion(term, canon) or respelling) and normalize_title(canon) == canon:
         g.setdefault("hard_fixes", {})[term] = canon
         g.setdefault("acquired", {})[term] = {
             "canonical": canon,

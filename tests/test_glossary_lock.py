@@ -217,7 +217,8 @@ def test_review_writes_its_decisions_onto_the_fresh_file(tmp_path, monkeypatch):
     monkeypatch.setattr("builtins.input", answer)
     ga.main()
     saved = json.load(open(path))
-    assert saved["verified"] == ["Added Meanwhile"] and "Respelled" in saved["names"] + saved["phrases"]
+    # A same-token-count respelling that a human approves is a deterministic correction (a hard fix), not an additive name.
+    assert saved["verified"] == ["Added Meanwhile"] and saved["hard_fixes"] == {"Resp": "Respelled"}
     assert "Resp" not in saved.get("flagged", {})
 
 
