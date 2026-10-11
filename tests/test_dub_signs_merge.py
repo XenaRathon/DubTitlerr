@@ -1144,3 +1144,58 @@ def test_cross_track_dedup_perf_bounded(tmp_path, monkeypatch):
     assert calls < 50_000, f"too many checks: {calls} (quadratic scan not using bisect window)"
     assert elapsed < 3.0, f"took too long: {elapsed:.2f}s"
 
+
+# --- Item 4: mutation coverage (primary selection & overlap thresholds) -------
+
+
+def test_primary_track_selection_more_events_wins(tmp_path, monkeypatch, capsys):
+    track0 = _sign_track(style_name="SignA", text="Tokyo Tower")
+    track0.events[0].text = r"{\pos(100,200)\fs35}Tokyo Tower"
+    track0.events[0].start = 1000
+    track0.events[0].end = 3000
+
+    track1 = _sign_track(style_name="SignB", text="Tokyo Tower")
+    track1.events[0].text = r"{\pos(120,210)\fs40}Tokyo Tower"
+    track1.events[0].start = 1000
+    track1.events[0].end = 3000
+    track1.events.append(
+        pysubs2.SSAEvent(start=5000, end=7000, style="SignB", text=r"{\pos(200,300)}Shinjuku")
+    )
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 2
+    res = pysubs2.load(out_ass)
+    sign_texts = [e.text for e in res.events if e.style != "Dubtitles"]
+    assert r"{\pos(120,210)\fs40}Tokyo Tower" in sign_texts
+    assert r"{\pos(100,200)\fs35}Tokyo Tower" not in sign_texts
+    assert "cross-track dedup: dropped 1 duplicate event(s) from stream 0" in capsys.readouterr().out
+
+
+def test_overlap_threshold_40_percent_kept(tmp_path, monkeypatch):
+    track0 = _sign_track(style_name="Sign0", text="Same Sign")
+    track0.events[0].start = 1000
+    track0.events[0].end = 3000
+
+    track1 = _sign_track(style_name="Sign1", text="Same Sign")
+    track1.events[0].start = 2200
+    track1.events[0].end = 4200
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 2
+
+
+def test_overlap_threshold_60_percent_deduped(tmp_path, monkeypatch):
+    track0 = _sign_track(style_name="Sign0", text="Same Sign")
+    track0.events[0].start = 1000
+    track0.events[0].end = 3000
+
+    track1 = _sign_track(style_name="Sign1", text="Same Sign")
+    track1.events[0].start = 1800
+    track1.events[0].end = 3800
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 1
+
