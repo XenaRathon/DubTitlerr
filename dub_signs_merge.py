@@ -32,15 +32,175 @@ Idempotent. Env: MERGE_ROOTS (colon list), DUB_SUFFIX, MEDIA_UID/GID, SUB_LANGS
 Requires ffmpeg/ffprobe + pysubs2.  Built with help of Claude (Anthropic).
 """
 
+import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
+from collections import Counter
 
 import pysubs2
 
 from common import MEDIA_GID, MEDIA_UID, find_video, log, out_for, signs_sub_streams, write_stage
 from common import extract_sub as extract
+
+SAFE_FONTS = {
+    "Arial",
+    "Arial Black",
+    "Verdana",
+    "Tahoma",
+    "Trebuchet MS",
+    "Georgia",
+    "Times New Roman",
+    "Calibri",
+    "Segoe UI",
+    "Open Sans",
+    "Roboto",
+}
+SAFE_FONTS_LOWER = {f.lower() for f in SAFE_FONTS}
+
+_STYLE_WORDS = {
+    "regular",
+    "bold",
+    "italic",
+    "oblique",
+    "medium",
+    "light",
+    "semibold",
+    "demibold",
+    "black",
+    "heavy",
+    "thin",
+}
+
+
+def fansub_font_enabled():
+    val = os.environ.get("DUB_FANSUB_FONT", "1").strip().lower()
+    return val not in {"0", "no", "false", "off"}
+
+
+def _normalize_font_token(s):
+    if not s:
+        return ""
+    s = s.lstrip("@")
+    s = re.sub(r"\.(?:ttf|otf|ttc|woff2?|eot)$", "", s, flags=re.I)
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", s)
+    s = s.lower()
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    words = [w for w in s.split() if w not in _STYLE_WORDS]
+    return "".join(words)
+
+
+def list_attachment_filenames(video):
+    """List attachment filenames carried by the video file via mkvmerge or ffprobe."""
+    try:
+        r = subprocess.run(
+            ["mkvmerge", "-J", video],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=30,
+        )
+        if r.returncode == 0:
+            data = json.loads(r.stdout)
+            atts = [
+                att.get("file_name", "")
+                for att in data.get("attachments", [])
+                if att.get("file_name")
+            ]
+            if atts:
+                return atts
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=index:stream_tags=filename",
+                "-select_streams",
+                "t",
+                "-of",
+                "json",
+                video,
+            ],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=30,
+        )
+        if r.returncode == 0:
+            streams = json.loads(r.stdout).get("streams", [])
+            return [
+                (st.get("tags") or {}).get("filename", "")
+                for st in streams
+                if (st.get("tags") or {}).get("filename")
+            ]
+    except Exception:
+        pass
+    return []
+
+
+def _track_dialogue_font(track):
+    dialogue_events = [
+        ev
+        for ev in track["src_events"]
+        if not keep_event(ev)
+        and not ev.is_comment
+        and ev.plaintext.strip()
+        and not STRONG_DROP_STYLE.search(ev.style or "")
+    ]
+    if not dialogue_events:
+        return None
+    counts = Counter(
+        ev.style for ev in dialogue_events if ev.style and ev.style in track["subs"].styles
+    )
+    if not counts:
+        return None
+    top_style = counts.most_common(1)[0][0]
+    raw_font = track["subs"].styles[top_style].fontname or ""
+    clean_font = raw_font.lstrip("@").strip()
+    return clean_font if clean_font else None
+
+
+def resolve_dialogue_font(video, loaded_tracks, primary_track):
+    if not fansub_font_enabled():
+        return "Arial"
+
+    candidate_font = None
+    if primary_track:
+        candidate_font = _track_dialogue_font(primary_track)
+    if not candidate_font:
+        for t in loaded_tracks:
+            if t is not primary_track:
+                candidate_font = _track_dialogue_font(t)
+                if candidate_font:
+                    break
+
+    if not candidate_font:
+        return "Arial"
+
+    attachments = list_attachment_filenames(video)
+    norm_font = _normalize_font_token(candidate_font)
+    font_attached = False
+    if norm_font:
+        for att in attachments:
+            norm_att = _normalize_font_token(att)
+            if norm_att and (norm_font in norm_att or norm_att in norm_font):
+                font_attached = True
+                break
+
+    if font_attached:
+        return candidate_font
+
+    if candidate_font.lower() in SAFE_FONTS_LOWER:
+        return candidate_font
+
+    log(f"  font '{candidate_font}' not attached and not in safe set — falling back to Arial")
+    return "Arial"
 
 ROOTS = os.environ.get("MERGE_ROOTS", "/data/Media/Anime Library").split(":")
 SUFFIX = os.environ.get("DUB_SUFFIX", ".eng.dubtitles.srt")
@@ -246,6 +406,7 @@ def build(video, dub_srt, out_ass):
         log("WARNING: resolution mismatch between subtitle tracks — signs may be mispositioned")
 
     if not cross_track_dedup_enabled():
+        primary_track = loaded_tracks[0]
         base = loaded_tracks[0]["subs"]
         base.events = []
         base.info["ScaledBorderAndShadow"] = "yes"
@@ -338,7 +499,7 @@ def build(video, dub_srt, out_ass):
     ref = play_y / 720
     fs = max(round(32 * ref), round(play_y / 17))
     st = pysubs2.SSAStyle()
-    st.fontname = "Arial"
+    st.fontname = resolve_dialogue_font(video, loaded_tracks, primary_track)
     st.fontsize = fs
     st.bold = True
     st.primarycolor = pysubs2.Color(255, 255, 255)

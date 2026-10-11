@@ -920,3 +920,120 @@ def test_single_track_releases_byte_identical_output(tmp_path, monkeypatch):
     assert dub1 == dub2
     assert open(out_default, "rb").read() == open(out_legacy, "rb").read()
 
+
+# --- Item 2: dialogue font matching ------------------------------------------
+
+
+def _track_with_dialogue(fontname="Arial", style_name="Default"):
+    t = pysubs2.SSAFile()
+    t.styles[style_name] = pysubs2.SSAStyle(fontname=fontname)
+    t.styles["Sign"] = pysubs2.SSAStyle(fontname="SignFont")
+    t.events = [
+        pysubs2.SSAEvent(start=1000, end=3000, style=style_name, text="Spoken dialogue line 1"),
+        pysubs2.SSAEvent(start=3500, end=5500, style=style_name, text="Spoken dialogue line 2"),
+        pysubs2.SSAEvent(start=6000, end=7000, style="Sign", text=r"{\pos(10,20)}A sign"),
+    ]
+    return t
+
+
+def test_fansub_font_attachment_present(tmp_path, monkeypatch):
+    track = _track_with_dialogue(fontname="WildWords", style_name="Default")
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: track.save(out) or True)
+    monkeypatch.setattr(dsm, "list_attachment_filenames", lambda video: ["wildwords-regular.ttf"])
+
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nDub line\n\n", encoding="utf-8")
+    out_ass = str(tmp_path / "out.ass")
+
+    status, signs, dub = dsm.build("fake.mkv", str(dub_srt), out_ass)
+    assert status == "ok"
+    res = pysubs2.load(out_ass)
+    assert res.styles["Dubtitles"].fontname == "WildWords"
+
+
+def test_fansub_font_no_attachment_exotic_font_falls_back_to_arial(tmp_path, monkeypatch, capsys):
+    track = _track_with_dialogue(fontname="WildWords", style_name="Default")
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: track.save(out) or True)
+    monkeypatch.setattr(dsm, "list_attachment_filenames", lambda video: [])
+
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nDub line\n\n", encoding="utf-8")
+    out_ass = str(tmp_path / "out.ass")
+
+    status, signs, dub = dsm.build("fake.mkv", str(dub_srt), out_ass)
+    assert status == "ok"
+    res = pysubs2.load(out_ass)
+    assert res.styles["Dubtitles"].fontname == "Arial"
+    out = capsys.readouterr().out
+    assert "falling back to Arial" in out
+
+
+def test_fansub_font_safe_set_without_attachment_used(tmp_path, monkeypatch):
+    track = _track_with_dialogue(fontname="Trebuchet MS", style_name="Default")
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: track.save(out) or True)
+    monkeypatch.setattr(dsm, "list_attachment_filenames", lambda video: [])
+
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nDub line\n\n", encoding="utf-8")
+    out_ass = str(tmp_path / "out.ass")
+
+    status, signs, dub = dsm.build("fake.mkv", str(dub_srt), out_ass)
+    assert status == "ok"
+    res = pysubs2.load(out_ass)
+    assert res.styles["Dubtitles"].fontname == "Trebuchet MS"
+
+
+def test_fansub_font_leading_at_symbol_stripped(tmp_path, monkeypatch):
+    track = _track_with_dialogue(fontname="@Verdana", style_name="Main")
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: track.save(out) or True)
+    monkeypatch.setattr(dsm, "list_attachment_filenames", lambda video: [])
+
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nDub line\n\n", encoding="utf-8")
+    out_ass = str(tmp_path / "out.ass")
+
+    status, signs, dub = dsm.build("fake.mkv", str(dub_srt), out_ass)
+    assert status == "ok"
+    res = pysubs2.load(out_ass)
+    assert res.styles["Dubtitles"].fontname == "Verdana"
+
+
+def test_fansub_font_no_dialogue_style_falls_back_to_arial(tmp_path, monkeypatch):
+    track = pysubs2.SSAFile()
+    track.styles["Sign"] = pysubs2.SSAStyle(fontname="SomeFont")
+    track.events = [pysubs2.SSAEvent(start=1000, end=2000, style="Sign", text=r"{\pos(10,10)}Sign only")]
+
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: track.save(out) or True)
+    monkeypatch.setattr(dsm, "list_attachment_filenames", lambda video: ["somefont.ttf"])
+
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nDub line\n\n", encoding="utf-8")
+    out_ass = str(tmp_path / "out.ass")
+
+    status, signs, dub = dsm.build("fake.mkv", str(dub_srt), out_ass)
+    assert status == "ok"
+    res = pysubs2.load(out_ass)
+    assert res.styles["Dubtitles"].fontname == "Arial"
+
+
+def test_fansub_font_opt_out(tmp_path, monkeypatch):
+    monkeypatch.setenv("DUB_FANSUB_FONT", "0")
+    track = _track_with_dialogue(fontname="Trebuchet MS", style_name="Default")
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: track.save(out) or True)
+    monkeypatch.setattr(dsm, "list_attachment_filenames", lambda video: ["trebuchet.ttf"])
+
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nDub line\n\n", encoding="utf-8")
+    out_ass = str(tmp_path / "out.ass")
+
+    status, signs, dub = dsm.build("fake.mkv", str(dub_srt), out_ass)
+    assert status == "ok"
+    res = pysubs2.load(out_ass)
+    assert res.styles["Dubtitles"].fontname == "Arial"
+
