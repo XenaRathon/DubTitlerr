@@ -289,7 +289,8 @@ def test_fallback_local_for_a_pair(decision, monkeypatch):
     decision(lambda q, b: None, status=500)
     monkeypatch.setenv("VERIFY_DECISION_FALLBACK", "local")
     monkeypatch.setattr(ga, "llm_chat", lambda prompt, **kw: '{"same_entity": true, "confidence": "high"}')
-    assert ga.adjudicate_merge("a", "b", [], [], "S") == {"same_entity": True, "confidence": "high"}
+    # marked as a fallback so the journal never remembers it as the decision model's answer
+    assert ga.adjudicate_merge("a", "b", [], [], "S") == {"same_entity": True, "confidence": "high", "fallback": True}
     assert gd.counters()["fallbacks"] == 1
 
 

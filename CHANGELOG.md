@@ -72,6 +72,15 @@ pins both the new default and the `0`/old value.
   The guard blocks far fewer wrong writes on the bundled list (6 of 119 instead of 99), so install `wamerican` or set `WORDLIST_PATH`.
 - **Stored no-match flags stay.** `VERIFY_QUEUE_NO_MATCH=0` only stops NEW no-match entries: the 1,702 already stored across 11 glossaries
   (One Pace 982) stay in the queue. `glossary_acquire.py <glossary> <showdir> --review --prune-no-match` clears them.
+- **Glossary verify and acquire survive a hard interruption.** Every completed adjudication (verify: one per term; acquire: one per
+  tier-C pair and per tier-B term) is appended to a journal (`<WIKI_CACHE_DIR>/<show>.verify.journal.jsonl`, and
+  `<glossary>.acquire.journal.jsonl` beside the glossary) as soon as it exists: one fsynced line each, safe against two writers and
+  a torn last line. A rerun reuses them without calling the model and asks only what is left, and its report and glossary equal an
+  uninterrupted run's. Each line records what the answer depended on (show, term, candidate-list or context hashes, backend, model,
+  prompt version, decision threshold); a line whose inputs changed is ignored, not deleted. Unavailable answers, failed decision
+  calls and the local fallback's answers are never journaled. A clean apply compacts the file (latest line per key, nothing older
+  than 30 days). `VERIFY_NO_JOURNAL=1` / `ACQUIRE_NO_CACHE=1` re-evaluate everything. The `decision` counters in a resumed
+  run count only the calls it actually made.
 - **A re-verify that affirms a term keeps its earlier proposal in the queue.** `verify --force` revisits verified terms; if the new
   answer is the term itself, an older `respelling-needs-review` flag for it (say `Raftel -> Ratel`) is left in the review queue, not
   cleared, so accepting it later would still write that hard fix. This is deliberate for now (a fresh answer must not erase another

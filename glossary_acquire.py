@@ -32,6 +32,7 @@ import re
 import jellyfish
 
 import acquire_cache
+import adjudication_journal
 import glossary
 import glossary_verify
 import mine_glossary
@@ -373,9 +374,13 @@ def adjudicate_merge(variant: str, canonical: str, ctx_v: list, ctx_c: list, sho
         if backend == "decision":
             import glossary_decision
 
+            # The local fallback's answer is marked: it must never be journaled as if the decision model had given it.
             return glossary_decision.adjudicate_pair(
                 variant, canonical, ctx_v, ctx_c, show,
-                local=lambda: _merge_via_llm(variant, canonical, ctx_v, ctx_c, show, glossary_verify.local_backend()),
+                local=lambda: {
+                    **_merge_via_llm(variant, canonical, ctx_v, ctx_c, show, glossary_verify.local_backend()),
+                    "fallback": True,
+                },
             )  # fmt: skip
         return _merge_via_llm(variant, canonical, ctx_v, ctx_c, show, backend)
     except Exception as e:
@@ -409,7 +414,29 @@ class StopRequested(Exception):
         self.step, self.done, self.unit = step, done, unit
 
 
-def escalate(proposals: list, ctx: dict, show: str, cache: dict | None = None) -> list:
+def open_journal(gloss_path: str):
+    """The acquire stage's adjudication journal for this glossary (beside acquire_cache), or None with ACQUIRE_NO_CACHE=1."""
+    if not glossary_verify.journal_enabled("acquire"):
+        return None
+    base = gloss_path[:-5] if gloss_path.endswith(".json") else gloss_path
+    return adjudication_journal.Journal(base + ".acquire.journal.jsonl", "acquire")
+
+
+def pair_provenance(show: str, variant: str, canonical: str, ctx_v: list, ctx_c: list) -> dict:
+    """What a pair adjudication depended on: the pair, both context lists, the prompt, and who answered (backend, model, tau)."""
+    return {
+        "stage": "pair",
+        "show": show,
+        "variant": variant,
+        "canonical": canonical,
+        "ctx_v": adjudication_journal.digest(ctx_v),
+        "ctx_c": adjudication_journal.digest(ctx_c),
+        "prompt": glossary_verify.prompt_version("pair"),
+        **glossary_verify.backend_identity(glossary_verify.acquire_backend(), "pair"),
+    }
+
+
+def escalate(proposals: list, ctx: dict, show: str, cache: dict | None = None, journal=None) -> list:
     """Re-decide share-too-close proposals with context. Other verdicts pass through.
 
     ONLY share-too-close escalates. below-floor, sentence-initial-only, already-canonical,
@@ -423,6 +450,10 @@ def escalate(proposals: list, ctx: dict, show: str, cache: dict | None = None) -
     acquire_cache's module docstring for why the PAIR's adjudication is cached and not the
     proposal's final verdict. Mutated in place; the caller owns saving it.
 
+    `journal` (adjudication_journal), if given, makes each completed pair answer durable the moment it exists and serves a
+    previous run's answer when its provenance (both context lists, model, prompt, threshold) is unchanged; unlike `cache` it
+    survives a kill, because `cache` is only saved after escalation finishes. An unavailable or fallback answer is not journaled.
+
     Raises StopRequested BEFORE a fresh (uncached) adjudication once the soft-stop flag is up:
     each completed pair is already in `cache`, and the proposals are only decided if every
     pair is, so a stopped run returns no verdicts at all rather than a partly-escalated set."""
@@ -433,6 +464,14 @@ def escalate(proposals: list, ctx: dict, show: str, cache: dict | None = None) -
             out.append(p)
             continue
         adj = cache is not None and acquire_cache.escalation_for(cache, p["variant"], p["canonical"])
+        prov = key = None
+        if not adj and journal is not None:
+            ctx_v, ctx_c = ctx.get(p["variant"], []), ctx.get(p["canonical"], [])
+            key = adjudication_journal.pair_key(p["variant"], p["canonical"])
+            prov = pair_provenance(show, p["variant"], p["canonical"], ctx_v, ctx_c)
+            adj = journal.lookup(key, prov)
+            if adj and cache is not None:
+                acquire_cache.remember_escalation(cache, p["variant"], p["canonical"], adj)
         if not adj:
             if stop_requested():
                 raise StopRequested("escalate", asked, "pair")
@@ -440,6 +479,8 @@ def escalate(proposals: list, ctx: dict, show: str, cache: dict | None = None) -
             asked += 1
             if cache is not None:
                 acquire_cache.remember_escalation(cache, p["variant"], p["canonical"], adj)
+            if key is not None:
+                journal.record(key, prov, adj)  # durable before the next pair; refuses unavailable and fallback answers
         if adj["same_entity"] and adj["confidence"] == "high":
             out.append({**p, "verdict": "apply", "reason": "context-merged"})
         elif not adj["same_entity"] and adj["confidence"] == "high":
@@ -1078,6 +1119,9 @@ def _acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str 
     if problem:
         log(f"glossary acquire refused: {problem}")
         return {"show": show, "note": f"refused: {problem}"}
+    # Completed adjudications (tier C pairs, tier B picks) are journaled as they finish, so a kill loses only the call in flight;
+    # ACQUIRE_NO_CACHE=1 turns this off with the rest of the memo.
+    journal = open_journal(gloss_path)
     # Harvest-first: nothing to score means no reason to spend a wiki round-trip.
     cands, mid, scope = harvest_candidates(show_dir)
     counts = {t: c["occurrence_count"] for t, c in cands.items() if c["occurrence_count"]}
@@ -1177,7 +1221,7 @@ def _acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str 
         cache = {} if os.environ.get("ACQUIRE_NO_CACHE") else acquire_cache.load(gloss_path)
         toks = sorted({p["variant"] for p in close} | {p["canonical"] for p in close})
         try:
-            proposals = escalate(proposals, context_lines(show_dir, toks), show, cache=cache)
+            proposals = escalate(proposals, context_lines(show_dir, toks), show, cache=cache, journal=journal)
         except StopRequested as e:
             # Keep what was adjudicated (a pair costs ~1.3 s of LLM time), apply nothing.
             acquire_cache.save(gloss_path, cache)
@@ -1208,11 +1252,10 @@ def _acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str 
             return {"show": show, "wiki": api, "note": "stopped", "files": files}
         try:
             cands_b = glossary_verify.candidates(term, titles)
-            chosen = glossary_verify.acquire_backend()
-            if chosen == glossary_verify.VERIFY_BACKEND:
-                adj = glossary_verify.adjudicate(term, cands_b, show)
-            else:  # acquire runs on a different backend than verify (ACQUIRE_BACKEND, or local under decision verify)
-                adj = glossary_verify.adjudicate(term, cands_b, show, backend=chosen)
+            # acquire may run on a different backend than verify (ACQUIRE_BACKEND, or local under decision verify)
+            adj = glossary_verify.adjudicate_journaled(
+                term, cands_b, show, journal, backend=glossary_verify.acquire_backend()
+            )
         except Exception as e:
             log("acquire: adjudicate failed:", term, e)
             continue
@@ -1263,6 +1306,8 @@ def _acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str 
             except OSError:
                 pass
             return {"show": show, "wiki": api, "note": f"write-failed: {e}", "files": files}
+    if journal is not None and apply:
+        journal.compact()  # a clean apply: latest line per key, nothing older than the journal's age limit
     return {
         "show": show,
         "wiki": api,
