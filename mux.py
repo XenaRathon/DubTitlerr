@@ -521,16 +521,20 @@ def temp_path(stem: str) -> str:
 
 
 def _source_unchanged(orig: str, st: os.stat_result) -> bool:
-    """True if orig exists and has identical size, mtime, inode, and device as st."""
+    """True if orig exists with identical size and mtime within 1 second.
+
+    Compares size and mtime only; inode and device are dropped because they are unstable
+    on CIFS/NFS/mergerfs mounts. Network mounts also introduce timestamp jitter, so mtime
+    is compared within a 1-second tolerance. A same-size same-mtime replacement is an
+    accepted blind spot to avoid false refusals on network storage.
+    """
     try:
         curr = os.stat(orig)
     except OSError:
         return False
     return (
         curr.st_size == st.st_size
-        and curr.st_mtime == st.st_mtime
-        and curr.st_ino == st.st_ino
-        and curr.st_dev == st.st_dev
+        and abs(curr.st_mtime - st.st_mtime) <= 1.0
     )
 
 

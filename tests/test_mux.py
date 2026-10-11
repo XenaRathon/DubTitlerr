@@ -1556,6 +1556,50 @@ def test_process_keeps_old_unique_temp_when_recovery_marker_exists(tmp_path, mon
     assert rec_temp.exists(), "temp with recovery marker must be kept"
 
 
+def test_source_unchanged_boundary_and_tolerance(tmp_path):
+    f = tmp_path / "video.mkv"
+    f.write_bytes(b"initial-payload-123")
+    st0 = os.stat(f)
+
+    # 1. Exact match => unchanged
+    assert mux._source_unchanged(str(f), st0) is True
+
+    # 2. mtime jitter of 0.4 s => unchanged
+    os.utime(f, (st0.st_atime, st0.st_mtime + 0.4))
+    assert mux._source_unchanged(str(f), st0) is True
+
+    # 3. touched file (mtime +5 s) => changed
+    os.utime(f, (st0.st_atime, st0.st_mtime + 5.0))
+    assert mux._source_unchanged(str(f), st0) is False
+
+    # Reset mtime
+    os.utime(f, (st0.st_atime, st0.st_mtime))
+
+    # 4. size change => changed
+    f.write_bytes(b"longer-initial-payload-123456")
+    os.utime(f, (st0.st_atime, st0.st_mtime))
+    assert mux._source_unchanged(str(f), st0) is False
+
+
+def test_source_unchanged_same_size_same_mtime_replacement_is_accepted_blind_spot(tmp_path):
+    f = tmp_path / "video.mkv"
+    f.write_bytes(b"initial-payload-123")
+    st0 = os.stat(f)
+
+    # Replaced with different inode, same size and same mtime
+    replacement = tmp_path / "replacement.mkv"
+    replacement.write_bytes(b"initial-payload-123")
+    os.utime(replacement, (st0.st_atime, st0.st_mtime))
+    os.replace(replacement, f)
+
+    st1 = os.stat(f)
+    assert st1.st_ino != st0.st_ino  # inode changed
+
+    # Inode/device are dropped, so this is an accepted blind spot (considered unchanged)
+    assert mux._source_unchanged(str(f), st0) is True
+
+
+
 
 
 

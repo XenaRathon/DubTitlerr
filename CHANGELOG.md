@@ -110,7 +110,7 @@ Combinations to avoid:
 until they are added to its `environment:` block (and to the second half of the nightly window, the cron host, if it runs these
 stages).
 
-- **Mux temp files are unique per run.** `mux.py` now uses `<stem>.<pid>.<token>.muxtmp.mkv` to prevent collision between concurrent writers, verifies the source file is unchanged (size, mtime, inode, device) before replacing the original, and updates recovery/sweep checks to match both legacy and new temp files.
+- **Mux temp files are unique per run.** `mux.py` now uses `<stem>.<pid>.<token>.muxtmp.mkv` to prevent collision between concurrent writers, verifies the source file is unchanged (size and mtime within a 1-second tolerance, dropping unstable inode/device checks; a same-size same-mtime replacement is an accepted blind spot) before replacing the original, and updates recovery/sweep checks to match both legacy and new temp files.
 
 - **A saved review answer applies only to the proposal you saw.** Pending answers now carry the canonical (and the reason) of the
   flag you answered; on replay one whose flag now proposes a different canonical (after `--revert` and a new verify) is skipped and
