@@ -1282,20 +1282,39 @@ def _pending_path(gloss_path: str) -> str:
     return gloss_path + ".review-pending"
 
 
-def _read_pending(gloss_path: str) -> list:
+def _valid_answer(row) -> bool:
+    """One saved answer: [term, accept, canonical, reason] with strings and a real JSON boolean (an older file may hold [term,
+    accept] or [term, accept, canonical]). Nothing is coerced: "false" is not a boolean and bool("false") is True."""
+    return (
+        isinstance(row, list)
+        and 2 <= len(row) <= 4
+        and isinstance(row[0], str)
+        and isinstance(row[1], bool)
+        and all(isinstance(x, str) for x in row[2:])
+    )
+
+
+def _read_pending(gloss_path: str, quarantine: bool = True) -> list:
     """The answers a busy glossary kept from an earlier --review: [[term, accept, canonical, reason], ...] (an older file may
-    hold [term, accept] only). A file that cannot be read is set aside as '.bad' (never trusted, never deleted) and counts as
-    empty."""
+    hold [term, accept] only). A file that cannot be read, or has a row that is not exactly that shape, is set aside as '.bad'
+    (never trusted, never deleted, never coerced) and counts as empty. ``quarantine=False`` (a read-only run) reports it the same
+    way but leaves the file where it is."""
     path = _pending_path(gloss_path)
     if not os.path.exists(path):
         return []
     try:
         doc = json.load(open(path, encoding="utf-8"))
-        return [[str(a[0]), bool(a[1]), *[str(x) for x in a[2:4]]] for a in doc["answers"]]
+        rows = doc["answers"]
+        if not isinstance(rows, list) or not all(_valid_answer(r) for r in rows):
+            raise ValueError("malformed answer row")
+        return [list(r) for r in rows]
     except (OSError, ValueError, KeyError, TypeError):
-        log(f"the saved review answers in {path} are unreadable; set aside as {path}.bad")
-        with contextlib.suppress(OSError):
-            os.replace(path, path + ".bad")
+        if quarantine:
+            log(f"the saved review answers in {path} are unreadable or malformed; set aside as {path}.bad")
+            with contextlib.suppress(OSError):
+                os.replace(path, path + ".bad")
+        else:
+            log(f"the saved review answers in {path} are unreadable or malformed; left in place (read-only run)")
         return []
 
 
@@ -1409,7 +1428,7 @@ def main():
         _prune_cli(a)
         return
     if a.review:
-        n_saved = len(_read_pending(a.glossary))
+        n_saved = len(_read_pending(a.glossary, quarantine=a.apply))
         if n_saved and a.apply:
             log(f"{n_saved} answers from an earlier --review were saved while the glossary was busy: applying them first")
             _commit_answers(a.glossary, [])
