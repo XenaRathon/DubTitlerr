@@ -90,7 +90,7 @@ def _normalize_font_token(s):
     s = re.sub(r"\.(?:ttf|otf|ttc|woff2?|eot)$", "", s, flags=re.I)
     s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", s)
     s = s.lower()
-    s = re.sub(r"[^a-z0-9]+", " ", s)
+    s = re.sub(r"[^\w]+|_", " ", s)
     words = [w for w in s.split() if w not in _STYLE_WORDS]
     return "".join(words)
 
@@ -192,7 +192,7 @@ def resolve_dialogue_font(video, loaded_tracks, primary_track):
     if norm_font:
         for att in attachments:
             norm_att = _normalize_font_token(att)
-            if norm_att and (norm_font in norm_att or norm_att in norm_font):
+            if norm_att and (norm_font in norm_att):
                 font_attached = True
                 break
 

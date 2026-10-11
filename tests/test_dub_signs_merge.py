@@ -1199,3 +1199,28 @@ def test_overlap_threshold_60_percent_deduped(tmp_path, monkeypatch):
     assert status == "ok"
     assert signs == 1
 
+
+# --- Item 5: font attachment matching ----------------------------------------
+
+
+def test_font_attachment_matching_unidirectional_and_unicode(tmp_path, monkeypatch):
+    def resolve_font(candidate_font, attachments):
+        track = _track_with_dialogue(fontname=candidate_font, style_name="Default")
+        loaded_tracks = [{"subs": track, "src_events": track.events, "kept_events": []}]
+        monkeypatch.setattr(dsm, "list_attachment_filenames", lambda v: attachments)
+        return dsm.resolve_dialogue_font("fake.mkv", loaded_tracks, loaded_tracks[0])
+
+    # False positives from reverse matching (norm_att in norm_font) must NOT match:
+    # "Gill Sans" vs "Sans.ttf", "Arial Rounded MT Bold" vs "Arial.ttf", "Fontin Sans" vs "Font.ttf"
+    assert resolve_font("Gill Sans", ["Sans.ttf"]) == "Trebuchet MS"
+    assert resolve_font("Arial Rounded MT Bold", ["Arial.ttf"]) == "Trebuchet MS"
+    assert resolve_font("Fontin Sans", ["Font.ttf"]) == "Trebuchet MS"
+
+    # Forward matching (norm_font in norm_att) matches
+    assert resolve_font("CC Wild Words", ["CCWildWords-Regular.ttf"]) == "CC Wild Words"
+    assert resolve_font("Fontin Sans", ["FontinSans-Regular.otf"]) == "Fontin Sans"
+
+    # Unicode / non-ASCII font matching
+    assert resolve_font("ＭＳ ゴシック", ["ＭＳ ゴシック.ttf"]) == "ＭＳ ゴシック"
+
+
