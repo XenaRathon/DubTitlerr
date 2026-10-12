@@ -370,6 +370,11 @@ def _plain_words(text):
     return re.findall(r"[^\W_]+", re.sub(r"\\[Nnh]", " ", t).lower())
 
 
+def _drawing_path(text):
+    """The m/l/b path of a \\p drawing, whitespace-normalised, for comparing drawings that carry no \\pos."""
+    return " ".join(re.sub(r"\{[^}]*\}", "", text or "").split())
+
+
 def _parse_playres(value, default):
     """An ASS PlayRes header as a positive int; ``default`` for anything else. Real files write "1920.0" or pad it."""
     try:
@@ -450,7 +455,9 @@ def _events_match(p, s, play_res=None):
             pw, ph = play_res if play_res else (1280, 720)
             dx = abs(pos_p[0] - pos_s[0])
             dy = abs(pos_p[1] - pos_s[1])
-            return (dx <= 0.20 * pw) and (dy <= 0.20 * ph)
+            return (dx <= 0.10 * pw) and (dy <= 0.10 * ph)
+        if not pos_p and not pos_s:
+            return _drawing_path(p.text) == _drawing_path(s.text)
         return True
 
     norm_p = _normalize_sign_plaintext(p.text)

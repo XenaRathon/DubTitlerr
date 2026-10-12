@@ -1322,3 +1322,40 @@ def test_song_line_with_a_typo_in_one_word_is_still_collapsed():
     p = pysubs2.SSAEvent(start=0, end=3000, style="OP Romaji", text=r"{\k20}we will never give up on this dream")
     s = pysubs2.SSAEvent(start=0, end=3000, style="OP-Romaji", text=r"{\k20}we wil never give up on this dream")
     assert dsm._events_match(p, s)
+
+
+# --- Follow-up 3: drawing proximity is 10% of PlayRes; unpositioned drawings compare paths ---
+
+
+def _drawing(text, start=0, end=2000, style="Sign"):
+    return pysubs2.SSAEvent(start=start, end=end, style=style, text=text)
+
+
+def test_drawings_150px_apart_on_a_1280_canvas_are_kept():
+    p = _drawing(r"{\p1\pos(100,100)}m 0 0 l 9 0 9 9")
+    s = _drawing(r"{\p1\pos(250,100)}m 0 0 l 9 0 9 9", style="Signs")
+    assert not dsm._events_match(p, s)
+
+
+def test_drawings_within_10_percent_are_still_collapsed():
+    p = _drawing(r"{\p1\pos(100,100)}m 0 0 l 9 0 9 9")
+    s = _drawing(r"{\p1\pos(220,160)}m 0 0 l 9 0 9 9", style="Signs")
+    assert dsm._events_match(p, s)
+
+
+def test_the_window_follows_the_declared_play_res():
+    p = _drawing(r"{\p1\pos(100,100)}m 0 0 l 9 0 9 9")
+    s = _drawing(r"{\p1\pos(250,100)}m 0 0 l 9 0 9 9", style="Signs")
+    assert dsm._events_match(p, s, (1920, 1080))
+
+
+def test_unpositioned_drawings_with_different_paths_are_kept():
+    p = _drawing(r"{\p1}m 0 0 l 100 0 100 100")
+    s = _drawing(r"{\p1}m 0 0 b 5 5 9 9 3 3", style="Signs")
+    assert not dsm._events_match(p, s)
+
+
+def test_unpositioned_drawings_with_the_same_path_are_collapsed_whatever_the_spacing():
+    p = _drawing(r"{\p1}m 0 0 l 100 0 100 100")
+    s = _drawing("{\\p1}m  0 0\tl 100 0   100 100 ", style="Signs")
+    assert dsm._events_match(p, s)
