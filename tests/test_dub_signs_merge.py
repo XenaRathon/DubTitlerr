@@ -3,6 +3,7 @@
 import os
 
 import pysubs2
+import pytest
 
 import common
 import dub_signs_merge as dsm
@@ -1268,3 +1269,35 @@ def test_secondary_sign_layer_preserved_and_style_conflict_logged(tmp_path, monk
     assert "style conflict: 'OtherSign'" not in out
 
 
+
+
+# --- Follow-up 1: PlayRes declared as a float / padded / garbage -------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("1920", 1920),
+        ("1920.0", 1920),
+        ("1920.5", 1920),
+        (" 1080 ", 1080),
+        ("", 7),
+        (None, 7),
+        ("abc", 7),
+        ("nan", 7),
+        ("inf", 7),
+        ("-5", 7),
+    ],
+)
+def test_parse_playres_tolerates_floats_whitespace_and_garbage(raw, expected):
+    assert dsm._parse_playres(raw, 7) == expected
+
+
+def test_build_with_float_playres_merges_and_keeps_the_declared_canvas(tmp_path, monkeypatch):
+    track0, track1 = _sign_track(text="first"), _sign_track(text="second")
+    for t in (track0, track1):
+        t.info["PlayResX"], t.info["PlayResY"] = "1920.0", "1080.5"
+    status, _signs, _dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    out = pysubs2.load(out_ass)
+    assert (int(float(out.info["PlayResX"])), int(float(out.info["PlayResY"]))) == (1920, 1080)

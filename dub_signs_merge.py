@@ -365,6 +365,15 @@ def _normalize_sign_plaintext(text):
     return "".join(ch for ch in t.lower() if ch.isalnum())
 
 
+def _parse_playres(value, default):
+    """An ASS PlayRes header as a positive int; ``default`` for anything else. Real files write "1920.0" or pad it."""
+    try:
+        n = int(float(str(value).strip()))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return n if n > 0 else default
+
+
 def _get_pos(text):
     m = re.search(r"\\pos\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)", text or "")
     if m:
@@ -519,8 +528,8 @@ def build(video, dub_srt, out_ass):
         primary_starts = [e.start for e in sorted_primary]
         max_primary_dur = max((e.end - e.start for e in sorted_primary), default=0)
         max_primary_dur = max(0, max_primary_dur)
-        play_w = int(base.info.get("PlayResX") or 1280)
-        play_h = int(base.info.get("PlayResY") or 720)
+        play_w = _parse_playres(base.info.get("PlayResX"), 1280)
+        play_h = _parse_playres(base.info.get("PlayResY"), 720)
         play_res = (play_w, play_h)
 
         for track in loaded_tracks:
@@ -569,11 +578,7 @@ def build(video, dub_srt, out_ass):
     # Declaring the video's PROBED resolution would be more correct, but only together with a
     # transform of every inherited sign coordinate into the new space -- the transform D5
     # above still defers to V3. Until that lands, the assumed space is the honest one.
-    play_y = 0
-    try:
-        play_y = int(base.info.get("PlayResY") or 0)
-    except Exception:
-        pass
+    play_y = _parse_playres(base.info.get("PlayResY"), 0)
     if not play_y:
         base.info["PlayResX"], base.info["PlayResY"] = "384", "288"
         play_y = 288
