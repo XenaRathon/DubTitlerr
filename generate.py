@@ -1099,6 +1099,21 @@ def _staleness_census(files):
     return census
 
 
+def filter_only_re(files, pattern):
+    """Filter files whose basename matches regex pattern. Fail closed on invalid regex."""
+    if not pattern:
+        return files
+    try:
+        rx = re.compile(pattern)
+    except re.error as e:
+        log(f"invalid GENERATE_ONLY_RE regex {pattern!r}: {e}")
+        sys.exit(2)
+    total = len(files)
+    kept = [f for f in files if rx.search(os.path.basename(f))]
+    log(f"GENERATE_ONLY_RE: kept {len(kept)} of {total} files")
+    return kept
+
+
 def main():
     args = sys.argv[1:]
     files = []
@@ -1108,6 +1123,9 @@ def main():
             for fn in fs:
                 if fn.lower().endswith(VIDEO_EXTS) and not SKIP_FILE_RE.search(fn):
                     files.append(os.path.join(dp, fn))
+        only_re = os.environ.get("GENERATE_ONLY_RE", "")
+        if only_re:
+            files = filter_only_re(files, only_re)
         # Watch-order priority: process seasons >= a per-show start season first (the arc
         # the viewer is about to watch), then earlier ones. Absent config -> plain sort.
         files = ordering.order_files(files, ordering.read_start(os.environ.get("SHOW_NAME", "")))
