@@ -365,6 +365,11 @@ def _normalize_sign_plaintext(text):
     return "".join(ch for ch in t.lower() if ch.isalnum())
 
 
+def _plain_words(text):
+    t = re.sub(r"\{[^}]*\}", "", text or "")
+    return re.findall(r"[^\W_]+", re.sub(r"\\[Nnh]", " ", t).lower())
+
+
 def _parse_playres(value, default):
     """An ASS PlayRes header as a positive int; ``default`` for anything else. Real files write "1920.0" or pad it."""
     try:
@@ -425,8 +430,14 @@ def _events_match(p, s, play_res=None):
         lat_s = _is_latin(norm_s)
         if (cjk_p and lat_s) or (lat_p and cjk_s):
             return False
-        ratio = difflib.SequenceMatcher(None, norm_p, norm_s).ratio()
-        return ratio >= 0.75
+        if difflib.SequenceMatcher(None, norm_p, norm_s).ratio() < 0.85:
+            return False
+        # One whole word swapped in a repeated chorus line scores ~0.93 as a string: same word count, a
+        # word that is not merely a misspelling of its counterpart means a different line.
+        words_p, words_s = _plain_words(p.text), _plain_words(s.text)
+        if len(words_p) == len(words_s) >= 2:
+            return all(difflib.SequenceMatcher(None, a, b).ratio() >= 0.5 for a, b in zip(words_p, words_s))
+        return True
 
     draw_p = bool(DRAWING_TAG.search(p.text or ""))
     draw_s = bool(DRAWING_TAG.search(s.text or ""))

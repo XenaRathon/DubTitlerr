@@ -1301,3 +1301,24 @@ def test_build_with_float_playres_merges_and_keeps_the_declared_canvas(tmp_path,
     assert status == "ok"
     out = pysubs2.load(out_ass)
     assert (int(float(out.info["PlayResX"])), int(float(out.info["PlayResY"]))) == (1920, 1080)
+
+
+# --- Follow-up 2: a chorus line differing by one word is not a duplicate -----
+
+
+def test_song_chorus_lines_differing_by_one_word_are_kept():
+    p = pysubs2.SSAEvent(start=0, end=3000, style="OP Romaji", text=r"{\k20}we will never give up on this dream")
+    s = pysubs2.SSAEvent(start=0, end=3000, style="OP-Romaji", text=r"{\k20}we will never give in on this dream")
+    assert not dsm._events_match(p, s)
+
+
+def test_song_line_with_a_trailing_particle_is_still_collapsed():
+    p = pysubs2.SSAEvent(start=0, end=3000, style="OP Romaji", text=r"{\k20}Shinjitsu")
+    s = pysubs2.SSAEvent(start=0, end=3000, style="OP-Romaji", text=r"{\k20}Shinjitsu no")
+    assert dsm._events_match(p, s)
+
+
+def test_song_line_with_a_typo_in_one_word_is_still_collapsed():
+    p = pysubs2.SSAEvent(start=0, end=3000, style="OP Romaji", text=r"{\k20}we will never give up on this dream")
+    s = pysubs2.SSAEvent(start=0, end=3000, style="OP-Romaji", text=r"{\k20}we wil never give up on this dream")
+    assert dsm._events_match(p, s)
