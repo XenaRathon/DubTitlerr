@@ -375,6 +375,9 @@ def _drawing_path(text):
     return " ".join(re.sub(r"\{[^}]*\}", "", text or "").split())
 
 
+LONG_EVENT_MS = 10_000
+
+
 def _parse_playres(value, default):
     """An ASS PlayRes header as a positive int; ``default`` for anything else. Real files write "1920.0" or pad it."""
     try:
@@ -542,9 +545,13 @@ def build(video, dub_srt, out_ass):
         base.events.extend(primary_track["kept_events"])
         kept = list(primary_track["kept_events"])
 
+        # Events longer than LONG_EVENT_MS are scanned for every secondary event; the rest are bisected
+        # with their OWN max duration, so one episode-long logo cannot widen every other event's window.
         sorted_primary = sorted(primary_track["kept_events"], key=lambda e: e.start)
-        primary_starts = [e.start for e in sorted_primary]
-        max_primary_dur = max((e.end - e.start for e in sorted_primary), default=0)
+        long_primary = [e for e in sorted_primary if e.end - e.start > LONG_EVENT_MS]
+        sorted_rest = [e for e in sorted_primary if e.end - e.start <= LONG_EVENT_MS]
+        primary_starts = [e.start for e in sorted_rest]
+        max_primary_dur = max((e.end - e.start for e in sorted_rest), default=0)
         max_primary_dur = max(0, max_primary_dur)
         play_w = _parse_playres(base.info.get("PlayResX"), 1280)
         play_h = _parse_playres(base.info.get("PlayResY"), 720)
@@ -560,7 +567,7 @@ def build(video, dub_srt, out_ass):
             for ev in track["kept_events"]:
                 left_idx = bisect.bisect_left(primary_starts, ev.start - max_primary_dur)
                 right_idx = bisect.bisect_right(primary_starts, ev.end)
-                candidates = sorted_primary[left_idx:right_idx]
+                candidates = long_primary + sorted_rest[left_idx:right_idx]
                 if any(_events_match(p_ev, ev, play_res) for p_ev in candidates):
                     dropped_count += 1
                 else:

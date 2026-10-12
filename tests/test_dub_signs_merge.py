@@ -1359,3 +1359,94 @@ def test_unpositioned_drawings_with_the_same_path_are_collapsed_whatever_the_spa
     p = _drawing(r"{\p1}m 0 0 l 100 0 100 100")
     s = _drawing("{\\p1}m  0 0\tl 100 0   100 100 ", style="Signs")
     assert dsm._events_match(p, s)
+
+
+# --- Follow-up 4: a few very long primary events must not widen every other event's window ---
+
+
+def _count_match_calls(tmp_path, monkeypatch, primary_extra):
+    def tr(off):
+        return [
+            pysubs2.SSAEvent(
+                start=i * 600 + off, end=i * 600 + off + 1500, style="Signs", text=f"{{\\pos(100,100)}}SIGN {i}"
+            )
+            for i in range(2000)
+        ]
+
+    t0 = pysubs2.SSAFile()
+    t0.styles["Signs"] = pysubs2.SSAStyle()
+    t0.events = tr(0) + primary_extra
+    t1 = pysubs2.SSAFile()
+    t1.styles["Signs"] = pysubs2.SSAStyle()
+    t1.events = tr(100)
+    calls = 0
+    orig_match = dsm._events_match
+
+    def counting_match(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return orig_match(*args, **kwargs)
+
+    monkeypatch.setattr(dsm, "_events_match", counting_match)
+    status, signs, _dub, _out = _two_track_build(tmp_path, monkeypatch, t0, t1)
+    assert status == "ok"
+    return calls, signs
+
+
+def test_long_primary_events_do_not_blow_up_the_number_of_comparisons(tmp_path, monkeypatch):
+    base_calls, _ = _count_match_calls(tmp_path, monkeypatch, [])
+    long_karaoke = [
+        pysubs2.SSAEvent(start=i * 300_000, end=i * 300_000 + 120_000, style="OP", text=r"{\k20}la{\k20}la")
+        for i in range(3)
+    ]
+    calls, _ = _count_match_calls(tmp_path, monkeypatch, long_karaoke)
+    assert calls <= 3 * base_calls, f"{calls} comparisons vs {base_calls} without the long events"
+
+
+def test_bisect_window_gives_the_same_survivors_as_a_full_scan(tmp_path, monkeypatch):
+    import random
+
+    texts = ["EXIT", "CAFE", "GATE", "OPEN"]
+
+    def rand_track(rng, n, long_ones):
+        t = pysubs2.SSAFile()
+        t.styles["Signs"] = pysubs2.SSAStyle()
+        for _ in range(n):
+            start = rng.randrange(0, 600_000, 10)
+            dur = rng.choice([0, 500, 2000, 8000])
+            t.events.append(
+                pysubs2.SSAEvent(
+                    start=start, end=start + dur, style="Signs", text=f"{{\\pos(10,10)}}{rng.choice(texts)}"
+                )
+            )
+        for _ in range(long_ones):
+            start = rng.randrange(0, 400_000, 10)
+            t.events.append(
+                pysubs2.SSAEvent(start=start, end=start + 120_000, style="Signs", text=r"{\pos(10,10)}EXIT")
+            )
+        return t
+
+    def kept(track):
+        seen, out = set(), []
+        for e in track.events:
+            k = (int(e.start), int(e.end), e.style, e.layer, e.text)
+            if dsm.keep_event(e) and k not in seen:
+                seen.add(k)
+                out.append(e)
+        return out
+
+    for seed in range(8):
+        rng = random.Random(seed)
+        t0, t1 = rand_track(rng, 120, seed % 3), rand_track(rng, 100, 0)
+        primary, secondary = kept(t0), kept(t1)
+        if len(secondary) > len(primary):  # build() takes the track with more kept events as the primary
+            primary, secondary = secondary, primary
+        expected = sorted(
+            [(e.start, e.end, e.text) for e in primary]
+            + [(e.start, e.end, e.text) for e in secondary if not any(dsm._events_match(p, e, (1280, 720)) for p in primary)]
+        )
+        sub = tmp_path / str(seed)
+        sub.mkdir()
+        _status, _signs, _dub, out_ass = _two_track_build(sub, monkeypatch, t0, t1)
+        got = sorted((e.start, e.end, e.text) for e in pysubs2.load(out_ass).events if e.style != "Dubtitles")
+        assert got == expected, f"seed {seed}"
