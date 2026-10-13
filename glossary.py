@@ -384,7 +384,9 @@ def correct(text: str, gloss: dict) -> tuple[str, int]:
     """Apply the tiered correction to one line; return (corrected, n_changes)."""
     n = 0
     for key in sorted(gloss["phrase_fixes"], key=len, reverse=True):  # phrases first
-        text, c = re.compile(r"\b" + re.escape(key) + r"\b", re.I).subn(gloss["phrase_fixes"][key], text)
+        # A function replacement, not the value itself: a str is a re template, so a backslash or \g<0> in a
+        # hard_fixes value (hand-edited or from the web editor) would raise or silently change the replacement.
+        text, c = re.compile(r"\b" + re.escape(key) + r"\b", re.I).subn(lambda _m, v=gloss["phrase_fixes"][key]: v, text)
         n += c
     out = []
     for tok in text.split():

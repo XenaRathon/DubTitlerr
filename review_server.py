@@ -63,7 +63,14 @@ from urllib.parse import quote
 
 import common
 import decisions
+import review_admin
 import review_apply
+import review_glossary
+import review_requests
+import review_settings
+import review_settings_write
+import review_status
+import review_webhooks
 import unresolved
 from common import log
 from decisions import show_for
@@ -72,7 +79,6 @@ REVIEW_PORT = int(os.environ.get("REVIEW_PORT", "8842"))
 UI_DIST = Path(__file__).resolve().parent / "web" / "dist"
 _AUDIO_SLOTS = threading.BoundedSemaphore(2)
 AUDIO_MAX_SECONDS = 20
-
 
 
 # Beside DECISIONS_DIR rather than inside it: that directory is the artifact a user may
@@ -102,7 +108,7 @@ STEMS_TTL = float(os.environ.get("REVIEW_STEMS_TTL", "30"))
 # actually took. A list this expensive to rebuild is allowed to be an hour stale; a fresh
 # episode still appears within that, and immediately on restart.
 STEMS_TTL_FACTOR = float(os.environ.get("REVIEW_STEMS_TTL_FACTOR", "20"))
-_STEMS_CACHE = None
+_STEMS_CACHE = None  # (expiry, stems, filled_at): filled_at is the walk START, time.monotonic(), for /api/status's cache_age_s
 # One episode's open queue, filled by the same pass that discovers the episodes and dropped
 # when that pass is redone. The index reads every episode's queue jsonl AND its conf.json --
 # ~200s across the live library, on top of the walk.
@@ -251,6 +257,52 @@ def announce_token(token_dir: str = "", bind: str = "") -> None:
     log("review server:   docker exec <container> cat " + path)
 
 
+ADMIN_HEADER = "X-Review-Admin-Token"
+# A request target after whitespace -- origin-form (/path) or absolute-form (scheme://host/path) -- and the query that
+# follows it, whatever the method token (PROPFIND, lowercase get, M-SEARCH...).
+_REQUEST_LINE_QUERY = re.compile(r'(\s(?:[A-Za-z][A-Za-z0-9+.-]*://[^\s"?/]*)?/[^\s"?]*)\?[^\s"]*')
+# Write routes added with the webui whose body must be JSON: garbage is a 400 there. The inbox routes keep their old
+# lenient reading (unparseable becomes an empty body).
+_JSON_REQUIRED = frozenset(
+    (
+        ("POST", "/api/requests"),
+        ("PUT", "/api/schedule"),
+        ("PUT", "/api/settings"),
+        ("POST", "/api/settings/test"),
+        ("POST", "/api/glossary"),
+    )
+)
+# (method, path) -> handler(body) for routes that need the admin token (specs/webui-admin-token). route() checks the review
+# token first, then admin_guard(); the HTTP layer fills ``admin_token`` from the header only. Empty until settings, run
+# requests and the schedule land; tests register a probe here.
+ADMIN_ROUTES: dict = {}
+
+
+def _anime_root():
+    """ANIME_ROOT from the environment at call time (None lets review_requests apply its own default)."""
+    return os.environ.get("ANIME_ROOT") or None
+
+
+# Builder-affecting writes: review token first, then the admin token (see route()).
+ADMIN_ROUTES[("POST", "/api/requests")] = lambda body: review_requests.handle(
+    "POST", "/api/requests", body, anime_root=_anime_root()
+)
+ADMIN_ROUTES[("PUT", "/api/settings")] = lambda body: review_settings_write.put_settings(body)
+ADMIN_ROUTES[("POST", "/api/settings/reset")] = lambda body: review_settings_write.reset_settings()
+ADMIN_ROUTES[("PUT", "/api/schedule")] = lambda body: review_requests.handle(
+    "PUT", "/api/schedule", body, anime_root=_anime_root()
+)
+
+
+def admin_guard(presented):
+    """None when the admin token is configured and matches; else the (403, payload) to answer with."""
+    return review_admin.check_admin(presented)
+
+
+def admin_authorised(presented) -> bool:
+    return admin_guard(presented) is None
+
+
 def authorised(method: str, presented, path: str = "") -> bool:
     """All routes require the token when auth is enabled."""
     if not auth_required():
@@ -314,7 +366,9 @@ def known_stems() -> list:
     # Filled together, dropped together. Nothing else expires a queue entry, so a re-repaired
     # episode would otherwise keep its old queue until the container restarted.
     _QUEUE_CACHE.clear()
-    _STEMS_CACHE = (time.monotonic() + _stems_ttl(time.monotonic() - now), stems)
+    # One tuple, one assignment: a reader never sees a list paired with another fill's timestamp. ``now`` is the
+    # walk START -- the list describes the tree as the walk saw it from then on, not as of when it finished.
+    _STEMS_CACHE = (time.monotonic() + _stems_ttl(time.monotonic() - now), stems, now)
     return stems
 
 
@@ -693,8 +747,10 @@ def handle_decide_batch(stem: str, verdicts: list) -> dict:
                 e = items[index]
                 # New workspace sends an identity as well as the legacy index. Never let a stale tab approve a new row.
                 if "id" in d and (
-                    d["id"] != entry_id(e) or e.get("resolved")
-                    or not unresolved.undecided([e], store) or not unresolved.live_only(ep, [e])
+                    d["id"] != entry_id(e)
+                    or e.get("resolved")
+                    or not unresolved.undecided([e], store)
+                    or not unresolved.live_only(ep, [e])
                 ):
                     errors.append({"index": index, "error": "stale review entry; reload this episode"})
                     continue
@@ -912,8 +968,11 @@ def preview_audio(body: dict) -> tuple:
             cards = json.load(f)
         if not isinstance(cards, list) or not isinstance(entry, dict):
             raise ValueError
-        matches = [c for c in cards if isinstance(c, dict)
-                   and decisions.key(c.get("text", "")) == decisions.key(entry.get("original_text", ""))]
+        matches = [
+            c
+            for c in cards
+            if isinstance(c, dict) and decisions.key(c.get("text", "")) == decisions.key(entry.get("original_text", ""))
+        ]
         card = matches[occurrence]
         start, end = float(card["start"]), float(card["end"])
         if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start:
@@ -928,23 +987,55 @@ def preview_audio(body: dict) -> tuple:
     try:
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-show_streams", "-of", "json", video],
-            capture_output=True, timeout=10, check=True, stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            check=True,
+            stdin=subprocess.DEVNULL,
         )
         info = json.loads(probe.stdout)
         streams = info.get("streams", []) if isinstance(info, dict) else []
-        audio = [s for s in streams if isinstance(s, dict) and s.get("codec_type") == "audio"
-                 and isinstance(s.get("tags", {}), dict)
-                 and str(s.get("tags", {}).get("language", "")).lower() in ("eng", "en")
-                 and "commentary" not in str(s.get("tags", {}).get("title", "")).lower()]
+        audio = [
+            s
+            for s in streams
+            if isinstance(s, dict)
+            and s.get("codec_type") == "audio"
+            and isinstance(s.get("tags", {}), dict)
+            and str(s.get("tags", {}).get("language", "")).lower() in ("eng", "en")
+            and "commentary" not in str(s.get("tags", {}).get("title", "")).lower()
+        ]
         if not audio:
             return 422, {"error": "no English dialogue audio track"}
         offset = max(0, start - 1.5)
         duration = min(AUDIO_MAX_SECONDS, end + 1.5 - offset)
         result = subprocess.run(
-            ["ffmpeg", "-nostdin", "-v", "error", "-ss", str(offset), "-i", video,
-             "-map", f"0:{int(audio[0]['index'])}", "-t", str(duration), "-vn", "-ac", "1", "-ar", "16000",
-             "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"],
-            capture_output=True, timeout=30, check=True, stdin=subprocess.DEVNULL,
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-ss",
+                str(offset),
+                "-i",
+                video,
+                "-map",
+                f"0:{int(audio[0]['index'])}",
+                "-t",
+                str(duration),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_s16le",
+                "-f",
+                "wav",
+                "pipe:1",
+            ],
+            capture_output=True,
+            timeout=30,
+            check=True,
+            stdin=subprocess.DEVNULL,
         )
         if not result.stdout.startswith(b"RIFF") or len(result.stdout) <= 44:
             return 502, {"error": "audio extraction produced no clip"}
@@ -955,18 +1046,43 @@ def preview_audio(body: dict) -> tuple:
         _AUDIO_SLOTS.release()
 
 
-def route(method: str, path: str, body: dict, token, client: str = "") -> tuple:
-    """(status, payload) for one request. ``client`` is the peer address, used only to throttle /api/login."""
+def route(
+    method: str, path: str, body: dict, token, client: str = "", admin_token: str = "", headers: dict | None = None
+) -> tuple:
+    """(status, payload) for one request. ``client`` is the peer address, used only to throttle /api/login.
+    ``admin_token`` is the X-Review-Admin-Token header value (never a cookie or query value), "" when absent.
+    ``headers`` are the request headers, read only by the webhook routes (their own X-Webhook-Token)."""
+    bare = path.partition("?")[0]
     if method == "GET" and (path == "/review" or path.startswith("/review/")):
         return workspace_asset(path)
     if method == "GET" and path == "/healthz":
         return handle_healthz()
     if method == "GET" and path == "/api/auth-mode":
-        return 200, {"password_login": _LOGIN is not None}
+        return 200, {"password_login": _LOGIN is not None, "admin_enabled": review_admin.admin_enabled()}
     if method == "POST" and path == "/api/login":
         return handle_login(body, client)
+    if method == "POST" and bare in review_webhooks.WEBHOOK_ROUTES:
+        # Sonarr/Radarr cannot send the review token: these routes carry their own WEBHOOK_TOKEN, checked inside
+        # handle(). They are deliberately NOT in OPEN_ROUTES, which stays the three pinned entries.
+        return review_webhooks.handle(
+            method,
+            path,
+            body,
+            headers=headers,
+            create=review_requests.create,
+            list_requests=review_requests.list_requests,
+            anime_root=_anime_root(),
+        )
     if not authorised(method, token, path):
         return 401, {"error": "a token is required"}
+    admin_handler = ADMIN_ROUTES.get((method, bare))
+    if admin_handler is not None:
+        refusal = admin_guard(admin_token)
+        if refusal:
+            return refusal
+        return (400, {"error": "invalid JSON"}) if body is None else admin_handler(body)
+    if body is None:  # only the strict JSON routes produce None (see Handler._with_body)
+        return 400, {"error": "invalid JSON"}
     if method == "GET" and path == "/api/audio":
         return preview_audio(body)
     if method == "GET" and path == "/api/episodes":
@@ -994,6 +1110,19 @@ def route(method: str, path: str, body: dict, token, client: str = "") -> tuple:
         return 200, handle_shared_decide(d if isinstance(d, list) else [])
     if method == "POST" and path == "/api/apply":
         return 200, handle_apply(str(body.get("stem", "")))
+    if method == "GET" and bare in ("/api/requests", "/api/schedule"):
+        return review_requests.handle("GET", bare, body, anime_root=_anime_root())
+    if (method, bare) in (("GET", "/api/settings"), ("POST", "/api/settings/test")):
+        # The connection test is a read-only probe, so it needs the review token only, not the admin token.
+        result = review_settings.handle(method, bare, body)
+        # GET gains the profile names, pending overrides and whether writes are possible (review_settings_write.py).
+        return review_settings_write.augment_get(*result) if method == "GET" else result
+    if path == "/api/status" and method == "GET":
+        # ONE read of the cache global: list and fill time always come from the same fill.
+        snapshot = _STEMS_CACHE
+        return review_status.handle(method, path, body, stems_cache=snapshot, open_entries=open_entries, now=time.monotonic())
+    if path == "/api/glossary" and method in ("GET", "POST"):
+        return review_glossary.handle(method, path, body, operator="token" if auth_required() else "anonymous")
     return 404, {"error": "no such route"}
 
 
@@ -1477,9 +1606,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if status == 429 and isinstance(payload, dict) and payload.get("retry_after"):
             self.send_header("Retry-After", str(int(payload["retry_after"])))
         if self.path.split("?", 1)[0].startswith("/review"):
-            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; "
-                             "img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; "
-                             "object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self'; style-src 'self'; "
+                "img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; "
+                "object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+            )
         self.end_headers()
         self.wfile.write(raw)
 
@@ -1504,17 +1636,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             status, payload = handle_healthz()
             return self._send(status, payload)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
-        status, payload = route("GET", u.path, q, presented, client=self._client())
+        status, payload = route(
+            "GET", u.path, q, presented, client=self._client(), admin_token=self.headers.get(ADMIN_HEADER, "")
+        )
         ctype = "application/json"
         if isinstance(payload, bytes):
             if u.path == "/api/audio":
                 ctype = "audio/wav"
             else:
-                ctype = {".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
-                         ".woff2": "font/woff2"}.get(Path(u.path).suffix, "text/html; charset=utf-8")
+                ctype = {".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2"}.get(
+                    Path(u.path).suffix, "text/html; charset=utf-8"
+                )
         self._send(status, payload, ctype)
 
     def do_POST(self):
+        self._with_body("POST")
+
+    def do_PUT(self):
+        self._with_body("PUT")
+
+    def _with_body(self, method: str):
         # The body is read BEFORE authorised() runs, so this bound is what stands between an
         # unauthenticated caller and this root process's memory. int("-1") does NOT raise, so
         # a declared length of -1 slipped past a `> cap` test and rfile.read(-1) then read to
@@ -1535,23 +1676,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._send(413, {"error": "body too large"})
             if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
                 return self._send(415, {"error": "application/json is required"})
-        try:
-            body = json.loads(self.rfile.read(n) or b"{}")
-        except ValueError:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        path_only = self.path.split("?", 1)[0]
+        if method == "POST" and path_only in review_webhooks.WEBHOOK_ROUTES:
+            # The webhook handler wants the RAW bytes: it checks its token first, then the 256 KiB cap, then parses,
+            # so a bad JSON body is a 400 (not a silent {}) and an oversize one a 413. Read at most cap + 1 bytes.
+            body = self.rfile.read(min(n, review_webhooks.BODY_CAP + 1))
+        else:
+            strict = (method, path_only) in _JSON_REQUIRED
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except ValueError:
+                body = None if strict else {}
+            if body is not None and not isinstance(body, dict):
+                body = None if strict else {}  # None reaches route(), which answers 400 once the caller is authorised
         status, payload = route(
-            "POST",
+            method,
             self.path,
             body,
             self.headers.get(TOKEN_HEADER) or _cookie_token(self.headers),
             client=self._client(),
+            admin_token=self.headers.get(ADMIN_HEADER, ""),  # the header only: a cookie or query value is never consulted
+            headers=dict(self.headers.items()),
         )
         self._send(status, payload)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 - the base class names it this
-        log("review server: " + (format % args))
+        # Never log a query string: the webhook routes accept ?token=, and a token in the request line would reach the log.
+        log("review server: " + _REQUEST_LINE_QUERY.sub(r"\1?[query hidden]", format % args))
 
 
 class BoundedHTTPServer(http.server.ThreadingHTTPServer):

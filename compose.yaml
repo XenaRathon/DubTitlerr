@@ -105,6 +105,44 @@ services:
       # REVIEW_USERNAME: ${REVIEW_USERNAME:-}
       # REVIEW_PASSWORD_FILE: /config/review_password # read once at start; or REVIEW_PASSWORD
 
+      # --- web UI run control, settings writes and Sonarr/Radarr webhooks (all optional) ---
+      # Writes that affect the builder (queue a run, set the schedule) need this second
+      # token, sent as the X-Review-Admin-Token header. Unset means those routes stay
+      # disabled. Use REVIEW_ADMIN_TOKEN_FILE to read it from a file instead.
+      # REVIEW_ADMIN_TOKEN: ${REVIEW_ADMIN_TOKEN:-}
+      # REVIEW_ADMIN_TOKEN_FILE: /config/review_admin_token
+      # Webhook receiver for Sonarr/Radarr (Settings > Connect > Webhook, POST to
+      # http://<host>:8842/api/webhook/sonarr or /radarr, header X-Webhook-Token).
+      # Unset means the routes answer 404. REMOTE_PATH_MAPPINGS translates the paths
+      # Sonarr/Radarr report into this container's paths: "remote=local;remote2=local2".
+      # WEBHOOK_TOKEN: ${WEBHOOK_TOKEN:-}
+      # REMOTE_PATH_MAPPINGS: ${REMOTE_PATH_MAPPINGS:-}
+      # The queue, schedule and effective-settings files live under /config by default
+      # (requests/, schedule.json, effective.env); change them only together:
+      # REQUESTS_DIR: /config/requests
+      # SCHEDULE_FILE: /config/schedule.json
+      # EFFECTIVE_ENV_FILE: /config/effective.env
+
+      # --- optional: repair through an OpenAI-compatible API instead of llama.cpp ---
+      # Replace the three REPAIR_* lines above with these. The key is read from the
+      # environment variable NAMED by REPAIR_OPENAI_KEY_ENV; put the key itself in .env.
+      # REPAIR_BACKEND: openai
+      # REPAIR_MODEL: LongCat-2.0
+      # REPAIR_OPENAI_URL: ${REPAIR_OPENAI_URL:-}
+      # REPAIR_OPENAI_KEY_ENV: LONGCATAI_API_KEY
+      # LONGCATAI_API_KEY: ${LONGCATAI_API_KEY:-}
+      # REPAIR_EXTRA_BODY: ${REPAIR_EXTRA_BODY:-}
+
+      # --- optional: repair profiles the web UI Settings page may switch between (with REVIEW_ADMIN_TOKEN set) ---
+      # One JSON map of profile name -> {backend, url, key_env}. The page can only pick a NAME from this map; it
+      # never accepts a URL or a key variable name. key_env names the variable that holds the key (leave it out
+      # for llamacpp). Example shape, one line:
+      # REPAIR_PROFILES: '{"local": {"backend": "llamacpp", "url": "http://host.docker.internal:8090/v1/chat/completions"}}'
+      # What the Settings page may select for glossary verification is opt-in too (names only; leave unset for the
+      # defaults: the local backends llamacpp and ollama, and no decision model):
+      # RUNTIME_VERIFY_BACKENDS: ${RUNTIME_VERIFY_BACKENDS:-}
+      # RUNTIME_DECISION_MODELS: ${RUNTIME_DECISION_MODELS:-}
+
       # --- ownership of what it writes ---
       MEDIA_UID: ${MEDIA_UID:-1000}
       MEDIA_GID: ${MEDIA_GID:-100}

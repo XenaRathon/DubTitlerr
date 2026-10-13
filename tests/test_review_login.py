@@ -101,18 +101,18 @@ def test_the_issued_token_works_against_the_unchanged_authorised(login):
 
 def test_unconfigured_the_route_is_a_404_and_auth_mode_says_so(login):
     assert rs.route("POST", "/api/login", {"username": "a", "password": "b"}, None) == (404, {"error": "no such route"})
-    assert rs.route("GET", "/api/auth-mode", {}, None) == (200, {"password_login": False})
+    assert rs.route("GET", "/api/auth-mode", {}, None) == (200, {"password_login": False, "admin_enabled": False})
 
 
 def test_configured_auth_mode_is_true_and_reveals_nothing_else(login):
     login()
-    assert rs.route("GET", "/api/auth-mode", {}, None) == (200, {"password_login": True})
+    assert rs.route("GET", "/api/auth-mode", {}, None) == (200, {"password_login": True, "admin_enabled": False})
 
 
 @pytest.mark.parametrize("user,password", [("", "secret"), ("reviewer", ""), ("", ""), ("reviewer", None), (None, "secret")])
 def test_an_empty_or_half_configured_login_is_not_configured_never_open(login, capsys, user, password):
     login(user=user, password=password)
-    assert rs.route("GET", "/api/auth-mode", {}, None) == (200, {"password_login": False})
+    assert rs.route("GET", "/api/auth-mode", {}, None) == (200, {"password_login": False, "admin_enabled": False})
     assert rs.route("POST", "/api/login", {"username": user or "", "password": password or ""}, None)[0] == 404
     if user is not None or password is not None:
         assert "login" in capsys.readouterr().out.lower(), "a half-set login is logged once at start"
@@ -138,9 +138,9 @@ def test_an_empty_or_missing_password_file_is_not_configured(login):
     f = login.tmp / "pw"
     f.write_text("\n")
     login(password=None, REVIEW_PASSWORD_FILE=str(f))
-    assert rs.route("GET", "/api/auth-mode", {}, None)[1] == {"password_login": False}
+    assert rs.route("GET", "/api/auth-mode", {}, None)[1] == {"password_login": False, "admin_enabled": False}
     login(password=None, REVIEW_PASSWORD_FILE=str(login.tmp / "nope"))
-    assert rs.route("GET", "/api/auth-mode", {}, None)[1] == {"password_login": False}
+    assert rs.route("GET", "/api/auth-mode", {}, None)[1] == {"password_login": False, "admin_enabled": False}
 
 
 # ---- constant time, logging, throttling -------------------------------------------------------------------------------------
@@ -280,7 +280,7 @@ JSON = {"Content-Type": "application/json"}
 
 def test_loopback_login_then_the_token_unlocks_the_api(server):
     status, raw, _ = request(server, "GET", "/api/auth-mode")
-    assert (status, json.loads(raw)) == (200, {"password_login": True})
+    assert (status, json.loads(raw)) == (200, {"password_login": True, "admin_enabled": False})
     status, raw, _ = request(server, "POST", "/api/login", {"username": "reviewer", "password": "correct horse"}, JSON)
     assert status == 200
     token = json.loads(raw)["token"]
