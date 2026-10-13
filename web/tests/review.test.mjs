@@ -5,10 +5,20 @@ import { blank, diffParts, nextOpenIndex, timecode } from '../src/review.ts';
 test('diff preserves the exact original and proposed words including untrusted HTML', () => {
   const original = 'A <script>factory</script> is here.';
   const proposed = 'A needle is here.';
-  assert.equal(diffParts(original, proposed, 'original').map(p => p.value).join(''), original);
-  assert.equal(diffParts(original, proposed, 'proposed').map(p => p.value).join(''), proposed);
-  assert.ok(diffParts(original, proposed, 'original').some(p => p.removed));
-  assert.ok(diffParts(original, proposed, 'proposed').some(p => p.added));
+  assert.equal(
+    diffParts(original, proposed, 'original')
+      .map((p) => p.value)
+      .join(''),
+    original,
+  );
+  assert.equal(
+    diffParts(original, proposed, 'proposed')
+      .map((p) => p.value)
+      .join(''),
+    proposed,
+  );
+  assert.ok(diffParts(original, proposed, 'original').some((p) => p.removed));
+  assert.ok(diffParts(original, proposed, 'proposed').some((p) => p.added));
 });
 test('invisible-only corrections are not usable', () => {
   for (const value of ['', '  \n\t', '\u200b\u2060\ufeff']) assert.equal(blank(value), true);

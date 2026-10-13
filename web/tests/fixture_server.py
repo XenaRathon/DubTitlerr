@@ -24,15 +24,36 @@ def main():
         os.environ["REVIEW_USERNAME"] = "reviewer"
         os.environ["REVIEW_PASSWORD"] = "browser-fixture-password"
         os.environ.pop("REVIEW_AUTH", None)
+        # The new pages' backends: admin-guarded run requests, a settings read and two backend probes.
+        os.environ["REVIEW_ADMIN_TOKEN"] = "browser-admin-token"
+        os.environ["ANIME_ROOT"] = str(media)
+        os.environ["REQUESTS_DIR"] = str(base / "requests")
+        os.environ["SCHEDULE_FILE"] = str(base / "schedule.json")
+        os.environ["REPAIR_LLAMACPP_URL"] = "http://127.0.0.1:18842/healthz"  # this very server: the probe succeeds
+        os.environ["VERIFY_LLAMACPP_URL"] = "http://127.0.0.1:9/"  # nothing listens here: the probe fails
+        # The settings form offers only what the server allows: these two lists come back in GET /api/settings.
+        os.environ["RUNTIME_VERIFY_BACKENDS"] = "llamacpp,ollama,decision"
+        os.environ["RUNTIME_DECISION_MODELS"] = "typesafe/jev,acme/judge-1"
+        # Settings writes: runtime.env lands in this directory; the one profile the page may pick is this server itself.
+        (base / "config").mkdir()
+        os.environ["CONFIG_DIR"] = str(base / "config")
+        os.environ["REPAIR_PROFILES"] = json.dumps(
+            {"local": {"backend": "llamacpp", "url": "http://127.0.0.1:18842/healthz"}}
+        )
+        os.environ["LONGCATAI_API_KEY"] = "fixture-secret-key-value"  # must show as "set", never as a value
+        os.environ.pop("COMMANDCODE_API_KEY", None)
+        os.environ.pop("WEBHOOK_TOKEN", None)
         os.environ["HEARTBEAT_PATH"] = str(base / "heartbeat.json")
         os.environ["GLOSSARY_DIR"] = str(glossary_dir)
         os.environ["DECISIONS_DIR"] = str(ddir)
         import common
         import decisions
         import review_server as rs
+        import review_settings
         import unresolved
 
         common.heartbeat(last_sweep_end=time.time(), roots_readable=True, order_file_present=True)
+        review_settings.EFFECTIVE_ENV_PATH = str(base / "no-effective.env")  # absent: settings come from the environment
         rs.configure_login()  # the optional username/password in front of the token
         rs.ROOTS = [str(media)]
         decisions.GLOSSARY_DIR = str(glossary_dir)
@@ -134,6 +155,13 @@ def main():
                             record["resolved"] = False
                         file.write_text("".join(json.dumps(r) + "\n" for r in records))
                     rs._QUEUE_CACHE.clear()
+                    for file in (base / "requests").glob("*") if (base / "requests").is_dir() else []:
+                        file.unlink()
+                    for stale in ("runtime.env", "runtime.env.prev"):
+                        (base / "config" / stale).unlink(missing_ok=True)
+                    (base / "schedule.json").unlink(missing_ok=True)
+                    for show in ("Neon Harbor", "Paper Moon"):
+                        (glossary_dir / f"{show}.json").write_text(json.dumps({"show": show}))
                     return self._send(200, {"ok": True})
                 return super().do_POST()
 

@@ -2,6 +2,10 @@ import { expect, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 test('human review workspace keeps real workflow semantics', async ({ page, request }, testInfo) => {
+  // One long journey: three axe scans, audio extraction and a full-page screenshot take 20-26 s on a quiet
+  // machine and 36-40 s when other workers load it. No fixed waits are involved, so give it room instead of
+  // slimming the journey; the global 30 s default stays for every other spec.
+  test.setTimeout(90_000);
   const reset = await request.post('/__test/reset', {
     headers: { 'X-Review-Token': 'browser-fixture-token' },
   });
@@ -30,7 +34,7 @@ test('human review workspace keeps real workflow semantics', async ({ page, requ
   await expect(page.getByRole('alert')).toContainText('Access token not accepted');
   await page.getByLabel('Access token').fill('browser-fixture-token');
   await page.getByRole('button', { name: 'Unlock workspace' }).click();
-  await expect(page.getByRole('heading', { name: 'A second set of eyes.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Review inbox', level: 1 })).toBeVisible();
   await expect(page.getByLabel('Search episodes')).toBeVisible();
   await page.getByLabel('Search episodes').fill('Neon Harbor');
   await page.getByRole('button', { name: /Neon Harbor.*S01E01/ }).click();
@@ -68,7 +72,7 @@ test('human review workspace keeps real workflow semantics', async ({ page, requ
   await page.keyboard.press('r');
   // A staged verdict advances to the next line that has no choice yet.
   await expect(page.getByRole('button', { name: 'Review line 1, staged', exact: true })).toBeVisible();
-  await expect(page.getByTestId('evidence')).toContainText(/2 \/ \d+/);
+  await expect(page.getByTestId('evidence')).toContainText(/Line 2 of \d+/);
   await expect(page.getByRole('button', { name: /Keep original/ })).toHaveAttribute('aria-pressed', 'false');
   await page.keyboard.press('k');
   await expect(page.getByRole('button', { name: /Keep original/ })).toHaveAttribute('aria-pressed', 'true');
@@ -127,7 +131,7 @@ test('human review workspace keeps real workflow semantics', async ({ page, requ
     await page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('button', { name }).click();
   }
   await nav('Shared lines');
-  await expect(page.getByRole('heading', { name: 'One decision. Many episodes.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Shared lines', level: 1 })).toBeVisible();
   await expect(page.getByTestId('evidence')).toContainText('2 episodes');
   await page.getByRole('button', { name: /Keep repair/ }).click();
   await page.getByRole('button', { name: /Save 1 choice/ }).click();
@@ -153,7 +157,7 @@ test('human review workspace keeps real workflow semantics', async ({ page, requ
     .analyze();
   expect(passwordAccessibility.violations).toEqual([]);
   await page.getByLabel('Password').press('Enter');
-  await expect(page.getByRole('heading', { name: 'A second set of eyes.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Review inbox', level: 1 })).toBeVisible();
   expect(await page.evaluate(() => sessionStorage.getItem('dubtitlerr_review_token'))).toBe(
     'browser-fixture-token',
   );

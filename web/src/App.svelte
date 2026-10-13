@@ -1,18 +1,15 @@
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
   import {
-    AudioLines,
     BookOpen,
     Check,
     ChevronLeft,
     ChevronRight,
     CircleHelp,
     ClipboardCheck,
-    ExternalLink,
     Filter,
     GitCompareArrows,
     Inbox,
-    Layers,
     LoaderCircle,
     LockKeyhole,
     LogOut,
@@ -25,11 +22,29 @@
     Sparkles,
     X,
   } from '@lucide/svelte';
+  import Sidebar from './lib/Sidebar.svelte';
+  import StatusBadge from './lib/StatusBadge.svelte';
+  import Dashboard from './pages/Dashboard.svelte';
+  import Glossary from './pages/Glossary.svelte';
+  import Runs from './pages/Runs.svelte';
+  import Settings from './pages/Settings.svelte';
+  import { ApiError } from './lib/api.js';
+  import { hashFor, parseHash } from './lib/route.js';
   import type { Draft, Entry, Episode, SaveResult, Shared, Verdict } from './types';
   import { blank, diffParts, nextOpenIndex, riskLabels, timecode, verdictLabels } from './review';
 
-  type View = 'inbox' | 'shared';
-  let view = $state<View>('inbox');
+  type View = 'inbox' | 'shared' | 'dashboard' | 'glossary' | 'runs' | 'settings';
+  const VIEW_TITLES: Record<View, string> = {
+    inbox: 'Review inbox',
+    shared: 'Shared lines',
+    dashboard: 'Dashboard',
+    glossary: 'Glossary',
+    runs: 'Runs',
+    settings: 'Settings',
+  };
+  // The location hash names the view, so a deep link and the back button both work; a deep link taken while
+  // signed out keeps its hash because nothing below rewrites it until the operator navigates.
+  let view = $state<View>(parseHash(typeof location === 'undefined' ? '' : location.hash));
   let token = $state('');
   let username = $state('');
   let password = $state('');
@@ -82,6 +97,18 @@
   const admitted = $derived(episodes.reduce((n, ep) => n + ep.admitted, 0));
   const refused = $derived(episodes.reduce((n, ep) => n + ep.refused, 0));
   const shows = $derived([...new Set(episodes.map((ep) => ep.show))].sort());
+  // Episodes with at least one repair waiting for a person: the number the sidebar badge and the inbox agree on.
+  const toReview = $derived(episodes.filter((ep) => ep.admitted > 0).length);
+  const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+  // The muted status line under the page title.
+  const queueSummary = $derived(
+    view === 'shared'
+      ? `${plural(shared.length, 'repeated change')} across episodes. One verdict settles every copy.`
+      : `${plural(admitted, 'repair')} in ${plural(toReview, 'episode')} need a decision.` +
+          (refused
+            ? ` ${plural(refused, 'other repair')} turned down by the safety check kept the original text.`
+            : ''),
+  );
   const filteredEpisodes = $derived(
     episodes.filter(
       (ep) =>
@@ -113,21 +140,40 @@
   const draft = $derived(current ? drafts[current.id] : undefined);
   const remaining = $derived(visible.filter((e) => !drafts[e.id]).length);
 
-  async function api<T>(path: string, body?: object): Promise<T> {
+  // `extra` carries per-call headers (the admin token); they go in the request headers, never in the JSON body.
+  // `method` defaults to POST with a body and GET without; PUT and body-less POST (reset) name theirs.
+  async function api<T>(
+    path: string,
+    body?: object,
+    extra?: Record<string, string>,
+    method?: string,
+  ): Promise<T> {
     const res = await fetch(path, {
-      method: body ? 'POST' : 'GET',
-      headers: { 'X-Review-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      method: method ?? (body ? 'POST' : 'GET'),
+      headers: { 'X-Review-Token': token, ...extra, ...(body ? { 'Content-Type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
     if (res.status === 401) {
       authenticated = false;
       forgetToken(); // a refused token must not linger in memory or storage and block the next sign-in
-      throw new Error('Access token not accepted. Your staged choices are still held in this tab.');
+      // Staged review choices live in this tab; glossary or run-form text does not survive the login panel.
+      error =
+        view === 'inbox' || view === 'shared'
+          ? 'Access token not accepted. Your staged choices are still held in this tab.'
+          : 'Access token not accepted. Sign in again; unsaved text on that page was not kept.';
+      throw new Error(error);
     }
     const result = await res.json();
-    if (!res.ok || result.error) throw new Error(result.error || `Request failed (${res.status})`);
+    // An ApiError keeps the HTTP status and body, so a page can tell a 409 from a 503 instead of matching message text.
+    if (!res.ok || result.error)
+      throw new ApiError(result.error || `Request failed (${res.status})`, res.status, result);
     return result as T;
   }
+  // Runs.svelte and Settings.svelte call api(path, { method, body, headers }); adapt that to the wrapper above.
+  const optionsApi = (
+    path: string,
+    options?: { method?: string; body?: object; headers?: Record<string, string> },
+  ) => api<any>(path, options?.body, options?.headers, options?.method);
   function forgetToken() {
     token = '';
     try {
@@ -194,18 +240,70 @@
     audioLoading = false;
     occurrence = 0;
   }
+  // The glossary page reports unsaved add-form/edit-row text through bind:dirty.
+  let glossaryDirty = $state(false);
   function discardOK() {
+    if (view === 'glossary' && glossaryDirty)
+      return window.confirm('Discard your unsaved glossary edits? Nothing has been saved yet.');
     return !staged || window.confirm('Discard your unsaved review choices? Nothing has been saved yet.');
   }
-  async function navigate(next: View) {
+  // Sidebar clicks go through the hash so the browser history records them; onhashchange does the switch. The discard
+  // prompt comes BEFORE the hash changes, so declining leaves no history entry behind; `agreedHash` tells onHashChange
+  // not to ask a second time.
+  let agreedHash = '';
+  function navigate(next: View) {
     if (next === view) {
-      mobileNav = false;
+      closeDrawer(true);
       return;
     }
+    mobileNav = false;
     if (saving || loading || !discardOK()) return;
+    agreedHash = hashFor(next);
+    location.hash = agreedHash;
+  }
+  // Back/forward and typed hashes land here. Declining the discard prompt puts the hash back for the view we stay on.
+  async function onHashChange() {
+    const next = parseHash(location.hash);
+    const agreed = agreedHash === hashFor(next);
+    agreedHash = '';
+    if (next === view) {
+      if (location.hash !== hashFor(next) && location.hash !== '')
+        history.replaceState(null, '', hashFor(next));
+      return;
+    }
+    if (saving || loading || (!agreed && !discardOK())) {
+      history.replaceState(null, '', hashFor(view));
+      return;
+    }
+    await switchView(next);
+    if (location.hash !== hashFor(next)) history.replaceState(null, '', hashFor(next)); // '#/glossary?x=1' -> '#/glossary'
+  }
+  // Drawer: closing it returns focus to the toggle when the operator did not pick a page.
+  let toggleBtn = $state<HTMLButtonElement>();
+  let narrow = $state(false);
+  function closeDrawer(refocus: boolean) {
+    mobileNav = false;
+    if (refocus) void tick().then(() => toggleBtn?.focus());
+  }
+  // The new page's title takes focus, so a keyboard or screen-reader user knows the page changed.
+  async function focusHeading() {
+    await tick();
+    document.querySelector<HTMLElement>('main h1')?.focus();
+  }
+  function skipToContent(e: Event) {
+    e.preventDefault(); // a plain #main href would be read as a route by the hash router
+    document.getElementById('main')?.focus();
+  }
+  async function switchView(next: View) {
+    if (!authenticated) {
+      view = next; // signed out: just remember the requested view; login() loads whatever it needs
+      return;
+    }
+    glossaryDirty = false; // the glossary page is about to unmount; the caller already confirmed the discard
     drafts = {};
     stopAudio();
     view = next;
+    void focusHeading();
     activeId = '';
     lineQuery = '';
     risk = 'all';
@@ -299,7 +397,7 @@
     if (
       wanted.some((e) => drafts[e.id].verdict === 'force') &&
       !window.confirm(
-        'Override the repair guard for the selected lines? Check the audio before saving an override.',
+        'Override the safety check for the selected lines? Listen to the audio before saving an override.',
       )
     )
       return;
@@ -409,6 +507,11 @@
     }
   }
   function keydown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && mobileNav) {
+      closeDrawer(true);
+      return;
+    }
+    if (view !== 'inbox' && view !== 'shared') return; // the review shortcuts and Ctrl+S belong to the review views
     const input =
       e.target instanceof HTMLElement &&
       (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A', 'AUDIO'].includes(e.target.tagName) ||
@@ -439,13 +542,14 @@
     if (key === '?') showHelp = !showHelp;
   }
   function beforeUnload(e: BeforeUnloadEvent) {
-    if (staged) {
+    if (staged || (view === 'glossary' && glossaryDirty)) {
       e.preventDefault();
       e.returnValue = '';
     }
   }
   function logout() {
     if (saving || loading || !discardOK()) return;
+    glossaryDirty = false;
     stopAudio();
     drafts = {};
     entries = [];
@@ -474,63 +578,59 @@
       .then((r) => r.json())
       .then((d) => (passwordLogin = d.password_login === true))
       .catch(() => (passwordLogin = false));
+    if (location.hash !== '' && location.hash !== hashFor(view))
+      history.replaceState(null, '', hashFor(view));
+    const narrowQuery = window.matchMedia('(max-width: 768px)');
+    narrow = narrowQuery.matches;
+    const syncNarrow = (e: MediaQueryListEvent) => {
+      narrow = e.matches;
+      if (!narrow) mobileNav = false; // a drawer left open must not freeze the page after the window widens
+    };
+    narrowQuery.addEventListener('change', syncNarrow);
     if (token) void login(true);
-    return stopAudio;
+    return () => {
+      narrowQuery.removeEventListener('change', syncNarrow);
+      stopAudio();
+    };
   });
 </script>
 
-<svelte:window onkeydown={keydown} onbeforeunload={beforeUnload} />
+<svelte:window onkeydown={keydown} onbeforeunload={beforeUnload} onhashchange={onHashChange} />
 
+<a class="skip-link" href="#main" onclick={skipToContent}>Skip to content</a>
 <div class="app-shell">
-  <aside class:mobile-open={mobileNav} class="sidebar">
-    <a class="brand" href="/review"
-      ><div class="brand-icon"><AudioLines size={24} /></div>
-      <span>DubTitlerr<small>THE DUB. EVERY WORD.</small></span></a
-    >
-    <div class="nav-label">WORKSPACE</div>
-    <nav aria-label="Primary navigation">
-      <button
-        class:nav-active={view === 'inbox'}
-        onclick={() => navigate('inbox')}
-        disabled={!authenticated || saving || loading}
-        ><Inbox size={19} />Review inbox<span class="nav-count">{authenticated ? episodes.length : '—'}</span
-        ></button
-      >
-      <button
-        class:nav-active={view === 'shared'}
-        onclick={() => navigate('shared')}
-        disabled={!authenticated || saving || loading}><Layers size={19} />Shared lines</button
-      >
-    </nav>
-    <div class="sidebar-tip">
-      <ShieldCheck size={22} /><strong>Human in the loop</strong>
-      <p>Hear the dub. Check the change. Your verdict keeps the meaning intact.</p>
-    </div>
-    <div class="sidebar-bottom">
-      <a href="/" class="classic-link"><ExternalLink size={15} />Classic review</a>
-      <div class="version-line"><span class="status-dot"></span>Review workspace <span>v0.1</span></div>
-    </div>
-  </aside>
+  <Sidebar
+    {view}
+    {authenticated}
+    busy={saving || loading}
+    count={toReview}
+    open={mobileNav}
+    {narrow}
+    onnavigate={navigate}
+  />
 
-  <div class="main-shell">
+  <div class="main-shell" inert={mobileNav && narrow}>
     <header class="topbar">
       <div class="breadcrumb">
         <button
           class="icon-button mobile-menu"
           aria-label="Toggle navigation"
+          bind:this={toggleBtn}
           onclick={() => (mobileNav = !mobileNav)}><Menu size={20} /></button
-        ><span>Workspace</span><ChevronRight size={14} /><strong
-          >{view === 'shared' ? 'Shared lines' : 'Human review'}</strong
-        >
+        >{#if authenticated}<span>Workspace</span><ChevronRight size={14} /><strong
+            >{VIEW_TITLES[view]}</strong
+          >{:else}<strong>Sign in</strong>{/if}
       </div>
       <div class="topbar-actions">
         <span class="health"
           ><span class:warning={health !== 'Healthy'} class="status-dot"></span>{authenticated
             ? health
             : 'Token protected'}</span
-        ><button class="icon-button" aria-label="Keyboard shortcuts" onclick={() => (showHelp = !showHelp)}
-          ><CircleHelp size={19} /></button
-        >{#if authenticated}<button
+        >{#if view === 'inbox' || view === 'shared'}<button
+            class="icon-button"
+            aria-label="Keyboard shortcuts"
+            onclick={() => (showHelp = !showHelp)}><CircleHelp size={19} /></button
+          >{/if}{#if authenticated}<button
             class="icon-button"
             aria-label="Sign out"
             onclick={logout}
@@ -539,7 +639,7 @@
       </div>
     </header>
 
-    <main>
+    <main id="main" tabindex="-1">
       {#if !authenticated}
         <section class="login-panel">
           <form
@@ -609,23 +709,22 @@
             >
           </form>
         </section>
+      {:else if view === 'glossary'}
+        <Glossary {api} bind:dirty={glossaryDirty} />
+      {:else if view === 'dashboard'}
+        <Dashboard {api} />
+      {:else if view === 'runs'}
+        <Runs api={optionsApi} />
+      {:else if view === 'settings'}
+        <Settings api={optionsApi} />
       {:else}
-        <section class="page-heading">
-          <div>
-            <div class="eyebrow">QUALITY CONTROL / HUMAN REVIEW</div>
-            <h1>
-              {view === 'shared' ? 'One decision. Many episodes.' : 'A second set of eyes.'}
-            </h1>
-            <p>
-              {view === 'shared'
-                ? 'Review repeated text pairs once. Saved verdicts settle the same pair show-wide.'
-                : 'Turn uncertain repairs into subtitles you can trust.'}
-            </p>
-          </div>
+        <header class="page-header">
+          <h1 tabindex="-1">{view === 'shared' ? 'Shared lines' : 'Review inbox'}</h1>
           <button class="secondary" onclick={refresh} disabled={loading || saving}
             ><RefreshCw size={16} class={loading ? 'spin' : ''} />Refresh queue</button
           >
-        </section>
+        </header>
+        <p class="page-sub">{loading && !episodes.length ? 'Loading the review queue…' : queueSummary}</p>
         {#if message}<div class="notice success" role="status">
             <Check size={18} /><span>{message}</span><button
               class="icon-button"
@@ -641,43 +740,11 @@
             >
           </div>{/if}
 
-        <section class="stats" aria-label="Review statistics">
-          <article>
-            <span class="stat-icon purple"><ClipboardCheck size={22} /></span>
-            <div>
-              <span>Admitted repairs</span><strong>{admitted.toLocaleString()}</strong><small
-                >Meaning still needs a human check</small
-              >
-            </div>
-          </article>
-          <article>
-            <span class="stat-icon teal"><Inbox size={22} /></span>
-            <div>
-              <span>Episodes to review</span><strong>{episodes.length.toLocaleString()}</strong><small
-                >Across {shows.length} show{shows.length === 1 ? '' : 's'}</small
-              >
-            </div>
-          </article>
-          <article>
-            <span class="stat-icon amber"><ShieldCheck size={22} /></span>
-            <div>
-              <span>Guard refusals</span><strong>{refused.toLocaleString()}</strong><small
-                >Original ASR retained; optional audit</small
-              >
-            </div>
-          </article>
-          <article>
-            <span class="stat-icon purple"><Save size={22} /></span>
-            <div>
-              <span>Staged choices</span><strong>{staged}</strong><small>Not saved until you say so</small>
-            </div>
-          </article>
-        </section>
         <div class="workspace" class:shared-workspace={view === 'shared'}>
           {#if view === 'inbox'}
             <section class="episode-panel" aria-label="Episode inbox">
               <div class="panel-title">
-                <h2>Review inbox</h2>
+                <h2>Episodes</h2>
                 <span class="badge neutral">{filteredEpisodes.length}</span>
               </div>
               <label class="search-field"
@@ -687,46 +754,43 @@
                   placeholder="Search shows or episodes…"
                 /></label
               ><select class="show-select" aria-label="Filter by show" bind:value={show}
-                ><option value="all">All shows</option>{#each shows as name}<option value={name}
+                ><option value="all">All shows</option>{#each shows as name (name)}<option value={name}
                     >{name}</option
                   >{/each}</select
               ><label class="toggle"
-                ><input type="checkbox" bind:checked={showRefused} /><span>Include refusal-only episodes</span
+                ><input type="checkbox" bind:checked={showRefused} /><span
+                  >Include episodes where every repair was turned down</span
                 ></label
               >
               <div class="episode-list">
-                {#each filteredEpisodes as ep}<button
+                {#each filteredEpisodes as ep (ep.stem)}<button
                     class="episode"
                     class:selected={selected?.stem === ep.stem}
                     onclick={() => selectEpisode(ep)}
                     disabled={saving || loading}
-                    ><span class="show-art">{ep.show.substring(0, 2).toUpperCase()}</span><span
-                      class="episode-copy"
-                      ><strong>{ep.show}</strong><span>{ep.name}</span><small
-                        >{ep.season} · {ep.admitted} admitted · {ep.refused} refused</small
+                    ><span class="episode-copy"
+                      ><strong>{ep.name}</strong><small
+                        >{ep.season}, {ep.admitted} to check{ep.refused
+                          ? `, ${ep.refused} turned down`
+                          : ''}</small
                       ></span
                     ><ChevronRight size={15} /></button
                   >{:else}<div class="empty-small">
                     <Inbox size={28} />
                     <p>No episodes match.</p>
-                    <small>Try another filter or include guard refusals.</small>
+                    <small>Try another filter, or include episodes where every repair was turned down.</small>
                   </div>{/each}
               </div>
               <div class="panel-footer">
-                <span class="status-dot"></span>Admitted changes first. No auto-approval.
+                Episodes with repairs to check come first. Nothing is approved automatically.
               </div>
             </section>
           {/if}
           <section class="review-panel" aria-label="Review editor">
             <div class="review-title">
-              <div>
-                <span class="eyebrow"
-                  >{view === 'shared' ? 'SHARED REPAIRS' : (selected?.show ?? 'READY WHEN YOU ARE')}</span
-                >
-                <h2>
-                  {view === 'shared' ? 'Clear the repeat questions' : (selected?.name ?? 'Choose an episode')}
-                </h2>
-              </div>
+              <h2>
+                {view === 'shared' ? 'Repeated changes' : (selected?.name ?? 'Choose an episode')}
+              </h2>
               {#if view === 'inbox' && selected}<span class="badge neutral">{selected.season}</span>{/if}
             </div>
             {#if loading}<div class="empty-state">
@@ -735,13 +799,12 @@
                 <p>Large media libraries can take a moment to discover.</p>
               </div>
             {:else if view === 'inbox' && !selected}<div class="empty-state">
-                <div class="empty-art"><GitCompareArrows size={40} /></div>
-                <h3>Good subtitles start with a listen.</h3>
+                <GitCompareArrows size={32} aria-hidden="true" />
+                <h3>No episode open</h3>
                 <p>
-                  Choose an episode from the inbox to compare repairs,<br />hear the original dub, and stage
-                  your verdicts.
+                  Pick an episode from the list to compare its repairs with the original transcript, hear the
+                  dub, and stage your verdicts.
                 </p>
-                <span class="badge teal">Save first. Apply separately.</span>
               </div>
             {:else}
               <div class="review-toolbar">
@@ -767,7 +830,7 @@
               </div>
               {#if current}
                 <div class="line-strip" aria-label="Review lines">
-                  {#each visible as e, i}<button
+                  {#each visible as e, i (e.id)}<button
                       class:active={current.id === e.id}
                       class:decided={!!drafts[e.id]}
                       onclick={() => activate(e.id)}
@@ -779,14 +842,17 @@
                 <div class="evidence" data-testid="evidence">
                   <div class="card-meta">
                     <div>
-                      <span class="badge {current.risk === 'punctuation' ? 'neutral' : 'purple'}"
-                        >{riskLabels[current.risk]}</span
-                      >{#if 'stage' in current}<span
-                          class="badge {current.stage === 'repair_applied' ? 'teal' : 'amber'}"
-                          >{current.stage === 'repair_applied' ? 'Admitted repair' : 'Guard refused'}</span
-                        >{:else}<span class="badge teal">{current.episodes} episodes</span>{/if}
+                      <span class="badge neutral">{riskLabels[current.risk]}</span>{#if 'stage' in current}
+                        <!-- An admitted repair waits for a verdict; a turned-down one already kept the original text. -->
+                        {#if current.stage === 'repair_applied'}<StatusBadge
+                            status="pending"
+                            label="Repair to check"
+                          />{:else}<StatusBadge
+                            status="stale"
+                            label="Turned down, original kept"
+                          />{/if}{:else}<span class="badge neutral">{current.episodes} episodes</span>{/if}
                     </div>
-                    <span class="muted">{activeIndex + 1} / {visible.length}</span>
+                    <span class="muted">Line {activeIndex + 1} of {visible.length}</span>
                   </div>
                   {#if 'show' in current}<div class="shared-show">{current.show}</div>{/if}
                   {#if 'starts' in current && current.starts.length}<div class="audio-row">
@@ -816,11 +882,11 @@
                       aria-label="English dub preview"
                     ></audio>{/if}{#if audioError}<p class="inline-error" role="alert">{audioError}</p>{/if}
                   {#if 'context' in current && current.context[occurrence]}<div class="context-line">
-                      <span>BEFORE</span>{current.context[occurrence].before.join(' ') || 'Start of episode'}
+                      <span>Before</span>{current.context[occurrence].before.join(' ') || 'Start of episode'}
                     </div>{/if}
                   <div class="diff-grid">
                     <div class="diff-box original">
-                      <div class="diff-label"><span class="tiny-dot"></span>ORIGINAL ASR</div>
+                      <div class="diff-label"><span class="tiny-dot"></span>Original transcript</div>
                       <p>
                         {#each diffParts(current.original_text, current.proposed_text, 'original') as part}{#if part.removed}<del
                               >{part.value}</del
@@ -828,7 +894,7 @@
                       </p>
                     </div>
                     <div class="diff-box proposed">
-                      <div class="diff-label"><Sparkles size={13} />PROPOSED REPAIR</div>
+                      <div class="diff-label"><Sparkles size={13} />Proposed repair</div>
                       <p>
                         {#each diffParts(current.original_text, current.proposed_text, 'proposed') as part}{#if part.added}<ins
                               >{part.value}</ins
@@ -837,7 +903,7 @@
                     </div>
                   </div>
                   {#if 'context' in current && current.context[occurrence]}<div class="context-line">
-                      <span>AFTER</span>{current.context[occurrence].after.join(' ') || 'End of episode'}
+                      <span>After</span>{current.context[occurrence].after.join(' ') || 'End of episode'}
                     </div>{/if}
                   {#if current.reference}<div class="reference">
                       <BookOpen size={16} />
@@ -860,7 +926,7 @@
                     <span>{draft ? 'Choice staged, not saved' : 'Nothing selected yet'}</span>
                   </div>
                   <div class="verdicts">
-                    {#each current.offered as verdict}<button
+                    {#each current.offered as verdict (verdict)}<button
                         class:chosen={draft?.verdict === verdict}
                         class="verdict {verdict}"
                         onclick={() => choose(verdict)}
@@ -907,7 +973,7 @@
                   <div class="card-navigation">
                     <button class="secondary" onclick={() => move(-1)} disabled={visible.length < 2}
                       ><ChevronLeft size={16} />Previous<kbd>K</kbd></button
-                    ><span>{remaining} of {visible.length} unstaged</span><button
+                    ><span>{remaining} still to decide</span><button
                       class="secondary"
                       onclick={() => move(1)}
                       disabled={visible.length < 2}>Next line<kbd>J</kbd><ChevronRight size={16} /></button
@@ -915,7 +981,7 @@
                   </div>
                 </div>
               {:else}<div class="empty-state">
-                  <div class="empty-art"><Check size={36} /></div>
+                  <Check size={32} aria-hidden="true" />
                   <h3>{lineQuery || risk !== 'all' ? 'No matching changes' : 'This queue is clear.'}</h3>
                   <p>
                     {lineQuery || risk !== 'all'
@@ -973,7 +1039,7 @@
       >
     </div>
     <p>Shortcuts work outside form controls. Choices are staged, never auto-saved.</p>
-    {#each [['J / ↓', 'Next line'], ['K / ↑', 'Previous line'], ['A', 'Keep repair (when offered)'], ['R', 'Keep original'], ['C', 'Write correction'], ['Space', 'Play / pause dub preview'], ['Escape', 'Clear current choice'], ['Ctrl / ⌘ S', 'Save staged choices']] as item}<div
+    {#each [['J / ↓', 'Next line'], ['K / ↑', 'Previous line'], ['A', 'Keep repair (when offered)'], ['R', 'Keep original'], ['C', 'Write correction'], ['Space', 'Play / pause dub preview'], ['Escape', 'Clear current choice'], ['Ctrl / ⌘ S', 'Save staged choices']] as item (item[0])}<div
         class="shortcut-row"
       >
         <span>{item[1]}</span><kbd>{item[0]}</kbd>

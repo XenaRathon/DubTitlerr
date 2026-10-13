@@ -13,7 +13,7 @@ test('password sign-in works when the tab holds a stale token', async ({ page })
   await page.getByLabel('Username').fill('reviewer');
   await page.getByLabel('Password').fill('browser-fixture-password');
   await page.getByLabel('Password').press('Enter');
-  await expect(page.getByRole('heading', { name: 'A second set of eyes.' })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('heading', { name: 'Review inbox', level: 1 })).toBeVisible({ timeout: 5000 });
   expect(await page.evaluate(() => sessionStorage.getItem('dubtitlerr_review_token'))).toBe(
     'browser-fixture-token',
   );
@@ -32,5 +32,5 @@ test('a refused stored token is forgotten, and token mode accepts the right toke
   expect(await page.evaluate(() => sessionStorage.getItem('dubtitlerr_review_token'))).toBeNull();
   await page.getByLabel('Access token').fill('browser-fixture-token');
   await page.getByRole('button', { name: 'Unlock workspace' }).click();
-  await expect(page.getByRole('heading', { name: 'A second set of eyes.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Review inbox', level: 1 })).toBeVisible();
 });
