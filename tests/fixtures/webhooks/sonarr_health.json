@@ -1,0 +1,7 @@
+{
+  "eventType": "Health",
+  "level": "warning",
+  "message": "Download client is unavailable",
+  "type": "DownloadClientUnavailable",
+  "wikiUrl": "https://wiki.servarr.com/sonarr/system#health-checks"
+}

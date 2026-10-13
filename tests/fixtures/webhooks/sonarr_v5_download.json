@@ -1,0 +1,41 @@
+{
+  "eventType": "Download",
+  "isUpgrade": false,
+  "series": {
+    "id": 1,
+    "title": "One Pace",
+    "titleSlug": "one-pace",
+    "path": "/tv/One Pace",
+    "tvdbId": 393203,
+    "type": "anime",
+    "malIds": [20],
+    "aniListIds": [21],
+    "originalCountry": "Japan"
+  },
+  "episodes": [
+    {
+      "id": 101,
+      "episodeNumber": 5,
+      "seasonNumber": 31,
+      "title": "The Duel",
+      "airDate": "2024-01-01",
+      "finaleType": "season"
+    }
+  ],
+  "episodeFiles": [
+    {
+      "id": 201,
+      "relativePath": "Season 31/One Pace - S31E05.mkv",
+      "path": "/tv/One Pace/Season 31/One Pace - S31E05.mkv",
+      "quality": "HDTV-720p",
+      "size": 500000000,
+      "indexerFlags": ["Freeleech"]
+    }
+  ],
+  "downloadClient": "qBittorrent",
+  "downloadId": "abc123",
+  "release": {
+    "releaseTitle": "One.Pace.S31E05.720p",
+    "indexerFlags": ["Freeleech"]
+  }
+}

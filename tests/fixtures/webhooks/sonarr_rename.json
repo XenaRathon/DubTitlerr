@@ -1,0 +1,19 @@
+{
+  "eventType": "Rename",
+  "series": {
+    "id": 1,
+    "title": "One Pace",
+    "titleSlug": "one-pace",
+    "path": "/tv/One Pace",
+    "tvdbId": 393203,
+    "type": "anime"
+  },
+  "renamedEpisodeFiles": [
+    {
+      "id": 201,
+      "previousPath": "/tv/One Pace/Season 31/One Pace - S31E05 OLD.mkv",
+      "relativePath": "Season 31/One Pace - S31E05.mkv",
+      "path": "/tv/One Pace/Season 31/One Pace - S31E05.mkv"
+    }
+  ]
+}

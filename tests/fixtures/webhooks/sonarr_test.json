@@ -1,0 +1,11 @@
+{
+  "eventType": "Test",
+  "series": {
+    "id": 1,
+    "title": "One Pace",
+    "titleSlug": "one-pace",
+    "path": "/tv/One Pace",
+    "tvdbId": 393203,
+    "type": "anime"
+  }
+}
