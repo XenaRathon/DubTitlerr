@@ -562,6 +562,7 @@ def _record_qc(rec, cards):
     breaking the ordinary_under_min_dur_after == 0 acceptance assertion it is exempt
     from. Muxing a short orphan is an explicit decision; muxing a short ordinary card
     is the defect."""
+    rec.record_duration_flags(cards)
     for c in cards:
         a, b, t = c["start"], c["end"], c["text"]
         dur = b - a

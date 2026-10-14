@@ -93,3 +93,176 @@ def test_plain_open_sidecars_are_group_writable(tmp_path):
     with open(p, "w") as f:
         f.write("{}")
     assert stat.S_IMODE(p.stat().st_mode) & 0o060 == 0o060, "group rw expected under umask 002"
+
+
+def test_duration_threshold_constants_exposed():
+    assert qc.OVERLONG_DUR_FLOOR == 6.0
+    assert qc.OVERLONG_BASE_DUR == 3.0
+    assert qc.OVERLONG_WORD_FACTOR == 0.6
+    assert qc.DRIP_MIN_CARDS == 3
+    assert qc.DRIP_MIN_WORDS == 1
+    assert qc.DRIP_MAX_WORDS == 2
+    assert qc.DRIP_MAX_GAP == 1.0
+    assert qc.DRIP_MIN_SPAN == 6.0
+
+
+def test_overlong_card_flags_four_real_one_pace_examples():
+    cards = [
+        {"start": 10.0, "end": 32.9, "text": "I want to be."},
+        {"start": 40.0, "end": 50.6, "text": "Meow!"},
+        {"start": 60.0, "end": 66.9, "text": "My eyes are"},
+        {"start": 70.0, "end": 76.4, "text": "mom what do you"},
+    ]
+    flags = qc.detect_duration_flags(cards)
+    assert len(flags) == 4
+
+    f0 = flags[0]
+    assert f0 == {
+        "start": 10.0,
+        "end": 32.9,
+        "duration": 22.9,
+        "words": 4,
+        "text": "I want to be.",
+        "reason": "overlong",
+    }
+
+    f1 = flags[1]
+    assert f1 == {
+        "start": 40.0,
+        "end": 50.6,
+        "duration": 10.6,
+        "words": 1,
+        "text": "Meow!",
+        "reason": "overlong",
+    }
+
+    f2 = flags[2]
+    assert f2 == {
+        "start": 60.0,
+        "end": 66.9,
+        "duration": 6.9,
+        "words": 3,
+        "text": "My eyes are",
+        "reason": "overlong",
+    }
+
+    f3 = flags[3]
+    assert f3 == {
+        "start": 70.0,
+        "end": 76.4,
+        "duration": 6.4,
+        "words": 4,
+        "text": "mom what do you",
+        "reason": "overlong",
+    }
+
+
+def test_normal_cards_must_not_be_flagged():
+    cards = [
+        # 12 words shown 6.5s: duration > 6.0, but 12 * 0.6 = 7.2 > 6.5 -> not flagged
+        {"start": 0.0, "end": 6.5, "text": "This is a normal subtitle card with twelve words that reads totally fine."},
+        # Short card: duration <= 6.0 -> not flagged
+        {"start": 10.0, "end": 12.5, "text": "Four words right here."},
+    ]
+    flags = qc.detect_duration_flags(cards)
+    assert flags == []
+
+
+def test_drip_chain_flagged():
+    # 3 consecutive cards each holding 1-2 words, gaps < 1.0 s, span > 6.0 s
+    cards = [
+        {"start": 10.0, "end": 12.5, "text": "I am"},
+        {"start": 12.9, "end": 15.0, "text": "going"},
+        {"start": 15.5, "end": 17.5, "text": "home."},
+    ]
+    flags = qc.detect_duration_flags(cards)
+    assert len(flags) == 1
+    assert flags[0] == {
+        "start": 10.0,
+        "end": 17.5,
+        "duration": 7.5,
+        "words": 4,
+        "text": "I am going home.",
+        "reason": "drip_chain",
+    }
+
+
+def test_real_pause_case_must_not_be_drip_chain():
+    # 3 cards each holding 1-2 words, but gap between card 1 and 2 is 1.5s (>= 1.0s)
+    cards = [
+        {"start": 10.0, "end": 12.5, "text": "Wait."},
+        {"start": 14.0, "end": 16.0, "text": "Who is"},
+        {"start": 16.4, "end": 18.0, "text": "there?"},
+    ]
+    flags = qc.detect_duration_flags(cards)
+    # Neither card 1 alone nor cards 2+3 (2 cards < 3, span 4.0 <= 6.0) qualifies as a drip chain.
+    # Also individual cards durations are <= 2.5s (not overlong).
+    assert flags == []
+
+
+def test_detector_does_not_change_any_card():
+    import copy
+
+    cards = [
+        {"start": 10.0, "end": 32.9, "text": "I want to be.\nSome wrap"},
+        {"start": 40.0, "end": 42.0, "text": "Meow!"},
+    ]
+    orig = copy.deepcopy(cards)
+    qc.detect_duration_flags(cards)
+    assert cards == orig
+
+
+def test_qc_sidecar_output_includes_duration_flags():
+    r = qc.Recorder()
+    cards = [
+        {"start": 1.0, "end": 23.9, "text": "I want to be."},
+    ]
+    r.record_duration_flags(cards)
+    doc = r.build(show="One Pace", episode="E13", stem="/x/E13")
+    assert "duration_flags" in doc
+    assert doc["duration_flags"] == [
+        {
+            "start": 1.0,
+            "end": 23.9,
+            "duration": 22.9,
+            "words": 4,
+            "text": "I want to be.",
+            "reason": "overlong",
+        }
+    ]
+
+
+def test_generate_record_qc_wires_duration_flags():
+    import sys
+    import types
+
+    if "faster_whisper" not in sys.modules:
+        fake = types.ModuleType("faster_whisper")
+
+        class _UnusedWhisperModel:
+            def __init__(self, *a, **kw):
+                raise AssertionError("WhisperModel must never be instantiated by these tests")
+
+        fake.WhisperModel = _UnusedWhisperModel
+        sys.modules["faster_whisper"] = fake
+
+    import generate
+
+    r = qc.Recorder()
+    cards = [
+        {"start": 0.0, "end": 10.6, "text": "Meow!", "source_start": 0.0, "source_end": 10.6},
+    ]
+    generate._record_qc(r, cards)
+    doc = r.build(show="One Pace", episode="E13", stem="/x/E13")
+    assert doc["duration_flags"] == [
+        {
+            "start": 0.0,
+            "end": 10.6,
+            "duration": 10.6,
+            "words": 1,
+            "text": "Meow!",
+            "reason": "overlong",
+        }
+    ]
+
+
