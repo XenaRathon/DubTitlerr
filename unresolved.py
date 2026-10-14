@@ -46,6 +46,7 @@ import json
 import os
 import re
 import tempfile
+import time
 
 import decisions
 from common import SIDECAR_MODE, out_for
@@ -389,7 +390,7 @@ def record(stem: str, stage: str, reason: str, **fields) -> bool:
     is original_text/proposed_text/source_start/source_end/avg_logprob; for punctuation the
     run's text. `proposed_text` matters most: today a rejected repair discards what the model
     said, which is exactly what a human needs to judge whether the guard was right."""
-    entry = {"stage": stage, "reason": reason, "resolved": False}
+    entry = {"stage": stage, "reason": reason, "resolved": False, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     entry.update({k: v for k, v in fields.items() if v is not None})
     path = path_for(stem)
     try:

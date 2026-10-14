@@ -7,12 +7,12 @@ const GROUPS = [
     ['repair_backend', 'repair_model', 'repair_llamacpp_url', 'repair_openai_url', 'repair_unanchored'],
   ],
   ['Verify', ['verify_backend', 'verify_decision_model']],
-  ['Acquire', ['acquire_backend', 'glossary_arc_tags']],
+  ['Acquire', ['acquire_backend', 'acquire_apply', 'glossary_arc_tags']],
   ['Transcription', ['whisper_model', 'compute_type', 'require_eng']],
   ['Schedule & loop', ['rescan_interval', 'merge_window']],
   ['Paths', ['merge_roots', 'anime_order']],
 ];
-const FLAG_KEYS = ['require_eng', 'repair_unanchored'];
+const FLAG_KEYS = ['require_eng', 'repair_unanchored', 'acquire_apply'];
 
 /**
  * File the settings into their display sections; empty sections are dropped and
@@ -51,8 +51,11 @@ export function groupSettings(settings) {
 export function formatValue(key, value) {
   if (typeof value === 'boolean') return value ? 'yes' : 'no';
   const text = value === null || value === undefined ? '' : String(value).trim();
+  // Unset acquire_apply means apply (gen_loop.sh), so it never reads "not set".
+  if (!text && key === 'acquire_apply') return 'yes (default)';
   if (!text) return 'not set';
   if (FLAG_KEYS.includes(key)) {
+    if (key === 'acquire_apply') return /^(0|false|no|off|dry-run)$/i.test(text) ? 'no' : 'yes';
     if (/^(1|true|yes|on)$/i.test(text)) return 'yes';
     if (/^(0|false|no|off)$/i.test(text)) return 'no';
   }
@@ -121,6 +124,7 @@ const WRITABLE_KEYS = [
   'verify_backend',
   'verify_decision_model',
   'require_eng',
+  'acquire_apply',
 ];
 
 /**
@@ -140,12 +144,15 @@ export function validateModel(value) {
  * A cleared text field sends null; requireEng (boolean) compares against the
  * loaded flag and sends 1/0. Empty string means "no value set".
  * @param {Record<string, unknown> | null | undefined} current
- * @param {{ repair_profile?: unknown, repair_model?: unknown, verify_backend?: unknown, verify_decision_model?: unknown, requireEng?: unknown }} edited
- * @returns {Record<string, string | number | null>}
+ * acquire_apply is sent only when the toggle (acquireApply, boolean) differs from the server's effective
+ * value (`acquire`, GET's acquire_apply): unset means apply, so comparing with the raw string would write off.
+ * @param {{ repair_profile?: unknown, repair_model?: unknown, verify_backend?: unknown, verify_decision_model?: unknown, requireEng?: unknown, acquireApply?: unknown }} edited
+ * @param {{ enabled?: unknown } | null | undefined} [acquire]
+ * @returns {Record<string, string | number | boolean | null>}
  */
-export function buildSettingsBody(current, edited) {
+export function buildSettingsBody(current, edited, acquire) {
   const src = current ?? {};
-  /** @type {Record<string, string | number | null>} */
+  /** @type {Record<string, string | number | boolean | null>} */
   const body = {};
   const flag = (/** @type {unknown} */ v) =>
     v === true ||
@@ -157,6 +164,12 @@ export function buildSettingsBody(current, edited) {
       : false;
   const editBag = /** @type {Record<string, unknown>} */ (edited);
   for (const key of WRITABLE_KEYS) {
+    if (key === 'acquire_apply') {
+      if (typeof acquire?.enabled === 'boolean' && typeof edited.acquireApply === 'boolean') {
+        if (edited.acquireApply !== acquire.enabled) body[key] = edited.acquireApply;
+      }
+      continue;
+    }
     if (key === 'require_eng') {
       if (flag(edited.requireEng) !== flag(src[key])) body[key] = edited.requireEng === true ? 1 : 0;
       continue;
@@ -166,6 +179,28 @@ export function buildSettingsBody(current, edited) {
     if (next !== prev) body[key] = next === '' ? null : next;
   }
   return body;
+}
+
+const ACQUIRE_SOURCES = { runtime: 'runtime file', env: 'environment', default: 'default' };
+
+/**
+ * One plain sentence for the acquire-apply toggle: the effective value, where it came from, when a change lands.
+ * @param {{ enabled?: unknown, source?: unknown } | null | undefined} state
+ * @returns {string}
+ */
+export function describeAcquireApply(state) {
+  if (typeof state?.enabled !== 'boolean') return 'Current value unknown.';
+  const from = ACQUIRE_SOURCES[/** @type {keyof typeof ACQUIRE_SOURCES} */ (state.source)] ?? 'unknown source';
+  return `Currently ${state.enabled ? 'on' : 'off'} (from the ${from}). A change takes effect at the next sweep.`;
+}
+
+/**
+ * The pending acquire-apply badge reads the meaning: unset (null) means apply, so only an explicit false is "off".
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function describePendingAcquireApply(value) {
+  return value === false ? 'off' : 'on';
 }
 
 /**

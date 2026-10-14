@@ -50,6 +50,7 @@ ALLOW_LIST = (
     "merge_roots",
     "anime_order",
     "merge_window",
+    "acquire_apply",
 )
 
 # Sensitive names always reported as presence booleans, from either source.

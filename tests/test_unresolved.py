@@ -532,3 +532,23 @@ def test_a_torn_tail_does_not_hold_back_an_opted_in_episode_from_being_held(tmp_
     monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["S"])
     monkeypatch.setattr(mux, "show_for", lambda _: "S")
     assert mux.held_for_review(stem) is True
+
+
+def test_record_stamps_each_new_entry_with_a_utc_ts(tmp_path):
+    import re
+
+    stem = str(tmp_path / "ep")
+    unresolved.record(stem, "repair", "rejected_guard", original_text="a")
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", unresolved.items(stem)[0]["ts"])
+
+
+def test_resolve_and_resolve_many_keep_the_ts_of_every_entry_they_rewrite(tmp_path):
+    stem = str(tmp_path / "ep")
+    for t in ("a", "b", "c"):
+        unresolved.record(stem, "repair", "rejected_guard", original_text=t)
+    before = [e["ts"] for e in unresolved.items(stem)]
+    assert unresolved.resolve(stem, 0, True)
+    assert unresolved.resolve_many(stem, [(1, False, "no")])
+    after = unresolved.items(stem)
+    assert [e["ts"] for e in after] == before
+    assert after[0]["resolved"] and after[1]["resolved"] and not after[2]["resolved"]

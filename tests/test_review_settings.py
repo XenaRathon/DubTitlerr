@@ -160,7 +160,7 @@ def test_settings_covers_the_spec_allow_list():
         "repair_backend", "repair_model", "repair_llamacpp_url", "repair_openai_url",
         "verify_backend", "verify_decision_model", "acquire_backend", "whisper_model",
         "compute_type", "require_eng", "repair_unanchored", "glossary_arc_tags",
-        "rescan_interval", "merge_roots", "anime_order",
+        "rescan_interval", "merge_roots", "anime_order", "acquire_apply",
     ):
         assert key in st.ALLOW_LIST
     payload = st.build_settings(env(), {})[1]

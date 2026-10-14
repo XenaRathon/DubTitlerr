@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   allowedChoices,
   buildSettingsBody,
+  describeAcquireApply,
+  describePendingAcquireApply,
   describeTestResult,
   describeWriteError,
   formatValue,
@@ -245,4 +247,70 @@ test('describeWriteError keeps the env var name of an allow-list refusal readabl
   });
   assert.match(msg, /RUNTIME_VERIFY_BACKENDS/);
   assert.match(msg, /^Not allowed on this server: verify backend/);
+});
+
+// --- ACQUIRE_APPLY: unset means apply, so the toggle seeds from the server's effective value, never from the raw string
+
+const EDITED = {
+  repair_profile: '',
+  repair_model: 'qwen',
+  verify_backend: 'llamacpp',
+  verify_decision_model: '',
+  requireEng: true,
+};
+
+test('buildSettingsBody leaves acquire_apply out when the toggle still equals its seed', () => {
+  const current = { repair_model: 'old', verify_backend: 'llamacpp', require_eng: '1', acquire_apply: '' };
+  const seed = { enabled: true, source: 'default' };
+  // Another field changes, the unset (= apply) toggle is untouched: saving must not write acquire_apply=0.
+  assert.deepEqual(buildSettingsBody(current, { ...EDITED, acquireApply: true }, seed), { repair_model: 'qwen' });
+  assert.deepEqual(buildSettingsBody(current, { ...EDITED, repair_model: 'old', acquireApply: true }, seed), {});
+});
+
+test('buildSettingsBody sends acquire_apply as a real boolean when the toggle moves', () => {
+  const current = { repair_model: 'qwen', verify_backend: 'llamacpp', require_eng: '1' };
+  assert.deepEqual(
+    buildSettingsBody(current, { ...EDITED, acquireApply: false }, { enabled: true, source: 'default' }),
+    { acquire_apply: false },
+  );
+  assert.deepEqual(
+    buildSettingsBody(current, { ...EDITED, acquireApply: true }, { enabled: false, source: 'runtime' }),
+    { acquire_apply: true },
+  );
+});
+
+test('buildSettingsBody never sends acquire_apply without a server state to compare against', () => {
+  const current = { repair_model: 'qwen', verify_backend: 'llamacpp', require_eng: '1' };
+  assert.deepEqual(buildSettingsBody(current, { ...EDITED, acquireApply: false }), {});
+  assert.deepEqual(buildSettingsBody(current, { ...EDITED, acquireApply: false }, null), {});
+});
+
+test('describeAcquireApply names the value, where it came from and when it takes effect', () => {
+  assert.match(describeAcquireApply({ enabled: true, source: 'default' }), /on.*default.*next sweep/i);
+  assert.match(describeAcquireApply({ enabled: false, source: 'env' }), /off.*environment.*next sweep/i);
+  assert.match(describeAcquireApply({ enabled: false, source: 'runtime' }), /off.*runtime file.*next sweep/i);
+  assert.match(describeAcquireApply(undefined), /unknown/i);
+});
+
+test('formatValue reads the raw acquire_apply string by the shell rule: empty means yes', () => {
+  assert.equal(formatValue('acquire_apply', ''), 'yes (default)');
+  assert.equal(formatValue('acquire_apply', '1'), 'yes');
+  assert.equal(formatValue('acquire_apply', 'off'), 'no');
+  assert.equal(formatValue('acquire_apply', 'dry-run'), 'no');
+});
+
+test('groupSettings files acquire_apply under Acquire', () => {
+  const acquire = groupSettings({ acquire_apply: '', acquire_backend: '' }).find((g) => g.title === 'Acquire');
+  assert.deepEqual(acquire.entries.map((e) => e.key), ['acquire_backend', 'acquire_apply']);
+});
+
+test('pendingEntries passes a boolean acquire_apply through', () => {
+  assert.deepEqual(pendingEntries({ acquire_apply: false }), [{ key: 'acquire_apply', value: false }]);
+});
+
+test('describePendingAcquireApply shows the meaning: only an explicit off reads off, unset reads on', () => {
+  assert.equal(describePendingAcquireApply(false), 'off');
+  assert.equal(describePendingAcquireApply(true), 'on');
+  assert.equal(describePendingAcquireApply(null), 'on');
+  assert.equal(describePendingAcquireApply(undefined), 'on');
 });

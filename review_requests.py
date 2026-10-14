@@ -336,6 +336,35 @@ def validate(body: dict, anime_root: str | None = None) -> dict:
     }
 
 
+_SKIP_SHOW_DIRS = ("lost+found",)
+
+
+def list_shows(anime_root: str | None = None) -> list[str]:
+    """Show directory names directly under the library root that validate() accepts, sorted.
+
+    One directory level only; symlinks, dot and @ directories (NAS metadata) and lost+found are skipped.
+    Each name goes through validate() itself, so every listed show is
+    one a run request can name; anything it refuses (traversal characters, a symlink out of the
+    root, control characters) is left out."""
+    aroot = anime_root or os.environ.get("ANIME_ROOT", ANIME_ROOT)
+    try:
+        names = [
+            e.name
+            for e in os.scandir(aroot)
+            if e.is_dir(follow_symlinks=False) and e.name not in _SKIP_SHOW_DIRS and e.name[0] not in ".@"
+        ]
+    except OSError:
+        return []
+    out = []
+    for name in names:
+        try:
+            if validate({"show": name}, anime_root=aroot)["show"] == name:
+                out.append(name)
+        except Refused:
+            pass
+    return sorted(out)
+
+
 def derive_generate_only_re(show: str, season: int | None = None, episode_re: str | None = None) -> str:
     r"""Derive GENERATE_ONLY_RE regex anchored on show name with season/episode branches."""
     esc_show = re.escape(show)
@@ -780,6 +809,7 @@ EFFECTIVE_ENV_ALLOW_EXACT = frozenset((
     "WHISPER_MODEL",
     "COMPUTE_TYPE",
     "MERGE_ROOTS",
+    "ACQUIRE_APPLY",
 ))
 EFFECTIVE_ENV_SKIP_SUBSTRINGS = ("KEY", "TOKEN", "PASSWORD", "SECRET")
 _SECRET_VALUE_RE = re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{16,}|\bBearer\b|://[^/\s:@]+:[^/\s:@]+@")

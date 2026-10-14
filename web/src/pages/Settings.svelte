@@ -5,6 +5,8 @@
   import { CircleCheck, CircleMinus } from '@lucide/svelte';
   import {
     buildSettingsBody,
+    describeAcquireApply,
+    describePendingAcquireApply,
     describeTestResult,
     describeWriteError,
     formatValue,
@@ -54,6 +56,8 @@
   let editVerifyBackend = $state('');
   let editVerifyModel = $state('');
   let editRequireEng = $state(false);
+  let acquireApply = $state<{ enabled?: boolean; source?: string } | null>(null);
+  let editAcquireApply = $state(true);
   let adminToken = $state('');
   let saving = $state(false);
   let resetting = $state(false);
@@ -87,6 +91,8 @@
     editVerifyModel = text('verify_decision_model');
     const flag = String(settings['require_eng'] ?? '');
     editRequireEng = flag === 'true' || flag === '1';
+    // Unset means apply, so seed from the server's effective value, not from the raw string.
+    editAcquireApply = acquireApply?.enabled ?? true;
   }
 
   function forgetAdminToken() {
@@ -112,6 +118,7 @@
       verify_backend: editVerifyBackend,
       verify_decision_model: editVerifyModel,
       requireEng: editRequireEng,
+      acquireApply: editAcquireApply,
     };
     for (const [label, value] of [
       ['Repair model', editModel],
@@ -122,7 +129,7 @@
         return;
       }
     }
-    const body = buildSettingsBody(settings, edited);
+    const body = buildSettingsBody(settings, edited, acquireApply);
     if (Object.keys(body).length === 0) {
       writeMsg = 'Nothing changed.';
       return;
@@ -184,6 +191,7 @@
     whisper_model: 'Whisper model',
     compute_type: 'Compute type',
     require_eng: 'Require English audio',
+    acquire_apply: 'Apply acquired names',
     rescan_interval: 'Rescan interval',
     merge_window: 'Container window',
     merge_roots: 'Library roots',
@@ -218,6 +226,7 @@
         source: string;
         profiles?: string[];
         pending?: Record<string, unknown>;
+        acquire_apply?: { enabled?: boolean; source?: string };
         writable?: boolean;
         allowed_verify_backends?: unknown;
         allowed_decision_models?: unknown;
@@ -227,6 +236,7 @@
       secrets = data.secrets;
       source = data.source;
       profiles = Array.isArray(data.profiles) ? data.profiles : [];
+      acquireApply = data.acquire_apply ?? null;
       pending = data.pending !== null && typeof data.pending === 'object' ? data.pending : {};
       writable = data.writable !== false;
       allowedVerify = data.allowed_verify_backends ?? [];
@@ -451,6 +461,18 @@
         >
         {#if pendingFor('require_eng') !== undefined}<span class="badge neutral"
             >pending next sweep: {String(pendingFor('require_eng'))}</span
+          >{/if}
+        <label class="settings-check"
+          ><input
+            type="checkbox"
+            bind:checked={editAcquireApply}
+            aria-describedby="settings-acquire-apply-note"
+            disabled={saving}
+          />Apply acquired names</label
+        >
+        <small id="settings-acquire-apply-note" class="settings-hint">{describeAcquireApply(acquireApply)}</small>
+        {#if pendingFor('acquire_apply') !== undefined}<span class="badge neutral"
+            >pending next sweep: {describePendingAcquireApply(pendingFor('acquire_apply'))}</span
           >{/if}
         <div class="settings-actions">
           <button id="settings-save" class="primary" type="submit" disabled={saving}>

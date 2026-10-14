@@ -1,10 +1,10 @@
 """Runtime settings writes (specs/webui-settings-write): the web UI picks a repair profile and models, the builder applies
 them at the next show / merge-pass boundary.
 
-The web server writes ONE small file, /config/runtime.env, of flat ``KEY=VALUE`` lines for five allow-listed keys.
+The web server writes ONE small file, /config/runtime.env, of flat ``KEY=VALUE`` lines for six allow-listed keys.
 Nothing ever ``source``s that file: the shell loops call ``python3 review_settings_write.py export`` instead, which parses
 it here, re-validates every value, and prints only allow-listed, shell-quoted assignments. A hand-edited or hostile
-file can therefore produce nothing but those five validated settings.
+file can therefore produce nothing but those six validated settings.
 
 A profile replaces the whole repair endpoint: backend, URL, the key variable's NAME, and the optional extra_body and
 model_secondary, all together. Picking one never mixes its URL with a previous provider's key or routing flags.
@@ -20,9 +20,9 @@ CLI for the loops (gen_loop.sh, merge_pass.sh)::
 
 prints ``export KEY=value`` lines (``--plain`` drops the ``export`` word; ``--file PATH`` reads another file;
 ``--scope gen|merge`` picks who is asking, default merge). ``gen`` emits only REPAIR_MODEL, VERIFY_BACKEND,
-VERIFY_DECISION_MODEL and REQUIRE_ENG: a repair profile belongs to the merge pass (repair), and applying its backend to
-the generate loop would also switch punctuation restoration and glossary verify off. It always exits 0 on a read problem
-and prints ONE stderr line naming what it ignored, so a bad file falls back to the container environment audibly.
+VERIFY_DECISION_MODEL, REQUIRE_ENG and ACQUIRE_APPLY: a repair profile belongs to the merge pass (repair), and applying
+its backend to the generate loop would also switch punctuation restoration and glossary verify off. It always exits 0 on a
+read problem and prints ONE stderr line naming what it ignored, so a bad file falls back to the container environment audibly.
 
 Verify settings are opt-in: RUNTIME_VERIFY_BACKENDS (default llamacpp,ollama) and RUNTIME_DECISION_MODELS (default none)
 list what the web UI may select, so an admin token cannot move glossary adjudication to a cloud account the operator
@@ -45,6 +45,7 @@ FILE_KEYS = {
     "verify_backend": "VERIFY_BACKEND",
     "verify_decision_model": "VERIFY_DECISION_MODEL",
     "require_eng": "REQUIRE_ENG",
+    "acquire_apply": "ACQUIRE_APPLY",
 }
 API_KEYS = {v: k for k, v in FILE_KEYS.items()}
 MODEL_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}")
@@ -181,7 +182,7 @@ def _valid_value(file_key, value):
         return value if MODEL_RE.fullmatch(value) else None
     if file_key == "VERIFY_BACKEND":
         return value if value in VERIFY_BACKENDS else None
-    if file_key == "REQUIRE_ENG":
+    if file_key in ("REQUIRE_ENG", "ACQUIRE_APPLY"):
         return value if value in ("0", "1") else None
     if file_key == "REPAIR_PROFILE":
         return value if NAME_RE.fullmatch(value) else None
@@ -216,6 +217,10 @@ def _validate_put(body, profiles, environ=None):
             if canonical not in allowed_verify_backends(environ):
                 raise Refused(400, "verify backend not allowed: the operator lists allowed backends in RUNTIME_VERIFY_BACKENDS")
             out[file_key] = canonical
+        elif key == "acquire_apply":  # a real JSON boolean: stored as 1/0, read back by the shell loop's own off-list
+            if type(value) is not bool:
+                raise Refused(400, "invalid acquire_apply: use true or false")
+            out[file_key] = "1" if value else "0"
         else:  # require_eng: a real integer 0 or 1, not a bool, float or string
             if type(value) is not int or value not in (0, 1):
                 raise Refused(400, "invalid require_eng: use 0 or 1")
@@ -306,6 +311,15 @@ def _keep_prev(path):
     return True
 
 
+def _api_value(file_key, value):
+    """A runtime.env string as the API reports it: require_eng as 0/1, acquire_apply as a boolean."""
+    if file_key == "REQUIRE_ENG":
+        return int(value)
+    if file_key == "ACQUIRE_APPLY":
+        return value == "1"
+    return value
+
+
 def _render(values):
     return "".join(f"{key}={values[key]}\n" for key in FILE_KEYS.values() if key in values).encode("utf-8")
 
@@ -338,7 +352,7 @@ def put_settings(body, environ=None):
     except OSError:
         return 500, {"error": "settings write failed"}
     written = {
-        api: (None if updates[file] is None else int(updates[file]) if file == "REQUIRE_ENG" else updates[file])
+        api: (None if updates[file] is None else _api_value(file, updates[file]))
         for api, file in FILE_KEYS.items()
         if file in updates
     }
@@ -388,9 +402,32 @@ def _lookup_for(file_key, environ):
 
 def _revert_value(name, environ):
     value = _env(environ).get(name)
+    if name == "ACQUIRE_APPLY":  # unset reverts to the default, which is apply
+        return acquire_apply_on(value)
     if value is None or value == "":
         return None
-    return int(value) if name == "REQUIRE_ENG" and value.isdigit() else value
+    if name == "REQUIRE_ENG" and value.isdigit():
+        return int(value)
+    return value
+
+
+ACQUIRE_APPLY_OFF = ("0", "false", "no", "off", "dry-run")
+
+
+def acquire_apply_on(raw):
+    """gen_loop.sh's rule for ACQUIRE_APPLY: unset, empty or anything but 0/false/no/off/dry-run (any case, trimmed) applies."""
+    return (raw or "").strip().lower() not in ACQUIRE_APPLY_OFF
+
+
+def acquire_apply_state(runtime, settings):
+    """{"enabled", "source"} for the Settings toggle: the runtime file wins, then the reported environment, else the default
+    (apply). Computed here so the page never has to know the shell rule."""
+    if "ACQUIRE_APPLY" in runtime:
+        return {"enabled": runtime["ACQUIRE_APPLY"] == "1", "source": "runtime"}
+    raw = settings.get("acquire_apply", "")
+    if isinstance(raw, str) and raw.strip():
+        return {"enabled": acquire_apply_on(raw), "source": "env"}
+    return {"enabled": True, "source": "default"}
 
 
 def pending_overrides(environ=None, profiles=None):
@@ -408,8 +445,11 @@ def pending_overrides(environ=None, profiles=None):
             profile = profiles.get(value)
             if profile is None or any(seen.get(name, "") != want for name, want in expand_profile(profile)[:2]):
                 pending[api] = value
+        elif file_key == "ACQUIRE_APPLY":  # compare the meaning: "off" in effective.env already equals a saved 0
+            if acquire_apply_on(seen.get(file_key, "")) != (value == "1"):
+                pending[api] = value == "1"
         elif seen.get(file_key, "") != value:
-            pending[api] = int(value) if file_key == "REQUIRE_ENG" else value
+            pending[api] = _api_value(file_key, value)
     for file_key, api in API_KEYS.items():
         if file_key in runtime:
             continue
@@ -420,6 +460,9 @@ def pending_overrides(environ=None, profiles=None):
             names = ("REPAIR_BACKEND", "REPAIR_LLAMACPP_URL", "REPAIR_OPENAI_URL")
             if any(n in seen and seen[n] != (_env(environ).get(n) or "") for n in names):
                 pending[api] = None
+        elif file_key == "ACQUIRE_APPLY":
+            if file_key in seen and acquire_apply_on(seen[file_key]) != acquire_apply_on(_env(environ).get(file_key)):
+                pending[api] = _revert_value(file_key, environ)
         elif file_key in seen and seen[file_key] != (_env(environ).get(file_key) or ""):
             pending[api] = _revert_value(file_key, environ)
     return pending
@@ -434,7 +477,8 @@ def augment_get(status, payload, environ=None):
     runtime = _allowed_only(parse_runtime(runtime_path(environ)), environ)
     out = dict(payload)
     out["profiles"] = sorted(profiles)
-    out["overrides"] = {API_KEYS[k]: (int(v) if k == "REQUIRE_ENG" else v) for k, v in sorted(runtime.items())}
+    out["overrides"] = {API_KEYS[k]: _api_value(k, v) for k, v in sorted(runtime.items())}
+    out["acquire_apply"] = acquire_apply_state(runtime, out["settings"])
     out["pending"] = pending_overrides(environ, profiles)
     out["allowed_verify_backends"] = list(allowed_verify_backends(environ))
     out["allowed_decision_models"] = list(allowed_decision_models(environ))
@@ -447,7 +491,7 @@ def augment_get(status, payload, environ=None):
 # --- the exporter the shell loops call ------------------------------------------------------------------------------
 
 
-GEN_KEYS = ("REPAIR_MODEL", "VERIFY_BACKEND", "VERIFY_DECISION_MODEL", "REQUIRE_ENG")
+GEN_KEYS = ("REPAIR_MODEL", "VERIFY_BACKEND", "VERIFY_DECISION_MODEL", "REQUIRE_ENG", "ACQUIRE_APPLY")
 SCOPES = ("gen", "merge")
 
 

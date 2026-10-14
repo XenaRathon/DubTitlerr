@@ -42,6 +42,9 @@ _HAS_INIT_VERIFY_DECISION_MODEL="${VERIFY_DECISION_MODEL+1}"
 _INIT_REQUIRE_ENG="${REQUIRE_ENG:-}"
 _HAS_INIT_REQUIRE_ENG="${REQUIRE_ENG+1}"
 
+_INIT_ACQUIRE_APPLY="${ACQUIRE_APPLY:-}"
+_HAS_INIT_ACQUIRE_APPLY="${ACQUIRE_APPLY+1}"
+
 restore_runtime_env() {
 	if [ -n "$_HAS_INIT_REPAIR_BACKEND" ]; then export REPAIR_BACKEND="$_INIT_REPAIR_BACKEND"; else unset REPAIR_BACKEND; fi
 	if [ -n "$_HAS_INIT_REPAIR_LLAMACPP_URL" ]; then export REPAIR_LLAMACPP_URL="$_INIT_REPAIR_LLAMACPP_URL"; else unset REPAIR_LLAMACPP_URL; fi
@@ -51,6 +54,7 @@ restore_runtime_env() {
 	if [ -n "$_HAS_INIT_VERIFY_BACKEND" ]; then export VERIFY_BACKEND="$_INIT_VERIFY_BACKEND"; else unset VERIFY_BACKEND; fi
 	if [ -n "$_HAS_INIT_VERIFY_DECISION_MODEL" ]; then export VERIFY_DECISION_MODEL="$_INIT_VERIFY_DECISION_MODEL"; else unset VERIFY_DECISION_MODEL; fi
 	if [ -n "$_HAS_INIT_REQUIRE_ENG" ]; then export REQUIRE_ENG="$_INIT_REQUIRE_ENG"; else unset REQUIRE_ENG; fi
+	if [ -n "$_HAS_INIT_ACQUIRE_APPLY" ]; then export ACQUIRE_APPLY="$_INIT_ACQUIRE_APPLY"; else unset ACQUIRE_APPLY; fi
 }
 
 apply_runtime_env() {
@@ -99,6 +103,105 @@ wait_for_window() {
 		echo "gen_loop: schedule window closed — sleeping ${SCHEDULE_CHECK_INTERVAL:-60}s"
 		sleep_unless_stopped "${SCHEDULE_CHECK_INTERVAL:-60}"
 	done
+}
+
+# The per-show prep both the sweep and a drained run request run before GENERATE, so the two cannot drift:
+# MINE, ACQUIRE, ARC TAGS, VERIFY. (Mux is not here: gen_loop never muxes, merge_pass.sh does that.)
+# Results come back in globals (POSIX sh has no `local`, and a $(...) call would lose them): _prep_gloss is the glossary
+# path, or "" when the show has none; _prep_stopped is 1 when a soft stop arrived before a step began. The function never
+# exits itself: the sweep exits, a request requeues. Its own variables are _ps_-prefixed so they cannot clobber the
+# caller's show, rc or GLOSS (a request is drained inside the sweep's read loop).
+prep_show() {
+	_ps_show="$1"
+	_prep_stopped=0
+	_prep_gloss=""
+	# ADDITIVE dictionary: load the show's existing glossary + mine its NEW episodes'
+	# embedded subs for new proper nouns, appending them (never rebuilds). Runs before
+	# generate so the grown dictionary applies to the episodes about to be transcribed.
+	# Each prep step can run for many minutes (ACQUIRE up to 30, VERIFY up to 20): a stop
+	# that arrives during one show's prep must not wait for the rest of it.
+	if stop_requested; then
+		echo "gen_loop: soft stop, not starting MINE on $_ps_show"
+		_prep_stopped=1
+		return 0
+	fi
+	echo "#### MINE $_ps_show $(date)"
+	GLOSSARY_DIR="$GLOSS_DIR" python3 "$APP_DIR"/mine_glossary.py "$ANIME/$_ps_show" </dev/null 2>&1 || echo "  mine failed (continuing)"
+	# Acquire names the miner cannot reach: releases with no embedded fansub track leave the
+	# glossary empty for that stretch of the show. Wiki-owned canonicals only. Two separate
+	# gates: ACQUIRE enables the step at all (default on);
+	# ACQUIRE_APPLY decides whether it writes what it finds (default: apply; an explicit
+	# 0/false/no/off/dry-run makes it log proposals only). Failure-swallowed
+	# so it can never stall a sweep either way.
+	if [ "${ACQUIRE:-1}" != "0" ] && [ -f "$GLOSS_DIR/$_ps_show.json" ]; then
+		if stop_requested; then
+			echo "gen_loop: soft stop, not starting ACQUIRE on $_ps_show"
+			_prep_stopped=1
+			return 0
+		fi
+		echo "#### ACQUIRE $_ps_show $(date)"
+		ACQ_FLAGS=""
+		# 0, false, no, off, dry-run (any case, surrounding whitespace ignored) = dry run; unset, empty or anything else = apply
+		case "$(printf '%s' "${ACQUIRE_APPLY:-}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" in
+			0 | false | no | off | dry-run) ;;
+			*) ACQ_FLAGS="--apply" ;;
+		esac
+		# acquire_cache only memoises escalate()'s LLM adjudication now, never a
+		# proposal's final verdict, so a dry run and a later --apply run always
+		# propose the same terms -- no ACQUIRE_NO_CACHE workaround needed. See
+		# .procoder/todo/20260829-acquire-cache-suppresses-every-verdict.md for the bug
+		# this replaced (a dry run's cached verdict used to fold into `settled` and skip
+		# the term on every later run, suppressing 22 apply, 1,654 known and 10,708 flag
+		# verdicts -- that last group being review-queue entries that would never have
+		# surfaced for a human).
+		# 600s was also an incremental-era number; a first full acquisition pass over 463
+		# episodes exceeded it and was killed mid-harvest on 2026-08-21.
+		timeout "${ACQUIRE_TIMEOUT:-1800}" python3 "$APP_DIR"/glossary_acquire.py \
+			"$GLOSS_DIR/$_ps_show.json" "$ANIME/$_ps_show" \
+			$ACQ_FLAGS </dev/null 2>&1 || echo "  acquire skipped (continuing)"
+	fi
+	_ps_gloss="$GLOSS_DIR/$_ps_show.json"
+	[ -f "$_ps_gloss" ] || _ps_gloss=""
+	# Arc tags + arc titles (opt-in, default off): one wiki fetch per distinct season.nfo arc, cached on disk, tags the
+	# glossary's names (repair weights its prompt by them) and stores the arc titles VERIFY_ARC_GATE checks writes against.
+	# Additive, atomic, failure-swallowed like every prep step; a title that is not an arc changes nothing.
+	if [ "${GLOSSARY_ARC_TAGS:-0}" = "1" ] && [ -n "$_ps_gloss" ]; then
+		if stop_requested; then
+			echo "gen_loop: soft stop, not starting ARC TAGS on $_ps_show"
+			_prep_stopped=1
+			return 0
+		fi
+		echo "#### ARC TAGS $_ps_show $(date)"
+		timeout "${ARC_TAGS_TIMEOUT:-600}" python3 "$APP_DIR"/glossary_verify.py "$_ps_gloss" --tag-arcs "$ANIME/$_ps_show" </dev/null 2>&1 ||
+			echo "  arc tagging skipped (continuing)"
+	fi
+	# wiki-verify the (mined/updated) glossary: canonical, dub-preferred spellings. Incremental +
+	# cached, and timeout-bounded + failure-swallowed so a slow/down wiki never stalls the sweep.
+	if [ -n "$_ps_gloss" ]; then
+		if stop_requested; then
+			echo "gen_loop: soft stop, not starting VERIFY on $_ps_show"
+			_prep_stopped=1
+			return 0
+		fi
+		echo "#### VERIFY $_ps_show $(date)"
+		# 300s was sized for INCREMENTAL verification -- pending_terms() skips anything
+		# already in `verified`, so a steady-state run adjudicates a handful of terms. A
+		# full re-adjudication (after `verified` is cleared, as on 2026-08-21) is 121 terms
+		# for One Pace and hit the wall at exactly 300s. `timeout` returns 124; anything
+		# else is a real failure, and collapsing the two into one "skipped" line is how a
+		# stage that never once completed still looked like a normal sweep.
+		# `&& rc=0 || rc=$?` (the generate.py pattern; rc is reassigned before every other use, so sharing the name is safe) so a `timeout`-killed
+		# verify -- exit 124 -- does not trip `set -e` and exit the container before the
+		# rc-classified message below ever runs. Verified on vm102 2026-09-05: every restart
+		# over the prior 14h exited with code 124, journal-confirmed, with VERIFY_TIMEOUT
+		# (1200s) firing on One Pace within ~2s of the restart in every measured instance.
+		timeout "${VERIFY_TIMEOUT:-1200}" python3 "$APP_DIR"/glossary_verify.py "$_ps_gloss" </dev/null 2>&1 && rc=0 || rc=$?
+		[ "$rc" -eq 0 ] || { [ "$rc" -eq 124 ] &&
+			echo "  verify TIMED OUT after ${VERIFY_TIMEOUT:-1200}s (continuing; terms stay unverified)" ||
+			echo "  verify failed rc=$rc (continuing)"; }
+	fi
+	_prep_gloss="$_ps_gloss"
+	return 0
 }
 
 drain_requests() {
@@ -154,8 +257,10 @@ EOF
 		apply_runtime_env
 
 		req_eng="${req_req_eng:-${REQUIRE_ENG:-1}}"
-		GLOSS="$GLOSS_DIR/$req_show.json"
-		[ -f "$GLOSS" ] || GLOSS=""
+		# Same prep as the sweep gives a show. A soft stop during it leaves the stop flag set, so the generate loop below
+		# does not start and the request is requeued by the check after it.
+		prep_show "$req_show"
+		GLOSS="$_prep_gloss"
 
 		attempt=0
 		rc=""
@@ -254,87 +359,9 @@ while :; do
 			continue
 		}
 		apply_runtime_env
-		# ADDITIVE dictionary: load the show's existing glossary + mine its NEW episodes'
-		# embedded subs for new proper nouns, appending them (never rebuilds). Runs before
-		# generate so the grown dictionary applies to the episodes about to be transcribed.
-		# Each prep step can run for many minutes (ACQUIRE up to 30, VERIFY up to 20): a stop
-		# that arrives during one show's prep must not wait for the rest of it.
-		if stop_requested; then
-			echo "gen_loop: soft stop, not starting MINE on $show"
-			exit 0
-		fi
-		echo "#### MINE $show $(date)"
-		GLOSSARY_DIR="$GLOSS_DIR" python3 "$APP_DIR"/mine_glossary.py "$ANIME/$show" </dev/null 2>&1 || echo "  mine failed (continuing)"
-		# Acquire names the miner cannot reach: releases with no embedded fansub track leave the
-		# glossary empty for that stretch of the show. Wiki-owned canonicals only. Two separate
-		# gates: ACQUIRE enables the step at all (default on, dry-run: it only logs proposals);
-		# ACQUIRE_APPLY additionally authorises writing them. Default production behaviour is
-		# dry-run-and-log until the Punk Hazard verification run has passed. Failure-swallowed
-		# so it can never stall a sweep either way.
-		if [ "${ACQUIRE:-1}" != "0" ] && [ -f "$GLOSS_DIR/$show.json" ]; then
-			if stop_requested; then
-				echo "gen_loop: soft stop, not starting ACQUIRE on $show"
-				exit 0
-			fi
-			echo "#### ACQUIRE $show $(date)"
-			ACQ_FLAGS=""
-			# unset, empty, 0, false, no, off (any case, surrounding whitespace ignored) = dry run; anything else = apply
-			case "$(printf '%s' "${ACQUIRE_APPLY:-}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" in
-				"" | 0 | false | no | off) ;;
-				*) ACQ_FLAGS="--apply" ;;
-			esac
-			# acquire_cache only memoises escalate()'s LLM adjudication now, never a
-			# proposal's final verdict, so a dry run and a later --apply run always
-			# propose the same terms -- no ACQUIRE_NO_CACHE workaround needed. See
-			# .procoder/todo/20260829-acquire-cache-suppresses-every-verdict.md for the bug
-			# this replaced (a dry run's cached verdict used to fold into `settled` and skip
-			# the term on every later run, suppressing 22 apply, 1,654 known and 10,708 flag
-			# verdicts -- that last group being review-queue entries that would never have
-			# surfaced for a human).
-			# 600s was also an incremental-era number; a first full acquisition pass over 463
-			# episodes exceeded it and was killed mid-harvest on 2026-08-21.
-			timeout "${ACQUIRE_TIMEOUT:-1800}" python3 "$APP_DIR"/glossary_acquire.py \
-				"$GLOSS_DIR/$show.json" "$ANIME/$show" \
-				$ACQ_FLAGS </dev/null 2>&1 || echo "  acquire skipped (continuing)"
-		fi
-		GLOSS="$GLOSS_DIR/$show.json"
-		[ -f "$GLOSS" ] || GLOSS=""
-		# Arc tags + arc titles (opt-in, default off): one wiki fetch per distinct season.nfo arc, cached on disk, tags the
-		# glossary's names (repair weights its prompt by them) and stores the arc titles VERIFY_ARC_GATE checks writes against.
-		# Additive, atomic, failure-swallowed like every prep step; a title that is not an arc changes nothing.
-		if [ "${GLOSSARY_ARC_TAGS:-0}" = "1" ] && [ -n "$GLOSS" ]; then
-			if stop_requested; then
-				echo "gen_loop: soft stop, not starting ARC TAGS on $show"
-				exit 0
-			fi
-			echo "#### ARC TAGS $show $(date)"
-			timeout "${ARC_TAGS_TIMEOUT:-600}" python3 "$APP_DIR"/glossary_verify.py "$GLOSS" --tag-arcs "$ANIME/$show" </dev/null 2>&1 ||
-				echo "  arc tagging skipped (continuing)"
-		fi
-		# wiki-verify the (mined/updated) glossary: canonical, dub-preferred spellings. Incremental +
-		# cached, and timeout-bounded + failure-swallowed so a slow/down wiki never stalls the sweep.
-		if [ -n "$GLOSS" ]; then
-			if stop_requested; then
-				echo "gen_loop: soft stop, not starting VERIFY on $show"
-				exit 0
-			fi
-			echo "#### VERIFY $show $(date)"
-			# 300s was sized for INCREMENTAL verification -- pending_terms() skips anything
-			# already in `verified`, so a steady-state run adjudicates a handful of terms. A
-			# full re-adjudication (after `verified` is cleared, as on 2026-08-21) is 121 terms
-			# for One Pace and hit the wall at exactly 300s. `timeout` returns 124; anything
-			# else is a real failure, and collapsing the two into one "skipped" line is how a
-			# stage that never once completed still looked like a normal sweep.
-			# `&& rc=0 || rc=$?` (the generate.py pattern on line 96) so a `timeout`-killed
-			# verify -- exit 124 -- does not trip `set -e` and exit the container before the
-			# rc-classified message below ever runs. Verified on vm102 2026-09-05: every restart
-			# over the prior 14h exited with code 124, journal-confirmed, with VERIFY_TIMEOUT
-			# (1200s) firing on One Pace within ~2s of the restart in every measured instance.
-			timeout "${VERIFY_TIMEOUT:-1200}" python3 "$APP_DIR"/glossary_verify.py "$GLOSS" </dev/null 2>&1 && rc=0 || rc=$?
-			[ "$rc" -eq 0 ] || { [ "$rc" -eq 124 ] &&
-				echo "  verify TIMED OUT after ${VERIFY_TIMEOUT:-1200}s (continuing; terms stay unverified)" ||
-				echo "  verify failed rc=$rc (continuing)"; }
-		fi
+		prep_show "$show"
+		[ "$_prep_stopped" -eq 0 ] || exit 0
+		GLOSS="$_prep_gloss"
 		echo "#### GENERATE $show $(date)"
 		# crash-resume: re-run until clean exit or no progress (poison files get a .fail marker)
 		attempt=0

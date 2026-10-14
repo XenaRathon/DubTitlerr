@@ -1203,3 +1203,9 @@ def test_h1_safe_grammar_property_random_walk_timing():
 
 
 
+
+
+def test_write_effective_env_reports_acquire_apply(tmp_path):
+    out_file = tmp_path / "effective.env"
+    write_effective_env(str(out_file), env={"ACQUIRE_APPLY": "0"})
+    assert "ACQUIRE_APPLY=0\n" in out_file.read_text()

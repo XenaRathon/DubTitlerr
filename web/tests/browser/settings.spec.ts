@@ -252,3 +252,40 @@ test('a backend the server refuses comes back as a readable sentence naming the 
   await expect(alert).toContainText('Not allowed on this server: verify backend.');
   await expect(page.getByText(/Saved\./)).toHaveCount(0);
 });
+
+// --- acquire apply: unset means apply, so the toggle starts on and a save of another field leaves it alone ---------
+
+test('the acquire-apply toggle starts on when nothing is set, with its source and timing', async ({ page }) => {
+  await openSignedIn(page, '#/settings');
+  const toggle = page.getByLabel('Apply acquired names');
+  await expect(toggle).toBeChecked();
+  await expect(page.locator('#settings-acquire-apply-note')).toContainText(
+    'Currently on (from the default). A change takes effect at the next sweep.',
+  );
+  await expectNoAxeViolations(page);
+});
+
+test('saving another field never writes acquire_apply while the toggle is untouched', async ({ page }) => {
+  await openSignedIn(page, '#/settings');
+  const seen = seenRequests(page, '**/api/settings');
+  await page.getByLabel('Repair model').fill('browser-test-model');
+  await page.locator('#settings-admin-token').fill(ADMIN_TOKEN);
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  await expect(page.getByText(/Saved\./)).toBeVisible();
+  expect(JSON.parse(seen.find((r) => r.method === 'PUT')!.body)).toEqual({ repair_model: 'browser-test-model' });
+});
+
+test('turning the toggle off sends acquire_apply:false and shows it from the runtime file, pending', async ({
+  page,
+}) => {
+  await openSignedIn(page, '#/settings');
+  const seen = seenRequests(page, '**/api/settings');
+  await page.getByLabel('Apply acquired names').uncheck();
+  await page.locator('#settings-admin-token').fill(ADMIN_TOKEN);
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  await expect(page.getByText(/Saved\./)).toBeVisible();
+  expect(JSON.parse(seen.find((r) => r.method === 'PUT')!.body)).toEqual({ acquire_apply: false });
+  await expect(page.getByLabel('Apply acquired names')).not.toBeChecked();
+  await expect(page.locator('#settings-acquire-apply-note')).toContainText('Currently off (from the runtime file)');
+  await expect(page.getByText('pending next sweep: off')).toBeVisible();
+});

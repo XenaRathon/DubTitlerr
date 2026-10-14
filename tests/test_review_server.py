@@ -2097,3 +2097,127 @@ def test_get_index_page_stays_open_without_a_token(tmp_path, monkeypatch):
     h = wire.as_handler("/")
     h.do_GET()
     assert wire.status == 200
+
+
+def _strip_ts(stem):
+    """Rewrite the queue the way an old build left it: entries with no ts."""
+    entries = [{k: v for k, v in e.items() if k != "ts"} for e in unresolved.items(stem)]
+    with open(unresolved.path_for(stem), "w") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+
+def test_oldest_pending_at_is_the_earliest_entry_ts_among_the_undecided(tmp_path, monkeypatch):
+    stem = _episode(tmp_path, "busy")
+    rows = unresolved.items(stem)
+    rows[0]["ts"] = "2026-01-03T00:00:00Z"
+    rows[1]["ts"] = "2026-01-02T00:00:00Z"  # rejected_guard: pending, the oldest
+    rows[2]["ts"] = "2026-01-04T00:00:00Z"
+    rows[3]["ts"] = "2025-12-01T00:00:00Z"  # llm_empty is not a primary reason: not counted
+    with open(unresolved.path_for(stem), "w") as f:
+        for e in rows:
+            f.write(json.dumps(e) + "\n")
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    assert review_server.handle_index()["episodes"][0]["oldest_pending_at"] == "2026-01-02T00:00:00Z"
+
+
+def test_oldest_pending_at_ignores_a_decided_entry(tmp_path, monkeypatch):
+    stem = _episode(tmp_path, "busy")
+    rows = unresolved.items(stem)
+    for e, ts in zip(rows, ("2026-01-05T00:00:00Z", "2026-01-01T00:00:00Z", "2026-01-06T00:00:00Z", "2026-01-07T00:00:00Z")):
+        e["ts"] = ts
+    rows[1]["resolved"] = True  # the oldest is settled
+    with open(unresolved.path_for(stem), "w") as f:
+        for e in rows:
+            f.write(json.dumps(e) + "\n")
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    assert review_server.handle_index()["episodes"][0]["oldest_pending_at"] == "2026-01-05T00:00:00Z"
+
+
+def test_oldest_pending_at_falls_back_to_the_sidecar_mtime_when_no_entry_has_a_ts(tmp_path, monkeypatch):
+    stem = _episode(tmp_path, "busy")
+    _strip_ts(stem)
+    os.utime(unresolved.path_for(stem), (1_700_000_000, 1_700_000_000))
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    assert review_server.handle_index()["episodes"][0]["oldest_pending_at"] == "2023-11-14T22:13:20Z"
+
+
+def test_oldest_pending_at_is_null_when_there_is_no_ts_and_the_file_cannot_be_stat(tmp_path, monkeypatch):
+    stem = _episode(tmp_path, "busy")
+    _strip_ts(stem)
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+    monkeypatch.setattr(review_server.os.path, "getmtime", lambda p: (_ for _ in ()).throw(OSError("gone")))
+
+    assert review_server.handle_index()["episodes"][0]["oldest_pending_at"] is None
+
+
+def test_forget_drops_the_cached_mtime_with_the_cached_queue(tmp_path, monkeypatch):
+    stem = _episode(tmp_path, "busy")
+    _strip_ts(stem)
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+    os.utime(unresolved.path_for(stem), (1_700_000_000, 1_700_000_000))
+    assert review_server.handle_index()["episodes"][0]["oldest_pending_at"] == "2023-11-14T22:13:20Z"
+
+    os.utime(unresolved.path_for(stem), (1_800_000_000, 1_800_000_000))
+    review_server.forget(stem)
+
+    assert review_server.handle_index()["episodes"][0]["oldest_pending_at"] == "2027-01-15T08:00:00Z"
+
+
+def test_a_fresh_walk_drops_the_cached_mtime_too(tmp_path, monkeypatch):
+    _triage_episode(tmp_path, "e01")
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", None)
+    monkeypatch.setattr(review_server, "_QUEUE_CACHE", {})
+    monkeypatch.setattr(review_server, "_QUEUE_MTIME", {})
+    monkeypatch.setattr(review_server, "STEMS_TTL", 0.0)
+    monkeypatch.setattr(review_server, "STEMS_TTL_FACTOR", 0.0)
+    stem = review_server.known_stems()[0]
+    _strip_ts(stem)
+    review_server.queue_written_at(stem)
+    assert review_server._QUEUE_MTIME
+
+    review_server.known_stems()
+
+    assert review_server._QUEUE_MTIME == {}
+
+
+def _shows_route(tmp_path, monkeypatch, root):
+    monkeypatch.delenv("REVIEW_TOKEN", raising=False)
+    monkeypatch.setattr(review_server, "TOKEN_DIR", str(tmp_path))
+    monkeypatch.setenv("ANIME_ROOT", str(root))
+    return review_server.route("GET", "/api/shows", {}, review_server.resolve_token(str(tmp_path)))
+
+
+def test_api_shows_lists_only_directories_the_run_validator_accepts(tmp_path, monkeypatch):
+    import review_requests
+
+    root = tmp_path / "lib"
+    for name in ("Frieren", "Bleach", "a..b"):
+        (root / name / "Season 1").mkdir(parents=True)
+    (root / "notes.txt").write_text("x")
+    (root / "linked").symlink_to(tmp_path)
+    (root / "alias").symlink_to(root / "Bleach")  # inside the root, but a link: not followed
+    for name in (".hidden", "@eaDir", "lost+found"):
+        (root / name).mkdir()
+
+    status, body = _shows_route(tmp_path, monkeypatch, root)
+
+    assert status == 200
+    assert body == {"shows": ["Bleach", "Frieren"]}
+    for s in body["shows"]:
+        review_requests.validate({"show": s}, anime_root=str(root))
+
+
+def test_api_shows_requires_the_token(tmp_path, monkeypatch):
+    monkeypatch.delenv("REVIEW_TOKEN", raising=False)
+    monkeypatch.setattr(review_server, "TOKEN_DIR", str(tmp_path))
+    monkeypatch.setenv("ANIME_ROOT", str(tmp_path))
+    assert review_server.route("GET", "/api/shows", {}, None)[0] == 401
+
+
+def test_api_shows_is_empty_when_the_root_is_missing(tmp_path, monkeypatch):
+    assert _shows_route(tmp_path, monkeypatch, tmp_path / "nope") == (200, {"shows": []})

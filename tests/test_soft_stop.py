@@ -291,7 +291,7 @@ name = {name!r}
 if name == "generate":
     show = os.environ["SHOW_NAME"]
 else:
-    show = os.path.basename(sys.argv[-1])
+    show = os.path.basename([a for a in sys.argv[1:] if not a.startswith("--")][-1])
     if show.endswith(".json"):
         show = show[:-5]
 with open(os.environ["CALLLOG"], "a") as f:

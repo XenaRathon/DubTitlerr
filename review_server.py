@@ -44,6 +44,7 @@ Env:
                  means login is NOT configured (the route answers 404), never "open".
 """
 
+import datetime
 import hashlib
 import html
 import http.cookies
@@ -124,6 +125,9 @@ _STEMS_CACHE = None  # (expiry, stems, filled_at): filled_at is the walk START, 
 # Deliberately holds the entries BEFORE the decisions store is consulted. The store is one
 # small file read per request, so a verdict shows up everywhere immediately.
 _QUEUE_CACHE: dict = {}
+# stem -> queue sidecar mtime as ISO 8601 UTC (None when unreadable). Filled and dropped with _QUEUE_CACHE: a stat per episode
+# on every index call is exactly the touch that cache exists to avoid.
+_QUEUE_MTIME: dict = {}
 CONF_SUFFIX = ".dubtitles.conf.json"
 # A HEADER, never a query parameter: a token in a URL lands in proxy logs, browser history
 # and any Referer the page emits.
@@ -332,6 +336,7 @@ def open_entries(stem: str) -> list:
 def forget(stem: str) -> None:
     """Drop one episode's cached queue, after writing to it."""
     _QUEUE_CACHE.pop(stem, None)
+    _QUEUE_MTIME.pop(stem, None)
 
 
 def known_stems() -> list:
@@ -366,6 +371,7 @@ def known_stems() -> list:
     # Filled together, dropped together. Nothing else expires a queue entry, so a re-repaired
     # episode would otherwise keep its old queue until the container restarted.
     _QUEUE_CACHE.clear()
+    _QUEUE_MTIME.clear()
     # One tuple, one assignment: a reader never sees a list paired with another fill's timestamp. ``now`` is the
     # walk START -- the list describes the tree as the walk saw it from then on, not as of when it finished.
     _STEMS_CACHE = (time.monotonic() + _stems_ttl(time.monotonic() - now), stems, now)
@@ -390,6 +396,18 @@ def _store_for(stem: str, cache: dict) -> dict:
     return cache[show]
 
 
+def queue_written_at(stem: str):
+    """When this episode's queue sidecar was last written, ISO 8601 UTC, or None: the fallback for entries that carry no ts.
+    Cached per walk, like the entries it describes."""
+    if stem not in _QUEUE_MTIME:
+        try:
+            when = datetime.datetime.fromtimestamp(os.path.getmtime(unresolved.path_for(stem)), datetime.timezone.utc)
+            _QUEUE_MTIME[stem] = when.strftime("%Y-%m-%dT%H:%M:%SZ")
+        except OSError:
+            _QUEUE_MTIME[stem] = None
+    return _QUEUE_MTIME[stem]
+
+
 def handle_index() -> dict:
     """Every episode with something pending, split by what kind of question it is.
 
@@ -411,6 +429,9 @@ def handle_index() -> dict:
             continue
         admitted = sum(1 for e in live if e.get("stage") == "repair_applied")
         season = os.path.basename(os.path.dirname(stem))
+        # Entries written before they were stamped have no ts; the sidecar's mtime stands in only when none of these has one.
+        stamps = [e["ts"] for e in live if isinstance(e.get("ts"), str) and e["ts"]]
+        oldest_at = min(stamps) if stamps else queue_written_at(stem)
         out.append(
             {
                 "stem": stem,
@@ -424,6 +445,7 @@ def handle_index() -> dict:
                 "pending": len(live),
                 "admitted": admitted,
                 "refused": len(live) - admitted,
+                "oldest_pending_at": oldest_at,
             }
         )
     # Most admitted first. With everything at 0 the flat list had no meaningful order at all,
@@ -1087,6 +1109,8 @@ def route(
         return preview_audio(body)
     if method == "GET" and path == "/api/episodes":
         return 200, handle_index()
+    if method == "GET" and path == "/api/shows":
+        return 200, {"shows": review_requests.list_shows(_anime_root())}
     if method == "GET" and path == "/api/episode":
         return 200, handle_episode(str(body.get("stem", "")), all_reasons=bool(body.get("all")))
     if method == "POST" and path == "/api/decide":

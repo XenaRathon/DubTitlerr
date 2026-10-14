@@ -906,3 +906,101 @@ def test_the_server_side_read_stays_quiet(cfg, capsys):
     runtime(cfg).write_bytes(b"\xff\xfe\n")
     w.augment_get(*review_settings.handle("GET", "/api/settings"))
     assert capsys.readouterr().err == ""
+
+
+# --- ACQUIRE_APPLY: a writable on/off runtime setting ---------------------------------------------------------------
+
+
+def test_acquire_apply_is_a_strict_boolean_stored_as_one_or_zero(cfg):
+    for bad in (0, 1, "1", "true", None.__class__, 1.0, [True]):
+        assert w.put_settings({"acquire_apply": bad})[0] == 400, bad
+    assert w.put_settings({"acquire_apply": False}) == (200, {"ok": True, "written": {"acquire_apply": False}, "pending": True})
+    assert lines(cfg) == ["ACQUIRE_APPLY=0"]
+    assert w.put_settings({"acquire_apply": True})[1]["written"] == {"acquire_apply": True}
+    assert lines(cfg) == ["ACQUIRE_APPLY=1"]
+    assert w.put_settings({"acquire_apply": None})[1]["written"] == {"acquire_apply": None}
+    assert lines(cfg) == []
+
+
+def test_a_hand_edited_acquire_apply_line_must_be_zero_or_one(cfg):
+    res = run_export(cfg, "ACQUIRE_APPLY=yes\nACQUIRE_APPLY=0\nACQUIRE_APPLY=2\n", "--scope", "gen")
+    assert [ln for ln in res.stdout.splitlines() if "ACQUIRE_APPLY" in ln] == ["export ACQUIRE_APPLY=0"]
+
+
+def test_gen_scope_exports_acquire_apply_and_merge_scope_does_too(cfg):
+    for scope in ("gen", "merge"):
+        assert "export ACQUIRE_APPLY=1" in run_export(cfg, "ACQUIRE_APPLY=1\n", "--scope", scope).stdout.splitlines()
+
+
+def acquire_state(cfg):
+    return w.augment_get(*review_settings.handle("GET", "/api/settings"))[1]["acquire_apply"]
+
+
+def test_get_reports_the_effective_acquire_apply_and_where_it_came_from(cfg, monkeypatch):
+    monkeypatch.delenv("ACQUIRE_APPLY", raising=False)
+    assert acquire_state(cfg) == {"enabled": True, "source": "default"}, "unset means apply"
+    monkeypatch.setenv("ACQUIRE_APPLY", "off")
+    assert acquire_state(cfg) == {"enabled": False, "source": "env"}
+    monkeypatch.setenv("ACQUIRE_APPLY", "")
+    assert acquire_state(cfg) == {"enabled": True, "source": "default"}, "empty also means apply"
+    w.put_settings({"acquire_apply": True})
+    assert acquire_state(cfg) == {"enabled": True, "source": "runtime"}, "the runtime file beats the environment"
+    w.put_settings({"acquire_apply": False})
+    assert acquire_state(cfg) == {"enabled": False, "source": "runtime"}
+
+
+def test_get_lists_acquire_apply_in_overrides_and_pending_as_a_bool(cfg):
+    (cfg / "effective.env").write_text("ACQUIRE_APPLY=1\n")
+    w.put_settings({"acquire_apply": False})
+    payload = w.augment_get(*review_settings.handle("GET", "/api/settings"))[1]
+    assert payload["overrides"] == {"acquire_apply": False}
+    assert payload["pending"] == {"acquire_apply": False}
+    (cfg / "effective.env").write_text("ACQUIRE_APPLY=0\n")
+    assert w.augment_get(*review_settings.handle("GET", "/api/settings"))[1]["pending"] == {}
+
+
+def test_acquire_apply_put_needs_the_admin_token(cfg):
+    body = {"acquire_apply": False}
+    assert rs.route("PUT", "/api/settings", body, TOKEN) == (403, {"error": "admin token required"})
+    assert rs.route("PUT", "/api/settings", body, TOKEN, admin_token=ADMIN)[0] == 200
+
+
+def pending_of(cfg):
+    return w.augment_get(*review_settings.handle("GET", "/api/settings"))[1]["pending"]
+
+
+def test_a_reset_acquire_apply_reverts_to_apply_not_to_an_unset_value(cfg, monkeypatch):
+    """The builder still runs ACQUIRE_APPLY=0 after a reset and the container leaves it unset, which means apply."""
+    monkeypatch.delenv("ACQUIRE_APPLY", raising=False)
+    (cfg / "effective.env").write_text("ACQUIRE_APPLY=0\n")
+    assert pending_of(cfg) == {"acquire_apply": True}
+
+
+def test_a_saved_value_matching_the_builders_meaning_is_not_pending(cfg, monkeypatch):
+    monkeypatch.delenv("ACQUIRE_APPLY", raising=False)
+    for spelling in ("off", "false", "No", "dry-run", "0"):
+        (cfg / "effective.env").write_text(f"ACQUIRE_APPLY={spelling}\n")
+        w.put_settings({"acquire_apply": False})
+        assert pending_of(cfg) == {}, f"saved 0 equals effective {spelling!r}"
+    (cfg / "effective.env").write_text("REQUIRE_ENG=1\n")  # the key is absent: unset means apply
+    w.put_settings({"acquire_apply": True})
+    assert "acquire_apply" not in pending_of(cfg), "saved 1 equals an effective file that leaves it unset"
+    (cfg / "effective.env").write_text("ACQUIRE_APPLY=yes\n")
+    assert pending_of(cfg) == {}, "saved 1 equals effective 'yes'"
+
+
+def test_a_reset_that_leaves_the_same_meaning_is_not_pending(cfg, monkeypatch):
+    """No saved value: the builder's spelling differs from the container's, the meaning does not."""
+    for effective, container in (("off", "0"), ("1", None), ("true", ""), ("DRY-RUN", "no")):
+        if container is None:
+            monkeypatch.delenv("ACQUIRE_APPLY", raising=False)
+        else:
+            monkeypatch.setenv("ACQUIRE_APPLY", container)
+        (cfg / "effective.env").write_text(f"ACQUIRE_APPLY={effective}\n")
+        assert pending_of(cfg) == {}, (effective, container)
+
+
+def test_a_reset_that_changes_the_meaning_is_pending_as_the_container_meaning(cfg, monkeypatch):
+    monkeypatch.setenv("ACQUIRE_APPLY", "off")
+    (cfg / "effective.env").write_text("ACQUIRE_APPLY=1\n")
+    assert pending_of(cfg) == {"acquire_apply": False}

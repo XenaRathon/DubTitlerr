@@ -577,8 +577,9 @@ def test_gen_loop_continues_when_arc_tagging_fails():
 
     text = open(os.path.join(os.path.dirname(__file__), "..", "gen_loop.sh")).read()
     step = text[text.index('"${GLOSSARY_ARC_TAGS:-0}" = "1"') :]
-    step = step[: step.index("\n\t\tfi\n")]
-    assert re.search(r'--tag-arcs "\$ANIME/\$show" </dev/null 2>&1 \|\|\s*\n\s*echo "  arc tagging skipped \(continuing\)"', step)
+    step = step[: step.index("\n\tfi\n")]
+    arc_fallback = r'--tag-arcs "\$ANIME/\$_ps_show" </dev/null 2>&1 \|\|\s*\n\s*echo "  arc tagging skipped \(continuing\)"'
+    assert re.search(arc_fallback, step)
     assert "exit 1" not in step and "set -e" not in step
 
 
