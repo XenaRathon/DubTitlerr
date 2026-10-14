@@ -106,7 +106,11 @@ test('a queued run appears in the list; asking for the same run again names the 
   await expect(table).toHaveCount(1);
 });
 
-test('an unknown show is refused with the server reason', async ({ page }) => {
+test('with no show list, an unknown typed show is refused with the server reason', async ({ page }) => {
+  // An empty list means free text; the server is then the one that refuses the name.
+  await page.route('**/api/shows', (route) =>
+    route.fulfill({ contentType: 'application/json', body: JSON.stringify({ shows: [] }) }),
+  );
   await openSignedIn(page, '#/runs');
   await page.locator('#runs-admin-token').fill(ADMIN_TOKEN);
   await queue(page, 'No Such Show');
@@ -192,4 +196,52 @@ test('a wrong admin token on the schedule is refused with the 403 sentence', asy
   await page.locator('#runs-admin-token').fill('not-the-admin-token');
   await page.getByRole('button', { name: 'Save schedule' }).click();
   await expect(page.getByRole('alert').filter({ hasText: /Admin token required|Not allowed/ })).toBeVisible();
+});
+
+test('the show picker lists /api/shows, filters as you type, and refuses a show not on the list', async ({
+  page,
+}) => {
+  await page.route('**/api/shows', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ shows: ['Alpha Show', 'Neon Harbor'] }),
+    }),
+  );
+  let posts = 0;
+  const seen: string[] = [];
+  await page.route('**/api/requests', (route) => {
+    if (route.request().method() === 'POST') {
+      posts++;
+      seen.push(route.request().postData() ?? '');
+    }
+    return route.continue();
+  });
+  await openSignedIn(page, '#/runs');
+  const listId = await page.getByLabel('Show', { exact: true }).getAttribute('list');
+  expect(listId).toBeTruthy();
+  const options = page.locator(`datalist#${listId} option`);
+  await expect(options).toHaveCount(2);
+  expect(await options.evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value))).toEqual([
+    'Alpha Show',
+    'Neon Harbor',
+  ]);
+  await page.locator('#runs-admin-token').fill(ADMIN_TOKEN);
+  await queue(page, 'Neon');
+  await expect(page.getByRole('alert')).toContainText(/Pick a show from the list/);
+  expect(posts).toBe(0);
+  // A listed show sends the same body as before.
+  await queue(page, 'Neon Harbor', '1');
+  await expect(page.getByRole('status')).toContainText(/Queued as/);
+  expect(JSON.parse(seen[0])).toEqual({ show: 'Neon Harbor', season: 1 });
+});
+
+test('when the show list fails to load, the field takes free text', async ({ page }) => {
+  await page.route('**/api/shows', (route) =>
+    route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'boom' }) }),
+  );
+  await openSignedIn(page, '#/runs');
+  await expect(page.getByText(/Show list unavailable/)).toBeVisible();
+  await page.locator('#runs-admin-token').fill(ADMIN_TOKEN);
+  await queue(page, 'Neon Harbor');
+  await expect(page.getByRole('status')).toContainText(/Queued as/);
 });

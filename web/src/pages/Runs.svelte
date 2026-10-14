@@ -4,6 +4,7 @@
   import { adminHeaders, clearAdminToken, loadAdminToken, storeAdminToken } from '../lib/adminToken.js';
   import {
     buildRequestBody,
+    checkShowPick,
     commonZones,
     describeError,
     describeSchedule,
@@ -42,6 +43,9 @@
   }
 
   let show = $state('');
+  // Show directories from /api/shows. Empty (no library, or the load failed) means the field takes free text.
+  let shows = $state.raw<string[]>([]);
+  let showsFailed = $state(false);
   let season = $state('');
   let episodeRe = $state('');
   let requireEng = $state(false);
@@ -114,7 +118,7 @@
     formError = '';
     errorMsg = '';
     statusMsg = '';
-    const problem = validateForm({ show, season, episodeRe });
+    const problem = validateForm({ show, season, episodeRe }) ?? checkShowPick(show, shows);
     if (problem) {
       formError = problem;
       return;
@@ -209,8 +213,19 @@
     document.getElementById('runs-schedule-result')?.focus();
   }
 
+  async function loadShows() {
+    try {
+      const data = (await api('/api/shows')) as { shows?: unknown };
+      shows = Array.isArray(data.shows) ? data.shows.filter((n): n is string => typeof n === 'string') : [];
+    } catch {
+      // Free text stays usable; the server still validates the name.
+      showsFailed = true;
+    }
+  }
+
   onMount(() => {
     adminToken = loadAdminToken();
+    void loadShows();
     try {
       tzPlaceholder = Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'UTC';
     } catch {
@@ -269,11 +284,19 @@
     <label for="runs-show">Show</label>
     <input
       id="runs-show"
+      list="runs-show-options"
       bind:value={show}
-      placeholder="Directory name under the anime root"
+      placeholder={shows.length ? 'Type to filter shows' : 'Directory name under the anime root'}
       autocomplete="off"
       spellcheck="false"
+      aria-describedby={showsFailed ? 'runs-show-hint' : undefined}
     />
+    {#if showsFailed}<small id="runs-show-hint" class="runs-hint"
+        >Show list unavailable; type the directory name.</small
+      >{/if}
+    <datalist id="runs-show-options">
+      {#each shows as name (name)}<option value={name}></option>{/each}
+    </datalist>
     <label for="runs-season">Season (optional)</label>
     <input id="runs-season" bind:value={season} inputmode="numeric" placeholder="e.g. 1" autocomplete="off" />
     <label for="runs-regex">Episode filter (optional)</label>

@@ -41,6 +41,18 @@ export function buildRequestBody(form) {
 }
 
 /**
+ * When the show list loaded, the show must be one of it; with no list (empty or failed to load) any name is allowed and
+ * the server decides.
+ * @param {string} show
+ * @param {string[]} shows
+ * @returns {string | null}
+ */
+export function checkShowPick(show, shows) {
+  if (!shows.length || shows.includes(show.trim())) return null;
+  return 'Pick a show from the list.';
+}
+
+/**
  * Mirror of the server limits; null when the form may be queued.
  * @param {{ show?: unknown, season?: unknown, episodeRe?: unknown }} form
  * @returns {string | null}

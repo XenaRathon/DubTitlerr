@@ -30,6 +30,7 @@
   import Settings from './pages/Settings.svelte';
   import { ApiError } from './lib/api.js';
   import { hashFor, parseHash } from './lib/route.js';
+  import { EPISODE_SORTS, LINE_SORTS, readSortPref, sortEpisodes, writeSortPref } from './lib/episodeSort.js';
   import type { Draft, Entry, Episode, SaveResult, Shared, Verdict } from './types';
   import { blank, diffParts, nextOpenIndex, riskLabels, timecode, verdictLabels } from './review';
 
@@ -44,7 +45,8 @@
   };
   // The location hash names the view, so a deep link and the back button both work; a deep link taken while
   // signed out keeps its hash because nothing below rewrites it until the operator navigates.
-  let view = $state<View>(parseHash(typeof location === 'undefined' ? '' : location.hash));
+  const initialView = parseHash(typeof location === 'undefined' ? '' : location.hash);
+  let view = $state<View>(initialView);
   let token = $state('');
   let username = $state('');
   let password = $state('');
@@ -68,7 +70,14 @@
   let show = $state('all');
   let showRefused = $state(false);
   let risk = $state('all');
-  let order = $state('risk');
+  // Both sort choices are remembered per browser; a stored value this build does not know falls back to the default.
+  const EPISODE_SORT_KEY = 'dubtitlerr_episode_sort';
+  const LINE_SORT_KEY = 'dubtitlerr_line_sort';
+  const storage = () => (typeof localStorage === 'undefined' ? undefined : localStorage);
+  const storedLineSort = () => readSortPref(storage(), LINE_SORT_KEY, LINE_SORTS, 'risk');
+  // A deep link into the shared view has no Time option, so it opens on risk as before.
+  let order = $state<string>(initialView === 'shared' ? 'risk' : storedLineSort());
+  let episodeOrder = $state<string>(readSortPref(storage(), EPISODE_SORT_KEY, EPISODE_SORTS, 'default'));
   let showHelp = $state(false);
   let mobileNav = $state(false);
   let health = $state('Unknown');
@@ -110,11 +119,14 @@
             : ''),
   );
   const filteredEpisodes = $derived(
-    episodes.filter(
-      (ep) =>
-        (showRefused || ep.admitted > 0) &&
-        (show === 'all' || ep.show === show) &&
-        `${ep.show} ${ep.name} ${ep.season}`.toLowerCase().includes(query.toLowerCase()),
+    sortEpisodes(
+      episodes.filter(
+        (ep) =>
+          (showRefused || ep.admitted > 0) &&
+          (show === 'all' || ep.show === show) &&
+          `${ep.show} ${ep.name} ${ep.season}`.toLowerCase().includes(query.toLowerCase()),
+      ),
+      episodeOrder,
     ),
   );
   const visible = $derived.by(() => {
@@ -321,6 +333,7 @@
         loading = false;
       }
     } else if (next === 'inbox') {
+      order = storedLineSort();
       loading = true;
       try {
         await loadIndex();
@@ -349,7 +362,7 @@
     stopAudio();
     try {
       await loadEpisode(ep);
-      order = 'risk';
+      order = storedLineSort();
       lineQuery = '';
       risk = 'all';
     } catch (exc) {
@@ -757,6 +770,15 @@
                 ><option value="all">All shows</option>{#each shows as name (name)}<option value={name}
                     >{name}</option
                   >{/each}</select
+              ><select
+                class="show-select"
+                aria-label="Sort episodes"
+                bind:value={episodeOrder}
+                onchange={() => writeSortPref(storage(), EPISODE_SORT_KEY, episodeOrder)}
+                ><option value="default">Default order</option><option value="episode">Episode order</option
+                ><option value="pending">Pending fixes, most first</option><option value="oldest"
+                  >Oldest activity first</option
+                ></select
               ><label class="toggle"
                 ><input type="checkbox" bind:checked={showRefused} /><span
                   >Include episodes where every repair was turned down</span
@@ -822,7 +844,13 @@
                       >Punctuation / case</option
                     ></select
                   ></label
-                ><select aria-label="Sort review lines" bind:value={order}
+                ><select
+                  aria-label="Sort review lines"
+                  bind:value={order}
+                  onchange={() => {
+                    // The shared view's order is its own; only the inbox choice is remembered.
+                    if (view === 'inbox') writeSortPref(storage(), LINE_SORT_KEY, order);
+                  }}
                   ><option value="risk">Risk first</option>{#if view === 'shared'}<option value="repeated"
                       >Most repeated</option
                     >{:else}<option value="time">Time order</option>{/if}</select

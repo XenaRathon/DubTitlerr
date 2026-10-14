@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildRequestBody,
+  checkShowPick,
   crossesMidnight,
   describeError,
   describeSchedule,
@@ -116,4 +117,11 @@ test('scheduleBody trims strings and keeps the boolean', () => {
     close: '17:00',
     tz: 'UTC',
   });
+});
+
+test('checkShowPick requires a listed show when the list is known, and allows free text when it is not', () => {
+  assert.equal(checkShowPick('Neon Harbor', ['Alpha', 'Neon Harbor']), null);
+  assert.equal(checkShowPick('  Neon Harbor ', ['Neon Harbor']), null);
+  assert.match(checkShowPick('Neon', ['Neon Harbor']), /Pick a show from the list/);
+  assert.equal(checkShowPick('Anything', []), null);
 });
