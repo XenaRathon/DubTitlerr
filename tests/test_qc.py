@@ -266,3 +266,178 @@ def test_generate_record_qc_wires_duration_flags():
     ]
 
 
+def test_qc_schema_version_is_5():
+    assert qc.SCHEMA_VERSION == 5
+
+
+def test_qc_sidecar_duration_flags_is_null_when_detector_did_not_run():
+    # If record_duration_flags was never called (e.g. cascade infeasible), duration_flags is null
+    r = qc.Recorder()
+    doc = r.build(show="One Pace", episode="E13", stem="/x/E13")
+    assert doc["duration_flags"] is None
+
+
+def test_qc_sidecar_duration_flags_is_empty_list_when_checked_and_clean():
+    # [] means checked and nothing found
+    r = qc.Recorder()
+    r.record_duration_flags([])
+    doc = r.build(show="One Pace", episode="E13", stem="/x/E13")
+    assert doc["duration_flags"] == []
+
+
+def test_overlong_card_excluded_from_drip_chains():
+    # 'Meow!' 10.6 s then two 0.5 s 'Meow' cards: overlong card must not be chained into a drip chain
+    cards = [
+        {"start": 10.0, "end": 20.6, "text": "Meow!"},
+        {"start": 20.8, "end": 21.3, "text": "Meow"},
+        {"start": 21.5, "end": 22.0, "text": "Meow"},
+    ]
+    flags = qc.detect_duration_flags(cards)
+    assert len(flags) == 1
+    assert flags[0]["reason"] == "overlong"
+    assert flags[0]["duration"] == 10.6
+
+
+def test_exact_six_second_card_duration_must_not_flag():
+    # Duration > 6.0 is strictly greater than; exactly 6.0 must NOT flag
+    cards = [{"start": 10.0, "end": 16.0, "text": "Meow!"}]
+    assert qc.detect_duration_flags(cards) == []
+
+
+def test_two_card_chain_must_not_flag_drip():
+    # Minimum chain length is 3 cards; 2 cards must NOT flag even if span > 6.0
+    cards = [
+        {"start": 10.0, "end": 13.5, "text": "Hold on"},
+        {"start": 14.0, "end": 17.5, "text": "tightly"},
+    ]
+    assert qc.detect_duration_flags(cards) == []
+
+
+def test_short_span_drip_chain_must_not_flag():
+    # Three 'No!' cards spanning 2.5 s must NOT flag (span must be > 6.0 s)
+    cards = [
+        {"start": 10.0, "end": 10.7, "text": "No!"},
+        {"start": 10.9, "end": 11.6, "text": "No!"},
+        {"start": 11.8, "end": 12.5, "text": "No!"},
+    ]
+    assert qc.detect_duration_flags(cards) == []
+
+
+def test_exact_six_second_chain_span_must_not_flag():
+    # Chain span > 6.0 is strictly greater than; span of exactly 6.0 must NOT flag
+    cards = [
+        {"start": 10.0, "end": 11.8, "text": "Wait"},
+        {"start": 12.0, "end": 13.8, "text": "for"},
+        {"start": 14.0, "end": 16.0, "text": "me"},
+    ]
+    assert qc.detect_duration_flags(cards) == []
+
+
+def test_exact_one_second_gap_breaks_drip_chain():
+    # Gap < 1.0 s is strictly less than; gap of exactly 1.0 s must break the chain
+    cards = [
+        {"start": 10.0, "end": 12.0, "text": "Wait"},
+        {"start": 13.0, "end": 15.0, "text": "for"},  # gap == 1.000 s
+        {"start": 15.3, "end": 17.5, "text": "me"},
+    ]
+    assert qc.detect_duration_flags(cards) == []
+
+
+def test_millisecond_rounded_gaps_prevent_float_drift():
+    # Cards at 0.9->1.9 and 1.1->2.1 must both count as a 1.000 s gap (breaking the chain)
+    cards1 = [
+        {"start": 0.0, "end": 0.9, "text": "Wait"},
+        {"start": 1.9, "end": 3.5, "text": "for"},  # 1.9 - 0.9 is 0.9999999999999999 in float
+        {"start": 3.8, "end": 7.5, "text": "me"},
+    ]
+    assert qc.detect_duration_flags(cards1) == []
+
+    cards2 = [
+        {"start": 0.0, "end": 1.1, "text": "Wait"},
+        {"start": 2.1, "end": 3.5, "text": "for"},  # 2.1 - 1.1 is 1.0000000000000002 in float
+        {"start": 3.8, "end": 7.5, "text": "me"},
+    ]
+    assert qc.detect_duration_flags(cards2) == []
+
+
+def test_three_word_card_breaks_drip_chain():
+    # 2-word cap: a 3-word card must break the chain
+    cards = [
+        {"start": 10.0, "end": 12.0, "text": "Wait"},
+        {"start": 12.3, "end": 14.3, "text": "one two three"},  # 3 words -> breaks
+        {"start": 14.6, "end": 17.0, "text": "now"},
+    ]
+    assert qc.detect_duration_flags(cards) == []
+
+
+def test_empty_or_none_text_card_breaks_drip_chain():
+    # Empty string text has 0 words, breaks chain
+    cards_empty = [
+        {"start": 10.0, "end": 12.0, "text": "Wait"},
+        {"start": 12.3, "end": 14.0, "text": ""},  # empty text -> 0 words -> breaks
+        {"start": 14.3, "end": 17.0, "text": "now"},
+    ]
+    assert qc.detect_duration_flags(cards_empty) == []
+
+    # None text is treated as empty, breaks chain
+    cards_none = [
+        {"start": 10.0, "end": 12.0, "text": "Wait"},
+        {"start": 12.3, "end": 14.0, "text": None},  # None text -> 0 words -> breaks
+        {"start": 14.3, "end": 17.0, "text": "now"},
+    ]
+    assert qc.detect_duration_flags(cards_none) == []
+
+
+def test_unsorted_cards_are_handled_correctly():
+    # Out-of-order cards must be sorted by start time to evaluate chains
+    cards = [
+        {"start": 15.5, "end": 17.5, "text": "home."},
+        {"start": 10.0, "end": 12.5, "text": "I am"},
+        {"start": 12.9, "end": 15.0, "text": "going"},
+    ]
+    flags = qc.detect_duration_flags(cards)
+    assert len(flags) == 1
+    assert flags[0] == {
+        "start": 10.0,
+        "end": 17.5,
+        "duration": 7.5,
+        "words": 4,
+        "text": "I am going home.",
+        "reason": "drip_chain",
+    }
+
+
+def test_tokens_without_letters_or_digits_not_counted_as_words():
+    # Dashes, ellipses, and music notes do not count as words
+    cards = [
+        {"start": 10.0, "end": 17.0, "text": "-- ... ♪ Wait ♪ --"},  # 1 word ("Wait"), dur 7.0s > 6.0s -> overlong
+    ]
+    flags = qc.detect_duration_flags(cards)
+    assert len(flags) == 1
+    assert flags[0]["words"] == 1
+    assert flags[0]["reason"] == "overlong"
+
+    # In a drip chain, a card with only non-alphanumeric tokens has 0 words, so it breaks a chain
+    cards_drip = [
+        {"start": 10.0, "end": 12.0, "text": "Wait"},
+        {"start": 12.3, "end": 14.0, "text": "♪ ♫ ..."},  # 0 words -> breaks
+        {"start": 14.3, "end": 17.0, "text": "now"},
+    ]
+    assert qc.detect_duration_flags(cards_drip) == []
+
+
+def test_chain_span_uses_latest_end_seen():
+    # If an earlier card in the chain has a later end time than the last card
+    cards = [
+        {"start": 10.0, "end": 17.5, "text": "I am"},
+        {"start": 12.0, "end": 14.0, "text": "going"},
+        {"start": 14.5, "end": 16.0, "text": "home"},
+    ]
+    flags = qc.detect_duration_flags(cards)
+    assert len(flags) == 1
+    assert flags[0]["start"] == 10.0
+    assert flags[0]["end"] == 17.5
+    assert flags[0]["duration"] == 7.5
+
+
+

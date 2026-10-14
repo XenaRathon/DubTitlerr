@@ -13,8 +13,8 @@ import json
 import os
 import tempfile
 
-SCHEMA_VERSION = 4  # v4: rule_*_evaluated / rule_*_activated liveness counters. v3: the
-# restore_* counters added (punctuation restoration). Zero
+SCHEMA_VERSION = 5  # v5: duration_flags added (null when detector did not run). v4: rule_*_evaluated /
+# rule_*_activated liveness counters. v3: the restore_* counters added (punctuation restoration). Zero
 # in a v2 sidecar means "not counted", not "no run was restored".
 # v2: over_chars counter added; cards_before,
 # ordinary_under_min_dur_before, flagged and low_conf went from
@@ -77,6 +77,15 @@ def _q(vals, p):
     return s[min(int(p * len(s)), len(s) - 1)]
 
 
+def count_words(text: str | None) -> int:
+    """Count words in text, ignoring tokens without letters or digits (dashes, ..., music notes).
+    Treats None as empty.
+    """
+    if not text:
+        return 0
+    return sum(1 for tok in text.split() if any(ch.isalnum() for ch in tok))
+
+
 def detect_duration_flags(cards):
     """Report-only detector for overlong cards and drip chains.
 
@@ -92,55 +101,76 @@ def detect_duration_flags(cards):
         return []
 
     flags = []
+    overlong_card_indices = set()
 
-    # 1. Overlong cards
-    for c in cards:
-        dur = c["end"] - c["start"]
-        words = len(c.get("text", "").split())
-        if dur > OVERLONG_DUR_FLOOR and dur > max(OVERLONG_BASE_DUR, words * OVERLONG_WORD_FACTOR):
+    # Sort cards by start time before evaluating
+    ordered = sorted(
+        cards,
+        key=lambda c: (round(float(c.get("start", 0.0)), 3), round(float(c.get("end", 0.0)), 3)),
+    )
+
+    # 1. Overlong cards (round times to milliseconds before comparing)
+    for idx, c in enumerate(ordered):
+        start = round(float(c.get("start", 0.0)), 3)
+        end = round(float(c.get("end", 0.0)), 3)
+        dur = round(end - start, 3)
+        text = c.get("text") or ""
+        words = count_words(text)
+        if dur > OVERLONG_DUR_FLOOR and dur > max(OVERLONG_BASE_DUR, round(words * OVERLONG_WORD_FACTOR, 3)):
+            overlong_card_indices.add(idx)
             flags.append(
                 {
-                    "start": round(c["start"], 3),
-                    "end": round(c["end"], 3),
-                    "duration": round(dur, 3),
+                    "start": start,
+                    "end": end,
+                    "duration": dur,
                     "words": words,
-                    "text": c.get("text", "").replace("\n", " ").strip(),
+                    "text": text.replace("\n", " ").strip(),
                     "reason": REASON_OVERLONG,
                 }
             )
 
     # 2. Drip chains
-    # Evaluate contiguous sequences in order of display timing
-    ordered = sorted(cards, key=lambda c: (c["start"], c["end"]))
+    # Overlong cards are left out of drip chains so a single long card is not reported twice
     i = 0
     n = len(ordered)
     while i < n:
+        if i in overlong_card_indices:
+            i += 1
+            continue
         c = ordered[i]
-        w = len(c.get("text", "").split())
+        text = c.get("text") or ""
+        w = count_words(text)
         if DRIP_MIN_WORDS <= w <= DRIP_MAX_WORDS:
             chain = [c]
             j = i + 1
             while j < n:
+                if j in overlong_card_indices:
+                    break
                 next_c = ordered[j]
-                next_w = len(next_c.get("text", "").split())
+                next_text = next_c.get("text") or ""
+                next_w = count_words(next_text)
                 if not (DRIP_MIN_WORDS <= next_w <= DRIP_MAX_WORDS):
                     break
-                gap = next_c["start"] - ordered[j - 1]["end"]
+                prev_end = round(float(ordered[j - 1].get("end", 0.0)), 3)
+                next_start = round(float(next_c.get("start", 0.0)), 3)
+                gap = round(next_start - prev_end, 3)
                 if gap >= DRIP_MAX_GAP:
                     break
                 chain.append(next_c)
                 j += 1
 
             if len(chain) >= DRIP_MIN_CARDS:
-                span = chain[-1]["end"] - chain[0]["start"]
+                chain_start = round(float(chain[0].get("start", 0.0)), 3)
+                latest_end = max(round(float(x.get("end", 0.0)), 3) for x in chain)
+                span = round(latest_end - chain_start, 3)
                 if span > DRIP_MIN_SPAN:
-                    total_words = sum(len(x.get("text", "").split()) for x in chain)
-                    joined_text = " ".join(x.get("text", "").replace("\n", " ").strip() for x in chain)
+                    total_words = sum(count_words(x.get("text")) for x in chain)
+                    joined_text = " ".join((x.get("text") or "").replace("\n", " ").strip() for x in chain)
                     flags.append(
                         {
-                            "start": round(chain[0]["start"], 3),
-                            "end": round(chain[-1]["end"], 3),
-                            "duration": round(span, 3),
+                            "start": chain_start,
+                            "end": latest_end,
+                            "duration": span,
                             "words": total_words,
                             "text": joined_text,
                             "reason": REASON_DRIP_CHAIN,
@@ -161,7 +191,7 @@ class Recorder:
         self.events = []
         self.priority_events = []
         self.event_count_total = 0
-        self.duration_flags = []
+        self.duration_flags = None
 
     def count(self, name, n=1):
         self.counters[name] = self.counters.get(name, 0) + n
@@ -208,7 +238,7 @@ class Recorder:
                 m: {"p50": _q(v, 0.50), "p90": _q(v, 0.90), "p95": _q(v, 0.95), "p99": _q(v, 0.99), "max": max(v) if v else 0.0}
                 for m, v in self.metrics.items()
             },
-            "duration_flags": list(self.duration_flags),
+            "duration_flags": None if self.duration_flags is None else list(self.duration_flags),
             "event_count_total": self.event_count_total,
             "events_retained": len(self.priority_events) + len(self.events),
             "events_truncated": self.event_count_total > len(self.priority_events) + len(self.events),
