@@ -534,3 +534,24 @@ if show == "Show2":
 
 
 
+
+
+def _acquire_apply_flags(value):
+    """Run gen_loop.sh's own ACQ_FLAGS block with ACQUIRE_APPLY=value -> the resulting flags."""
+    src = (REPO / "gen_loop.sh").read_text()
+    start = src.index('ACQ_FLAGS=""')
+    end = src.index("# acquire_cache", start)
+    snippet = src[start:end]
+    script = f'{snippet}\nprintf "[%s]" "$ACQ_FLAGS"'
+    env = {**os.environ, "ACQUIRE_APPLY": value}
+    return subprocess.run(["sh", "-c", script], env=env, capture_output=True, text=True, check=True).stdout
+
+
+def test_acquire_apply_off_values_do_not_enable_apply():
+    for off in ("", "0", "false", "False", "NO", "off", "Off", " 0 ", "0 ", "\toff\n"):
+        assert _acquire_apply_flags(off) == "[]", f"ACQUIRE_APPLY={off!r} must mean dry-run"
+
+
+def test_acquire_apply_on_values_enable_apply():
+    for on in ("1", "true", "yes", "on", "anything"):
+        assert _acquire_apply_flags(on) == "[--apply]", f"ACQUIRE_APPLY={on!r} must mean apply"

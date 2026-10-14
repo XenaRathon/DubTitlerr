@@ -695,13 +695,13 @@ def propose(
     transcript candidate may be a near-miss OF, which also picks D4's floor. Both are
     optional: without them every token is treated as an unanchored transcript token, which
     is the safe reading."""
-    settled = settled or set()
+    settled = {str(t).lower() for t in (settled or ())}
     candidates = candidates or {}
     if resolved is None:
         resolved = _resolve_tokens(counts, titles)
     out = []
     for tok, (canon, score) in sorted(resolved.items()):
-        if tok in settled:
+        if tok.lower() in settled:
             continue
         canon_count = counts.get(canon, 0)
         cand = candidates.get(tok) or _candidate(tok, SOURCE_TRANSCRIPT)
@@ -768,11 +768,112 @@ def _provenance(p: dict, scope: int) -> dict:
     }
 
 
+CONFLICTS_WITH_CURATED = "conflicts-with-curated-fix"
+
+
+def _key(d: dict, term: str):
+    """The key of `d` equal to `term` ignoring case, else None. glossary.load_dict lowercases every
+    hard_fixes key at load, so `zolo` and `Zolo` are ONE fix downstream and must never coexist."""
+    low = term.lower()
+    return next((k for k in d if str(k).lower() == low), None)
+
+
+def _is_curated(g: dict, term: str) -> bool:
+    """True when a person owns the hard_fix for `term` (case-insensitive), so acquire may not pop or overwrite it.
+
+    Curated = no `acquired` record (hand-written), OR run == "review" (a human approved it through
+    record_decision / decisions.promote, the same marker revert() honours), OR its value no longer
+    matches the canonical acquire recorded (hand-edited since, as revert() also leaves alone).
+    Debt: a fix an OLDER acquire wrote without an `acquired` record counts as curated forever; there
+    is no way to tell it from a hand-written one."""
+    fixes = g.get("hard_fixes") or {}
+    fk = _key(fixes, term)
+    if fk is None:
+        return False
+    acquired = g.get("acquired") or {}
+    ak = _key(acquired, term)
+    if ak is None:
+        return True
+    meta = acquired[ak] or {}
+    return meta.get("run") == "review" or fixes[fk] != meta.get("canonical")
+
+
+def _drop(d: dict, term: str) -> None:
+    """Remove every case-variant of `term` from `d`."""
+    k = _key(d, term)
+    while k is not None:
+        d.pop(k)
+        k = _key(d, term)
+
+
+def _flag_entry(p: dict, scope: int) -> dict:
+    return {
+        "reason": p["reason"],
+        "canonical": p["canonical"],
+        "variant_count": p["variant_count"],
+        "canonical_count": p["canonical_count"],
+        "score": p["score"],
+        "bound": round(p.get("bound", 0.0), 3),
+        "context": p.get("context", []),
+        **_provenance(p, scope),
+    }
+
+
+SETTLE_REASONS = frozenset({"human-rejected-conflict", "human-confirmed-curated"})
+
+
+def _norm(g: dict) -> dict:
+    """Coerce explicit nulls ({"known": None}) to empty containers, in place, so every reader below can index freely."""
+    for k in ("hard_fixes", "acquired", "flagged"):
+        if not isinstance(g.get(k), dict):
+            g[k] = {}
+    for k in ("names", "phrases"):
+        if k in g and g[k] is None:
+            g[k] = []
+    g["known"] = list(g.get("known") or [])
+    return g
+
+
+def _ldrop(items, term: str) -> list:
+    """`items` without any case-variant of `term`."""
+    return [k for k in items if str(k).lower() != term.lower()]
+
+
+def _settle_curated(g: dict, term: str, reason: str = "human-rejected-conflict") -> None:
+    """Remember that a person looked at a flag on a CURATED fix and left the fix as it is: a protected
+    (run == "review") `acquired` record holding the curated value, so `_settled` skips the term and the next
+    sweep does not re-flag the same conflict. It only counts while the fix exists (see _settled)."""
+    acq = g.setdefault("acquired", {})
+    ak = _key(acq, term)
+    if ak is None or (acq[ak] or {}).get("run") != "review":
+        _drop(acq, term)
+        fix = g["hard_fixes"][_key(g["hard_fixes"], term)]
+        acq[term] = {**_human_record(fix, {}), "reason": reason}
+
+
+def _settled(gloss: dict) -> set:
+    """Terms a sweep must not propose again: known + acquired, lowercased (compare with .lower()).
+
+    A settle record (SETTLE_REASONS) is a person's "leave this curated fix alone"; it stops counting when the fix
+    it protects is deleted by hand. Human-approved additive entries have no fix and always count."""
+    fixes = {str(k).lower() for k in (gloss.get("hard_fixes") or {})}
+    out = {str(t).lower() for t in (gloss.get("known") or [])}
+    for t, meta in (gloss.get("acquired") or {}).items():
+        if (meta or {}).get("reason") in SETTLE_REASONS and str(t).lower() not in fixes:
+            continue
+        out.add(str(t).lower())
+    return out
+
+
 def apply_proposals(gloss: dict, proposals: list, run_id: str, scope: int = 0, episode_keys_by_stem: dict | None = None) -> dict:
     """Write applied proposals into hard_fixes + acquired; record the rest in flagged.
 
     Pure: deep-copies its input the way glossary_verify.apply_results does, so curated
-    hard_fixes, names and initial_prompt survive untouched.
+    hard_fixes, names and initial_prompt survive untouched. A hard_fix is CURATED (see _is_curated:
+    no `acquired` record, a human-approved run == "review" record, or hand-edited since) when a person
+    owns it: it is never popped, never overwritten with a different canonical (the disagreement is
+    recorded in `flagged` as CONFLICTS_WITH_CURATED instead) and never also marked `known`. Keys match
+    case-insensitively. Only fixes this module wrote are re-evaluated, replaced or removed.
 
     Acquired canonicals deliberately do NOT join `names`, and therefore never reach the
     regenerated initial_prompt. That is the cut that keeps a wrong entry from biasing the
@@ -783,32 +884,41 @@ def apply_proposals(gloss: dict, proposals: list, run_id: str, scope: int = 0, e
     for the same term, mirroring record_decision. Without this a term can end up both
     `known` (a human said no) and freshly hard-fixed (a later sweep said yes), which is
     exactly the both-states bug this module exists to avoid reintroducing."""
-    g = json.loads(json.dumps(gloss))
-    fixes = g.setdefault("hard_fixes", {})
-    acquired = g.setdefault("acquired", {})
-    flagged = g.setdefault("flagged", {})
-    known = set(g.get("known", []))
+    g = _norm(json.loads(json.dumps(gloss)))
+    fixes = g["hard_fixes"]
+    acquired = g["acquired"]
+    flagged = g["flagged"]
+    known = list(g["known"])
     for p in proposals:
         term = p["variant"]
-        flagged.pop(term, None)  # I3: never stays queued once decided
+        _drop(flagged, term)  # I3: never stays queued once decided (any case)
+        curated = _is_curated(g, term)
+        if curated:
+            # A person owns this fix: keep it AND its record, never mark it known too (both-states), and
+            # if the proposal disagrees say so in the review queue instead of acting on it.
+            mine = fixes[_key(fixes, term)]
+            if p["verdict"] == "apply" and p["canonical"] == mine:
+                continue
+            if p["verdict"] == "known":
+                continue
+            ak = _key(acquired, term)
+            if ak is not None and (acquired[ak] or {}).get("run") != "review":
+                acquired.pop(ak)  # hand-edited since acquire wrote it: drop only our provenance, as revert() does
+            reason = CONFLICTS_WITH_CURATED if p["canonical"] != mine else p["reason"]
+            flagged[term] = {**_flag_entry(p, scope), "reason": reason}
+            continue
         if p["verdict"] == "known":
-            known.add(term)
+            if not any(str(k).lower() == term.lower() for k in known):
+                known.append(term)
             continue
         if p["verdict"] != "apply":
-            fixes.pop(term, None)
-            acquired.pop(term, None)
-            flagged[term] = {
-                "reason": p["reason"],
-                "canonical": p["canonical"],
-                "variant_count": p["variant_count"],
-                "canonical_count": p["canonical_count"],
-                "score": p["score"],
-                "bound": round(p.get("bound", 0.0), 3),
-                "context": p.get("context", []),
-                **_provenance(p, scope),
-            }
+            _drop(fixes, term)
+            _drop(acquired, term)
+            flagged[term] = _flag_entry(p, scope)
             continue
-        known.discard(term)  # C2: an apply verdict wins over a stale known
+        known = _ldrop(known, term)  # C2: an apply verdict wins over a stale known
+        _drop(fixes, term)  # replacing our own fix: never leave a second spelling that differs only by case
+        _drop(acquired, term)
         fixes[term] = p["canonical"]
         acquired[term] = {
             "canonical": p["canonical"],
@@ -847,7 +957,7 @@ def revert(gloss: dict, run_id: str | None = None) -> dict:
     module's automated guess. A blanket --revert must never delete one, regardless of
     `run_id` -- reverting an automated sweep must not also undo what a person approved."""
     g = json.loads(json.dumps(gloss))
-    fixes, acquired = g.get("hard_fixes", {}), g.get("acquired", {})
+    fixes, acquired = g.get("hard_fixes") or {}, g.get("acquired") or {}
     for variant, meta in list(acquired.items()):
         if meta.get("run") == "review":
             continue
@@ -944,22 +1054,39 @@ def accept_effect(term: str, meta) -> str:
     return "refused"
 
 
+def _human_record(canon: str, meta: dict) -> dict:
+    return {
+        "canonical": canon,
+        "count": meta.get("variant_count", 0),
+        "canonical_count": meta.get("canonical_count", 0),
+        "score": meta.get("score", 0.0),
+        "bound": meta.get("bound", 0.0),
+        "reason": "human-approved",
+        "run": "review",
+    }
+
+
 def record_decision(gloss: dict, term: str, accept: bool) -> dict:
     """Apply one human decision and drop the term from the queue for good, in exactly one state.
 
     accept and reject are mutually exclusive: each clears whatever the other branch -- or a
     stale prior decision from an earlier run -- may have left behind, so a term is never both
-    known and hard-fixed at once.
+    known and hard-fixed at once. A CURATED fix (see _is_curated) survives a reject untouched and the
+    term is NOT marked known (the rejection is remembered as a protected `acquired` record instead);
+    a yes on a flag for a curated term replaces the curated value, as a human decision (run == "review").
+    Keys of `flagged` match case-insensitively.
 
     C1 defence in depth: this cannot see `titles` (best_title's normalised set), so it
     cannot repeat R1's membership check. It CAN repeat the other two structural checks --
     not an expansion, and the canonical is already in normalised form -- and does, before
     ever writing to hard_fixes. A canonical failing either is free-form model/human-typo
     text, not a wiki spelling, and must not become a hard_fix even on a human 'y'."""
-    g = json.loads(json.dumps(gloss))
-    if term not in (g.get("flagged") or {}):
+    g = _norm(json.loads(json.dumps(gloss)))
+    fk = _key(g["flagged"], term)
+    if fk is None:
         return g  # nothing is awaiting a decision: a stale answer must not touch hard_fixes or known
-    meta = (g.get("flagged") or {}).get(term)
+    term = _key(g["hard_fixes"], term) or fk  # one spelling in the file: the stored key's, not the typed one
+    meta = g["flagged"][fk]
     if isinstance(meta, str):
         meta = {"reason": meta}
     meta = meta or {}
@@ -971,26 +1098,32 @@ def record_decision(gloss: dict, term: str, accept: bool) -> dict:
     # and so does an ordinary English word (see accept_effect).
     if effect == "additive" and meta.get("reason") == "respelling-needs-review" and len(canon.split()) == len(term.split()):
         log(f"kept {term!r} -> {canon!r} additive: {term!r} is an ordinary English word (a hard fix would rewrite all of them)")
-    if effect == "hard_fix":
-        g.setdefault("hard_fixes", {})[term] = canon
-        g.setdefault("acquired", {})[term] = {
-            "canonical": canon,
-            "count": meta.get("variant_count", 0),
-            "canonical_count": meta.get("canonical_count", 0),
-            "score": meta.get("score", 0.0),
-            "bound": meta.get("bound", 0.0),
-            "reason": "human-approved",
-            "run": "review",
-        }
-        g["known"] = sorted(set(g.get("known", [])) - {term})
-        g.get("flagged", {}).pop(term, None)
+    curated = _is_curated(g, term)
+    if effect == "hard_fix" and curated and g["hard_fixes"][_key(g["hard_fixes"], term)] != canon:
+        # A person has seen term and canonical and pressed y: their yes overrides the curated value.
+        _drop(g["hard_fixes"], term)
+        _drop(g["acquired"], term)
+        g["hard_fixes"][term] = canon
+        g["acquired"][term] = _human_record(canon, meta)
+        g["known"] = sorted(_ldrop(g["known"], term))
+        _drop(g.get("flagged", {}), term)
+    elif effect == "hard_fix" and curated:  # same canonical: already what the person wants; remember they said so
+        _settle_curated(g, term, "human-confirmed-curated")
+        _drop(g["flagged"], term)
+    elif effect == "hard_fix":
+        _drop(g["hard_fixes"], term)
+        _drop(g["acquired"], term)
+        g["hard_fixes"][term] = canon
+        g["acquired"][term] = _human_record(canon, meta)
+        g["known"] = sorted(_ldrop(g["known"], term))
+        _drop(g.get("flagged", {}), term)
     elif effect == "additive":
         # verify's apply_results would have WRITTEN this expansion; a guard flagged it instead (the common-word guard, the
         # arc gate, the whole-word guard). A human 'y' puts it where apply_results puts a write -- additive, the term stays.
         dest = glossary_verify._shape_list(g.setdefault("names", []), g.setdefault("phrases", []), canon)
         if canon not in dest:
             dest.append(canon)
-        g.setdefault("acquired", {})[term] = {
+        g["acquired"][term] = {
             "canonical": canon,
             "count": meta.get("variant_count", 0),
             "canonical_count": meta.get("canonical_count", 0),
@@ -999,15 +1132,22 @@ def record_decision(gloss: dict, term: str, accept: bool) -> dict:
             "reason": "human-approved",
             "run": "review",
         }
-        g["known"] = sorted(set(g.get("known", [])) - {term})
-        g.get("flagged", {}).pop(term, None)
+        g["known"] = sorted(_ldrop(g["known"], term))
+        _drop(g.get("flagged", {}), term)
     elif accept and canon:
-        g.setdefault("flagged", {})[term] = {**meta, "reason": "unsafe-canonical-rejected"}
+        _drop(g["flagged"], term)
+        g["flagged"][term] = {**meta, "reason": "unsafe-canonical-rejected"}
+    elif curated:
+        # A person owns the fix: keep it and do not also call the term known. Record the rejection as a
+        # protected (run == "review") acquired entry holding the CURATED value, so `_settled` skips the term
+        # and the next sweep does not re-flag the same conflict; revert() and acquire leave it alone.
+        _drop(g["flagged"], term)
+        _settle_curated(g, term)
     else:
-        g["known"] = sorted(set(g.get("known", [])) | {term})
-        g.get("hard_fixes", {}).pop(term, None)
-        g.get("acquired", {}).pop(term, None)
-        g.get("flagged", {}).pop(term, None)
+        g["known"] = sorted(g["known"] if any(str(k).lower() == term.lower() for k in g["known"]) else [*g["known"], term])
+        _drop(g.get("hard_fixes", {}), term)
+        _drop(g.get("acquired", {}), term)
+        _drop(g.get("flagged", {}), term)
     for k in ("flagged", "known", "hard_fixes", "acquired"):
         if not g.get(k):
             g.pop(k, None)
@@ -1151,7 +1291,7 @@ def _acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str 
     norm_titles = {normalize_title(t) for t in titles if normalize_title(t)}
     # C2: skip anything a human or an earlier sweep already settled, so an unattended
     # rerun can never re-propose (and re-apply) a term someone already rejected.
-    settled = set(gloss.get("known", [])) | set(gloss.get("acquired", {}))
+    settled = _settled(gloss)
     # I6/perf: the token x title join is the module's dominant cost -- resolve every
     # harvested token against the wiki exactly once and hand the same result to propose()
     # and unmatched(), instead of each independently re-running it (was ~1.5x the work).

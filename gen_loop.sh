@@ -278,7 +278,11 @@ while :; do
 			fi
 			echo "#### ACQUIRE $show $(date)"
 			ACQ_FLAGS=""
-			[ -n "${ACQUIRE_APPLY:-}" ] && ACQ_FLAGS="--apply"
+			# unset, empty, 0, false, no, off (any case, surrounding whitespace ignored) = dry run; anything else = apply
+			case "$(printf '%s' "${ACQUIRE_APPLY:-}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" in
+				"" | 0 | false | no | off) ;;
+				*) ACQ_FLAGS="--apply" ;;
+			esac
 			# acquire_cache only memoises escalate()'s LLM adjudication now, never a
 			# proposal's final verdict, so a dry run and a later --apply run always
 			# propose the same terms -- no ACQUIRE_NO_CACHE workaround needed. See
