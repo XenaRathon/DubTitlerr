@@ -45,7 +45,8 @@ test('the episode list sorts by episode order and pending count, and remembers t
   await expect
     .poll(() => names(page))
     .toEqual(['Neon Harbor S01E10', 'Alpha Show S10E01', 'Neon Harbor S01E02']);
-  await expect(sort.locator('option[value="oldest"]')).toHaveText('Oldest activity first');
+  await expect(sort.locator('option[value="oldest"]')).toHaveText('Oldest pending first');
+  await expect(sort.locator('option[value="pending"]')).toHaveText('Most repairs to check');
   await sort.selectOption('oldest');
   await expect
     .poll(() => names(page))
@@ -58,6 +59,16 @@ test('the episode list sorts by episode order and pending count, and remembers t
   await expect
     .poll(() => names(page))
     .toEqual(['Alpha Show S10E01', 'Neon Harbor S01E02', 'Neon Harbor S01E10']);
+});
+
+test('a sort stored under the old Oldest activity label still restores', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('dubtitlerr_episode_sort', 'oldest'));
+  await mockEpisodes(page);
+  await openSignedIn(page);
+  await expect(page.getByLabel('Sort episodes')).toHaveValue('oldest');
+  await expect
+    .poll(() => names(page))
+    .toEqual(['Neon Harbor S01E02', 'Alpha Show S10E01', 'Neon Harbor S01E10']);
 });
 
 test('an unknown stored sort falls back to the default', async ({ page }) => {

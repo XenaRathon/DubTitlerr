@@ -776,8 +776,8 @@
                 bind:value={episodeOrder}
                 onchange={() => writeSortPref(storage(), EPISODE_SORT_KEY, episodeOrder)}
                 ><option value="default">Default order</option><option value="episode">Episode order</option
-                ><option value="pending">Pending fixes, most first</option><option value="oldest"
-                  >Oldest activity first</option
+                ><option value="pending">Most repairs to check</option><option value="oldest"
+                  >Oldest pending first</option
                 ></select
               ><label class="toggle"
                 ><input type="checkbox" bind:checked={showRefused} /><span

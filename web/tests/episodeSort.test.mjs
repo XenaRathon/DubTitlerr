@@ -39,9 +39,38 @@ test('pending puts the most repairs to check first, ties in episode order', () =
 });
 
 test('sorting never mutates the input array', () => {
-  const copy = served.slice();
-  sortEpisodes(served, 'episode');
-  assert.deepEqual(served, copy);
+  for (const order of EPISODE_SORTS) {
+    // A fresh array per order, in an order no sort leaves it in, so an in-place sort cannot hide behind an earlier one.
+    const input = [
+      { ...ep('Zeta', 'Season 1', 'Zeta E02', 1), oldest_pending_at: '2026-10-02T00:00:00Z' },
+      { ...ep('Alpha', 'Season 1', 'Alpha E01', 2), oldest_pending_at: null },
+      { ...ep('Zeta', 'Season 1', 'Zeta E01', 3), oldest_pending_at: '2026-09-01T00:00:00Z' },
+    ];
+    const before = input.map((e) => e.stem);
+    sortEpisodes(input, order);
+    assert.deepEqual(
+      input.map((e) => e.stem),
+      before,
+      order,
+    );
+  }
+});
+
+test('episode order compares seasons when two seasons share an episode name', () => {
+  // Same file name in both seasons: only the season can order them. Season 10 comes first in the input.
+  const rows = [ep('Show', 'Season 10', 'Show - 01', 1), ep('Show', 'Season 2', 'Show - 01', 1)];
+  assert.deepEqual(
+    sortEpisodes(rows, 'episode').map((e) => e.season),
+    ['Season 2', 'Season 10'],
+  );
+});
+
+test('most repairs to check breaks ties in episode order, not input order', () => {
+  const rows = [ep('Zeta', 'Season 1', 'Zeta E01', 2), ep('Alpha', 'Season 1', 'Alpha E01', 2)];
+  assert.deepEqual(
+    sortEpisodes(rows, 'pending').map((e) => e.name),
+    ['Alpha E01', 'Zeta E01'],
+  );
 });
 
 test('a stored preference is restored only when it is a known value', () => {
@@ -51,6 +80,9 @@ test('a stored preference is restored only when it is a known value', () => {
   ]);
   const storage = { getItem: (k) => store.get(k) ?? null };
   assert.equal(readSortPref(storage, 'a', EPISODE_SORTS, 'default'), 'episode');
+  // Saved before the option was renamed to "Oldest pending first": the value kept its key, so it still restores.
+  store.set('old', 'oldest');
+  assert.equal(readSortPref(storage, 'old', EPISODE_SORTS, 'default'), 'oldest');
   assert.equal(readSortPref(storage, 'b', EPISODE_SORTS, 'default'), 'default');
   assert.equal(readSortPref(storage, 'missing', LINE_SORTS, 'risk'), 'risk');
   // An inherited Object key is not a sort option.

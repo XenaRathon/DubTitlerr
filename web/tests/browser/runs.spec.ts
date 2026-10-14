@@ -229,6 +229,10 @@ test('the show picker lists /api/shows, filters as you type, and refuses a show 
   await queue(page, 'Neon');
   await expect(page.getByRole('alert')).toContainText(/Pick a show from the list/);
   expect(posts).toBe(0);
+  // A case-only match is refused too, never sent as typed.
+  await queue(page, 'neon harbor');
+  await expect(page.getByRole('alert')).toContainText(/Pick a show from the list/);
+  expect(posts).toBe(0);
   // A listed show sends the same body as before.
   await queue(page, 'Neon Harbor', '1');
   await expect(page.getByRole('status')).toContainText(/Queued as/);

@@ -8,6 +8,7 @@ export interface Episode {
   pending: number;
   admitted: number;
   refused: number;
+  oldest_pending_at?: string | null;
 }
 export interface Entry {
   id: string;

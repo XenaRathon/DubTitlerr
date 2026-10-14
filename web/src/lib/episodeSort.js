@@ -26,8 +26,8 @@ const byEpisode = (a, b) => natural(a.show, b.show) || natural(a.season, b.seaso
 export function sortEpisodes(episodes, order) {
   if (order === 'episode') return episodes.slice().sort(byEpisode);
   if (order === 'pending') return episodes.slice().sort((a, b) => b.admitted - a.admitted || byEpisode(a, b));
-  // oldest_pending_at is the queue's last write (ISO 8601 UTC, one fixed format), so string order is time order.
-  // It is last activity, an upper bound on age; episodes without one go last.
+  // oldest_pending_at is the oldest undecided entry's own timestamp (the queue file's write time only when no entry
+  // carries one), ISO 8601 UTC in one fixed format, so string order is time order. Episodes without one go last.
   if (order === 'oldest')
     return episodes.slice().sort((a, b) => {
       const x = a.oldest_pending_at ?? null;

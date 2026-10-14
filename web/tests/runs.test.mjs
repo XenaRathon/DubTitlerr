@@ -124,4 +124,6 @@ test('checkShowPick requires a listed show when the list is known, and allows fr
   assert.equal(checkShowPick('  Neon Harbor ', ['Neon Harbor']), null);
   assert.match(checkShowPick('Neon', ['Neon Harbor']), /Pick a show from the list/);
   assert.equal(checkShowPick('Anything', []), null);
+  // Show directories are case-sensitive on the server: a case-only match is refused, never sent as typed.
+  assert.match(checkShowPick('one piece', ['One Piece']), /Pick a show from the list/);
 });
