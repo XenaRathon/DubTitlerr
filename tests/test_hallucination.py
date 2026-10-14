@@ -325,3 +325,67 @@ def test_the_cjk_rule_is_counted_like_every_other_gate():
     rec = Rec()
     h.drop_reason({"text": "君はどうする?"}, rec=rec)
     assert any("cjk" in k for k in rec.n), rec.n
+
+
+# --- repeat-loop: a run of cards that are nothing but one token (Digimon S01E38 'Xanamon!') ----
+
+# The real final cards of S01E38 from 4:16 to 4:43 (start, end, text), not a synthetic shape.
+E38 = [
+    (256.840, 258.781, "We'll talk about this later, Joe."),
+    (259.280, 263.600, "There's one of them now! Let's go! Xanamon! Xanamon!"),
+    (266.760, 267.590, "Xanamon!"),
+    (268.200, 269.030, "Xanamon!"),
+    (269.113, 269.943, "Xanamon!"),
+    (270.026, 270.856, "Xanamon! Xanamon!"),
+    (270.939, 276.450, "Xanamon!"),
+    (277.020, 278.100, "Xanamon! Xanamon!"),
+    (280.380, 281.210, "Xanamon!"),
+    (281.480, 282.740, "Good work, you guys."),
+    (283.120, 284.340, "Mom, wake up."),
+]
+
+
+def _e38():
+    return [card(t, start=s, end=e) for s, e, t in E38]
+
+
+def test_repeat_loop_drops_the_xanamon_run_and_trims_the_head_card():
+    drops, trims = h.repeat_loops(_e38())
+    assert drops == {2, 3, 4, 5, 6, 7, 8}  # the seven one-token cards, neither neighbour
+    assert trims == {1: "There's one of them now! Let's go!"}  # the real words in the head card survive
+    assert h.collapse_runs(_e38()) == _e38()  # the existing rules really do miss this
+
+
+def test_repeat_loop_keeps_a_looped_glossary_name():
+    cards = [card("Garurumon!", start=100 + i, end=100.8 + i) for i in range(8)]
+    assert h.repeat_loops(cards, known=["Garurumon"]) == (set(), {})
+    assert h.repeat_loops(cards)[0] == set(range(8))  # the same cards with no glossary
+
+
+def test_repeat_loop_known_matches_a_token_of_a_multiword_name():
+    cards = [card("Metal!", start=i, end=i + 0.5) for i in range(6)]
+    assert h.repeat_loops(cards, known=["Metal Garurumon"]) == (set(), {})
+
+
+def test_repeat_loop_keeps_ordinary_emphasis():
+    cards = [card("No!", start=10, end=10.5), card("No!", start=11, end=11.5), card("No!", start=12, end=12.5)]
+    assert h.repeat_loops(cards) == (set(), {})
+
+
+def test_repeat_loop_needs_five_cards_and_six_tokens():
+    four = [card("Xanamon! Xanamon!", start=i, end=i + 0.5) for i in range(4)]  # 8 tokens but 4 cards
+    assert h.repeat_loops(four) == (set(), {})
+    five = [card("Xanamon!", start=i, end=i + 0.5) for i in range(5)]  # 5 cards but 5 tokens
+    assert h.repeat_loops(five) == (set(), {})
+
+
+def test_repeat_loop_a_real_card_breaks_the_run():
+    cards = [card("Xanamon!", start=i, end=i + 0.5) for i in range(4)]
+    cards.append(card("Look out!", start=4, end=4.5))
+    cards += [card("Xanamon!", start=5 + i, end=5.5 + i) for i in range(4)]
+    assert h.repeat_loops(cards) == (set(), {})  # two runs of 4 cards each, neither reaches 5
+
+
+def test_repeat_loop_does_not_trim_a_card_beside_no_run():
+    cards = [card("Go Xanamon!", start=0, end=1), card("Xanamon!", start=2, end=3)]
+    assert h.repeat_loops(cards) == (set(), {})

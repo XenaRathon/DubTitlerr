@@ -792,8 +792,12 @@ def text_stages(stem, words, segments, audio_duration, rec, fail):
     except reflow.CascadeInfeasible as e:
         return _cascade_infeasible(stem, fail, e)
     kept, fixes, dropped = [], 0, 0
-    for c in cards:
-        if hallucination.drop_reason(c, rec=rec):  # blocklist / repetition / music -> drop
+    # a word looped across many short cards is invisible to the per-card rules; glossary names and phrases are exempt
+    loops, trims = hallucination.repeat_loops(cards, known=[*GLOSS["names"], *GLOSS.get("phrases", [])])
+    for idx, c in enumerate(cards):
+        if idx in trims:
+            c = {**c, "text": trims[idx]}  # a real sentence that ends in the loop word keeps its real words
+        if idx in loops or hallucination.drop_reason(c, rec=rec):  # repeat-loop / blocklist / repetition -> drop
             dropped += 1
             continue
         lines, n = [], 0
