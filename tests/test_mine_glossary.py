@@ -16,6 +16,7 @@ import sys
 import types
 
 import pysubs2
+import pytest
 
 import common
 import mine_glossary
@@ -493,3 +494,180 @@ def test_an_unrecognised_style_is_treated_as_dialogue(monkeypatch):
     _fake_styled([_stream(2, title="Fansub English")], [("WeirdCustomName", "Asuna drew her rapier.")], monkeypatch)
 
     assert "Asuna" in mine_glossary.eng_sub_text("fake.mkv")
+
+
+# --- lowercase-share gate: ordinary words show up lowercase in the same text -----------
+
+
+def _mined(text):
+    bare, poss, mid, lower = {}, {}, set(), {}
+    mine_glossary.mine_text(text, bare, poss, mid, lower=lower)
+    return bare, poss, mid, lower
+
+
+def _cap(word, n=3):
+    return "\n".join(f"I saw {word} there." for _ in range(n))
+
+
+def test_mine_text_counts_all_lowercase_tokens_only_when_asked():
+    bare, poss, mid, lower = _mined("I like it. Like that. We like Zoro's hat.")
+    assert lower["like"] == 2
+    assert "zoro" not in lower, "a capitalised word is never a lowercase sighting"
+    assert bare == {"Like": 1}, "lowercase never leaks into the capitalised lane"
+
+
+def test_mine_text_without_lower_behaves_as_before():
+    a, b = ({}, {}, set()), ({}, {}, set())
+    text = "I like Zoro. Zoro's hat, I like it."
+    mine_glossary.mine_text(text, *a)
+    mine_glossary.mine_text(text, *b, None, None)
+    assert a == b
+
+
+def test_admit_without_lower_is_unchanged():
+    bare, poss, mid, _ = _mined(_cap("Charm") + "\n" + "a charm here\n" * 20)
+    assert mine_glossary.admit(bare, poss, mid, 3, set(), set())[0] == ["Charm"]
+
+
+def test_junk_word_with_high_lowercase_share_is_dropped():
+    bare, poss, mid, lower = _mined(_cap("Charm") + "\n" + "a charm here\n" * 12)
+    dropped = []
+    new, queue = mine_glossary.admit(bare, poss, mid, 3, set(), set(), lower=lower, dropped=dropped)
+    assert new == [] and queue == {}
+    assert dropped == ["Charm"]
+
+
+def test_name_with_no_lowercase_form_is_kept():
+    bare, poss, mid, lower = _mined(_cap("Zeppeli") + "\nthe charm of it\n" * 5)
+    dropped = []
+    assert mine_glossary.admit(bare, poss, mid, 3, set(), set(), lower=lower, dropped=dropped)[0] == ["Zeppeli"]
+    assert dropped == []
+
+
+def test_dictionary_word_name_never_seen_lowercase_is_kept():
+    bare, poss, mid, lower = _mined(_cap("Brook"))
+    assert mine_glossary.admit(bare, poss, mid, 3, set(), set(), lower=lower)[0] == ["Brook"]
+
+
+def _gate(b, lo, p=0, min_count=1, word="Merry"):
+    """admit() over hand-built counts, so each boundary is exact."""
+    return mine_glossary.admit(
+        {word: b}, {word: p} if p else {}, {word}, min_count, set(), set(), lower={word.lower(): lo}
+    )
+
+
+def test_evidence_guard_bites_when_share_is_over_threshold():
+    assert _gate(b=1, lo=2)[0] == [("Merry")], "share 0.67 but only 2 lowercase sightings: kept"
+    assert _gate(b=1, lo=3)[0] == [], "exactly 3 sightings at share 0.75: dropped"
+    assert _gate(b=1, lo=0)[0] == ["Merry"]
+
+
+def test_share_boundary_is_inclusive_at_the_threshold():
+    assert _gate(b=2, lo=3)[0] == [], "share exactly 0.6 with 3 sightings: dropped"
+    assert _gate(b=3, lo=4)[0] == ["Merry"], "share 0.57: kept"
+
+
+def test_possessives_count_in_the_share_denominator():
+    # bare 1, possessive 8, lowercase 3 -> 3/12 = 0.25: a name people possess, kept
+    assert mine_glossary.admit({"Heaven": 1}, {"Heaven": 8}, {"Heaven"}, 3, set(), set(), lower={"heaven": 3})[1] != {}
+    assert mine_glossary.admit({"Boss": 1}, {"Boss": 10}, {"Boss"}, 3, set(), set(), lower={"boss": 3})[1] != {}
+    dropped = []
+    mine_glossary.admit({"Boss": 1}, {"Boss": 10}, {"Boss"}, 3, set(), set(), lower={"boss": 3}, dropped=dropped)
+    assert dropped == []
+
+
+def test_lowercase_possessives_are_lowercase_sightings():
+    bare, poss, mid, lower = _mined("the school's roof, the school's door, a school")
+    assert lower["school"] == 3
+    assert bare == {} and poss == {}
+
+
+def test_mine_applies_the_lowercase_gate():
+    text = "I saw Charm there.\n" * 5 + "a charm here\n" * 50
+    assert mine_glossary.mine(text, min_count=3, common=set(), existing=set())[0] == []
+
+
+def _verdicts(b, lo, min_count=1):
+    """admit() on a single word with exact counts -> True when it survives the gate."""
+    return mine_glossary.admit({"Word": b}, {}, {"Word"}, min_count, set(), set(), lower={"word": lo})[0] == ["Word"]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_override_notice(monkeypatch):
+    monkeypatch.setattr(mine_glossary, "_announced", set(), raising=False)
+
+
+BAD_SHARES = ["nan", "inf", "-inf", "0", "-0.5", "1.5", "", "abc", "1e-9", "0.06", "0.29", "1e400"]
+
+
+@pytest.mark.parametrize("bad", BAD_SHARES)
+def test_bad_share_env_behaves_as_the_default_in_admit(monkeypatch, bad):
+    monkeypatch.setenv("MINE_MAX_LOWER_SHARE", bad)
+    assert _verdicts(b=3, lo=3), "share 0.5 is under the default 0.6: kept (a tiny threshold would drop it)"
+    assert not _verdicts(b=2, lo=3), "share exactly 0.6 with 3 sightings: dropped"
+
+
+BAD_EVIDENCE = ["0", "-1", "-2", "2.5", "nan", "", "1e400", "1" + "0" * 400]
+
+
+@pytest.mark.parametrize("bad", BAD_EVIDENCE)
+def test_bad_evidence_env_behaves_as_the_default_in_admit(monkeypatch, bad):
+    monkeypatch.setenv("MINE_MIN_LOWER_EVIDENCE", bad)
+    assert _verdicts(b=1, lo=0), "no lowercase sightings: kept"
+    assert _verdicts(b=1, lo=2), "2 sightings is under the default 3: kept"
+    assert not _verdicts(b=1, lo=3), "exactly 3 sightings at share 0.75: dropped"
+
+
+def test_smallest_legal_values_really_reach_the_division(monkeypatch):
+    monkeypatch.setenv("MINE_MIN_LOWER_EVIDENCE", "1")
+    new, _ = mine_glossary.admit({}, {}, {"Ghost"}, 0, set(), set(), lower={"ghost": 1})
+    assert new == [], "lo=1, b=0, p=0: share 1.0, dropped"
+    assert _verdicts(b=1, lo=1), "lo=1, b=1: share 0.5, kept"
+
+
+def test_a_non_default_override_is_announced_once(monkeypatch, capsys):
+    monkeypatch.setenv("MINE_MAX_LOWER_SHARE", "0.7")
+    _verdicts(b=3, lo=3)
+    _verdicts(b=3, lo=3)
+    out = capsys.readouterr().out
+    assert out.count("mine: MINE_MAX_LOWER_SHARE=0.7 (default 0.6)") == 1
+
+
+def test_defaults_and_rejected_values_announce_nothing(monkeypatch, capsys):
+    _verdicts(b=3, lo=3)
+    monkeypatch.setenv("MINE_MAX_LOWER_SHARE", "0.6")
+    _verdicts(b=3, lo=3)
+    monkeypatch.setenv("MINE_MAX_LOWER_SHARE", "1e-9")
+    _verdicts(b=3, lo=3)
+    assert capsys.readouterr().out == ""
+
+
+def test_env_overrides_the_threshold(monkeypatch):
+    bare, poss, mid, lower = _mined(_cap("Mayor") + "\n" + "the mayor\n" * 3)  # share 0.5
+    assert mine_glossary.admit(bare, poss, mid, 3, set(), set(), lower=lower)[0] == ["Mayor"]
+    monkeypatch.setenv("MINE_MAX_LOWER_SHARE", "0.4")
+    assert mine_glossary.admit(bare, poss, mid, 3, set(), set(), lower=lower)[0] == []
+    monkeypatch.setenv("MINE_MAX_LOWER_SHARE", "not-a-number")
+    assert mine_glossary.admit(bare, poss, mid, 3, set(), set(), lower=lower)[0] == ["Mayor"], "bad value falls back to default"
+
+
+def test_env_overrides_the_evidence_guard(monkeypatch):
+    bare, poss, mid, lower = _mined(_cap("Heart") + "\nheart\nheart\nheart\nheart\nheart\nheart\n")
+    monkeypatch.setenv("MINE_MIN_LOWER_EVIDENCE", "50")
+    assert mine_glossary.admit(bare, poss, mid, 3, set(), set(), lower=lower)[0] == ["Heart"]
+
+
+def test_review_queue_lane_is_gated_too():
+    text = "I told the Boss to wait.\nBoss's men arrived.\nBoss's ship moved.\n" + "the boss said\n" * 10
+    bare, poss, mid, lower = _mined(text)
+    assert mine_glossary.admit(bare, poss, mid, 3, set(), set())[1], "ungated, the crossing lane queues it"
+    dropped = []
+    new, queue = mine_glossary.admit(bare, poss, mid, 3, set(), set(), lower=lower, dropped=dropped)
+    assert queue == {} and dropped == ["Boss"]
+
+
+def test_main_passes_lowercase_counts_through_and_reports_the_drop(tmp_path, monkeypatch, capsys):
+    text = _cap("Charm") + "\n" + "a charm here\n" * 12 + _cap("Brownbeard")
+    out = _run_main(tmp_path, text, monkeypatch)
+    assert out["names"] == ["Brownbeard"]
+    assert "Charm" in capsys.readouterr().out, "the maintainer must be able to see what the gate removed"
