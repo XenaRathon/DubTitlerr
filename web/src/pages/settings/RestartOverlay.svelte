@@ -7,12 +7,16 @@
   });
 </script>
 
-<!-- Not dismissable while waiting: Escape is swallowed, because the page cannot be used until the builder is back. -->
+<!-- Not dismissable while waiting: Escape is swallowed, because the page cannot be used until the builder is back.
+     Once the wait has timed out, Escape closes it like the Close button. -->
 <dialog
   bind:this={dialog}
   class="help-panel"
   aria-labelledby="restarting-title"
-  oncancel={(e) => e.preventDefault()}
+  oncancel={(e) => {
+    e.preventDefault();
+    if (step === 'timeout') onclose();
+  }}
 >
   <div class="panel-title"><h2 id="restarting-title">Restarting</h2></div>
   {#if step === 'waiting'}

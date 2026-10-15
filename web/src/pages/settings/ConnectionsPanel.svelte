@@ -177,7 +177,7 @@
       </div>
       {#if c.kind === 'openai'}
         <div class="field">
-          {#if secretsWritable}
+          {#if secretsWritable && canEdit}
             <label for={`conn-${i}-key`}>API key</label>
             <input
               id={`conn-${i}-key`}
@@ -197,7 +197,7 @@
             {#if c.key === CLEAR}<span class="hint">The key is cleared when you save.</span>{/if}
           {:else}
             <p class="field-label">API key: {c.api_key?.set ? 'Set' : 'Not set'}</p>
-            <p class="hint">available after login is enabled</p>
+            {#if !secretsWritable}<p class="hint">available after login is enabled</p>{/if}
           {/if}
           {#if fieldError(c, i, 'api_key')}<p class="field-error" role="alert">
               {fieldError(c, i, 'api_key')}
@@ -242,11 +242,9 @@
           value={c.timeout_read}
           oninput={(e) => update(i, { timeout_read: Number(e.currentTarget.value) || e.currentTarget.value })}
         />
-        {#if fieldError(c, i, 'timeout_connect') || fieldError(c, i, 'timeout_read')}
-          <p class="field-error" role="alert">
-            {fieldError(c, i, 'timeout_connect') || fieldError(c, i, 'timeout_read')}
-          </p>
-        {/if}
+        {#each ['timeout_connect', 'timeout_read'] as field (field)}
+          {#if fieldError(c, i, field)}<p class="field-error" role="alert">{fieldError(c, i, field)}</p>{/if}
+        {/each}
       </div>
       <div class="actions">
         {#if canEdit}
@@ -258,13 +256,13 @@
             onclick={() => void run(`conn:${c.name}`, { connection: c.name })}
             >Test connection {c.name}</button
           >
+          <button
+            class="secondary"
+            type="button"
+            aria-label={`Remove connection ${c.name || 'new'}`}
+            onclick={() => remove(i)}>Remove</button
+          >
         {/if}
-        <button
-          class="secondary"
-          type="button"
-          aria-label={`Remove connection ${c.name || 'new'}`}
-          onclick={() => remove(i)}>Remove</button
-        >
       </div>
       {#if results[`conn:${c.name}`]}
         <p

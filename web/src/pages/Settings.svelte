@@ -142,7 +142,7 @@
 
   /** Save the edited rows in one all-or-nothing PUT. Also what Ctrl+S runs (App calls it through bind:this). */
   export async function save() {
-    if (saving || !dirty) return;
+    if (!canEdit || saving || !dirty) return;
     if (connWork.some((c) => c.extra_error)) {
       saveError = 'The extra request body of a connection is not valid JSON.';
       return;

@@ -322,9 +322,8 @@ test('Restart Now asks for a soft stop and the overlay stays until a different b
   await expect(page.getByRole('status').filter({ hasText: 'The builder restarted.' })).toBeVisible();
 });
 
-test('after ten minutes without a new boot_id the overlay says to start the container by hand', async ({
-  page,
-}) => {
+/** Save a restart-required change, restart, and let ten minutes pass with the old boot_id still answering. */
+async function reachRestartTimeout(page: Page) {
   await page.clock.install();
   await openSignedIn(page, '#/settings/general');
   await page.getByLabel('Web UI port', { exact: true }).fill('9001');
@@ -348,7 +347,20 @@ test('after ten minutes without a new boot_id the overlay says to start the cont
   await page.clock.runFor(2_000);
   await expect(overlay.getByRole('alert')).toContainText('did not come back within 10 minutes');
   await expect(overlay).toContainText('start it by hand');
+  return overlay;
+}
+
+test('after ten minutes without a new boot_id the overlay says to start the container by hand', async ({
+  page,
+}) => {
+  const overlay = await reachRestartTimeout(page);
   await overlay.getByRole('button', { name: 'Close' }).click();
+  await expect(overlay).toHaveCount(0);
+});
+
+test('once the ten minutes are up Escape closes the overlay', async ({ page }) => {
+  const overlay = await reachRestartTimeout(page);
+  await page.keyboard.press('Escape');
   await expect(overlay).toHaveCount(0);
 });
 
@@ -671,4 +683,29 @@ test('the server refusals show under their own fields: a URL query, a short key,
   await expect(page.locator('.stages .field-error')).toContainText(
     'points at a host decision_client.py will not call (llm.example.net)',
   );
+});
+
+test('a connect timeout error and a read timeout error both show', async ({ page }) => {
+  await openSignedIn(page, '#/settings/connections');
+  const card = await addConnection(page, { name: 'fixture-local', url: LOCAL_URL, model: 'm' });
+  await page.route('**/api/settings', (route) =>
+    route.request().method() === 'PUT'
+      ? route.fulfill({
+          status: 400,
+          json: {
+            errors: {
+              'connections.fixture-local.timeout_connect': 'connect timeout must be a number',
+              'connections.fixture-local.timeout_read': 'read timeout must be a number',
+            },
+          },
+        })
+      : route.continue(),
+  );
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(
+    card.locator('.field-error').filter({ hasText: 'connect timeout must be a number' }),
+  ).toBeVisible();
+  await expect(
+    card.locator('.field-error').filter({ hasText: 'read timeout must be a number' }),
+  ).toBeVisible();
 });

@@ -75,3 +75,53 @@ test('as a user every settings row is read-only and no admin control is offered'
   await expect(page.getByRole('heading', { name: 'Connections', level: 1 })).toBeVisible();
   await expect(page.getByRole('button', { name: /^Test/ })).toHaveCount(0);
 });
+
+test('as a user the Connections page offers no editing and never shows a key box', async ({
+  page,
+  request,
+}) => {
+  await makeUser(request);
+  await page.route('**/api/settings', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        secrets_writable: true,
+        connections: [
+          {
+            name: 'hosted',
+            kind: 'openai',
+            url: 'http://127.0.0.1:18842/v1/chat/completions',
+            model: 'gpt-x',
+            extra_body: { set: false },
+            timeout_connect: 10,
+            timeout_read: 120,
+            api_key: { set: true },
+          },
+        ],
+      },
+    });
+  });
+  const puts: string[] = [];
+  page.on('request', (r) => {
+    if (r.method() === 'PUT' && r.url().includes('/api/settings')) puts.push(r.url());
+  });
+  await page.goto('/review#/settings/connections');
+  await signIn(page, 'viewer', 'viewer password!');
+  await expect(page.getByRole('heading', { name: 'Connections', level: 1 })).toBeVisible();
+  const card = page.locator('[data-connection]').first();
+  await expect(card).toContainText('API key: Set');
+  await expect(page.locator('input[type="password"]')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Add connection' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Remove connection/ })).toHaveCount(0);
+  const pickers = page.locator('.stages select');
+  expect(await pickers.count()).toBeGreaterThan(0);
+  for (const picker of await pickers.all()) await expect(picker).toBeDisabled();
+  // Ctrl+S reaches save() from anywhere; for a user it must send nothing.
+  await page.keyboard.press('Control+s');
+  await page.waitForTimeout(500);
+  expect(puts).toEqual([]);
+});
