@@ -16,15 +16,18 @@
     sourceNote,
     validateModel,
   } from '../lib/settings.js';
+  import { isAdmin } from '../lib/roles.js';
 
   // The options-style wrapper the Runs page uses: api(path, { method, body, headers }).
   let {
     api,
+    role = 'user',
   }: {
     api: (
       path: string,
       options?: { method?: string; body?: object; headers?: Record<string, string> },
     ) => Promise<any>;
+    role?: string;
   } = $props();
 
   // The server's allow-lists (RUNTIME_VERIFY_BACKENDS, RUNTIME_DECISION_MODELS); a PUT outside them is refused.
@@ -333,28 +336,30 @@
     {#each BACKENDS as name (name)}
       <div class="settings-backend">
         <strong>{name}</strong>
-        <button
-          class="secondary"
-          type="button"
-          disabled={testing[name]}
-          onclick={() => void testBackend(name)}>Test {name} connection</button
-        >
-        {#if results[name]}
-          {#if results[name].ok}
-            <p id={`settings-test-${name}`} tabindex="-1" class="notice success" role="status">
-              {describeTestResult(results[name])}
-            </p>
-          {:else}
-            <p id={`settings-test-${name}`} tabindex="-1" class="notice failure" role="alert">
-              {describeTestResult(results[name])}
-            </p>
+        {#if isAdmin(role)}
+          <button
+            class="secondary"
+            type="button"
+            disabled={testing[name]}
+            onclick={() => void testBackend(name)}>Test {name} connection</button
+          >
+          {#if results[name]}
+            {#if results[name].ok}
+              <p id={`settings-test-${name}`} tabindex="-1" class="notice success" role="status">
+                {describeTestResult(results[name])}
+              </p>
+            {:else}
+              <p id={`settings-test-${name}`} tabindex="-1" class="notice failure" role="alert">
+                {describeTestResult(results[name])}
+              </p>
+            {/if}
           {/if}
         {/if}
       </div>
     {/each}
   </section>
 
-  {#if writable}
+  {#if writable && isAdmin(role)}
     <section class="settings-section settings-edit" aria-label="Edit settings">
       <h2>Edit settings</h2>
       <div id="settings-write-result" tabindex="-1">

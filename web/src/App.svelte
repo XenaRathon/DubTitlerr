@@ -645,9 +645,9 @@
       {:else if view === 'dashboard'}
         <Dashboard {api} />
       {:else if view === 'runs'}
-        <Runs api={optionsApi} />
+        <Runs api={optionsApi} role={account.role} />
       {:else if view === 'settings'}
-        <Settings api={optionsApi} />
+        <Settings api={optionsApi} role={account.role} />
       {:else}
         <header class="page-header">
           <h1 tabindex="-1">{view === 'shared' ? 'Shared lines' : 'Review inbox'}</h1>

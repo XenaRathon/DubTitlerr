@@ -14,15 +14,18 @@
     validateSchedule,
   } from '../lib/runs.js';
   import StatusBadge from '../lib/StatusBadge.svelte';
+  import { isAdmin } from '../lib/roles.js';
 
   // Authenticated fetch wrapper: the session cookie and the CSRF header are added by session.js.
   let {
     api,
+    role = 'user',
   }: {
     api: (
       path: string,
       options?: { method?: string; body?: object; headers?: Record<string, string> },
     ) => Promise<any>;
+    role?: string;
   } = $props();
 
   const POLL_MS = 15000;
@@ -225,45 +228,55 @@
     {#if statusMsg}<p class="notice success" role="status">{statusMsg}</p>{/if}
   </div>
 
-  <h2 class="runs-heading">Queue a run</h2>
-  <form
-    class="runs-form form-narrow"
-    onsubmit={(e) => {
-      e.preventDefault();
-      void queue();
-    }}
-  >
-    <label for="runs-show">Show</label>
-    <input
-      id="runs-show"
-      list="runs-show-options"
-      bind:value={show}
-      placeholder={shows.length ? 'Type to filter shows' : 'Directory name under the anime root'}
-      autocomplete="off"
-      spellcheck="false"
-      aria-describedby={showsFailed ? 'runs-show-hint' : undefined}
-    />
-    {#if showsFailed}<small id="runs-show-hint" class="runs-hint"
-        >Show list unavailable; type the directory name.</small
-      >{/if}
-    <datalist id="runs-show-options">
-      {#each shows as name (name)}<option value={name}></option>{/each}
-    </datalist>
-    <label for="runs-season">Season (optional)</label>
-    <input id="runs-season" bind:value={season} inputmode="numeric" placeholder="e.g. 1" autocomplete="off" />
-    <label for="runs-regex">Episode filter (optional)</label>
-    <input
-      id="runs-regex"
-      bind:value={episodeRe}
-      placeholder="Regex on the file name"
-      autocomplete="off"
-      spellcheck="false"
-    />
-    <label class="runs-check"><input type="checkbox" bind:checked={requireEng} />Require English audio</label>
-    <div class="runs-actions">
-      <button class="primary" type="submit" disabled={queuing}>Queue run</button>
-    </div>
-  </form>
+  {#if isAdmin(role)}
+    <h2 class="runs-heading">Queue a run</h2>
+    <form
+      class="runs-form form-narrow"
+      onsubmit={(e) => {
+        e.preventDefault();
+        void queue();
+      }}
+    >
+      <label for="runs-show">Show</label>
+      <input
+        id="runs-show"
+        list="runs-show-options"
+        bind:value={show}
+        placeholder={shows.length ? 'Type to filter shows' : 'Directory name under the anime root'}
+        autocomplete="off"
+        spellcheck="false"
+        aria-describedby={showsFailed ? 'runs-show-hint' : undefined}
+      />
+      {#if showsFailed}<small id="runs-show-hint" class="runs-hint"
+          >Show list unavailable; type the directory name.</small
+        >{/if}
+      <datalist id="runs-show-options">
+        {#each shows as name (name)}<option value={name}></option>{/each}
+      </datalist>
+      <label for="runs-season">Season (optional)</label>
+      <input
+        id="runs-season"
+        bind:value={season}
+        inputmode="numeric"
+        placeholder="e.g. 1"
+        autocomplete="off"
+      />
+      <label for="runs-regex">Episode filter (optional)</label>
+      <input
+        id="runs-regex"
+        bind:value={episodeRe}
+        placeholder="Regex on the file name"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <label class="runs-check"
+        ><input type="checkbox" bind:checked={requireEng} />Require English audio</label
+      >
+      <div class="runs-actions">
+        <button class="primary" type="submit" disabled={queuing}>Queue run</button>
+      </div>
+    </form>
+  {/if}
 
   <h2 class="runs-heading">Queue</h2>
   {#if loading && requests.length === 0}
@@ -305,52 +318,55 @@
     <p class="runs-note">Requests wait for the current show and for the schedule window.</p>
   {/if}
 
-  <section class="runs-schedule" aria-label="Schedule">
-    <h2 class="runs-heading">Schedule</h2>
-    <div id="runs-schedule-result" tabindex="-1">
-      {#if schedFormError}<p class="notice failure" role="alert">{schedFormError}</p>{/if}
-      {#if schedError}<p class="notice failure" role="alert">{schedError}</p>{/if}
-      {#if schedMsg}<p class="notice success" role="status">{schedMsg}</p>{/if}
-    </div>
-    <p class="runs-note">
-      {describeSchedule({ enabled: schedEnabled, open: schedOpen, close: schedClose, tz: schedTz })}
-    </p>
-    {#if schedLoading}
-      <p class="page-sub">Loading schedule…</p>
-    {:else}
-      <form
-        class="runs-form form-narrow"
-        onsubmit={(e) => {
-          e.preventDefault();
-          void saveSchedule();
-        }}
-      >
-        <label class="runs-check"><input type="checkbox" bind:checked={schedEnabled} />Window enabled</label>
-        <!-- With the window off the times are kept but not editable, so it is clear they do nothing yet. -->
-        <label for="runs-open">Open</label>
-        <input id="runs-open" type="time" bind:value={schedOpen} disabled={!schedEnabled} />
-        <label for="runs-close">Close</label>
-        <input id="runs-close" type="time" bind:value={schedClose} disabled={!schedEnabled} />
-        <label for="runs-tz">Timezone</label>
-        <input
-          id="runs-tz"
-          bind:value={schedTz}
-          list="runs-tz-list"
-          placeholder={tzPlaceholder}
-          autocomplete="off"
-          spellcheck="false"
-          disabled={!schedEnabled}
-        />
-        <datalist id="runs-tz-list">
-          {#each ZONES as zone (zone)}<option value={zone}></option>{/each}
-        </datalist>
-        <div class="runs-actions">
-          <button class="primary" type="submit" disabled={schedSaving}>Save schedule</button>
-        </div>
-      </form>
-    {/if}
-    <p class="runs-note">Host systemd timers remain the outer guard.</p>
-  </section>
+  {#if isAdmin(role)}
+    <section class="runs-schedule" aria-label="Schedule">
+      <h2 class="runs-heading">Schedule</h2>
+      <div id="runs-schedule-result" tabindex="-1">
+        {#if schedFormError}<p class="notice failure" role="alert">{schedFormError}</p>{/if}
+        {#if schedError}<p class="notice failure" role="alert">{schedError}</p>{/if}
+        {#if schedMsg}<p class="notice success" role="status">{schedMsg}</p>{/if}
+      </div>
+      <p class="runs-note">
+        {describeSchedule({ enabled: schedEnabled, open: schedOpen, close: schedClose, tz: schedTz })}
+      </p>
+      {#if schedLoading}
+        <p class="page-sub">Loading schedule…</p>
+      {:else}
+        <form
+          class="runs-form form-narrow"
+          onsubmit={(e) => {
+            e.preventDefault();
+            void saveSchedule();
+          }}
+        >
+          <label class="runs-check"><input type="checkbox" bind:checked={schedEnabled} />Window enabled</label
+          >
+          <!-- With the window off the times are kept but not editable, so it is clear they do nothing yet. -->
+          <label for="runs-open">Open</label>
+          <input id="runs-open" type="time" bind:value={schedOpen} disabled={!schedEnabled} />
+          <label for="runs-close">Close</label>
+          <input id="runs-close" type="time" bind:value={schedClose} disabled={!schedEnabled} />
+          <label for="runs-tz">Timezone</label>
+          <input
+            id="runs-tz"
+            bind:value={schedTz}
+            list="runs-tz-list"
+            placeholder={tzPlaceholder}
+            autocomplete="off"
+            spellcheck="false"
+            disabled={!schedEnabled}
+          />
+          <datalist id="runs-tz-list">
+            {#each ZONES as zone (zone)}<option value={zone}></option>{/each}
+          </datalist>
+          <div class="runs-actions">
+            <button class="primary" type="submit" disabled={schedSaving}>Save schedule</button>
+          </div>
+        </form>
+      {/if}
+      <p class="runs-note">Host systemd timers remain the outer guard.</p>
+    </section>
+  {/if}
 </section>
 
 <style>
