@@ -37,12 +37,27 @@ def test_verify_compares_with_compare_digest(monkeypatch):
 
 @pytest.mark.parametrize(
     "stored",
-    ["not-a-hash", "", "scrypt$x$8$1$00$00", "bcrypt$16384$8$1$00$00", "scrypt$16384$8$1$zz$00", "scrypt$16384$8$1$00$00"],
+    [
+        "not-a-hash",
+        "",
+        "scrypt$x$8$1$00$00",
+        "bcrypt$16384$8$1$00$00",
+        "scrypt$16384$8$1$zz$00",
+        "scrypt$16384$8$1$00$00",
+        "scrypt$18446744073709551616$8$1$00$00",
+        None,
+    ],
 )
 def test_a_malformed_or_foreign_hash_is_false_and_still_costs_one_scrypt(monkeypatch, stored):
     calls = []
     real = hashlib.scrypt
-    monkeypatch.setattr(review_auth.hashlib, "scrypt", lambda *a, **k: calls.append(1) or real(*a, **k))
+
+    def counted(*a, **k):
+        out = real(*a, **k)  # a call the library rejects outright did no work, so only completed calls count
+        calls.append(1)
+        return out
+
+    monkeypatch.setattr(review_auth.hashlib, "scrypt", counted)
     assert review_auth.verify_password("whatever-long-enough", stored) is False
     assert len(calls) == 1
 
