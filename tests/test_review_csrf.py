@@ -157,3 +157,28 @@ def test_a_wrong_key_still_runs_the_constant_time_comparison(server, monkeypatch
     monkeypatch.setattr(review_auth.secrets, "compare_digest", lambda a, b: ran.append(1) or real(a, b))
     assert rs.route_full("GET", "/api/episodes", {}, None, headers={"X-Api-Key": "wrong-key"})[0] == 401
     assert ran, "the token comparison must go through compare_digest"
+
+
+def test_origin_null_is_refused_even_with_a_valid_cookie_and_header(server):
+    status, payload, _ = post(server, {**cookie(), **CSRF, "Origin": "null"})
+    assert (status, payload) == (403, {"error": "cross-site request refused"})
+
+
+@pytest.mark.parametrize("value", ["true", "0", "yes", "11", "1 ", ""])
+def test_a_csrf_header_value_other_than_1_is_refused(server, value):
+    status, payload, _ = post(server, {**cookie(), "X-DubTitlerr-Request": value})
+    assert (status, payload) == (403, {"error": "cross-site request refused"})
+
+
+def test_a_put_without_the_header_is_refused_as_cross_site_before_the_route_is_judged(server):
+    status, payload, _ = post(server, cookie(), path="/api/schedule", method="PUT")
+    assert (status, payload) == (403, {"error": "cross-site request refused"})
+
+
+@pytest.mark.parametrize(
+    "ctype",
+    ["text/plain", "multipart/form-data; boundary=x", "TEXT/PLAIN; charset=utf-8", "application/x-www-form-urlencoded"],
+)
+def test_form_content_types_are_415_on_a_session_route_with_auth_on(server, ctype):
+    status, payload, _ = post(server, {**cookie(), **CSRF, "Content-Type": ctype})
+    assert (status, payload) == (415, {"error": "application/json is required"})

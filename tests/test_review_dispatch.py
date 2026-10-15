@@ -72,7 +72,7 @@ def test_every_path_do_get_serves_itself_is_in_the_role_table():
 def test_no_do_method_can_bypass_the_dispatcher_unnoticed():
     cls, _ = _handler_method("do_GET")
     names = sorted(n.name for n in cls.body if isinstance(n, ast.FunctionDef) and n.name.startswith("do_"))
-    assert names == ["do_GET", "do_POST", "do_PUT"], "a new do_* method must go through route_full and be added here"
+    assert names == ["do_DELETE", "do_GET", "do_POST", "do_PUT"], "a new do_* method must go through route_full and be added here"
 
 
 def test_every_admin_handler_and_webhook_is_in_the_role_table():

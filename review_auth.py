@@ -764,7 +764,9 @@ def _hostname(value: str) -> str:
 def _csrf_refusal(method: str, headers) -> bool:
     """A browser sends the session cookie to this origin from any page, so a state change must prove it came from our own
     page. X-DubTitlerr-Request is the primary defence. The Origin HOST check is defence in depth: it compares hostnames only
-    (scheme and port ignored) against X-Forwarded-Host when a proxy sends one, else Host."""
+    (scheme and port ignored) against X-Forwarded-Host when a proxy sends one, else Host. It only adds value behind a proxy
+    that overwrites X-Forwarded-Host: a client reaching the server directly can send its own, so there the header defence
+    above is what holds."""
     if method in ("GET", "HEAD"):
         return False
     if header(headers, CSRF_HEADER) != "1":
@@ -981,3 +983,126 @@ def handle_apikey(method: str, path: str) -> tuple:
         return 405, {"error": "method not allowed"}
     except AuthError as e:
         return e.status, {"error": e.message}
+
+
+def _admin_count(users: list) -> int:
+    return sum(1 for u in users if u["role"] == "admin")
+
+
+def list_users() -> list:
+    return [{"name": u["name"], "role": u["role"]} for u in read_users()]
+
+
+def update_user(name, *, role=None, password=None) -> dict:
+    if role is not None and role not in ROLES:
+        raise Invalid("role must be admin or user")
+    if role is None and password is None:
+        raise Invalid("nothing to change")
+    if password is not None and validate_password(password):
+        raise Invalid(validate_password(password))
+    stored = hash_password(password) if password is not None else None
+    role_changed = False
+    with _locked(users_path()):
+        users = read_users()
+        row = find_user(users, name)
+        if row is None:
+            raise NotFound("no such user")
+        if role is not None and role != row["role"]:
+            if row["role"] == "admin" and _admin_count(users) <= 1:
+                raise Conflict("cannot remove or demote the last admin")
+            row["role"], role_changed = role, True
+        if stored is not None:
+            row["hash"], row["pw_changed_at"] = stored, CLOCK()
+        if role_changed or stored is not None:
+            row["session_epoch"] = int(row.get("session_epoch", 0)) + 1  # every existing session of the account is now invalid
+        _write_json(users_path(), {"version": 1, "users": users})
+        out = {"name": row["name"], "role": row["role"]}
+    if role_changed or stored is not None:
+        sessions().revoke_user(out["name"])
+    return out
+
+
+def delete_user(name) -> None:
+    with _locked(users_path()):
+        users = read_users()
+        row = find_user(users, name)
+        if row is None:
+            raise NotFound("no such user")
+        if row["role"] == "admin" and _admin_count(users) <= 1:
+            raise Conflict("cannot remove or demote the last admin")
+        users.remove(row)
+        _write_json(users_path(), {"version": 1, "users": users})
+    sessions().revoke_user(row["name"])
+
+
+def set_password(name, new) -> int:
+    """New password for ``name``. Bumps the account's session_epoch, so every session of it, including the caller's, stops
+    validating in every process (the recovery CLI runs in another one); returns the new epoch for the caller that wants to
+    start a fresh session. Also what the recovery CLI calls."""
+    problem = validate_password(new)
+    if problem:
+        raise Invalid(problem)
+    stored = hash_password(new)
+    with _locked(users_path()):
+        users = read_users()
+        row = find_user(users, name)
+        if row is None:
+            raise NotFound("no such user")
+        row["hash"], row["pw_changed_at"] = stored, CLOCK()
+        row["session_epoch"] = int(row.get("session_epoch", 0)) + 1
+        _write_json(users_path(), {"version": 1, "users": users})
+        canonical, epoch = row["name"], row["session_epoch"]
+    sessions().revoke_user(canonical)  # memory and file; the epoch already made them invalid everywhere
+    return epoch
+
+
+def handle_users(method: str, bare: str, body, principal) -> tuple:
+    try:
+        if bare == "/api/users":
+            if method == "GET":
+                return 200, {"users": list_users()}
+            if method != "POST":
+                return 405, {"error": "method not allowed"}
+            body = body if isinstance(body, dict) else {}
+            row = create_user(body.get("username"), body.get("role", "user"), body.get("password"))
+            return 201, {"name": row["name"], "role": row["role"]}
+        if method not in ("PUT", "DELETE"):
+            return 404, {"error": "no such route"}
+        name = urllib.parse.unquote(bare[len("/api/users/") :])
+        if validate_username(name):
+            raise Invalid("invalid username")
+        if method == "DELETE":
+            delete_user(name)
+            return 200, {"ok": True}
+        body = body if isinstance(body, dict) else {}
+        return 200, update_user(name, role=body.get("role"), password=body.get("password"))
+    except AuthError as e:
+        return e.status, {"error": e.message}
+
+
+def handle_change_password(body, principal, client: str, throttle, headers=None) -> tuple:
+    if principal is None or principal.kind != "session":
+        return 403, {"error": "sign in with your own account to change its password"}, {}
+    wait = throttle.retry_after(client)
+    if wait:
+        log("review server: password change throttled")
+        return 429, {"error": "too many failed attempts; wait before trying again", "retry_after": wait}, {}
+    body = body if isinstance(body, dict) else {}
+    try:
+        row = find_user(read_users(), principal.name)
+        if row is None:
+            return 401, {"error": "login required"}, {}
+        current = body.get("current")
+        if not verify_password(current if isinstance(current, str) else "", row["hash"]):
+            throttle.failure(client)
+            log("review server: password change refused")
+            return 403, {"error": "current password is wrong"}, {}
+        epoch = set_password(row["name"], body.get("new"))
+    except AuthError as e:
+        return e.status, {"error": e.message}, {}
+    throttle.success(client)
+    try:  # rotation: the old id (and any copy of it) is dead; this browser continues on a new one
+        sid = sessions().create(row["name"], principal.remember, epoch)
+    except AuthError:
+        return 200, {"ok": True, "signed_out": True}, {"Set-Cookie": clear_cookie(cookie_secure(headers))}  # sign in again
+    return 200, {"ok": True}, {"Set-Cookie": session_cookie(sid, principal.remember, cookie_secure(headers))}

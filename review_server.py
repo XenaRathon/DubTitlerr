@@ -275,6 +275,8 @@ _JSON_REQUIRED = frozenset(
         ("PUT", "/api/settings"),
         ("POST", "/api/settings/test"),
         ("POST", "/api/glossary"),
+        ("POST", "/api/users"),
+        ("PUT", "/api/me/password"),
     )
 )
 # (method, path) -> handler(body) for routes that need the admin token (specs/webui-admin-token). route() checks the review
@@ -1101,6 +1103,10 @@ def _route(method: str, path: str, bare: str, body: dict, decision, client: str,
         return review_auth.handle_apikey(method, bare)
     if body is None:  # only the strict JSON routes produce None (see Handler._with_body)
         return 400, {"error": "invalid JSON"}
+    if bare == "/api/users" or bare.startswith("/api/users/"):
+        return review_auth.handle_users(method, bare, body, decision.principal)
+    if method == "PUT" and bare == "/api/me/password":
+        return review_auth.handle_change_password(body, decision.principal, client, _THROTTLE, headers)
     if method == "GET" and path == "/api/audio":
         return preview_audio(body)
     if method == "GET" and path == "/api/episodes":
@@ -1664,6 +1670,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_PUT(self):
         self._with_body("PUT")
 
+    def do_DELETE(self):
+        self._with_body("DELETE")
+
     def _with_body(self, method: str):
         # The body is read BEFORE authorised() runs, so this bound is what stands between an
         # unauthenticated caller and this root process's memory. int("-1") does NOT raise, so
@@ -1671,6 +1680,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # EOF -- unbounded, which is exactly what the check existed to prevent. Anything not
         # a non-negative integer is refused without reading a byte.
         raw = self.headers.get("Content-Length")
+        if method == "DELETE" and raw is None:
+            raw = "0"  # a DELETE normally has no body
         try:
             n = int(raw or "")
         except (TypeError, ValueError):
