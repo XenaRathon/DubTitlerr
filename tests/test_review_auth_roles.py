@@ -33,7 +33,10 @@ def env(tmp_path, monkeypatch):
 def people(env):
     review_auth.create_user("root", "admin", "admin password")
     review_auth.create_user("alice", "user", "user password!")
-    return {n: {"Cookie": f"dubtitlerr_session={review_auth.sessions().create(n, False)}"} for n in ("root", "alice")}
+    return {
+        n: {"Cookie": f"dubtitlerr_session={review_auth.sessions().create(n, False)}", "X-DubTitlerr-Request": "1"}
+        for n in ("root", "alice")
+    }
 
 
 @pytest.mark.parametrize(
@@ -151,7 +154,7 @@ def test_a_valid_session_beats_a_legacy_cookie_and_a_stale_token(people):
 
 def test_review_auth_off_opens_every_route(env, monkeypatch):
     monkeypatch.setenv("REVIEW_AUTH", "off")
-    assert review_auth.role_for("PUT", "/api/settings", {}) == ("admin", None)
+    assert review_auth.role_for("PUT", "/api/settings", {"X-DubTitlerr-Request": "1"}) == ("admin", None)
     assert review_auth.role_for("GET", "/api/nope", {}) == ("admin", None)
 
 

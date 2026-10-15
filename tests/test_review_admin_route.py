@@ -30,7 +30,7 @@ def env(monkeypatch):
 
 def call(token=TOKEN, admin=None, body=None):
     kwargs = {} if admin is None else {"admin_token": admin}
-    return rs.route("POST", "/api/_admin_probe", body or {}, token, **kwargs)
+    return rs.route("POST", "/api/_admin_probe", body or {}, token, headers={"X-DubTitlerr-Request": "1"}, **kwargs)
 
 
 def test_unset_admin_token_disables_the_guarded_route_with_403(env):

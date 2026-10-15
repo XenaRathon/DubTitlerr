@@ -17,6 +17,7 @@ import secrets
 import tempfile
 import threading
 import time
+import urllib.parse
 
 import glossary_lock
 from common import log
@@ -747,10 +748,43 @@ def _refuse(status: int, required: str, known: bool, error: str = "") -> Decisio
 _NO_PRINCIPAL_PREFIXES = ("/healthz", "/review", "/api/webhook/")  # public routes that never read who is asking
 
 
+def _hostname(value: str) -> str:
+    try:
+        return (urllib.parse.urlsplit("//" + value).hostname or "") if value else ""
+    except ValueError:
+        return ""
+
+
+def _csrf_refusal(method: str, headers) -> bool:
+    """A browser sends the session cookie to this origin from any page, so a state change must prove it came from our own
+    page. X-DubTitlerr-Request is the primary defence. The Origin HOST check is defence in depth: it compares hostnames only
+    (scheme and port ignored) against X-Forwarded-Host when a proxy sends one, else Host."""
+    if method in ("GET", "HEAD"):
+        return False
+    if header(headers, CSRF_HEADER) != "1":
+        return True
+    origin = header(headers, "Origin")
+    if not origin:
+        return False
+    try:
+        origin_host = urllib.parse.urlsplit(origin).hostname or ""
+    except ValueError:
+        return True
+    expected = _hostname(header(headers, "X-Forwarded-Host").split(",")[0].strip()) or _hostname(header(headers, "Host"))
+    return not origin_host or origin_host != expected
+
+
+def _holds_valid_key(headers) -> bool:
+    presented = header(headers, API_KEY_HEADER)
+    return bool(presented) and key_matches(presented)
+
+
 def decide(method: str, path: str, headers) -> Decision:
     path = path.split("?", 1)[0].split("#", 1)[0]  # the table knows routes, not query strings
     required, known = _required_role(method, path)
     if not auth_on():
+        if required != "public" and _csrf_refusal(method, headers) and not _holds_valid_key(headers):
+            return _refuse(403, required, known, "cross-site request refused")
         return Decision("admin", None, "", required, known, Principal("open", "", "admin"))
     if required == "public" and path.startswith(_NO_PRINCIPAL_PREFIXES):
         return Decision("public", None, "", required, known, None)
@@ -761,6 +795,8 @@ def decide(method: str, path: str, headers) -> Decision:
         if header(headers, API_KEY_HEADER) or header(headers, ALIAS_HEADER):
             return _refuse(401, required, known)
         return _refuse(409 if setup_required() else 401, required, known)
+    if principal.kind == "session" and _csrf_refusal(method, headers):
+        return _refuse(403, required, known, "cross-site request refused")
     if required == "admin" and principal.role != "admin":
         return _refuse(403, required, known)
     return Decision(principal.role, None, "", required, known, principal)

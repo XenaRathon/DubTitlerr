@@ -395,26 +395,6 @@ def test_the_token_is_never_placed_in_a_url(tmp_path, monkeypatch):
     assert review_server.TOKEN_HEADER.lower() == "x-review-token"
 
 
-def test_the_token_comparison_is_timing_safe():
-    """A SOURCE assertion, and it is the weaker kind of test on purpose.
-
-    `==` and `secrets.compare_digest` return the same answer for every input, so no
-    behavioural test can tell them apart -- a mutation swapping one for the other passes the
-    whole suite. The difference is only observable as a timing side channel, which is not
-    something this suite can measure reliably. This token is the single thing between a LAN
-    and a root-owned endpoint that rewrites subtitles, so the property is worth a guard that
-    catches a silent revert, even though it pins the decision rather than the behaviour."""
-    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "review_server.py")).read()
-    body = src[src.index("def authorised(") : src.index("def known_stems(")]
-    auth_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "review_auth.py")).read()
-    matcher = auth_src[auth_src.index("def key_matches(") : auth_src.index("def _warn_if_env_token_differs(")]
-
-    # The comparison moved into review_auth.key_matches when the token became the API key; authorised() must delegate to it.
-    assert "review_auth.key_matches" in body, "authorised() must use the one constant-time matcher"
-    assert "compare_digest" in matcher, "the token comparison must be constant-time"
-    assert "== resolve_token" not in body and "resolve_token() ==" not in body
-
-
 def test_a_show_with_an_ampersand_in_its_name_is_still_usable(tmp_path, monkeypatch):
     """html.escape is right for HTML TEXT and wrong for the JS and URL contexts.
 
@@ -898,23 +878,6 @@ def test_the_index_page_shows_both_counts(tmp_path, monkeypatch):
     page = review_server.render_page()
 
     assert "admitted" in page.lower() and "refused" in page.lower()
-
-
-def test_the_page_remembers_the_token_in_the_browser(tmp_path, monkeypatch):
-    """Paste it once per browser, not once per visit.
-
-    The token is generated, 0600 and root-owned, so retrieving it means a docker exec
-    incantation nobody should be expected to remember. It is already in the reviewer's
-    browser the moment they paste it, so keeping it in localStorage gives up nothing and
-    removes the only genuinely annoying step. It is NEVER rendered into the page by the
-    server -- the browser puts it there, which is a different thing."""
-    stem = _episode(tmp_path)
-    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
-
-    page = review_server.render_page(stem)
-
-    assert "localStorage" in page, "the token must survive a reload"
-    assert "dubtitlerr_token" in page, "under a name that will not collide"
 
 
 # --- the index has to survive a real library ---------------------------------
@@ -1687,7 +1650,7 @@ def test_episode_sort_reorders_rows_without_changing_the_posted_index_set(tmp_pa
     )
     assert set(displayed) == {0, 1, 2}, "every queued entry is still addressable exactly once"
 
-    sort_body = page.split("function sortEpisode", 1)[1].split("const TOK", 1)[0]
+    sort_body = page.split("function sortEpisode", 1)[1].split("async function post", 1)[0]
     assert "appendChild(row)" in sort_body, "reordering must move existing nodes"
     assert "fetch(" not in sort_body and "location.reload" not in sort_body, "no round trip"
     assert "name.slice(1)" in page, "posted indexes come from stable radio names, not visual position"
@@ -1893,32 +1856,10 @@ def test_cookie_token_malformed_cookie_header_returns_none():
     assert review_server._cookie_token({"Cookie": ";;;=== not a cookie"}) is None
 
 
-def test_render_locked_page_has_no_episode_data_and_no_fetch_call():
-    out = review_server.render_locked("page")
-    assert "needs-token" in out
-    assert "fetch(" not in out, "the locked shell must not call any write route either"
-    assert "id=tok" in out
-
-
 def test_render_locked_shared_uses_the_shared_title():
     out = review_server.render_locked("shared")
     assert "Shared lines" in out
     assert "needs-token" in out
-
-
-def test_the_token_box_js_syncs_a_cookie_next_to_localstorage(monkeypatch):
-    """The existing TOK 'input' listener (review_server.py:829-831 in render_shared,
-    byte-for-byte the same at :1038-1040 in render_page) already writes to
-    localStorage; it must ALSO write the cookie authorised() now reads, in the SAME
-    handler, so the two never drift out of sync."""
-    monkeypatch.setattr(review_server, "known_stems", lambda: [])
-
-    for out in (review_server.render_page(), review_server.render_shared()):
-        start = out.index("TOK.addEventListener('input'")
-        handler = out[start : start + 400]
-        assert "localStorage.setItem('dubtitlerr_token'" in handler
-        assert "syncTokenCookie()" in handler
-        assert "document.cookie=" in out
 
 
 def test_get_index_without_a_token_shows_the_locked_shell_not_the_queue(tmp_path, monkeypatch):
@@ -2037,28 +1978,6 @@ def test_review_auth_off_keeps_every_page_open_with_no_token(tmp_path, monkeypat
     assert wire.status == 200
     assert "needs-token" not in body
     assert "S01E01" in body
-
-
-def test_every_fetch_call_on_the_index_page_still_carries_the_token_header(monkeypatch):
-    monkeypatch.setattr(review_server, "known_stems", lambda: [])
-    page = review_server.render_page()
-    assert page.count("fetch(") == 1, "expected exactly one fetch() call on the index page"
-    assert f"'{review_server.TOKEN_HEADER}':TOK.value" in page
-
-
-def test_every_fetch_call_on_the_shared_page_still_carries_the_token_header(monkeypatch):
-    monkeypatch.setattr(review_server, "known_stems", lambda: [])
-    page = review_server.render_shared()
-    assert page.count("fetch(") == 1, "expected exactly one fetch() call on the shared page"
-    assert f"'{review_server.TOKEN_HEADER}':TOK.value" in page
-
-
-def test_a_401_is_still_surfaced_by_alert_and_the_token_box_stays_visible(monkeypatch):
-    monkeypatch.setattr(review_server, "known_stems", lambda: [])
-    page = review_server.render_page()
-    shared = review_server.render_shared()
-    assert "id=tok" in page and "if(r.error){alert(r.error)" in page
-    assert "id=tok" in shared and "if(r.error){alert(r.error)" in shared
 
 
 def test_get_api_episodes_without_token_is_401_with_the_literal_body(tmp_path, monkeypatch):

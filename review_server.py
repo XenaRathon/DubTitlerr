@@ -847,6 +847,7 @@ def handle_apply(stem: str) -> dict:
 # a test (tests/test_review_login.py) compares this list with the code. Everything else under /api needs the token.
 OPEN_ROUTES = (("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login"), ("POST", "/api/setup"))
 _SMALL_JSON_ROUTES = ("/api/login", "/api/setup")
+_FORM_TYPES = ("text/plain", "application/x-www-form-urlencoded", "multipart/form-data")  # what a cross-site <form> can send
 LOGIN_MAX_BODY = 4096  # a username and a password; the generic POST cap (1 MiB) is far too generous for an unauthenticated route
 
 
@@ -1231,7 +1232,6 @@ def render_shared() -> str:
         '<option value="repeated" selected>most repeated first</option>'
         '<option value="risk">risk first</option>'
         "</select></label></p>"
-        "<p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
         f"<p><small>{len(rows)} line(s) that appear in more than one episode, grouped by show. "
         f"Deciding one here settles it everywhere and removes {saved} repeat question(s) from "
         "the episode queues. Grouped on the exact text pair, so the same sung line transcribed "
@@ -1251,14 +1251,8 @@ def render_shared() -> str:
         "try{const saved=localStorage.getItem(SHARED_SORT_KEY);if(['repeated','risk'].includes(saved))SS.value=saved}catch(e){}"
         "sortShared(SS.value);SS.addEventListener('change',()=>{sortShared(SS.value);"
         "try{localStorage.setItem(SHARED_SORT_KEY,SS.value)}catch(e){}});"
-        "const TOK=document.getElementById('tok');"
-        "function syncTokenCookie(){if(TOK.value){document.cookie="
-        "'dubtitlerr_token='+encodeURIComponent(TOK.value)+'; Path=/; SameSite=Strict'}"
-        "else{document.cookie='dubtitlerr_token=; Path=/; SameSite=Strict; Max-Age=0'}}"
-        "try{TOK.value=localStorage.getItem('dubtitlerr_token')||''}catch(e){}"
-        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}syncTokenCookie()});"
         "async function post(p,b){return (await fetch(p,{method:'POST',headers:{'Content-Type':'application/json',"
-        f"'{TOKEN_HEADER}':TOK.value}},"
+        "'X-DubTitlerr-Request':'1'},"
         "body:JSON.stringify(b)})).json()}"
         "function chosen(){return [...document.querySelectorAll('#list input[type=radio]:checked')]"
         ".map(r=>({id:r.name.slice(1),verdict:r.value,"
@@ -1456,25 +1450,16 @@ def render_page(stem: str = "") -> str:
     return (
         "<!doctype html><meta charset=utf-8><title>DubTitlerr review</title>"
         f"<style>{_CSS}</style>"
-        "<h1>Review</h1><p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
+        "<h1>Review</h1>"
         f"{controls}"
         f"<div id=list>{''.join(rows)}</div>"
         f"{apply_html}"
         "<script>"
         f"const STEM={_js(doc.get('stem', ''))};"
         f"{episode_sort_script}"
-        # Restored on load and saved on every edit. The server never renders the value --
-        # the browser holds it, which is where it already was the moment it was pasted.
-        # A cookie is set alongside localStorage, so the value survives a page navigation
-        # to /shared and the shared page's own token box reads the same source.
-        "const TOK=document.getElementById('tok');"
-        "function syncTokenCookie(){if(TOK.value){document.cookie="
-        "'dubtitlerr_token='+encodeURIComponent(TOK.value)+'; Path=/; SameSite=Strict'}"
-        "else{document.cookie='dubtitlerr_token=; Path=/; SameSite=Strict; Max-Age=0'}}"
-        "try{TOK.value=localStorage.getItem('dubtitlerr_token')||''}catch(e){}"
-        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}syncTokenCookie()});"
+        # The session cookie rides along by itself; the header proves the write came from this page, not a cross-site form.
         "async function post(p,b){return (await fetch(p,{method:'POST',headers:{'Content-Type':'application/json',"
-        f"'{TOKEN_HEADER}':TOK.value}},"
+        "'X-DubTitlerr-Request':'1'},"
         "body:JSON.stringify(b)})).json()}"
         # One request for the whole episode. Sequential per-verdict posts would each be a
         # read-modify-write of two whole files over the media mount, and concurrent ones
@@ -1540,19 +1525,17 @@ def render_locked(page_kind: str, setup: bool = False) -> str:
     page, but the episode/shared list is never built: handle_index()/handle_episode()/
     handle_shared() walk MERGE_ROOTS and the decision stores and return every stem and
     every card's original/proposed text, so the one thing this shell must not do is
-    call any of them. NO fetch() call either -- there is nothing to save from a page
-    that was never shown data. page_kind ("page" or "shared") picks only the <h1>; the
-    token box and its JS are identical between the two, so there is exactly one place
-    a cookie gets synced from this shell."""
+    call any of them. NO script and NO fetch() call either -- there is nothing to save from
+    a page that was never shown data. page_kind ("page" or "shared") picks only the <h1>;
+    ``setup`` points at first-run setup instead of sign-in."""
     h1 = "Shared lines" if page_kind == "shared" else "Review"
     back = '<p><a href="/">← all episodes</a></p>' if page_kind == "shared" else ""
     return (
         "<!doctype html><meta charset=utf-8><title>DubTitlerr review</title>"
         f"<style>{_CSS}</style>"
         f"<h1>{h1}</h1>"
-        "<p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
         f"{back}"
-        '<p id="needs-token">Paste the review token to load the queue.</p>'
+        '<p id="needs-token">Sign in to load the queue.</p>'
         "<p>"
         + (
             'No accounts exist yet: <a href="/review/setup">create the first admin</a>.'
@@ -1560,16 +1543,6 @@ def render_locked(page_kind: str, setup: bool = False) -> str:
             else 'Or <a href="/review/login">sign in with your account</a>.'
         )
         + "</p>"
-        "<script>"
-        "const TOK=document.getElementById('tok');"
-        "function syncTokenCookie(){if(TOK.value){document.cookie="
-        "'dubtitlerr_token='+encodeURIComponent(TOK.value)+'; Path=/; SameSite=Strict'}"
-        "else{document.cookie='dubtitlerr_token=; Path=/; SameSite=Strict; Max-Age=0'}}"
-        "try{TOK.value=localStorage.getItem('dubtitlerr_token')||''}catch(e){}"
-        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}"
-        "syncTokenCookie();clearTimeout(window.__tokReload);"
-        "window.__tokReload=setTimeout(()=>location.reload(),300)});"
-        "</script>"
     )
 
 
@@ -1711,7 +1684,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
                 return self._send(415, {"error": "application/json is required"})
         path_only = self.path.split("?", 1)[0]
-        if method == "POST" and path_only in review_webhooks.WEBHOOK_ROUTES:
+        is_webhook = method == "POST" and path_only in review_webhooks.WEBHOOK_ROUTES
+        if n > 0 and not is_webhook and self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() in _FORM_TYPES:
+            return self._send(415, {"error": "application/json is required"})
+        if is_webhook:
             # The webhook handler wants the RAW bytes: it checks its token first, then the 256 KiB cap, then parses,
             # so a bad JSON body is a 400 (not a silent {}) and an oversize one a 413. Read at most cap + 1 bytes.
             body = self.rfile.read(min(n, review_webhooks.BODY_CAP + 1))
@@ -1727,7 +1703,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             method,
             self.path,
             body,
-            self.headers.get(TOKEN_HEADER) or _cookie_token(self.headers),
+            self.headers.get(TOKEN_HEADER),
             client=self._client(),
             admin_token=self.headers.get(ADMIN_HEADER, ""),  # the header only: a cookie or query value is never consulted
             headers=dict(self.headers.items()),

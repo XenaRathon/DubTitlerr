@@ -577,6 +577,7 @@ def test_audit_operator_is_token_when_auth_on_and_anonymous_when_off(gdir, tmp_p
         "/api/glossary",
         {"show": SHOW, "op": "add", "key": "names", "term": "Sanji", "expected_version": _version(p)},
         None,
+        headers={"X-DubTitlerr-Request": "1"},
     )
     lines = [ln for ln in capsys.readouterr().out.splitlines() if "glossary edit" in ln]
     assert "operator=token" in lines[0] and "operator=anonymous" in lines[1]
