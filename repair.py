@@ -178,7 +178,8 @@ REPAIR_BACKEND = os.environ.get("REPAIR_BACKEND", "llamacpp")
 # documented default could not have worked for anybody -- including the maintainer, who was
 # passing this explicitly and had no reason to notice.
 LLAMACPP_URL = os.environ.get("REPAIR_LLAMACPP_URL", "http://127.0.0.1:8090/v1/chat/completions")
-MODEL_SECONDARY = os.environ.get("REPAIR_MODEL_SECONDARY", MODEL)
+# Empty means unset: the settings exporter writes REPAIR_MODEL_SECONDARY= when no Connection names a second model.
+MODEL_SECONDARY = os.environ.get("REPAIR_MODEL_SECONDARY") or MODEL
 OPENAI_URL = os.environ.get("REPAIR_OPENAI_URL", "")
 OPENAI_KEY_ENV = os.environ.get("REPAIR_OPENAI_KEY_ENV", "")
 OPENAI_MAX_TOKENS = env_int("REPAIR_MAX_TOKENS", 1024, lo=1)

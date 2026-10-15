@@ -12,7 +12,8 @@ Subcommands
   migrate
       the one-time import of runtime.env (settings_migrate.py); container_run.sh runs it first.
   export --scope gen|merge|server|container [--plain] [--boot] [--reset-to-init] [--secrets-only]
-      the stored settings of one scope (a merge pass also receives the gen keys, as it always has).
+      the stored settings of one scope (a merge pass also receives the gen keys, as it always has), plus what the stage
+      Connections stand for (settings_connections.expand).
       --plain       NAME=value lines, no `export`, stored values only (for tests and for reading). Never a secret.
       --boot        also `export DT_BOOT_<KEY>=<container value>` for each stored key the container already sets, so the server
                     can still report the pre-store value and the "overrides env" flag (container_run.sh passes it).
@@ -36,6 +37,7 @@ import os
 import shlex
 import sys
 
+import settings_connections as conns
 import settings_registry as reg
 import settings_store as store
 
@@ -48,7 +50,7 @@ USAGE = (
 
 def scope_names(scope):
     """Every environment name a process of this scope may be given, in a fixed order."""
-    return sorted(reg.keys_for_scope(scope))
+    return sorted(set(reg.keys_for_scope(scope)) | set(conns.extra_names(scope)))
 
 
 def export_assignments(environ=None, scope="merge", notes=None, boot=False, plain=False, secrets_only=False):
@@ -75,6 +77,14 @@ def export_assignments(environ=None, scope="merge", notes=None, boot=False, plai
         elif key in state.values and not secrets_only:
             out.append((key, reg.to_env(state.values[key])))
             stored.add(key)
+    if not secrets_only:
+        # A stage's Connection wins over a plain value for the same variable (an old runtime.env could carry REPAIR_MODEL). The
+        # per-stage key holders are secrets, so --plain and --boot leave them out like every other secret.
+        merged = dict(out)
+        holders = set(conns.extra_names(scope)) if (plain or boot) else set()
+        merged.update((n, v) for n, v in conns.expand(state, scope) if n not in holders)
+        out = list(merged.items())
+        stored |= set(merged)
     if boot and not secrets_only:
         out.extend(("DT_BOOT_" + key, environ[key]) for key in sorted(stored) if key in environ)
     return out, stored

@@ -1,22 +1,28 @@
-"""One-time migration from the pre-0.3.0 runtime.env (specs/webui-full-settings, S-4).
+"""One-time migration from the pre-0.3.0 runtime.env and REPAIR_PROFILES (specs/webui-full-settings, S-4).
 
 On the first start with no `runtime.env.migrated` next to the old runtime file:
   * the keys of an existing runtime.env become stored values (REQUIRE_ENG, ACQUIRE_APPLY, REPAIR_MODEL, VERIFY_BACKEND,
     VERIFY_DECISION_MODEL) and runtime.env is renamed to runtime.env.migrated;
-  * with no runtime.env, an empty runtime.env.migrated is written, so the migration runs exactly once.
+  * with no runtime.env, an empty runtime.env.migrated is written, so the migration runs exactly once;
+  * every REPAIR_PROFILES entry becomes a Connection (with the key found in the environment variable its key_env named, if any;
+    its model_secondary becomes the Connection's second model), and a REPAIR_PROFILE chosen in runtime.env becomes the repair
+    stage. This import has its own marker, CONFIG_DIR/profiles.migrated, so it does not depend on the runtime.env one; the
+    REPAIR_PROFILE choice is read from runtime.env, or from runtime.env.migrated once the first step has renamed it.
 The old exporter applied VERIFY_BACKEND and VERIFY_DECISION_MODEL only when the operator had opted in through
 RUNTIME_VERIFY_BACKENDS (default llamacpp,ollama) and RUNTIME_DECISION_MODELS (default none), so the same filter runs here: a
 value it refused is skipped with a log note and never imported. After the migration those lists are never read again.
 
 Idempotent: the marker is written last, and a rerun after a crash imports only what the store does not already hold."""
 
+import json
 import os
 import re
 
+import settings_connections as conns
 import settings_registry as reg
 import settings_store as store
 
-OLD_KEYS = ("REPAIR_MODEL", "VERIFY_BACKEND", "VERIFY_DECISION_MODEL", "REQUIRE_ENG", "ACQUIRE_APPLY")
+OLD_KEYS = ("REPAIR_PROFILE", "REPAIR_MODEL", "VERIFY_BACKEND", "VERIFY_DECISION_MODEL", "REQUIRE_ENG", "ACQUIRE_APPLY")
 VERIFY_BACKENDS = ("llamacpp", "ollama", "openai", "decision")  # what the 0.2.x exporter knew
 _LINE = re.compile(r"([A-Z][A-Z_]*)=(.*)")
 MAX_BYTES = 64 * 1024
@@ -66,46 +72,112 @@ def _flag(text):
     return {"1": True, "0": False}.get(text)
 
 
+def import_profiles(environ, notes):
+    """[(connection, key)] from REPAIR_PROFILES. Every profile or key that cannot be imported leaves a note; nothing raises."""
+    raw = (environ.get("REPAIR_PROFILES") or "").strip()
+    if not raw:
+        return []
+    try:
+        table = json.loads(raw)
+    except ValueError:
+        notes.append("REPAIR_PROFILES is not valid JSON; no connections imported")
+        return []
+    if not isinstance(table, dict):
+        notes.append("REPAIR_PROFILES is not an object; no connections imported")
+        return []
+    out = []
+    for name, entry in table.items():
+        if not isinstance(entry, dict):
+            notes.append(f"profile {name!r} skipped: not an object")
+            continue
+        item = {
+            "name": name,
+            "kind": entry.get("backend"),
+            "url": entry.get("url"),
+            "model": "",
+            "extra_body": entry.get("extra_body") or {},
+        }
+        if entry.get("model_secondary"):
+            item["model_secondary"] = entry["model_secondary"]
+        conn, problems = conns.validate_connection(item)
+        if problems:
+            notes.append(f"profile {name!r} skipped: " + ", ".join(f"{f} {m}" for f, m in sorted(problems.items())))
+            continue
+        key_env = entry.get("key_env")
+        key = ""
+        if isinstance(key_env, str) and key_env:
+            value = (environ.get(key_env) or "").strip()
+            if not value:
+                notes.append(f"profile {name!r}: key not imported, {key_env} is not set; enter the key on the Connections page")
+            elif conns.key_problem(conn, value):
+                notes.append(f"profile {name!r}: key from {key_env} not imported ({conns.key_problem(conn, value)})")
+            else:
+                key = value
+        out.append((conn, key))
+    return out
+
+
 def migrate(environ=None):
     """Run the migration. Returns the notes (empty when it did nothing or everything was clean). Never raises."""
     environ = os.environ if environ is None else environ
     notes = []
     old = runtime_path(environ)
     marker = old + ".migrated"
-    if os.path.exists(marker):
+    profiles_marker = os.path.join(store.config_dir(environ), "profiles.migrated")
+    runtime_done, profiles_done = os.path.exists(marker), os.path.exists(profiles_marker)
+    if runtime_done and profiles_done:
         return notes
-    runtime = parse_runtime(old, notes)
+    # The runtime values are imported once; the REPAIR_PROFILE choice is still read after the file was renamed.
+    runtime = parse_runtime(marker if runtime_done else old, notes)
     if runtime is None:
-        return notes
-    runtime = _allowed_only(runtime, environ, notes)
+        if not runtime_done:
+            return notes  # retried at the next start
+        runtime = {}
+    values = {} if runtime_done else _allowed_only(runtime, environ, notes)
     try:
         with store.locked(environ) as got:
             if not got:
                 return notes + ["settings busy; migration retried at the next start"]
             state = store.load(environ)
-            if state.error or state.secrets_error:
-                return notes + [state.error or state.secrets_error]
+            if state.error:  # secrets are never written here, so an unusable secrets.json must not hold the import back
+                return notes + [state.error]
             imported = []
             for key in ("REQUIRE_ENG", "ACQUIRE_APPLY"):
-                if key in runtime and key not in state.values and _flag(runtime[key]) is not None:
-                    state.values[key] = _flag(runtime[key])
+                if key in values and key not in state.values and _flag(values[key]) is not None:
+                    state.values[key] = _flag(values[key])
                     imported.append(key)
             for key in ("REPAIR_MODEL", "VERIFY_BACKEND", "VERIFY_DECISION_MODEL"):
-                if key in runtime and key not in state.values:
+                if key in values and key not in state.values:
                     try:
-                        state.values[key] = reg.validate(key, runtime[key])
+                        state.values[key] = reg.validate(key, values[key])
                         imported.append(key)
                     except reg.Invalid:
                         notes.append(f"runtime.env {key} skipped: not a valid value")
+            if not profiles_done:
+                names = {c["name"] for c in state.connections}
+                for conn, key in import_profiles(environ, notes):
+                    if conn["name"] not in names:
+                        state.connections.append(conn)
+                        names.add(conn["name"])
+                        imported.append(f"connection:{conn['name']}")
+                        if key:
+                            state.conn_keys[conn["name"]] = key
+                chosen = runtime.get("REPAIR_PROFILE")
+                if chosen and chosen not in names:
+                    notes.append(f"REPAIR_PROFILE {chosen!r} is not an imported profile; the repair stage is left unset")
+                elif chosen and "repair" not in state.stages:
+                    state.stages["repair"] = chosen
+                    imported.append("stages")
             if imported:
                 store.save(state, environ)
-                store.audit("migration from runtime.env", imported)
-            if os.path.exists(old):
-                os.replace(old, marker)
-            else:
-                store.atomic_write(marker, b"", 0o664)
+                store.audit("migration from runtime.env", imported, [f"connection:{n}.api_key" for n in state.conn_keys])
+            if not runtime_done:
+                if os.path.exists(old):
+                    os.replace(old, marker)
+                else:
+                    store.atomic_write(marker, b"", 0o664)
+            if not profiles_done:
+                store.atomic_write(profiles_marker, b"", 0o664)
     except OSError as e:
         notes.append(f"migration failed ({e.__class__.__name__}); retried at the next start")
-    for note in notes:
-        store._log(f"settings migration: {note}")
-    return notes
+    return notes  # the caller logs them: review_settings_write.py prints each once

@@ -25,7 +25,15 @@ WATCHED = (
 STUB_REPAIR = """\
 import json, os, sys
 keys = %r
-open(os.environ["DUMP"], "w").write(json.dumps({k: os.environ.get(k) for k in keys}))
+seen = {k: os.environ.get(k) for k in keys}
+if os.environ.get("CALL_BACKEND"):
+    # Load the REAL repair module (the stub shadows it on sys.path) and make one hosted call, as a repair run would.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("real_repair", os.path.join(os.environ["REPO"], "repair.py"))
+    real = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(real)
+    seen["answer"] = real.llm_openai("hello", None)
+open(os.environ["DUMP"], "w").write(json.dumps(seen))
 """
 
 
@@ -51,11 +59,13 @@ def harness(tmp_path):
         p.write_text("#!/bin/sh\nexit 0\n")
         p.chmod(p.stat().st_mode | stat.S_IEXEC)
 
-    def run(extra_env=None, values=None, secrets=None, raw=None, app_dir=None):
+    def run(extra_env=None, values=None, secrets=None, raw=None, app_dir=None, connections=None):
         if raw is not None:
             (config / "settings.json").write_text(raw)
         elif values is not None:
             (config / "settings.json").write_text(json.dumps({"version": 1, "rev": 1, "values": values}))
+        if connections is not None:
+            (config / "settings.json").write_text(json.dumps({"version": 1, "rev": 1, "values": values or {}, **connections}))
         if secrets is not None:
             (config / "secrets.json").write_text(json.dumps({"version": 1, "values": secrets, "connections": {}}))
             os.chmod(config / "secrets.json", 0o600)
@@ -69,6 +79,7 @@ def harness(tmp_path):
             APP_DIR=str(app_dir or app),
             CONFIG_DIR=str(config),
             DUMP=str(dump),
+            REPO=REPO,
             MARK="untouched",
         )
         env.update(extra_env or {})
@@ -223,3 +234,62 @@ def test_the_merge_report_is_0640_and_holds_neither_a_secret_nor_url_user_info(h
     assert "hunter22" not in text and "reporter" not in text and "tok-merge-0123456789" not in text and "PLEX_TOKEN" not in text
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o640
 
+
+# --- [S-8] a Connection picked for the repair stage is what the next pass uses, key included --------------------------------
+
+
+class _Backend:
+    """A one-route OpenAI-compatible server on loopback that records the Authorization header and the request path."""
+
+    def __init__(self):
+        import http.server
+        import threading
+
+        outer = self
+        self.seen = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                outer.seen.append((self.path, self.headers.get("Authorization")))
+                body = json.dumps({"choices": [{"message": {"content": "fixed line"}, "finish_reason": "stop"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1/chat/completions"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+
+
+def test_the_repair_stage_connection_and_its_key_reach_the_backend_in_the_next_pass(harness):
+    backend = _Backend()
+    key = "sk-merge-pass-key-0123456789"
+    try:
+        conn = {
+            "name": "fixture",
+            "kind": "openai",
+            "url": backend.url,
+            "model": "m",
+            "extra_body": {},
+            "timeout_connect": 10.0,
+            "timeout_read": 30.0,
+        }
+        (harness.config / "secrets.json").write_text(
+            json.dumps({"version": 1, "values": {}, "connections": {"fixture": {"api_key": key}}})
+        )
+        os.chmod(harness.config / "secrets.json", 0o600)
+        seen, res = harness({"CALL_BACKEND": "1"}, connections={"connections": [conn], "stages": {"repair": "fixture"}})
+        assert seen["answer"] == "fixed line", res.stdout + res.stderr
+        assert backend.seen[-1] == ("/v1/chat/completions", f"Bearer {key}")
+        assert key not in (harness.config / "merge-effective.env").read_text()
+    finally:
+        backend.close()

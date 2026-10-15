@@ -16,7 +16,7 @@ def _setup_app(tmp_path, include_exporter=True):
         shutil.copy(REPO / "review_settings_write.py", app / "review_settings_write.py")
         if (REPO / "glossary_lock.py").exists():
             shutil.copy(REPO / "glossary_lock.py", app / "glossary_lock.py")
-        for module in ("settings_registry.py", "settings_store.py"):
+        for module in ("settings_registry.py", "settings_store.py", "settings_connections.py", "decision_client.py"):
             shutil.copy(REPO / module, app / module)
     (app / "mine_glossary.py").write_text("")
     return app
@@ -439,3 +439,50 @@ def test_a_stored_show_order_file_is_ignored_because_the_path_is_read_only_in_th
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert [r["show"] for r in _runs(runs)] == ["Show1", "Show2"]
+
+
+def test_a_verify_connection_and_its_key_reach_the_next_show_but_the_repair_endpoint_does_not(tmp_path):
+    app = _setup_app(tmp_path)
+    config = tmp_path / "config"
+    config.mkdir()
+    url = "https://api.example.test/v1/chat/completions"
+    hosted = {
+        "name": "hosted",
+        "kind": "openai",
+        "url": url,
+        "model": "m",
+        "extra_body": {},
+        "timeout_connect": 10.0,
+        "timeout_read": 120.0,
+    }
+    stages = {"verify": "hosted", "repair": "hosted"}
+    settings = {"version": 1, "rev": 1, "values": {}, "connections": [hosted], "stages": stages}
+    (config / "settings.json").write_text(json.dumps(settings))
+    (config / "secrets.json").write_text(
+        json.dumps({"version": 1, "values": {}, "connections": {"hosted": {"api_key": "sk-gen-key-0123456789"}}})
+    )
+    os.chmod(config / "secrets.json", 0o600)
+    runs = tmp_path / "runs.jsonl"
+    keys = (
+        "VERIFY_BACKEND",
+        "VERIFY_OPENAI_URL",
+        "VERIFY_OPENAI_KEY_ENV",
+        "DT_CONN_KEY_VERIFY",
+        "VERIFY_MODEL",
+        "REPAIR_BACKEND",
+        "DT_CONN_KEY_REPAIR",
+        "REPAIR_MODEL",
+    )
+    _recording_generate(app, runs, config / "settings.json", "pass", keys=keys)
+    proc = subprocess.run(
+        ["sh", str(REPO / "gen_loop.sh")], env=_loop_env(tmp_path, app, config), capture_output=True, text=True, timeout=30
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    seen = _runs(runs)[0]
+    assert seen["VERIFY_BACKEND"] == "openai" and seen["VERIFY_OPENAI_URL"] == url and seen["VERIFY_MODEL"] == "m"
+    assert seen["VERIFY_OPENAI_KEY_ENV"] == "DT_CONN_KEY_VERIFY" and seen["DT_CONN_KEY_VERIFY"] == "sk-gen-key-0123456789"
+    assert seen["REPAIR_BACKEND"] is None and seen["DT_CONN_KEY_REPAIR"] is None, (
+        "the generate loop never receives the repair endpoint"
+    )
+    assert seen["REPAIR_MODEL"] == "m", "the repair model alone reaches it, as REPAIR_MODEL always did"
+    assert "sk-gen-key" not in (config / "effective.env").read_text()

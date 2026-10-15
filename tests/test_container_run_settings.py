@@ -73,7 +73,14 @@ def run_server_function(tmp_path, secrets, env=None):
 
     app = tmp_path / "app"
     app.mkdir()
-    for name in ("review_settings_write.py", "settings_registry.py", "settings_store.py", "glossary_lock.py", "common.py"):
+    for name in (
+        "review_settings_write.py",
+        "settings_registry.py",
+        "settings_store.py",
+        "settings_connections.py",
+        "glossary_lock.py",
+        "common.py",
+    ):
         shutil.copy(os.path.join(REPO, name), app / name)
     dump = tmp_path / "server-env.json"
     stub = "import json, os\nenv = {k: v for k, v in os.environ.items() if 'WEBHOOK_TOKEN' in k}\n"

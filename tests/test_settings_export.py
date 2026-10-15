@@ -191,3 +191,49 @@ def test_secrets_only_cannot_be_combined_with_plain(cfg):
     save(cfg, {}, {"WEBHOOK_TOKEN": "hook-stored"})
     res = run(cfg, "export", "--scope", "server", "--secrets-only", "--plain")
     assert res.returncode == 2 and res.stdout == ""
+
+
+def save_connection(cfg, key="sk-export-key-0123456789", stages=None):
+    env = {"CONFIG_DIR": str(cfg)}
+    state = store.load(env)
+    state.connections = [
+        {
+            "name": "cloud",
+            "kind": "openai",
+            "url": "https://api.example.test/v1/chat/completions",
+            "model": "gpt-x",
+            "model_secondary": "gpt-y",
+            "extra_body": {},
+            "timeout_connect": 10.0,
+            "timeout_read": 30.0,
+        }
+    ]
+    state.stages = {"repair": "cloud", "verify": "cloud"} if stages is None else stages
+    state.conn_keys = {"cloud": key} if key else {}
+    store.save(state, env)
+
+
+def test_stage_connections_are_exported_per_scope_and_win_over_a_plain_value(cfg):
+    save_connection(cfg)
+    merge = run(cfg, "export", "--scope", "merge").stdout.splitlines()
+    assert "export REPAIR_BACKEND=openai" in merge and "export REPAIR_MODEL=gpt-x" in merge
+    assert "export REPAIR_MODEL_SECONDARY=gpt-y" in merge and "export DT_CONN_KEY_REPAIR=sk-export-key-0123456789" in merge
+    gen = run(cfg, "export", "--scope", "gen").stdout.splitlines()
+    assert "export VERIFY_BACKEND=openai" in gen and "export DT_CONN_KEY_VERIFY=sk-export-key-0123456789" in gen
+    assert not any("REPAIR_BACKEND" in line or "DT_CONN_KEY_REPAIR" in line for line in gen)
+
+
+def test_plain_and_boot_leave_the_connection_key_holders_out_like_every_secret(cfg):
+    save_connection(cfg)
+    for flag in ("--plain", "--boot"):
+        res = run(cfg, "export", "--scope", "merge", flag)
+        assert not any(line.lstrip("export ").startswith("DT_CONN_KEY") for line in res.stdout.splitlines()), flag
+        assert "sk-export-key" not in res.stdout, flag
+        assert "REPAIR_BACKEND=openai" in res.stdout, "the non-secret part is still exported"
+
+
+def test_a_cleared_stage_is_restored_to_the_container_value_by_reset_to_init(cfg):
+    save_connection(cfg, stages={})
+    out = run(cfg, "export", "--scope", "merge", "--reset-to-init").stdout
+    assert "else unset DT_CONN_KEY_REPAIR; fi" in out and "else unset REPAIR_BACKEND; fi" in out
+    assert not any(line.startswith("export REPAIR_BACKEND=") for line in out.splitlines())

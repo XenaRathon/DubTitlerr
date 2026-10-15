@@ -138,3 +138,39 @@ def test_a_saved_token_appears_in_no_response_log_or_report(env, tmp_path, capsy
         assert TOKEN not in text
         assert CONN_SECRET not in text
         assert URL_PW not in text
+
+
+def test_a_connection_key_reaches_the_pipeline_env_but_no_report_or_plain_export(env, tmp_path):
+    key = "sk-leakcheck-0123456789abcdef"
+    st = store.load(env)
+    st.connections = [
+        {
+            "name": "cloud",
+            "kind": "openai",
+            "url": "https://api.example.test/v1/chat/completions",
+            "model": "gpt-x",
+            "extra_body": {},
+            "timeout_connect": 10.0,
+            "timeout_read": 30.0,
+        }
+    ]
+    st.stages = {"repair": "cloud", "verify": "cloud"}
+    st.conn_keys = {"cloud": key}
+    store.save(st, env)
+    reports = []
+    for scope in ("gen", "merge"):
+        exported = exported_environment(scope, tmp_path)  # --plain: what a report is built from
+        assert key not in exported.values()
+        path = tmp_path / f"{scope}-connection-effective.env"
+        review_requests.write_effective_env(str(path), env=exported)
+        reports.append(path.read_text())
+    assert any("REPAIR_BACKEND=openai" in r for r in reports), "the report is not empty: the secret was filtered, not missing"
+    shell = subprocess.run(
+        [sys.executable, os.path.join(REPO, "review_settings_write.py"), "export", "--scope", "merge"],
+        env={**os.environ, "CONFIG_DIR": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    ).stdout
+    assert f"DT_CONN_KEY_REPAIR={key}" in shell, "the pipeline itself does receive the key through the environment"
+    assert all(key not in r for r in reports)
