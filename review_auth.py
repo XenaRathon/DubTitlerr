@@ -775,6 +775,11 @@ def handle_setup(body) -> tuple:
     """POST /api/setup: create the first admin, only while no account exists. The lock makes a second browser lose with 409."""
     body = body if isinstance(body, dict) else {}
     try:
+        if read_users():  # answered before any hashing: this route is public and unthrottled, so a refusal must be cheap
+            return 409, {"error": "already set up"}
+    except Unreadable as e:
+        return e.status, {"error": e.message}
+    try:
         row = create_user(body.get("username"), "admin", body.get("password"), only_if_empty=True)
     except AuthError as e:
         return e.status, {"error": e.message}
@@ -795,13 +800,18 @@ def import_env_admin(env=None) -> bool:
     except Unreadable:
         log("review server: REVIEW_USERNAME not imported: the accounts file is unreadable")
         return False
+    source = "REVIEW_PASSWORD"
     if pw_file:
         try:
             with open(pw_file, "rb") as f:
-                raw = f.read(4096).decode("utf-8", "replace")
+                raw = f.read(4096).decode("utf-8")
         except OSError as e:
             log(f"review server: REVIEW_PASSWORD_FILE unreadable ({e.__class__.__name__}); nothing imported, use the setup page")
             return False
+        except UnicodeDecodeError:
+            log("review server: REVIEW_PASSWORD_FILE is not valid UTF-8, nothing imported; use the setup page")
+            return False
+        source = "REVIEW_PASSWORD_FILE"
         password = raw[:-2] if raw.endswith("\r\n") else raw[:-1] if raw.endswith("\n") else raw
     if not user or not password:
         log("review server: nothing imported: REVIEW_USERNAME needs a non-empty REVIEW_PASSWORD (or REVIEW_PASSWORD_FILE)")
@@ -817,7 +827,9 @@ def import_env_admin(env=None) -> bool:
     except AuthError as e:
         log(f"review server: REVIEW_USERNAME not imported ({e.message})")
         return False
-    log("review server: REVIEW_USERNAME imported as the first admin; REVIEW_PASSWORD is not read again once accounts exist")
+    log(
+        f"review server: REVIEW_USERNAME imported as the first admin (password from {source}); not read again once accounts exist"
+    )
     return True
 
 
@@ -906,3 +918,13 @@ def handle_logout(principal, headers=None) -> tuple:
 
 def handle_me(principal) -> tuple:
     return 200, {"username": principal.name or "anonymous", "role": principal.role}
+
+
+def handle_apikey(method: str, path: str) -> tuple:
+    """GET /api/apikey and POST /api/apikey/reset. The key is shown here only; the role table makes both admin only."""
+    try:
+        if method == "POST" and path == "/api/apikey/reset":
+            return 200, {"key": reset_api_key()}
+        return 200, {"key": api_key()}
+    except AuthError as e:
+        return e.status, {"error": e.message}

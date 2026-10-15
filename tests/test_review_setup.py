@@ -188,3 +188,45 @@ def test_setup_accepts_only_small_json_over_http(env):
         srv.shutdown()
         srv.server_close()
         thread.join(timeout=5)
+
+
+def test_setup_after_accounts_exist_is_409_without_hashing_anything(env, monkeypatch):
+    rs.route("POST", "/api/setup", FIRST, None)
+    calls, real = [], review_auth.hashlib.scrypt
+    monkeypatch.setattr(review_auth.hashlib, "scrypt", lambda *a, **k: calls.append(1) or real(*a, **k))
+    assert rs.route("POST", "/api/setup", {"username": "other", "password": "another-long-pass"}, None) == (
+        409,
+        {"error": "already set up"},
+    )
+    assert calls == [], "an unauthenticated POST must not cost a scrypt once setup is over"
+
+
+def test_setup_with_an_unreadable_accounts_file_is_503_without_hashing(env, monkeypatch):
+    (env / "config").mkdir()
+    (env / "config" / "users.json").write_text("{not json")
+    calls, real = [], review_auth.hashlib.scrypt
+    monkeypatch.setattr(review_auth.hashlib, "scrypt", lambda *a, **k: calls.append(1) or real(*a, **k))
+    status, payload = rs.route("POST", "/api/setup", FIRST, None)
+    assert status == 503 and "unreadable" in payload["error"] and calls == []
+
+
+def test_a_password_file_that_is_not_utf8_imports_nothing_and_leaves_setup_open(env, capsys):
+    f = env / "pw"
+    f.write_bytes(b"s3cret-\xff-password\n")
+    assert review_auth.import_env_admin({"REVIEW_USERNAME": "reviewer", "REVIEW_PASSWORD_FILE": str(f)}) is False
+    assert review_auth.setup_required() is True
+    out = capsys.readouterr().out
+    assert "not valid UTF-8, nothing imported" in out and "s3cret" not in out
+
+
+def test_the_import_log_line_says_which_source_supplied_the_password_never_its_value(env, capsys):
+    f = env / "pw"
+    f.write_text("file-password-1\n")
+    both = {"REVIEW_USERNAME": "a", "REVIEW_PASSWORD_FILE": str(f), "REVIEW_PASSWORD": "env-password-1"}
+    assert review_auth.import_env_admin(both)
+    out = capsys.readouterr().out
+    assert "password from REVIEW_PASSWORD_FILE" in out and "file-password-1" not in out and "env-password-1" not in out
+    (env / "config" / "users.json").unlink()
+    assert review_auth.import_env_admin({"REVIEW_USERNAME": "a", "REVIEW_PASSWORD": "env-password-1"})
+    out = capsys.readouterr().out
+    assert "password from REVIEW_PASSWORD" in out and "REVIEW_PASSWORD_FILE" not in out and "env-password-1" not in out

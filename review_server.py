@@ -1094,6 +1094,8 @@ def _route(method: str, path: str, bare: str, body: dict, decision, client: str,
             if refusal:
                 return refusal
         return (400, {"error": "invalid JSON"}) if body is None else admin_handler(body)
+    if bare in ("/api/apikey", "/api/apikey/reset") and method in ("GET", "POST"):
+        return review_auth.handle_apikey(method, bare)
     if body is None:  # only the strict JSON routes produce None (see Handler._with_body)
         return 400, {"error": "invalid JSON"}
     if method == "GET" and path == "/api/audio":
