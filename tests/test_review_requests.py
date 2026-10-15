@@ -596,8 +596,9 @@ def test_write_effective_env_and_cli(tmp_path, capsys):
     # L3: REPAIR_EXTRA_BODY is explicitly skipped
     assert "REPAIR_EXTRA_BODY" not in content
     assert "Bearer" not in content
-    assert "REPAIR_USERINFO" not in content
-    assert "pass@" not in content
+    # the user info is stripped, the URL stays: the report is for display
+    assert "REPAIR_USERINFO=https://host/v1\n" in content
+    assert "user:pass" not in content
     assert "REPAIR_OPENAI_API_KEY" not in content
     assert "sk-secret-1234567890abcdef" not in content
     assert "VERIFY_OTHER" not in content

@@ -208,3 +208,18 @@ def test_a_hostile_key_in_settings_json_creates_no_file_through_merge_pass(harne
     for place in (root, harness.config, harness.app, harness.tmp, harness.tmp / "fakebin"):
         assert not (place / "PWNED").exists()
     assert not os.path.exists("PWNED")
+
+
+def test_the_merge_report_is_0640_and_holds_neither_a_secret_nor_url_user_info(harness):
+    seen, res = harness(
+        {"REPAIR_LLAMACPP_URL": "http://reporter:hunter22@gpu.lan:8090/v1", "PLEX_URL": "http://plex.lan:32400"},
+        secrets={"PLEX_TOKEN": "tok-merge-0123456789"},
+        values={"WHISPER_BEAM_SIZE": 5},
+    )
+    assert seen is not None, res.stdout + res.stderr
+    path = harness.config / "merge-effective.env"
+    text = path.read_text()
+    assert "REPAIR_LLAMACPP_URL=http://gpu.lan:8090/v1\n" in text and "PLEX_URL=http://plex.lan:32400\n" in text
+    assert "hunter22" not in text and "reporter" not in text and "tok-merge-0123456789" not in text and "PLEX_TOKEN" not in text
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o640
+

@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+import urllib.parse
 import uuid
 import zoneinfo
 from typing import Any
@@ -812,7 +813,28 @@ EFFECTIVE_ENV_ALLOW_EXACT = frozenset((
     "ACQUIRE_APPLY",
 ))
 EFFECTIVE_ENV_SKIP_SUBSTRINGS = ("KEY", "TOKEN", "PASSWORD", "SECRET")
-_SECRET_VALUE_RE = re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{16,}|\bBearer\b|://[^/\s:@]+:[^/\s:@]+@")
+_SECRET_VALUE_RE = re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{16,}|\bBearer\b")
+_MIN_SECRET_LEN = 8  # shorter values are too common to match against other lines
+
+
+def _strip_url_userinfo(val: str) -> str:
+    """Strip user info by rebuilding netloc from urlsplit().hostname and port.
+
+    A raw @ in the password must not leak a fragment.
+    """
+    if "://" not in val:
+        return val
+    try:
+        parts = urllib.parse.urlsplit(val)
+    except ValueError:
+        return val
+    if not parts.scheme or not parts.netloc or not parts.hostname:
+        return val
+    host = parts.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    netloc = host + (f":{parts.port}" if parts.port else "")
+    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 def _reportable(key: str) -> bool:
@@ -825,13 +847,31 @@ def _reportable(key: str) -> bool:
     return entry is not None and not entry["secret"] and bool({"gen", "merge"} & set(entry["scope"]))
 
 
+def _known_secret_values(source_env: dict) -> list:
+    """The values of every secret the registry knows (and the per-stage key holders), so no other line can repeat one."""
+    try:
+        import settings_registry
+    except ImportError:
+        registry = {}
+    else:
+        registry = settings_registry.REGISTRY
+    out = []
+    for k, v in source_env.items():
+        secret = (k in registry and registry[k]["secret"]) or k.startswith("DT_CONN_KEY_")
+        if secret and len(str(v)) >= _MIN_SECRET_LEN:
+            out.append(str(v))
+    return out
+
+
 def write_effective_env(out_file: str | None = None, env: dict | None = None) -> str:
-    """Write effective.env atomically with allowed variables and secret masking."""
+    """Write the effective-env report atomically (mode 0640): allowed variables only, no secret, no repeated secret value, and
+    the user info of every URL stripped (the report is for display, so a URL keeps its host, port and path)."""
     target = out_file or os.environ.get(
         "EFFECTIVE_ENV_FILE",
         os.path.join(os.environ.get("CONFIG_DIR", "/config"), "effective.env"),
     )
     source_env = env if env is not None else os.environ
+    secret_values = _known_secret_values(source_env)
 
     lines = []
     for k in sorted(source_env.keys()):
@@ -843,8 +883,8 @@ def write_effective_env(out_file: str | None = None, env: dict | None = None) ->
             continue
         if any(s in k for s in EFFECTIVE_ENV_SKIP_SUBSTRINGS):
             continue
-        v = str(source_env[k])
-        if _SECRET_VALUE_RE.search(v):
+        v = _strip_url_userinfo(str(source_env[k]))
+        if _SECRET_VALUE_RE.search(v) or any(secret in v for secret in secret_values):
             continue
         val = v.splitlines()[0] if v else ""
         lines.append(f"{k}={val}\n")
@@ -852,7 +892,9 @@ def write_effective_env(out_file: str | None = None, env: dict | None = None) ->
     parent = os.path.dirname(os.path.abspath(target))
     os.makedirs(parent, exist_ok=True)
     tmp = target + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        os.fchmod(f.fileno(), 0o640)  # umask-proof: the host user reads the report, other users do not
         f.writelines(lines)
     os.replace(tmp, target)
     return target
