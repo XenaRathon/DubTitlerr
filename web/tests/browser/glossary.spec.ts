@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { expectNoAxeViolations, reset, signIn } from './helpers';
+import { API_KEY, expectNoAxeViolations, reset, signIn } from './helpers';
 
 async function openGlossary(page: Page) {
   await page.goto('/review#/glossary');
@@ -265,4 +265,65 @@ test.describe('glossary form keeps the operator in place', () => {
     await expect(page.getByRole('cell', { name: 'Zoro', exact: true })).toHaveCount(1);
     expect(errors).toEqual([]);
   });
+});
+
+test('an admin tests and saves the wiki override, and the page shows the saved value', async ({ page }) => {
+  let wiki = '';
+  let posted: Record<string, unknown> | null = null;
+  const detail = () => ({ show: 'Neon Harbor', version: 'v1', names: [], phrases: [], hard_fixes: {}, wiki });
+  await page.route(/\/api\/glossary\?show=/, (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(detail()) }),
+  );
+  await page.route('**/api/glossary/wiki-test', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        api: 'https://yugioh.fandom.com/api.php',
+        sitename: 'Yu-Gi-Oh! Wiki',
+      }),
+    }),
+  );
+  await page.route('**/api/glossary', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    posted = route.request().postDataJSON();
+    wiki = String(posted?.wiki ?? '');
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, version: 'v2', reapply_hint: true }),
+    });
+  });
+  await openGlossary(page);
+  const field = page.getByLabel('Wiki', { exact: true });
+  await expect(field).toHaveValue('');
+  await expect(
+    page.getByText('Fandom or MediaWiki site URL, e.g. https://yugioh.fandom.com. Empty = auto-detect.'),
+  ).toBeVisible();
+  await field.fill('https://yugioh.fandom.com');
+  await page.getByRole('button', { name: 'Test wiki' }).click();
+  await expect(page.getByText('Yu-Gi-Oh! Wiki')).toBeVisible();
+  await page.getByLabel('New term').fill('Half typed');
+  await page.getByRole('button', { name: 'Save wiki' }).click();
+  await expect(page.locator('.notice.success').first()).toBeVisible();
+  expect(posted).toEqual({ show: 'Neon Harbor', expected_version: 'v1', wiki: 'https://yugioh.fandom.com' });
+  await expect(field).toHaveValue('https://yugioh.fandom.com');
+  await expect(page.getByLabel('New term')).toHaveValue('Half typed'); // a wiki save keeps the term form
+});
+
+test('a non-admin sees the wiki as text with no Test or Save', async ({ page, request }) => {
+  await reset(request);
+  const made = await request.post('/api/users', {
+    headers: { 'X-Api-Key': API_KEY },
+    data: { username: 'viewer', password: 'viewer password!', role: 'user' },
+  });
+  expect([201, 409]).toContain(made.status());
+  await page.goto('/review#/glossary');
+  await signIn(page, 'viewer', 'viewer password!');
+  await expect(page.getByLabel('New term')).toBeVisible();
+  await expect(page.getByText('Wiki', { exact: true })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Wiki', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Test wiki' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Save wiki' })).toHaveCount(0);
 });

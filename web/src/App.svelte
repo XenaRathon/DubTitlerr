@@ -696,7 +696,7 @@
               : 'The accounts file cannot be read. An administrator can recover with: python3 review_users.py reset-admin <name>')}
         />
       {:else if view === 'glossary'}
-        <Glossary {api} bind:dirty={glossaryDirty} />
+        <Glossary {api} bind:dirty={glossaryDirty} role={account.role} />
       {:else if view === 'dashboard'}
         <Dashboard {api} />
       {:else if view === 'runs'}

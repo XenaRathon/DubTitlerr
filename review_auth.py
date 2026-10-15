@@ -618,6 +618,7 @@ register_routes(
         ("GET", "/api/me"): "user",
         ("PUT", "/api/me/password"): "user",
         ("POST", "/api/logout"): "user",
+        ("POST", "/api/glossary/wiki-test"): "admin",
         ("POST", "/api/requests"): "admin",
         ("PUT", "/api/schedule"): "admin",
         ("PUT", "/api/settings"): "admin",

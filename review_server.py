@@ -275,6 +275,7 @@ _JSON_REQUIRED = frozenset(
         ("POST", "/api/settings/test"),
         ("POST", "/api/settings/reset"),
         ("POST", "/api/glossary"),
+        ("POST", "/api/glossary/wiki-test"),
         ("POST", "/api/users"),
         ("PUT", "/api/me/password"),
     )
@@ -293,6 +294,7 @@ def _anime_root():
 ADMIN_ROUTES[("POST", "/api/requests")] = lambda body: review_requests.handle(
     "POST", "/api/requests", body, anime_root=_anime_root()
 )
+ADMIN_ROUTES[("POST", "/api/glossary/wiki-test")] = review_glossary.wiki_test
 ADMIN_ROUTES[("PUT", "/api/schedule")] = lambda body: review_requests.handle(
     "PUT", "/api/schedule", body, anime_root=_anime_root()
 )
@@ -1133,7 +1135,9 @@ def _route(method: str, path: str, bare: str, body: dict, decision, client: str,
         snapshot = _STEMS_CACHE
         return review_status.handle(method, path, body, stems_cache=snapshot, open_entries=open_entries, now=time.monotonic())
     if path == "/api/glossary" and method in ("GET", "POST"):
-        return review_glossary.handle(method, path, body, operator="token" if auth_required() else "anonymous")
+        p = decision.principal
+        who = f"{p.kind}:{p.name}" if p and p.name else ("token" if auth_required() else "anonymous")
+        return review_glossary.handle(method, path, body, operator=who, role=decision.role or "user")
     return 404, {"error": "no such route"}
 
 

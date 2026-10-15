@@ -102,7 +102,7 @@ def test_a_user_is_refused_before_the_body_is_judged(env):
 
 
 def test_a_user_can_give_verdicts_edit_glossaries_and_read(env, monkeypatch):
-    monkeypatch.setattr(rs.review_glossary, "handle", lambda method, path, body, operator="x": (200, {"ok": True}))
+    monkeypatch.setattr(rs.review_glossary, "handle", lambda method, path, body, operator="x", role="user": (200, {"ok": True}))
     user = session("alice")
     assert rs.route_full("POST", "/api/decide", {"stem": "nope", "index": 0, "verdict": "reject"}, None, headers=user)[0] == 200
     assert rs.route_full("POST", "/api/glossary", {"show": "s"}, None, headers=user)[:2] == (200, {"ok": True})

@@ -65,8 +65,8 @@ def test_http_is_refused_without_the_test_switch_and_allowed_with_it(urlopen, mo
         gv._http_json("http://x.fandom.com/api.php?action=query")
     assert urlopen == []
     monkeypatch.setenv("WIKI_ALLOW_HTTP", "1")
-    assert gv._http_json("http://127.0.0.1:1/api.php?x=1") == {"query": {}}
-    assert urlopen == ["http://127.0.0.1:1/api.php?x=1"]
+    assert gv._http_json("http://wiki.example.com/api.php?x=1") == {"query": {}}
+    assert urlopen == ["http://wiki.example.com/api.php?x=1"]
 
 
 def test_https_in_any_case_is_fine(urlopen):
@@ -99,7 +99,7 @@ def test_normalize_api_rejects_what_is_not_http_or_https(url):
 def test_normalize_api_still_reduces_good_urls():
     assert gv.normalize_api("https://onepiece.fandom.com/wiki/Spandam") == "https://onepiece.fandom.com/api.php"
     assert gv.normalize_api("HTTPS://onepiece.fandom.com/wiki/Spandam") == "https://onepiece.fandom.com/api.php"
-    assert gv.normalize_api("http://127.0.0.1:8000/anything") == "http://127.0.0.1:8000/api.php"
+    assert gv.normalize_api("http://wiki.example.com:8000/anything") == "http://wiki.example.com:8000/api.php"
 
 
 @pytest.mark.parametrize("override", ["file:///etc/passwd", "ftp://x/api.php", "javascript:1", "FILE:///x"])
@@ -141,7 +141,7 @@ def test_the_redirect_handler_follows_an_allowed_target(monkeypatch):
     monkeypatch.delenv("WIKI_ALLOW_HTTP", raising=False)
     assert _redirect("https://y.fandom.com/api.php") is not None
     monkeypatch.setenv("WIKI_ALLOW_HTTP", "1")
-    assert _redirect("http://127.0.0.1:9/api.php") is not None
+    assert _redirect("http://wiki.example.com:9/api.php") is not None
 
 
 def test_a_real_redirect_to_ftp_is_never_attempted(monkeypatch):
@@ -181,6 +181,7 @@ def test_a_real_redirect_to_ftp_is_never_attempted(monkeypatch):
 
     threading.Thread(target=serve, daemon=True).start()
     monkeypatch.setenv("WIKI_ALLOW_HTTP", "1")
+    monkeypatch.setattr(gv, "_internal_host", lambda host: "")  # this fake lives on loopback, which is otherwise refused
     try:
         with pytest.raises(ValueError):
             gv._http_json(f"http://127.0.0.1:{a.getsockname()[1]}/api.php")

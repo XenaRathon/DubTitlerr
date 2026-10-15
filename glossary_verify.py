@@ -23,9 +23,11 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import difflib
+import ipaddress
 import json
 import os
 import re
+import socket
 import sys
 import time
 import urllib.parse
@@ -811,7 +813,31 @@ def _wiki_url_problem(url: str, schemes: tuple = ("https",)) -> str:
         return "no host"
     if "@" in parts.netloc:
         return "credentials in the url"
-    return ""
+    return _internal_host(host)
+
+
+def _internal_host(host: str) -> str:
+    """Why ``host`` is an internal address, or "". Literal names and IPs only (no DNS lookup): localhost and any private,
+    loopback, link-local, reserved, multicast or unspecified IP, so a wiki value or a redirect cannot aim the fetch at the
+    machine or its network."""
+    host = host.strip("[]").rstrip(".").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return "internal host"
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is None and re.fullmatch(r"(0x[0-9a-f]*|[0-9]+)(\.(0x[0-9a-f]*|[0-9]+))*", host):
+        # Legacy IPv4 spellings the resolver accepts (2130706433, 127.1, 0177.0.0.1, 0x7f000001): parse them as it would.
+        try:
+            ip = ipaddress.IPv4Address(socket.inet_aton(host))
+        except OSError:
+            return "internal host"  # all digits but not an address, so not a public name either
+    if ip is None:
+        return ""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return "" if ip.is_global and not ip.is_multicast else "internal host"
 
 
 def normalize_api(url: str) -> str | None:

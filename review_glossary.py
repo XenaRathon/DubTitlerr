@@ -1,6 +1,6 @@
 """The glossary editor backend: GET/POST /api/glossary (specs/webui-glossary-editor/spec.md).
 
-Edits only ``names``, ``phrases`` and ``hard_fixes`` of a deployed glossary; every other key (the
+Edits only ``names``, ``phrases``, ``hard_fixes`` and the ``wiki`` override of a deployed glossary; every other key (the
 machine-owned verified/flagged/acquired/known/_curated, any underscore key, initial_prompt, ...) is
 loaded and written back untouched. ``show`` is resolved only against the server-side list of
 ``*.json`` in decisions.GLOSSARY_DIR, never used as a path, and no media tree is ever walked.
@@ -21,12 +21,14 @@ import unicodedata
 
 import decisions
 import glossary_lock
+import glossary_verify
 from common import log
 
 EDITABLE = ("names", "phrases", "hard_fixes")
 OPS = ("add", "update", "delete")
 KEEP_BACKUPS = 20
 MAX_BODY = 64 * 1024
+MAX_WIKI = 300
 _LIMITS = {"names": 80, "phrases": 120, "hard_fixes": 120}
 # Sidecars that live next to a glossary and are not glossaries themselves.
 _SIDECAR = re.compile(r"\.(acquire-cache|lastrun|journal)\.json$|\.review-pending|\.bak-")
@@ -117,6 +119,7 @@ def read_show(show):
         "names": list(cfg.get("names") or []),
         "phrases": list(cfg.get("phrases") or []),
         "hard_fixes": dict(cfg.get("hard_fixes") or {}),
+        "wiki": cfg["wiki"] if isinstance(cfg.get("wiki"), str) else "",
     }
 
 
@@ -134,6 +137,40 @@ def _text(value, key, what):
     if key == "phrases" and " " not in value:
         raise _Refused(400, "a phrase needs a space; single words belong in names")
     return value
+
+
+def _wiki(value):
+    """The trimmed wiki override as typed ("" clears it). The URL rules are glossary_verify.normalize_api's, not copied."""
+    if not isinstance(value, str):
+        raise _Refused(400, "wiki must be a string")
+    value = unicodedata.normalize("NFC", value.strip())
+    if len(value) > MAX_WIKI:
+        raise _Refused(400, f"wiki must be at most {MAX_WIKI} characters")
+    if any(unicodedata.category(c) in _BAD_CATEGORIES for c in value):
+        raise _Refused(400, "wiki must not contain control or invisible characters")
+    if value and (
+        glossary_verify.normalize_api(value) is None or glossary_verify._wiki_url_problem(value, glossary_verify._wiki_schemes())
+    ):
+        raise _Refused(
+            400,
+            "wiki must be an https URL (http only with WIKI_ALLOW_HTTP=1) with a public host and no credentials, e.g. https://yugioh.fandom.com",
+        )
+    return value
+
+
+def wiki_test(body):
+    """(status, payload) for POST /api/glossary/wiki-test: one siteinfo GET through glossary_verify's own fetch."""
+    url = body.get("url") if isinstance(body, dict) else None
+    api = glossary_verify.normalize_api(url) if isinstance(url, str) and url.strip() else None
+    if api is None:
+        return 400, {"error": "url must be an https URL (http only with WIKI_ALLOW_HTTP=1) with a public host and no credentials"}
+    try:
+        sitename = glossary_verify._http_json(api + "?action=query&meta=siteinfo&format=json")["query"]["general"]["sitename"]
+    except KeyError:
+        return 200, {"ok": False, "api": api, "error": "no MediaWiki siteinfo in the response"}
+    except Exception as exc:  # any fetch failure is a result for the operator, not a server error
+        return 200, {"ok": False, "api": api, "error": (str(exc) or type(exc).__name__)[:200]}
+    return 200, {"ok": True, "api": api, "sitename": sitename}
 
 
 def _nfc(value):
@@ -253,10 +290,12 @@ def _write(path, new_bytes):
     return os.path.basename(backup)
 
 
-def write_show(body, operator):
+def write_show(body, operator, role="user"):
     try:
         if len(json.dumps(body, ensure_ascii=False).encode("utf-8", "surrogatepass")) > MAX_BODY:
             raise _Refused(413, "body too large")
+        if "wiki" in body and role != "admin":  # the route is user-level for term edits; the wiki steers fetches
+            raise _Refused(403, "admin only")
         show = _check_show(body.get("show"))
         expected = body.get("expected_version")
         if not isinstance(expected, str) or not expected:
@@ -268,7 +307,17 @@ def write_show(body, operator):
             raw, cfg = _load(show)  # re-read under the lock: the version check and the write see one file
             if _version(raw) != expected:
                 return 409, {"error": "version conflict", "version": _version(raw)}
-            new, term, value = apply_op(cfg, body)
+            new, term, value = cfg, None, None
+            if "op" in body or "wiki" not in body:
+                new, term, value = apply_op(cfg, body)
+            wiki = None
+            if "wiki" in body:
+                wiki = _wiki(body["wiki"])
+                new = dict(new)
+                if wiki:
+                    new["wiki"] = wiki
+                else:
+                    new.pop("wiki", None)
             new_bytes = _dump(raw, new)
             try:
                 backup = _write(path, new_bytes)
@@ -277,15 +326,21 @@ def write_show(body, operator):
     except _Refused as r:
         return r.reply
     at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    shown = "" if value is None else f" value={json.dumps(value, ensure_ascii=False)}"
-    log(
-        f"glossary edit: at={at} operator={operator} show={json.dumps(show)} op={body['op']} "
-        f"key={body['key']} term={json.dumps(term, ensure_ascii=False)}{shown} backup={backup}"
-    )
+    if term is not None:
+        shown = "" if value is None else f" value={json.dumps(value, ensure_ascii=False)}"
+        log(
+            f"glossary edit: at={at} operator={operator} show={json.dumps(show)} op={body['op']} "
+            f"key={body['key']} term={json.dumps(term, ensure_ascii=False)}{shown} backup={backup}"
+        )
+    if wiki is not None:
+        log(
+            f"glossary edit: at={at} operator={operator} show={json.dumps(show)} op={'set' if wiki else 'delete'} "
+            f"key=wiki value={json.dumps(wiki, ensure_ascii=False)} backup={backup}"
+        )
     return 200, {"ok": True, "show": show, "version": _version(new_bytes), "backup": backup, "reapply_hint": True}
 
 
-def handle(method, path, body, operator="anonymous"):
+def handle(method, path, body, operator="anonymous", role="user"):
     """(status, payload) for /api/glossary. Authentication is the caller's: route() has already checked the token."""
     if path != "/api/glossary":
         return 404, {"error": "no such route"}
@@ -297,5 +352,5 @@ def handle(method, path, body, operator="anonymous"):
     if method == "POST":
         if not isinstance(body, dict):
             return 400, {"error": "a JSON object is required"}
-        return write_show(body, operator)
+        return write_show(body, operator, role)
     return 404, {"error": "no such route"}

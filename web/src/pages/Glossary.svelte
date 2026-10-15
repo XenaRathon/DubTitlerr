@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { ApiError } from '../lib/api.js';
   import { buildOp, describeError, filterTerms, isDirty, sortTerms, validateTerm } from '../lib/glossary.js';
+  import { isAdmin } from '../lib/roles.js';
   import { Search } from '@lucide/svelte';
 
   type Key = 'names' | 'phrases' | 'hard_fixes';
@@ -11,7 +12,8 @@
   let {
     api,
     dirty = $bindable(false),
-  }: { api: (path: string, body?: object) => Promise<any>; dirty?: boolean } = $props();
+    role = 'user',
+  }: { api: (path: string, body?: object) => Promise<any>; dirty?: boolean; role?: string } = $props();
 
   const TABS = ['names', 'phrases', 'hard_fixes'] as const;
   const TAB_LABELS: Record<Key, string> = { names: 'Names', phrases: 'Phrases', hard_fixes: 'Hard fixes' };
@@ -22,6 +24,10 @@
   let names = $state<string[]>([]);
   let phrases = $state<string[]>([]);
   let hardFixes = $state<Record<string, string>>({});
+  let wiki = $state('');
+  let wikiDraft = $state('');
+  let wikiResult = $state<{ ok: boolean; text: string } | null>(null);
+  let wikiBusy = $state(false);
   let tab = $state<Key>('names');
   let query = $state('');
   let status = $state('');
@@ -37,7 +43,9 @@
   let searchEl = $state<HTMLInputElement>();
   let newTermEl = $state<HTMLInputElement>();
   $effect(() => {
-    dirty = isDirty({ newTerm, newValue, editTerm, editDraft, editValue, saved: hardFixes });
+    dirty =
+      isDirty({ newTerm, newValue, editTerm, editDraft, editValue, saved: hardFixes }) ||
+      (isAdmin(role) && wikiDraft.trim() !== wiki);
   });
 
   const pairRows = $derived(
@@ -66,12 +74,16 @@
         names: string[];
         phrases: string[];
         hard_fixes: Record<string, string>;
+        wiki?: string;
       };
       version = data.version;
       names = data.names;
       phrases = data.phrases;
       hardFixes = data.hard_fixes;
+      wiki = data.wiki ?? '';
       if (clearForm) {
+        wikiDraft = wiki;
+        wikiResult = null;
         editTerm = null;
         newTerm = '';
         newValue = '';
@@ -121,6 +133,60 @@
       // The button that was just pressed is disabled while saving, which drops focus to <body>: put it back.
       await tick();
       (op === 'add' ? newTermEl : searchEl)?.focus();
+    }
+  }
+
+  async function testWiki() {
+    if (wikiBusy) return;
+    wikiBusy = true;
+    wikiResult = null;
+    try {
+      const res = (await api('/api/glossary/wiki-test', { url: wikiDraft.trim() })) as {
+        ok: boolean;
+        sitename?: string;
+        api?: string;
+        error?: string;
+      };
+      wikiResult = res.ok
+        ? { ok: true, text: `Reachable: ${res.sitename} (${res.api})` }
+        : { ok: false, text: `Not reachable: ${res.error} (${res.api})` };
+    } catch (exc) {
+      const msg =
+        exc instanceof ApiError
+          ? describeError(exc.status, exc.payload as { error?: string })
+          : exc instanceof Error
+            ? exc.message
+            : 'Request failed. Please try again.';
+      wikiResult = { ok: false, text: msg };
+    } finally {
+      wikiBusy = false;
+    }
+  }
+
+  async function saveWiki() {
+    if (saving || wikiBusy) return;
+    errorMsg = '';
+    status = '';
+    note = '';
+    saving = true;
+    try {
+      const res = (await api('/api/glossary', {
+        show,
+        expected_version: version,
+        wiki: wikiDraft.trim(),
+      })) as { reapply_hint?: boolean };
+      await loadDetail({ quiet: true, clearForm: false }); // a half-typed term must survive a wiki save
+      if (res.reapply_hint) note = 'Saved. Applies to episodes processed from now on.';
+      else status = 'Saved.';
+    } catch (exc) {
+      if (exc instanceof ApiError) {
+        if (exc.status === 409) await loadDetail({ quiet: true, clearForm: false });
+        errorMsg = describeError(exc.status, exc.payload as { error?: string });
+      } else {
+        errorMsg = exc instanceof Error ? exc.message : 'Request failed. Please try again.';
+      }
+    } finally {
+      saving = false;
     }
   }
 
@@ -216,6 +282,44 @@
     {#if loading}
       <p class="page-sub">Loading glossary…</p>
     {:else if show}
+      <div class="glossary-wiki">
+        {#if isAdmin(role)}
+          <form
+            onsubmit={(e) => {
+              e.preventDefault();
+              void saveWiki();
+            }}
+          >
+            <label for="glossary-wiki">Wiki</label>
+            <input
+              id="glossary-wiki"
+              bind:value={wikiDraft}
+              maxlength={300}
+              placeholder="https://yugioh.fandom.com"
+              autocomplete="off"
+              spellcheck="false"
+              aria-describedby="glossary-wiki-help"
+            />
+            <button
+              class="secondary"
+              type="button"
+              disabled={wikiBusy || saving || !wikiDraft.trim()}
+              onclick={() => void testWiki()}>Test wiki</button
+            >
+            <button class="primary" type="submit" disabled={saving || wikiBusy || wikiDraft.trim() === wiki}
+              >Save wiki</button
+            >
+          </form>
+        {:else}
+          <p><span class="wiki-label">Wiki</span> {wiki || 'auto-detect'}</p>
+        {/if}
+        <p id="glossary-wiki-help" class="page-sub">
+          Fandom or MediaWiki site URL, e.g. https://yugioh.fandom.com. Empty = auto-detect.
+        </p>
+        {#if wikiResult}<p class="notice {wikiResult.ok ? 'success' : 'failure'}" role="status">
+            {wikiResult.text}
+          </p>{/if}
+      </div>
       <form
         class="glossary-add"
         onsubmit={(e) => {
@@ -400,6 +504,23 @@
     align-items: center;
     flex-wrap: wrap;
     margin-bottom: 16px;
+  }
+  .glossary-wiki {
+    margin-bottom: 16px;
+  }
+  .glossary-wiki form {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .glossary-wiki label,
+  .wiki-label {
+    color: var(--muted);
+  }
+  .glossary-wiki input {
+    flex: 1 1 20rem;
+    max-width: 32rem;
   }
   .glossary-add > label {
     color: var(--muted);
