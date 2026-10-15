@@ -435,3 +435,70 @@ def sessions() -> SessionStore:
         if path not in _STORES:
             _STORES[path] = SessionStore(path)
         return _STORES[path]
+
+
+def _no_token() -> str:
+    return ""
+
+
+_TOKEN_FALLBACK = _no_token
+
+
+def set_token_fallback(fn) -> None:
+    """review_server hands in resolve_token: the 0.2.x review token is the API key until a key file exists."""
+    global _TOKEN_FALLBACK
+    _TOKEN_FALLBACK = fn
+
+
+def apikey_path() -> str:
+    return os.path.join(config_dir(), "apikey")
+
+
+def _read_key_file() -> str:
+    try:
+        with open(apikey_path(), encoding="utf-8") as f:
+            return f.read(512).strip()
+    except OSError:
+        return ""
+
+
+def api_key() -> str:
+    return _read_key_file() or _TOKEN_FALLBACK()
+
+
+def key_matches(presented) -> bool:
+    expected = api_key()
+    if not expected or not isinstance(presented, str) or not presented:
+        return False
+    return secrets.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
+
+
+def _warn_if_env_token_differs() -> None:
+    """The key file outranks REVIEW_TOKEN once it exists, so a token rotated in the compose file would silently not apply.
+    Said once per start, without either value."""
+    env, stored = os.environ.get("REVIEW_TOKEN", ""), _read_key_file()
+    if env and stored and not secrets.compare_digest(env.encode("utf-8"), stored.encode("utf-8")):
+        log("review server: REVIEW_TOKEN differs from the stored API key and is ignored; reset the key in Settings, Security")
+
+
+def init_api_key() -> None:
+    """On upgrade the existing review token becomes the API key, so scripts that hold it keep working (S-6)."""
+    if _read_key_file():
+        _warn_if_env_token_differs()
+        return
+    key = _TOKEN_FALLBACK() or secrets.token_urlsafe(32)
+    try:
+        with _locked(apikey_path()):
+            if not _read_key_file():
+                _write_atomic(apikey_path(), key + "\n")
+        log(f"review server: API key stored in {apikey_path()} (0600)")
+    except AuthError as e:
+        log(f"review server: could not store the API key ({e.message}); the review token keeps working as the key")
+
+
+def reset_api_key() -> str:
+    key = secrets.token_urlsafe(32)
+    with _locked(apikey_path()):
+        _write_atomic(apikey_path(), key + "\n")
+    log("review server: API key reset")
+    return key
