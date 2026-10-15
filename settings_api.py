@@ -8,9 +8,11 @@ import errno
 import os
 import re
 import urllib.parse
+import urllib.request
 
 import review_auth
 import review_settings
+import settings_connections as conns
 import settings_registry as reg
 import settings_store as store
 
@@ -123,6 +125,11 @@ def _redact(key, out):
     return out
 
 
+def public_connection(conn, state):
+    """A Connection as the page sees it: every field, and whether a key is stored. Never the key."""
+    return {**{f: conn.get(f) for f in conns.FIELDS}, "api_key": {"set": conn["name"] in state.conn_keys}}
+
+
 def get_settings(environ=None):
     environ = _env(environ)
     state = store.load(environ)
@@ -131,7 +138,7 @@ def get_settings(environ=None):
     values = {key: _redact(key, _resolve(key, state, environ, reports, settings_mtime)) for key in reg.REGISTRY}
     return 200, {
         "values": values,
-        "connections": [],
+        "connections": [public_connection(c, state) for c in state.connections],
         "stages": dict(state.stages),
         "restart_pending": any(values[k]["pending"] for k, e in reg.REGISTRY.items() if e["applies"] == "restart"),
         "revision": state.rev,
@@ -249,17 +256,94 @@ def _commit(environ, who, build, touches_secrets=False, prepare=None):
         return _write_failure(e)
 
 
+def _validate_connections(items):
+    """(clean connections, {name: key action}, errors). A key action is ("set", key) or ("clear", None); absent, "" or null mean
+    no change."""
+    clean, actions, errors, seen = [], {}, {}, set()
+    if not isinstance(items, list):
+        return [], {}, {"connections": "must be a list"}
+    for index, item in enumerate(items):
+        conn, problems = conns.validate_connection(item)
+        label = (
+            item.get("name") if isinstance(item, dict) and isinstance(item.get("name"), str) and item.get("name") else str(index)
+        )
+        for field, message in problems.items():
+            errors[f"connections.{label}.{field}"] = message
+        if problems:
+            continue
+        if conn["name"] in seen:
+            errors[f"connections.{label}.name"] = "is already used by another connection"
+            continue
+        seen.add(conn["name"])
+        clean.append(conn)
+        raw = item.get("api_key")
+        if raw == {"clear": True}:
+            actions[conn["name"]] = ("clear", None)
+        elif isinstance(raw, str) and raw:
+            why = conns.key_problem(conn, raw)
+            if why:
+                errors[f"connections.{label}.api_key"] = why
+            else:
+                actions[conn["name"]] = ("set", raw)
+        elif raw not in (None, ""):
+            errors[f"connections.{label}.api_key"] = 'must be text, or {"clear": true}'
+    return clean, actions, errors
+
+
+def _apply_connections(state, clean, actions):
+    """Replace the Connection list. A changed URL or kind drops the stored key unless a key arrives in the same save, so a stolen
+    session cannot point a saved key at another host. Returns (changed labels, secret labels, url map)."""
+    old = {c["name"]: c for c in state.connections}
+    changed, secret_keys, urls = [], [], {}
+
+    def touch(name, key_changed=False):
+        label = f"connection:{name}"
+        if label not in changed:
+            changed.append(label)
+        if key_changed:
+            secret_keys.append(f"{label}.api_key")
+
+    for conn in clean:
+        name, prior, action = conn["name"], old.get(conn["name"]), actions.get(conn["name"])
+        if prior != conn:
+            touch(name)
+        if prior is None or prior["url"] != conn["url"]:
+            urls[f"connection {name}"] = conn["url"]
+        moved = prior is not None and (prior["url"] != conn["url"] or prior["kind"] != conn["kind"])
+        if (moved and action is None) or action == ("clear", None):
+            if state.conn_keys.pop(name, None) is not None:
+                touch(name, True)
+        elif action and action[0] == "set" and state.conn_keys.get(name) != action[1]:
+            state.conn_keys[name] = action[1]
+            touch(name, True)
+    for name in sorted(set(old) - {c["name"] for c in clean}):
+        touch(name, state.conn_keys.pop(name, None) is not None)
+    state.connections = clean
+    return changed, secret_keys, urls
+
+
 def put_settings(body, environ=None, who="admin"):
     environ = _env(environ)
     if not isinstance(body, dict) or not isinstance(body.get("values", {}), dict):
-        return 400, {"errors": {"body": 'send {"values": {KEY: value}, "revision": N}'}}
-    extra = sorted(set(body) - {"values", "revision"})
+        return 400, {"errors": {"body": 'send {"values": {KEY: value}}'}}
+    extra = sorted(set(body) - {"values", "revision", "connections", "stages"})
     if extra:
         return 400, {"errors": {"body": f"unknown field: {extra[0]}"}}
     if type(body.get("revision")) is not int:
         return 400, {"errors": {"revision": "send the revision you loaded, as an integer"}}
     plan, errors = _validate_values(body.get("values", {}))
-    touches_secrets = any(action.startswith("secret") for action, _ in plan.values())
+    clean, actions = None, {}
+    if "connections" in body:
+        clean, actions, problems = _validate_connections(body["connections"])
+        errors.update(problems)
+    stages_in = body.get("stages")
+    if stages_in is not None and not (
+        isinstance(stages_in, dict)
+        and all(isinstance(k, str) and (v is None or isinstance(v, str)) for k, v in stages_in.items())
+    ):
+        errors["stages"] = "must map a stage to a connection name, or null"
+        stages_in = None
+    touches_secrets = any(action.startswith("secret") for action, _ in plan.values()) or bool(actions)
     if touches_secrets and not _secrets_writable():
         return 403, {"error": SECRETS_NEED_LOGIN}
     if errors:
@@ -271,6 +355,22 @@ def put_settings(body, environ=None, who="admin"):
             return 409, {"error": "settings changed since you loaded them", "current": current}
         changed, secret_keys = _apply(state, plan)
         urls = {k: state.values[k] for k in changed if k in state.values and reg.REGISTRY[k]["type"] == "url" and state.values[k]}
+        if clean is not None:
+            more, more_secrets, more_urls = _apply_connections(state, clean, actions)
+            changed, secret_keys, urls = changed + more, secret_keys + more_secrets, {**urls, **more_urls}
+        if stages_in is not None:
+            before = dict(state.stages)
+            for stage, name in stages_in.items():
+                if name:
+                    state.stages[stage] = name
+                else:
+                    state.stages.pop(stage, None)
+            if state.stages != before:
+                changed.append("stages")
+        if clean is not None or stages_in is not None:
+            problems = {f"stages.{k}": v for k, v in conns.validate_stages(state.stages, state.connections).items()}
+            if problems:
+                return 400, {"errors": problems}
         return changed, secret_keys, urls
 
     return _commit(environ, who, build, touches_secrets)
@@ -344,13 +444,46 @@ def reset_settings(body, environ=None, who="admin"):
     return status, payload
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _no_redirect_opener():
+    return urllib.request.build_opener(_NoRedirectHandler).open
+
+
+def test_connection(name, environ=None, opener=None):
+    """Probe one saved Connection with its own timeouts and key. Always 200 with {ok, latency_ms, error}; the key is read here
+    and travels in the Authorization header only."""
+    state = store.load(_env(environ))
+    conn = next((c for c in state.connections if c["name"] == name), None) if isinstance(name, str) else None
+    if conn is None:
+        return 400, {"error": "unknown connection"}
+    key = state.conn_keys.get(conn["name"], "")
+    if conn["kind"] == "openai":
+        if not key:
+            return 200, {"ok": False, "latency_ms": 0, "error": "API key not configured"}
+        url, headers = conns.models_url(conn["url"]), {"Authorization": f"Bearer {key}"}
+    else:
+        url, headers = conn["url"], {}
+    target_url, extra_headers, problem = conns.check_test_target(url)
+    if problem:
+        return 200, {"ok": False, "latency_ms": 0, "error": problem}
+    headers = {**headers, **extra_headers}
+    if opener is None:
+        opener = _no_redirect_opener()
+    result = review_settings.probe(target_url, headers, key, conn["timeout_connect"], opener)
+    return 200, {**result, "error": store.scrub(result["error"], state)}
+
+
 # --- dispatch -------------------------------------------------------------------------------------------------------------
 
 
 def handle(method, path, body=None, environ=None, who="admin", opener=None):
     route = (path or "").split("?", 1)[0]
     if method == "GET" and route == "/api/settings/schema":
-        return 200, reg.schema()
+        return 200, {**reg.schema(), "connections": conns.rules()}
     if method == "GET" and route == "/api/settings":
         return get_settings(environ)
     if method == "PUT" and route == "/api/settings":
@@ -358,5 +491,7 @@ def handle(method, path, body=None, environ=None, who="admin", opener=None):
     if method == "POST" and route == "/api/settings/reset":
         return reset_settings(body, environ, who)
     if method == "POST" and route == "/api/settings/test":
+        if isinstance(body, dict) and "connection" in body:
+            return test_connection(body["connection"], environ, opener)
         return review_settings.handle(method, route, body, environ=environ, opener=opener)
     return 404, {"error": "no such route"}

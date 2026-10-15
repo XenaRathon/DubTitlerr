@@ -261,3 +261,12 @@ def test_locked_keeps_errno_when_lock_cannot_be_opened(env, monkeypatch):
         with store.locked(env):
             pass
     assert exc.value.errno == 28
+
+
+def test_scrub_removes_every_stored_secret_from_text_that_came_from_outside():
+    state = store.State()
+    state.secret_values = {"PLEX_TOKEN": SECRET}
+    state.conn_keys = {"cloud": "sk-conn-key-12345678"}
+    assert store.scrub(f"bad {SECRET} and sk-conn-key-12345678 and short", state) == "bad [redacted] and [redacted] and short"
+    state.conn_keys = {"cloud": "short"}
+    assert store.scrub("a short key stays", state) == "a short key stays", "too short to match safely"

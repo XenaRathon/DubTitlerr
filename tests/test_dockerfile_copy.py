@@ -135,13 +135,17 @@ def test_container_run_starts_the_review_server_as_a_background_loop():
     # Executable lines only. Matching the whole file would be satisfied by the word
     # appearing in a COMMENT -- the guard would pass while nothing started the server.
     code = [ln.strip() for ln in body.splitlines() if ln.strip() and not ln.strip().startswith("#")]
-    launches = [i for i, ln in enumerate(code) if "review_server.py" in ln]
+    # The server is started through run_review_server, which exports the stored server secrets and then execs the server.
+    # The function body runs in a backgrounded subshell, so its exec replaces that subshell, never PID 1.
+    launches = [i for i, ln in enumerate(code) if ln == "run_review_server &"]
     gen = [i for i, ln in enumerate(code) if "gen_loop.sh" in ln]
 
     assert launches, "the server has to actually be started, not just mentioned"
-    assert code[launches[0]].startswith("python3 ") and code[launches[0]].endswith("&"), "a background process"
+    assert 'exec python3 "$APP_DIR/review_server.py"' in code, "the function ends by becoming the server"
     assert gen and code[gen[0]].endswith("&"), "the generate loop is started in the background and supervised"
-    assert not any(ln.startswith("exec ") for ln in code), "exec would drop the SIGTERM trap (soft stop)"
+    assert [ln for ln in code if ln.startswith("exec ")] == ['exec python3 "$APP_DIR/review_server.py"'], (
+        "exec would drop the SIGTERM trap (soft stop) anywhere but in the backgrounded server function"
+    )
     assert 'wait "$gen_pid"' in code, "the supervisor waits on the generate loop, not the review server"
     assert launches[0] < gen[0], "started BEFORE the supervisor's wait, or it never starts at all"
 
@@ -152,7 +156,7 @@ def test_the_review_server_loop_cannot_end_the_container():
     so a non-zero exit is retried rather than propagating."""
     body = _container_run()
     code = [ln.strip() for ln in body.splitlines() if ln.strip() and not ln.strip().startswith("#")]
-    at = next(i for i, ln in enumerate(code) if "review_server.py" in ln)
+    at = next(i for i, ln in enumerate(code) if ln == "run_review_server &")
     before, after = code[:at], code[at:]
     loop = max(i for i, ln in enumerate(before) if ln.startswith("while"))
 

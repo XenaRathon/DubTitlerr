@@ -268,6 +268,14 @@ def save(state, environ=None):
     state.rev = new_rev
 
 
+def scrub(text, state):
+    """``text`` with every stored secret (and any connection key) replaced, for an error string that came from outside."""
+    for secret in [*state.secret_values.values(), *state.conn_keys.values()]:
+        if len(secret) >= 8:
+            text = text.replace(secret, "[redacted]")
+    return text
+
+
 def audit(who, keys, secret_keys=(), urls=None):
     """One log line per save: who, the keys, the NAMES of secrets touched (never a value), and each changed URL without
     user info, query or fragment."""
