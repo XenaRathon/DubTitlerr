@@ -456,23 +456,62 @@ def apikey_path() -> str:
     return os.path.join(config_dir(), "apikey")
 
 
-def _read_key_file() -> str:
+def _retired_path() -> str:
+    return os.path.join(config_dir(), "apikey.retired")
+
+
+_KEY_STORED: set = set()  # key-file paths this process has seen stored; the marker file remembers it for later processes
+_KEY_ERR_LOGGED: set = set()
+
+
+def _key_file() -> tuple:
+    """("ok", key) | ("missing", "") | ("error", ""). Only a missing file may fall back to the old review token; an
+    unreadable or empty one fails closed with one log line, so a permissions slip can never revive a retired token."""
+    path = apikey_path()
     try:
-        with open(apikey_path(), encoding="utf-8") as f:
-            return f.read(512).strip()
-    except OSError:
-        return ""
+        with open(path, encoding="utf-8") as f:
+            key = f.read().strip()
+    except FileNotFoundError:
+        return "missing", ""
+    except (OSError, ValueError) as e:
+        if path not in _KEY_ERR_LOGGED:
+            _KEY_ERR_LOGGED.add(path)
+            log(f"review server: API key file unreadable ({type(e).__name__}); no key is accepted until it is fixed or reset")
+        return "error", ""
+    if not key:
+        if path not in _KEY_ERR_LOGGED:
+            _KEY_ERR_LOGGED.add(path)
+            log("review server: API key file unreadable (empty); no key is accepted until it is fixed or reset")
+        return "error", ""
+    _KEY_ERR_LOGGED.discard(path)
+    _KEY_STORED.add(path)
+    return "ok", key
+
+
+def _read_key_file() -> str:
+    return _key_file()[1]
+
+
+def _legacy_allowed() -> bool:
+    """The 0.2.x review token may stand in as the key only until a key file has ever been stored."""
+    return apikey_path() not in _KEY_STORED and not os.path.exists(_retired_path())
 
 
 def api_key() -> str:
-    return _read_key_file() or _TOKEN_FALLBACK()
+    state, key = _key_file()
+    if state == "ok":
+        return key
+    return _TOKEN_FALLBACK() if state == "missing" and _legacy_allowed() else ""
 
 
 def key_matches(presented) -> bool:
     expected = api_key()
     if not expected or not isinstance(presented, str) or not presented:
         return False
-    return secrets.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
+    try:
+        return secrets.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
+    except UnicodeEncodeError:  # a lone surrogate cannot be the key
+        return False
 
 
 def _warn_if_env_token_differs() -> None:
@@ -483,25 +522,37 @@ def _warn_if_env_token_differs() -> None:
         log("review server: REVIEW_TOKEN differs from the stored API key and is ignored; reset the key in Settings, Security")
 
 
+def _store_key(key: str) -> None:
+    """Caller holds the lock. Writes the key, then a marker that retires the old review token for good."""
+    _write_atomic(apikey_path(), key + "\n")
+    _KEY_STORED.add(apikey_path())
+    _write_atomic(_retired_path(), "the 0.2.x review token no longer stands in for the API key\n")
+
+
 def init_api_key() -> None:
-    """On upgrade the existing review token becomes the API key, so scripts that hold it keep working (S-6)."""
-    if _read_key_file():
+    """On upgrade the existing review token becomes the API key, so scripts that hold it keep working (S-6). Only the
+    first time: once a key file has been stored, a lost file gets a fresh random key, never the old token again."""
+    state, _ = _key_file()
+    if state == "ok":
         _warn_if_env_token_differs()
         return
-    key = _TOKEN_FALLBACK() or secrets.token_urlsafe(32)
+    if state == "error":
+        return  # an unreadable key file is not ours to overwrite; reset replaces it
+    key = (_TOKEN_FALLBACK() if _legacy_allowed() else "") or secrets.token_urlsafe(32)
     try:
         with _locked(apikey_path()):
-            if not _read_key_file():
-                _write_atomic(apikey_path(), key + "\n")
+            if _key_file()[0] != "missing":
+                return
+            _store_key(key)
         log(f"review server: API key stored in {apikey_path()} (0600)")
     except AuthError as e:
-        log(f"review server: could not store the API key ({e.message}); the review token keeps working as the key")
+        log(f"review server: could not store the API key ({e.message}); until then the review token, if set, stays the key")
 
 
 def reset_api_key() -> str:
     key = secrets.token_urlsafe(32)
     with _locked(apikey_path()):
-        _write_atomic(apikey_path(), key + "\n")
+        _store_key(key)
     log("review server: API key reset")
     return key
 
