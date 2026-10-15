@@ -848,7 +848,8 @@ def handle_apply(stem: str) -> dict:
 
 # Routes answered without a token, besides the /review document and its assets. EXPLICIT, so adding one is a visible edit and
 # a test (tests/test_review_login.py) compares this list with the code. Everything else under /api needs the token.
-OPEN_ROUTES = (("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login"))
+OPEN_ROUTES = (("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login"), ("POST", "/api/setup"))
+_SMALL_JSON_ROUTES = ("/api/login", "/api/setup")
 LOGIN_MAX_BODY = 4096  # a username and a password; the generic POST cap (1 MiB) is far too generous for an unauthenticated route
 
 
@@ -954,7 +955,7 @@ def handle_login(body: dict, client: str = "") -> tuple:
 
 def workspace_asset(path: str) -> tuple:
     """Serve only the inert SPA document and Vite's flat asset directory, never arbitrary files."""
-    if path in ("/review", "/review/", "/review/index.html"):
+    if path in ("/review", "/review/", "/review/index.html", "/review/setup", "/review/login"):
         target = UI_DIST / "index.html"
     elif re.fullmatch(r"/review/assets/[A-Za-z0-9_.-]+\.(?:js|css|woff2|svg)", path):
         target = UI_DIST / "assets" / path.rsplit("/", 1)[1]
@@ -1105,6 +1106,8 @@ def _route(method: str, path: str, bare: str, body: dict, decision, client: str,
         return handle_healthz()
     if method == "GET" and path == "/api/auth-mode":
         return 200, {"password_login": _LOGIN is not None, "admin_enabled": review_admin.admin_enabled()}
+    if method == "POST" and bare == "/api/setup":
+        return review_auth.handle_setup(body)
     if method == "POST" and path == "/api/login":
         return handle_login(body, client)
     if method == "POST" and bare in review_webhooks.WEBHOOK_ROUTES:
@@ -1727,7 +1730,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(411, {"error": "a valid Content-Length is required"})
         if n > 1 << 20:
             return self._send(413, {"error": "body too large"})
-        if self.path.split("?", 1)[0] == "/api/login":
+        if self.path.split("?", 1)[0] in _SMALL_JSON_ROUTES:
             # Unauthenticated, so stricter than the other POSTs: JSON only, and a few KiB at most.
             if n > LOGIN_MAX_BODY:
                 return self._send(413, {"error": "body too large"})
@@ -1854,6 +1857,19 @@ def _warm_cache_forever() -> None:
         time.sleep(_next_warm_delay(_STEMS_CACHE, time.monotonic()))
 
 
+def startup_auth() -> None:
+    """Auth on: refuse to start without scrypt, import REVIEW_USERNAME/REVIEW_PASSWORD once, seed the API key from the
+    review token. Auth off (REVIEW_AUTH=off): nothing to prepare."""
+    if not auth_required():
+        return
+    if not review_auth.scrypt_available():
+        log("review server: hashlib.scrypt is not available in this Python/OpenSSL build; refusing to start with auth on")
+        raise SystemExit(2)
+    review_auth.import_env_admin()
+    review_auth.init_api_key()
+    review_auth.dummy_hash()  # built now, so the first login for an unknown name costs one scrypt like every other
+
+
 def serve(port: int = 0):
     # Checked before ANYTHING else, including resolve_token() (which would otherwise
     # mint/print a token nobody needs). A fail-closed opt-in for an unattended deploy:
@@ -1865,7 +1881,8 @@ def serve(port: int = 0):
         raise SystemExit(2)
     resolve_token()  # generates and prints the VALUE on first start, before anything is served
     announce_token()  # and on every start, says where to find it
-    configure_login()  # the optional username/password in front of the token
+    startup_auth()
+    configure_login()  # the optional username/password in front of the token; Task 8 retires it
     srv = BoundedHTTPServer((REVIEW_BIND, port or REVIEW_PORT), Handler)
     log(f"review server: listening on {REVIEW_BIND}:{port or REVIEW_PORT}")
     # Started BEFORE serve_forever and as a daemon: the port must open immediately either

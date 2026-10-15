@@ -36,7 +36,12 @@ def test_status_requires_the_token(tok, stems):
 
 def test_status_is_not_an_open_route():
     assert not any(route == "/api/status" for _method, route in review_server.OPEN_ROUTES)
-    assert set(review_server.OPEN_ROUTES) == {("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login")}
+    assert set(review_server.OPEN_ROUTES) == {
+        ("GET", "/healthz"),
+        ("GET", "/api/auth-mode"),
+        ("POST", "/api/login"),
+        ("POST", "/api/setup"),
+    }
 
 
 def test_an_empty_cache_is_503_cache_warming(tok, monkeypatch):

@@ -531,7 +531,7 @@ def test_get_route_returns_the_merged_payload(cfg):
 
 
 def test_the_settings_routes_do_not_change_open_routes():
-    assert set(rs.OPEN_ROUTES) == {("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login")}
+    assert set(rs.OPEN_ROUTES) == {("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login"), ("POST", "/api/setup")}
 
 
 @pytest.fixture

@@ -75,6 +75,9 @@ def dummy_hash() -> str:
     """What login verifies against when the username does not exist, so a miss takes as long as a wrong password.
     Made at import with the real cost pinned (not the patchable SCRYPT_* names), so the first miss is not slower and a
     test that lowers SCRYPT_N cannot leave a weak dummy behind."""
+    global _DUMMY
+    if _DUMMY is None:  # only after something cleared it; startup_auth calls this so it is never first-login work
+        _DUMMY = _hash_with(secrets.token_urlsafe(24), 2**14, 8, 1)
     return _DUMMY
 
 
@@ -766,3 +769,53 @@ def decide(method: str, path: str, headers) -> Decision:
 def role_for(method: str, path: str, headers) -> tuple:
     d = decide(method, path, headers)
     return d.role, d.status
+
+
+def handle_setup(body) -> tuple:
+    """POST /api/setup: create the first admin, only while no account exists. The lock makes a second browser lose with 409."""
+    body = body if isinstance(body, dict) else {}
+    try:
+        row = create_user(body.get("username"), "admin", body.get("password"), only_if_empty=True)
+    except AuthError as e:
+        return e.status, {"error": e.message}
+    log("review server: first admin account created through setup")
+    return 200, {"username": row["name"], "role": "admin"}
+
+
+def import_env_admin(env=None) -> bool:
+    """With no accounts yet, turn REVIEW_USERNAME plus REVIEW_PASSWORD (or REVIEW_PASSWORD_FILE, read once, one trailing
+    newline stripped) into the first admin, once, so an upgrade skips the setup page. Never logs the password."""
+    env = os.environ if env is None else env
+    user, password, pw_file = env.get("REVIEW_USERNAME"), env.get("REVIEW_PASSWORD"), env.get("REVIEW_PASSWORD_FILE")
+    if not user and not password and not pw_file:
+        return False
+    try:
+        if read_users():
+            return False
+    except Unreadable:
+        log("review server: REVIEW_USERNAME not imported: the accounts file is unreadable")
+        return False
+    if pw_file:
+        try:
+            with open(pw_file, "rb") as f:
+                raw = f.read(4096).decode("utf-8", "replace")
+        except OSError as e:
+            log(f"review server: REVIEW_PASSWORD_FILE unreadable ({e.__class__.__name__}); nothing imported, use the setup page")
+            return False
+        password = raw[:-2] if raw.endswith("\r\n") else raw[:-1] if raw.endswith("\n") else raw
+    if not user or not password:
+        log("review server: nothing imported: REVIEW_USERNAME needs a non-empty REVIEW_PASSWORD (or REVIEW_PASSWORD_FILE)")
+        return False
+    problem = validate_username(user) or validate_password(password)
+    if problem:
+        log(f"review server: REVIEW_USERNAME not imported ({problem}); use the setup page")
+        return False
+    try:
+        create_user(user, "admin", password, only_if_empty=True)
+    except Conflict:
+        return False
+    except AuthError as e:
+        log(f"review server: REVIEW_USERNAME not imported ({e.message})")
+        return False
+    log("review server: REVIEW_USERNAME imported as the first admin; REVIEW_PASSWORD is not read again once accounts exist")
+    return True

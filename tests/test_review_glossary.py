@@ -584,7 +584,12 @@ def test_audit_operator_is_token_when_auth_on_and_anonymous_when_off(gdir, tmp_p
 
 def test_open_routes_is_unchanged():
     assert not any("glossary" in route for _method, route in review_server.OPEN_ROUTES)
-    assert set(review_server.OPEN_ROUTES) == {("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login")}
+    assert set(review_server.OPEN_ROUTES) == {
+        ("GET", "/healthz"),
+        ("GET", "/api/auth-mode"),
+        ("POST", "/api/login"),
+        ("POST", "/api/setup"),
+    }
 
 
 # --- fix round: separators, normalization, symlinks, sidecars, failed prune --------------

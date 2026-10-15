@@ -232,7 +232,7 @@ def test_tracked_addresses_are_capped_and_the_oldest_is_evicted():
 
 
 def test_the_open_routes_are_exactly_these():
-    assert set(rs.OPEN_ROUTES) == {("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login")}
+    assert set(rs.OPEN_ROUTES) == {("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login"), ("POST", "/api/setup")}
 
 
 @pytest.mark.parametrize(

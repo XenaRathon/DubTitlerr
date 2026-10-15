@@ -88,7 +88,7 @@ def test_radarr_and_unknown_events(env):
 
 def test_webhook_routes_are_not_open_routes(env):
     assert not any("webhook" in p for _m, p in rs.OPEN_ROUTES)
-    assert set(rs.OPEN_ROUTES) == {("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login")}
+    assert set(rs.OPEN_ROUTES) == {("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login"), ("POST", "/api/setup")}
 
 
 def test_a_get_on_a_webhook_path_is_not_served(env):

@@ -94,7 +94,7 @@ def test_auth_mode_never_reveals_the_token(env):
 
 
 def test_open_routes_are_unchanged():
-    assert set(rs.OPEN_ROUTES) == {("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login")}
+    assert set(rs.OPEN_ROUTES) == {("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login"), ("POST", "/api/setup")}
 
 
 # --- the HTTP layer: header only -------------------------------------------------------------------------------------

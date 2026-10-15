@@ -69,7 +69,7 @@ def test_a_created_request_is_listed_and_uses_anime_root_from_the_environment(en
 
 def test_the_request_routes_are_not_open(env):
     assert not any("requests" in p or "schedule" in p for _m, p in rs.OPEN_ROUTES)
-    assert set(rs.OPEN_ROUTES) == {("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login")}
+    assert set(rs.OPEN_ROUTES) == {("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login"), ("POST", "/api/setup")}
 
 
 # --- schedule: written against review_requests.handle('/api/schedule'); skipped until it supports it ------------------
