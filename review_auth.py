@@ -28,7 +28,6 @@ _SCRYPT_MAXMEM = 64 * 1024 * 1024  # OpenSSL's default cap is 32 MiB; n=2^14, r=
 ROLES = ("admin", "user")
 MIN_PASSWORD, MAX_PASSWORD = 10, 256
 _USERNAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
-_DUMMY = None
 
 
 def scrypt_available() -> bool:
@@ -39,10 +38,14 @@ def scrypt_available() -> bool:
         return False
 
 
-def hash_password(password: str) -> str:
+def _hash_with(password: str, n: int, r: int, p: int) -> str:
     salt = secrets.token_bytes(16)
-    dk = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, dklen=32, maxmem=_SCRYPT_MAXMEM)
-    return f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${salt.hex()}${dk.hex()}"
+    dk = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p, dklen=32, maxmem=_SCRYPT_MAXMEM)
+    return f"scrypt${n}${r}${p}${salt.hex()}${dk.hex()}"
+
+
+def hash_password(password: str) -> str:
+    return _hash_with(password, SCRYPT_N, SCRYPT_R, SCRYPT_P)
 
 
 def verify_password(password, stored) -> bool:
@@ -68,11 +71,13 @@ def verify_password(password, stored) -> bool:
 
 
 def dummy_hash() -> str:
-    """What login verifies against when the username does not exist, so a miss takes as long as a wrong password."""
-    global _DUMMY
-    if _DUMMY is None:
-        _DUMMY = hash_password(secrets.token_urlsafe(24))
+    """What login verifies against when the username does not exist, so a miss takes as long as a wrong password.
+    Made at import with the real cost pinned (not the patchable SCRYPT_* names), so the first miss is not slower and a
+    test that lowers SCRYPT_N cannot leave a weak dummy behind."""
     return _DUMMY
+
+
+_DUMMY = _hash_with(secrets.token_urlsafe(24), 2**14, 8, 1)
 
 
 def validate_username(name) -> str | None:
@@ -84,6 +89,10 @@ def validate_username(name) -> str | None:
 def validate_password(password) -> str | None:
     if not isinstance(password, str) or not MIN_PASSWORD <= len(password) <= MAX_PASSWORD:
         return f"password must be {MIN_PASSWORD} to {MAX_PASSWORD} characters"
+    try:
+        password.encode("utf-8")
+    except UnicodeEncodeError:  # a lone surrogate from a JSON body would crash the hash
+        return "password must be valid text"
     return None
 
 
@@ -147,6 +156,12 @@ def _write_atomic(path: str, text: str) -> None:
             os.fsync(f.fileno())
         os.chmod(tmp, 0o600)
         os.replace(tmp, path)
+        with contextlib.suppress(OSError):  # make the rename durable; a failure here must not undo a finished write
+            dfd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
     except OSError as e:
         if tmp:
             with contextlib.suppress(OSError):
@@ -160,7 +175,13 @@ def _write_json(path: str, doc: dict) -> None:
 
 @contextlib.contextmanager
 def _locked(path: str, wait: float | None = None):
-    """The glossary lock helper on ``path`` (its own ``<path>.lock`` file, never a glossary's). Busy when it stays taken."""
+    """The glossary lock helper on ``path`` (its own ``<path>.lock`` file, never a glossary's). Busy when it stays taken.
+    Unavailable when the lock file cannot be opened: the helper would then run unlocked, and auth must never do that."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.close(os.open(glossary_lock.lock_path(path), os.O_RDWR | os.O_CREAT, 0o600))
+    except OSError as e:
+        raise Unavailable("the config volume is not writable") from e
     with glossary_lock.locked(path, "review_auth", wait=LOCK_WAIT if wait is None else wait) as got:
         if not got:
             raise Busy("busy, try again")
@@ -175,13 +196,25 @@ def read_users() -> list:
         return []
     except (OSError, ValueError) as e:
         raise Unreadable(_UNREADABLE) from e
-    rows = doc.get("users") if isinstance(doc, dict) else None
-    if not isinstance(rows, list) or not all(
-        isinstance(r, dict) and isinstance(r.get("name"), str) and r.get("role") in ROLES and isinstance(r.get("hash"), str)
-        for r in rows
-    ):
+    rows = doc.get("users") if isinstance(doc, dict) and doc.get("version") == 1 else None
+    if not isinstance(rows, list) or not all(_valid_row(r) for r in rows):
+        raise Unreadable(_UNREADABLE)
+    if len({r["name"].lower() for r in rows}) != len(rows):
         raise Unreadable(_UNREADABLE)
     return rows
+
+
+def _valid_row(r) -> bool:
+    return (
+        isinstance(r, dict)
+        and validate_username(r.get("name")) is None
+        and r.get("role") in ROLES
+        and isinstance(r.get("hash"), str)
+        and isinstance(r.get("session_epoch"), int)
+        and not isinstance(r.get("session_epoch"), bool)
+        and isinstance(r.get("pw_changed_at"), (int, float))
+        and not isinstance(r.get("pw_changed_at"), bool)
+    )
 
 
 def setup_required() -> bool:

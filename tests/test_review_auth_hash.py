@@ -1,4 +1,5 @@
 import hashlib
+import importlib.util
 
 import pytest
 
@@ -89,3 +90,19 @@ def test_invalid_usernames_get_a_message(name):
 )
 def test_password_length_limits(pw, ok):
     assert (review_auth.validate_password(pw) is None) is ok
+
+
+def _fresh_copy():
+    spec = importlib.util.spec_from_file_location("review_auth_fresh", review_auth.__file__)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_dummy_hash_exists_from_import_so_the_first_miss_costs_one_scrypt():
+    assert _fresh_copy()._DUMMY is not None
+
+
+def test_the_dummy_hash_keeps_the_real_cost_when_the_cost_constants_are_patched(monkeypatch):
+    monkeypatch.setattr(review_auth, "SCRYPT_N", 2**4)
+    assert review_auth.dummy_hash().split("$")[1:4] == ["16384", "8", "1"]
