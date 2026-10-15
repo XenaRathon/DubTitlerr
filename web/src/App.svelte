@@ -12,7 +12,6 @@
     Inbox,
     LoaderCircle,
     LockKeyhole,
-    LogOut,
     Menu,
     Play,
     RefreshCw,
@@ -31,6 +30,7 @@
   import { ApiError } from './lib/api.js';
   import Login from './pages/Login.svelte';
   import Setup from './pages/Setup.svelte';
+  import AccountMenu from './lib/AccountMenu.svelte';
   import { apiFetch, logout as endSession, me as fetchMe } from './lib/session.js';
   import { hashFor, parseHash } from './lib/route.js';
   import { EPISODE_SORTS, LINE_SORTS, readSortPref, sortEpisodes, writeSortPref } from './lib/episodeSort.js';
@@ -612,12 +612,12 @@
             class="icon-button"
             aria-label="Keyboard shortcuts"
             onclick={() => (showHelp = !showHelp)}><CircleHelp size={19} /></button
-          >{/if}{#if authenticated}<button
-            class="icon-button"
-            aria-label="Sign out"
-            onclick={logout}
-            disabled={saving}><LogOut size={18} /></button
-          >{/if}
+          >{/if}{#if authenticated}<AccountMenu
+            username={account.username}
+            role={account.role}
+            onlogout={logout}
+            disabled={saving}
+          />{/if}
       </div>
     </header>
 

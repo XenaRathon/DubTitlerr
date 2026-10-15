@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { USERNAME, expectNoAxeViolations, openSignedIn, reset, signIn } from './helpers';
+import { USERNAME, expectNoAxeViolations, openSignedIn, reset, signIn, signOut } from './helpers';
 
 test.beforeEach(async ({ request }) => reset(request));
 
@@ -59,7 +59,7 @@ test('requests carry the CSRF header on writes and never a token header', async 
     if (r.url().includes('/api/')) seen.push({ method: r.method(), headers: r.headers() });
   });
   await openSignedIn(page);
-  await page.getByRole('button', { name: 'Sign out' }).click();
+  await signOut(page);
   await expect(page.getByRole('heading', { name: 'Open your review workspace' })).toBeVisible();
   const writes = seen.filter((r) => r.method !== 'GET');
   expect(writes.length).toBeGreaterThanOrEqual(2); // the login and the logout

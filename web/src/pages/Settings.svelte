@@ -17,6 +17,8 @@
     validateModel,
   } from '../lib/settings.js';
   import { isAdmin } from '../lib/roles.js';
+  import Security from './Security.svelte';
+  import Accounts from './Accounts.svelte';
 
   // The options-style wrapper the Runs page uses: api(path, { method, body, headers }).
   let {
@@ -462,6 +464,8 @@
     Overrides apply at the next sweep; the builder keeps working with prior values until then. URLs and
     secrets stay in the compose file.
   </p>
+
+  {#if isAdmin(role)}<Security /><Accounts />{/if}
 </section>
 
 <style>

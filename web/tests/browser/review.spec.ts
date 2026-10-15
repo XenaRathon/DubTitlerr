@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { signOut } from './helpers';
 
 test('human review workspace keeps real workflow semantics', async ({ page, request }, testInfo) => {
   // One long journey: three axe scans, audio extraction and a full-page screenshot take 20-26 s on a quiet
@@ -142,7 +143,7 @@ test('human review workspace keeps real workflow semantics', async ({ page, requ
   await expect(page.locator('.evidence img')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(errors).toEqual([]);
-  await page.getByRole('button', { name: 'Sign out' }).click();
+  await signOut(page);
   await expect(page.getByRole('heading', { name: 'Open your review workspace' })).toBeVisible();
   // Signing in again opens the same workspace, and no token was ever put in storage.
   await page.getByLabel('Username').fill('reviewer');

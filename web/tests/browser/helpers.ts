@@ -22,8 +22,15 @@ export async function signIn(page: Page, username = USERNAME, password = PASSWOR
 export async function openSignedIn(page: Page, hash = '') {
   await page.goto('/review' + hash);
   await signIn(page);
-  // The sidebar is on screen signed out too; Sign out only renders once the session cookie is set and the workspace loaded.
-  await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
+  // The sidebar is on screen signed out too; the account menu only renders once the session cookie is set and the workspace loaded.
+  await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible();
+}
+
+/** Open the account menu (unless it is already open) and sign out. */
+export async function signOut(page: Page) {
+  const menu = page.getByRole('button', { name: 'Account menu' });
+  if ((await menu.getAttribute('aria-expanded')) !== 'true') await menu.click();
+  await page.getByRole('button', { name: 'Sign out' }).click();
 }
 
 /** The sidebar button for a view, opening the mobile drawer first when it is collapsed. */

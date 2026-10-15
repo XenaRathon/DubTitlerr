@@ -46,4 +46,6 @@ test('as an admin the same controls are present', async ({ page }) => {
   await page.goto('/review#/settings');
   await expect(page.getByRole('button', { name: 'Save settings' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Reset overrides' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Security' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Accounts' })).toBeVisible();
 });
