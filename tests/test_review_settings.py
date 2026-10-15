@@ -60,50 +60,6 @@ def dumped(payload):
 
 # ---- masking: the secret value never appears anywhere ---------------------------------------------------------------
 
-def test_secrets_are_booleans_never_values():
-    payload = st.build_settings(
-        env(REVIEW_TOKEN=SECRET, REVIEW_PASSWORD=SECRET, LONGCATAI_API_KEY=SECRET),
-        {},
-    )[1]
-    assert payload["secrets"]["REVIEW_TOKEN"] is True
-    assert payload["secrets"]["REVIEW_PASSWORD"] is True
-    assert payload["secrets"]["LONGCATAI_API_KEY"] is True
-    assert SECRET not in dumped(payload), "a set secret must never appear in any returned payload"
-
-
-def test_unset_secrets_are_false():
-    payload = st.build_settings(env(), {})[1]
-    assert payload["secrets"]["REVIEW_TOKEN"] is False
-    assert SECRET not in dumped(payload)
-
-
-def test_effective_env_secrets_are_masked_too(tmp_path):
-    f = tmp_path / "effective.env"
-    f.write_text(f"REPAIR_MODEL=qwen\nREVIEW_TOKEN={SECRET}\n", encoding="utf-8")
-    payload = st.build_settings(env(), st.read_effective_env(str(f)))[1]
-    assert payload["settings"]["repair_model"] == "qwen"
-    assert payload["secrets"]["REVIEW_TOKEN"] is True
-    assert SECRET not in dumped(payload)
-
-
-def test_key_named_by_key_env_is_masked_and_never_echoed():
-    e = env(
-        REPAIR_BACKEND="openai",
-        REPAIR_OPENAI_URL="https://api.example.com",
-        REPAIR_OPENAI_KEY_ENV="MY_API_KEY",
-        MY_API_KEY=SECRET,
-    )
-    payload = st.build_settings(e, {})[1]
-    assert payload["secrets"]["MY_API_KEY"] is True
-    assert SECRET not in dumped(payload)
-    opener = FakeOpener()
-    result = st.test_backend("repair", e, opener=opener)
-    assert result["ok"] is True
-    sent = opener.requests[0].get_header("Authorization")
-    assert sent == f"Bearer {SECRET}", "the key travels in the header"
-    assert SECRET not in dumped(result), "the key is never echoed back"
-
-
 def test_backend_errors_cannot_carry_the_key():
     e = env(
         REPAIR_BACKEND="openai",
@@ -141,31 +97,6 @@ def test_effective_env_parses_pairs_ignores_comments_and_bad_lines(tmp_path):
 
 def test_missing_effective_env_is_empty_dict(tmp_path):
     assert st.read_effective_env(str(tmp_path / "nope.env")) == {}
-
-
-def test_effective_env_wins_over_environ_and_sets_source():
-    payload = st.build_settings(env(REPAIR_MODEL="from-env"), {"REPAIR_MODEL": "from-file"})[1]
-    assert payload["settings"]["repair_model"] == "from-file"
-    assert payload["source"] == "effective.env"
-
-
-def test_missing_file_falls_back_to_env_with_source_env():
-    payload = st.build_settings(env(REPAIR_MODEL="from-env"), {})[1]
-    assert payload["settings"]["repair_model"] == "from-env"
-    assert payload["source"] == "env"
-
-
-def test_settings_covers_the_spec_allow_list():
-    for key in (
-        "repair_backend", "repair_model", "repair_llamacpp_url", "repair_openai_url",
-        "verify_backend", "verify_decision_model", "acquire_backend", "whisper_model",
-        "compute_type", "require_eng", "repair_unanchored", "glossary_arc_tags",
-        "rescan_interval", "merge_roots", "anime_order", "acquire_apply",
-    ):
-        assert key in st.ALLOW_LIST
-    payload = st.build_settings(env(), {})[1]
-    assert set(payload) == {"settings", "secrets", "source"}
-    assert set(payload["settings"]) == set(st.ALLOW_LIST)
 
 
 # ---- backend probes ---------------------------------------------------------------------------------------------------
@@ -246,17 +177,6 @@ def test_unconfigured_endpoint_is_a_clean_failure():
 
 # ---- handle dispatch ---------------------------------------------------------------------------------------------------
 
-def test_handle_get_settings(monkeypatch, tmp_path):
-    f = tmp_path / "effective.env"
-    f.write_text("REPAIR_MODEL=qwen\n", encoding="utf-8")
-    monkeypatch.setattr(st, "EFFECTIVE_ENV_PATH", str(f))
-    status, payload = st.handle("GET", "/api/settings", None, environ=env(REVIEW_TOKEN=SECRET))
-    assert status == 200
-    assert payload["settings"]["repair_model"] == "qwen"
-    assert payload["source"] == "effective.env"
-    assert SECRET not in dumped(payload)
-
-
 def test_handle_test_round_trips_the_probe(monkeypatch):
     monkeypatch.setattr(st, "EFFECTIVE_ENV_PATH", "/nonexistent-effective.env")
     opener = FakeOpener()
@@ -280,19 +200,6 @@ def test_handle_unknown_routes_are_404():
     assert st.handle("DELETE", "/api/settings", None, environ=env())[0] == 404
 
 
-def test_userinfo_stripped_from_urls_in_settings():
-    e = env(
-        REPAIR_LLAMACPP_URL="http://user:basicsecret@host/v1",
-        REPAIR_OPENAI_URL="https://admin:pass123@api.example.com/v1",
-    )
-    status, payload = st.build_settings(e, {})
-    assert status == 200
-    assert payload["settings"]["repair_llamacpp_url"] == "http://host/v1"
-    assert payload["settings"]["repair_openai_url"] == "https://api.example.com/v1"
-    assert "basicsecret" not in dumped(payload)
-    assert "pass123" not in dumped(payload)
-
-
 def test_userinfo_redacted_in_backend_probe_error():
     url = "http://user:secret@host/v1"
     e = env(REPAIR_LLAMACPP_URL=url)
@@ -302,30 +209,3 @@ def test_userinfo_redacted_in_backend_probe_error():
     assert "secret" not in result["error"]
     assert "secret" not in dumped(result)
 
-
-def test_l6_admin_token_and_webhook_token_reported_as_secrets():
-    payload = st.build_settings(
-        env(REVIEW_ADMIN_TOKEN="adm123", WEBHOOK_TOKEN="whk456"),
-        {},
-    )[1]
-    assert payload["secrets"]["REVIEW_ADMIN_TOKEN"] is True
-    assert payload["secrets"]["WEBHOOK_TOKEN"] is True
-    assert "adm123" not in dumped(payload)
-    assert "whk456" not in dumped(payload)
-
-
-def test_l6_merge_window_in_allowlist():
-    payload = st.build_settings(
-        env(MERGE_WINDOW="10:00-14:00"),
-        {},
-    )[1]
-    assert payload["settings"]["merge_window"] == "10:00-14:00"
-
-
-def test_l6_dynamic_effective_env_file_env_var(tmp_path):
-    f = tmp_path / "custom.env"
-    f.write_text("REPAIR_MODEL=custom-model\n", encoding="utf-8")
-    e = env(EFFECTIVE_ENV_FILE=str(f))
-    status, payload = st.handle("GET", "/api/settings", environ=e)
-    assert status == 200
-    assert payload["settings"]["repair_model"] == "custom-model"

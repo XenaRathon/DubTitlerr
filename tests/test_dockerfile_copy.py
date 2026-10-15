@@ -25,6 +25,10 @@ ENTRYPOINTS = [
     # exactly this reason.
     "review_server.py",
     "review_users.py",
+    # The shell loops and the container entrypoint run these directly: the settings exporter (imports the registry and the
+    # store) and the request helper (writes the effective-env reports).
+    "review_settings_write.py",
+    "review_requests.py",
 ]
 
 

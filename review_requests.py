@@ -815,6 +815,16 @@ EFFECTIVE_ENV_SKIP_SUBSTRINGS = ("KEY", "TOKEN", "PASSWORD", "SECRET")
 _SECRET_VALUE_RE = re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{16,}|\bBearer\b|://[^/\s:@]+:[^/\s:@]+@")
 
 
+def _reportable(key: str) -> bool:
+    """Every registry key a builder process reads is reported, so the page can tell a pending change from an applied one."""
+    try:
+        import settings_registry
+    except ImportError:  # a minimal app directory without the registry keeps the fixed allow-list above
+        return False
+    entry = settings_registry.REGISTRY.get(key)
+    return entry is not None and not entry["secret"] and bool({"gen", "merge"} & set(entry["scope"]))
+
+
 def write_effective_env(out_file: str | None = None, env: dict | None = None) -> str:
     """Write effective.env atomically with allowed variables and secret masking."""
     target = out_file or os.environ.get(
@@ -828,6 +838,7 @@ def write_effective_env(out_file: str | None = None, env: dict | None = None) ->
         if k == "REPAIR_EXTRA_BODY":
             continue
         allowed = any(k.startswith(p) for p in EFFECTIVE_ENV_ALLOW_PREFIXES) or (k in EFFECTIVE_ENV_ALLOW_EXACT)
+        allowed = allowed or _reportable(k)
         if not allowed:
             continue
         if any(s in k for s in EFFECTIVE_ENV_SKIP_SUBSTRINGS):

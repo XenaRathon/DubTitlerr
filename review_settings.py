@@ -1,14 +1,10 @@
-"""Settings page backend helpers (specs/webui-settings): allow-listed reads and backend probes.
+"""Settings page probes (specs/webui-settings): read the builder's effective.env, and probe a backend with a strict timeout.
 
-Read-only in Phase 1: GET /api/settings reports the builder's actual environment from
-/config/effective.env (falling back to process os.environ), and POST /api/settings/test
-probes one backend with a strict 5 s timeout. Secret values are never returned, echoed,
-or logged -- names matching KEY/TOKEN/PASSWORD/SECRET (and the key vars named by the
-*_KEY_ENV pointers) are reported as presence booleans only.
+The settings API itself (schema, values, writes) is settings_api.py. This module keeps what is not about stored settings: the
+effective.env reader, the connectivity probe every Test button uses, and the probe of a stage that is still configured from the
+container environment (POST /api/settings/test with {"backend": "repair" | "verify" | "acquire"}).
 
-The boss registers the routes; handle() expects an already-authorised call (the token
-argument is accepted for the handle(method, path, body, token, ...) convention and ignored).
-"""
+Error text can never carry a key or a URL query. handle() expects an already-authorised call."""
 
 import errno
 import os
@@ -32,47 +28,8 @@ EFFECTIVE_ENV_PATH = os.environ.get("EFFECTIVE_ENV_FILE") or os.path.join(
     os.environ.get("CONFIG_DIR", "/config"), "effective.env"
 )
 
-# The settings keys in the spec, reported under these lowercase names.
-ALLOW_LIST = (
-    "repair_backend",
-    "repair_model",
-    "repair_llamacpp_url",
-    "repair_openai_url",
-    "verify_backend",
-    "verify_decision_model",
-    "acquire_backend",
-    "whisper_model",
-    "compute_type",
-    "require_eng",
-    "repair_unanchored",
-    "glossary_arc_tags",
-    "rescan_interval",
-    "merge_roots",
-    "anime_order",
-    "merge_window",
-    "acquire_apply",
-)
-
-# Sensitive names always reported as presence booleans, from either source.
-SECRET_NAMES = (
-    "REVIEW_TOKEN",
-    "REVIEW_ADMIN_TOKEN",
-    "WEBHOOK_TOKEN",
-    "REVIEW_PASSWORD",
-    "LONGCATAI_API_KEY",
-    "COMMANDCODE_API_KEY",
-)
-# Pointers whose VALUE is the name of the env var holding a key.
-KEY_ENV_POINTERS = ("REPAIR_OPENAI_KEY_ENV", "VERIFY_OPENAI_KEY_ENV", "VERIFY_DECISION_KEY_ENV")
-
-_SECRET_HINTS = ("KEY", "TOKEN", "PASSWORD", "SECRET")
 _TEST_BACKENDS = ("repair", "verify", "acquire")
-
 _KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-
-
-def _is_secret_name(name: str) -> bool:
-    return any(hint in name for hint in _SECRET_HINTS)
 
 
 def read_effective_env(path: str | None = None) -> dict:
@@ -92,7 +49,7 @@ def read_effective_env(path: str | None = None) -> dict:
         if not line or line.startswith("#"):
             continue
         if line.startswith("export "):
-            line = line[len("export "):].strip()
+            line = line[len("export ") :].strip()
         if "=" not in line:
             continue
         key, value = line.split("=", 1)
@@ -111,55 +68,6 @@ def _merged(environ, effective: dict) -> dict:
     merged = dict(environ)
     merged.update(effective)
     return merged
-
-
-def _secret_names(merged: dict) -> list:
-    names = [n for n in SECRET_NAMES]
-    for pointer in KEY_ENV_POINTERS:
-        pointed = merged.get(pointer)
-        if pointed and pointed not in names:
-            names.append(pointed)
-    return names
-
-
-def _strip_userinfo(url: str) -> str:
-    """Strip username:password userinfo from a URL."""
-    if not url or "@" not in url:
-        return url
-    try:
-        parts = urllib.parse.urlsplit(url)
-        if parts.netloc and "@" in parts.netloc:
-            host_part = parts.netloc.rsplit("@", 1)[1]
-            return urllib.parse.urlunsplit((parts.scheme, host_part, parts.path, parts.query, parts.fragment))
-    except Exception:
-        pass
-    return url
-
-
-def build_settings(environ=None, effective=None) -> tuple:
-    """(200, {"settings": {...}, "secrets": {NAME: bool}, "source": ...}).
-
-    effective.env wins over environ per key; source is "effective.env" whenever the
-    file yielded at least one pair, else "env". Secret masking applies to values from
-    both sources alike.
-    """
-    env = os.environ if environ is None else environ
-    eff = effective if effective is not None else {}
-    merged = _merged(env, eff)
-    settings, secrets = {}, {}
-    for key in ALLOW_LIST:
-        name = key.upper()
-        if _is_secret_name(name):
-            secrets[name] = bool(merged.get(name))
-        else:
-            val = merged.get(name, "")
-            if isinstance(val, str) and ("_url" in key or "://" in val):
-                val = _strip_userinfo(val)
-            settings[key] = val
-    for name in _secret_names(merged):
-        if name not in secrets:
-            secrets[name] = bool(merged.get(name))
-    return 200, {"settings": settings, "secrets": secrets, "source": "effective.env" if eff else "env"}
 
 
 def _sanitize(text, key: str = "", url: str = "") -> str:
@@ -223,7 +131,6 @@ def test_backend(name: str, environ=None, opener=None, timeout: float = 5.0) -> 
     that can never carry the key or a URL query.
     """
     env = os.environ if environ is None else environ
-    opener = urllib.request.urlopen if opener is None else opener
     resolved = _resolve_backend(name, env)
     if resolved is None:
         return {"ok": False, "latency_ms": 0, "error": "unsupported backend"}
@@ -240,9 +147,15 @@ def test_backend(name: str, environ=None, opener=None, timeout: float = 5.0) -> 
         headers = {"Authorization": f"Bearer {key}"}
     else:
         url, headers = base, {}
+    return probe(url, headers, key, timeout, opener)
+
+
+def probe(url, headers, key="", timeout=5.0, opener=None):
+    """GET ``url`` and map the outcome to {"ok", "latency_ms", "error"}. The error text can never carry the key or a URL query."""
+    opener = urllib.request.urlopen if opener is None else opener
     display = url.split("?", 1)[0]
     try:
-        request = urllib.request.Request(display, headers=headers, method="GET")
+        request = urllib.request.Request(display, headers=headers or {}, method="GET")
         start = time.monotonic()
         with opener(request, timeout=timeout) as response:
             status = getattr(response, "status", 200)
@@ -273,12 +186,10 @@ def test_backend(name: str, environ=None, opener=None, timeout: float = 5.0) -> 
 
 
 def handle(method, path, body=None, token=None, environ=None, opener=None) -> tuple:
-    """GET /api/settings and POST /api/settings/test; 404 otherwise."""
+    """POST /api/settings/test for an environment-configured stage; 404 otherwise. The settings read is settings_api.py."""
     env = os.environ if environ is None else environ
     eff_path = get_effective_env_path(env)
     route = (path or "").split("?", 1)[0]
-    if method == "GET" and route == "/api/settings":
-        return build_settings(env, read_effective_env(eff_path))
     if method == "POST" and route == "/api/settings/test":
         name = body.get("backend") if isinstance(body, dict) else None
         if not name:
