@@ -38,7 +38,6 @@ def cfg(tmp_path, monkeypatch):
     monkeypatch.setenv("REVIEW_TOKEN", TOKEN)
     monkeypatch.setenv("REVIEW_ADMIN_TOKEN", ADMIN)
     monkeypatch.delenv("REVIEW_AUTH", raising=False)
-    monkeypatch.setattr(rs, "_LOGIN", None)
     return d
 
 

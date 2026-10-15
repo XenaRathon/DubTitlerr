@@ -37,11 +37,8 @@ Env:
   DECISIONS_DIR  default /config/decisions   (the token lives beside it)
   MERGE_ROOTS    default /data/Media/Anime Library  (colon list; the only stems accepted)
   REVIEW_USERNAME, REVIEW_PASSWORD, REVIEW_PASSWORD_FILE
-                 optional human login (POST /api/login) that hands out the same token to
-                 someone who knows the password. The token stays the one credential every other
-                 route checks. Both a username and a password (or a password file, read once at
-                 start, one trailing newline stripped) are needed; an empty or half-set pair
-                 means login is NOT configured (the route answers 404), never "open".
+                 imported once as the first admin account when no account exists yet
+                 (review_auth.import_env_admin); not read again afterwards.
 """
 
 import datetime
@@ -900,57 +897,6 @@ class LoginThrottle:
 
 
 _THROTTLE = LoginThrottle()
-_LOGIN = None  # (username bytes, password bytes) once configure_login() found a usable pair, else None
-
-
-def configure_login(env=None) -> bool:
-    """Read REVIEW_USERNAME / REVIEW_PASSWORD (or REVIEW_PASSWORD_FILE) once. True when password login is on.
-
-    A password file wins over REVIEW_PASSWORD and is read ONCE; one trailing newline is stripped, nothing else. An empty username
-    or password, one half set, or an unreadable file means login is NOT configured (and says why in the log): an empty secret must
-    never become an open door. The password itself is never logged."""
-    global _LOGIN
-    env = os.environ if env is None else env
-    _LOGIN = None
-    user, pw, pw_file = env.get("REVIEW_USERNAME"), env.get("REVIEW_PASSWORD"), env.get("REVIEW_PASSWORD_FILE")
-    if user is None and pw is None and not pw_file:
-        return False
-    if pw_file:
-        try:
-            with open(pw_file, "rb") as f:
-                raw = f.read()
-        except OSError as e:
-            log(f"review server: password login NOT configured: REVIEW_PASSWORD_FILE unreadable ({e.__class__.__name__})")
-            return False
-        pw = raw.decode("utf-8", "replace")
-        pw = pw[:-2] if pw.endswith("\r\n") else pw[:-1] if pw.endswith("\n") else pw
-    if not user or not pw:
-        log("review server: password login NOT configured: it needs a non-empty REVIEW_USERNAME and a non-empty password")
-        return False
-    _LOGIN = (user.encode("utf-8"), pw.encode("utf-8"))
-    log("review server: password login is on (the token stays the credential; serve this over a trusted LAN or TLS)")
-    return True
-
-
-def handle_login(body: dict, client: str = "") -> tuple:
-    """POST /api/login: the token, for someone who knows the configured username and password."""
-    if _LOGIN is None:
-        return 404, {"error": "no such route"}
-    wait = _THROTTLE.retry_after(client)
-    if wait:
-        log("review server: password login throttled")
-        return 429, {"error": "too many failed logins; wait before trying again", "retry_after": wait}
-    user, pw = body.get("username"), body.get("password")
-    # Both fields ALWAYS compared, as bytes, and combined with & (not `and`): no early exit tells a caller whether the username
-    # was right. A non-string is just a wrong answer (compared as empty).
-    ok_user = secrets.compare_digest((user if isinstance(user, str) else "").encode("utf-8"), _LOGIN[0])
-    ok_pass = secrets.compare_digest((pw if isinstance(pw, str) else "").encode("utf-8"), _LOGIN[1])
-    if ok_user & ok_pass:
-        _THROTTLE.success(client)
-        return 200, {"token": resolve_token()}
-    _THROTTLE.failure(client)
-    log("review server: password login refused")  # the same line for a wrong username and a wrong password
-    return 401, {"error": "wrong username or password"}
 
 
 def workspace_asset(path: str) -> tuple:
@@ -1094,7 +1040,11 @@ def route_full(
     if decision.status is not None:
         return decision.status, {"error": decision.error}, {}
     result = _route(method, path, bare, body, decision, client, admin_token, hdrs)
-    return result if len(result) == 3 else (*result, {})
+    status, payload, extra = result if len(result) == 3 else (*result, {})
+    p = decision.principal
+    if p is not None and p.kind == "session" and p.refresh and status < 400 and "Set-Cookie" not in extra:
+        extra = {**extra, "Set-Cookie": review_auth.session_cookie(p.sid, True, review_auth.is_https(hdrs))}  # sliding 30 days
+    return status, payload, extra
 
 
 def _route(method: str, path: str, bare: str, body: dict, decision, client: str, admin_token: str, headers: dict | None) -> tuple:
@@ -1105,11 +1055,24 @@ def _route(method: str, path: str, bare: str, body: dict, decision, client: str,
     if method == "GET" and path == "/healthz":
         return handle_healthz()
     if method == "GET" and path == "/api/auth-mode":
-        return 200, {"password_login": _LOGIN is not None, "admin_enabled": review_admin.admin_enabled()}
+        return (
+            200,
+            {
+                # old meaning (a login exists); the deployed bundle reads it; removed in Task 15
+                "password_login": not review_auth.setup_required(),
+                "admin_enabled": review_admin.admin_enabled(),  # removed with the admin token in Task 13
+                "setup_required": review_auth.setup_required(),
+                "accounts_ok": review_auth.accounts_ok(),
+            },
+        )
     if method == "POST" and bare == "/api/setup":
         return review_auth.handle_setup(body)
-    if method == "POST" and path == "/api/login":
-        return handle_login(body, client)
+    if method == "POST" and bare == "/api/login":
+        return review_auth.handle_login(body, client, _THROTTLE, headers)
+    if method == "POST" and bare == "/api/logout":
+        return review_auth.handle_logout(decision.principal, headers)
+    if method == "GET" and bare == "/api/me":
+        return review_auth.handle_me(decision.principal)
     if method == "POST" and bare in review_webhooks.WEBHOOK_ROUTES:
         # Sonarr/Radarr cannot send the review token: these routes carry their own WEBHOOK_TOKEN, checked inside
         # handle(). They are deliberately NOT in OPEN_ROUTES, which stays the three pinned entries.
@@ -1569,7 +1532,7 @@ def render_page(stem: str = "") -> str:
     )
 
 
-def render_locked(page_kind: str) -> str:
+def render_locked(page_kind: str, setup: bool = False) -> str:
     """The shell shown instead of render_page()/render_shared() when authorised()
     refuses the GET -- same chrome (title, CSS, the token box and its JS) as the real
     page, but the episode/shared list is never built: handle_index()/handle_episode()/
@@ -1588,6 +1551,13 @@ def render_locked(page_kind: str) -> str:
         "<p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
         f"{back}"
         '<p id="needs-token">Paste the review token to load the queue.</p>'
+        "<p>"
+        + (
+            'No accounts exist yet: <a href="/review/setup">create the first admin</a>.'
+            if setup
+            else 'Or <a href="/review/login">sign in with your account</a>.'
+        )
+        + "</p>"
         "<script>"
         "const TOK=document.getElementById('tok');"
         "function syncTokenCookie(){if(TOK.value){document.cookie="
@@ -1665,7 +1635,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
             )
         for name, value in (extra or {}).items():
-            self.send_header(name, value)
+            for v in value if isinstance(value, list) else [value]:  # a login sends two Set-Cookie lines
+                self.send_header(name, v)
         self.end_headers()
         self.wfile.write(raw)
 
@@ -1673,17 +1644,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         from urllib.parse import parse_qs, urlparse
 
         u = urlparse(self.path)
-        # A plain page load cannot carry a custom header, so the cookie the token box's own
-        # JS sets is the fallback here -- /api/* callers (curl, the page's own fetch()
-        # calls) keep sending the header, which still wins when present.
-        presented = self.headers.get(TOKEN_HEADER) or _cookie_token(self.headers)
+        # The classic pages accept a signed-in session, the token header and, for these page routes only, the legacy token
+        # cookie (review_auth.authenticate). /api/* never reads that cookie.
+        hdrs = dict(self.headers.items())
         if u.path == "/shared":
-            if not authorised("GET", presented):
-                return self._send(200, render_locked("shared").encode(), "text/html; charset=utf-8")
+            _role, why = review_auth.role_for("GET", "/shared", hdrs)
+            if why is not None:
+                return self._send(200, render_locked("shared", setup=why == 409).encode(), "text/html; charset=utf-8")
             return self._send(200, render_shared().encode(), "text/html; charset=utf-8")
         if u.path in ("/", "/index.html"):
-            if not authorised("GET", presented):
-                return self._send(200, render_locked("page").encode(), "text/html; charset=utf-8")
+            _role, why = review_auth.role_for("GET", u.path, hdrs)
+            if why is not None:
+                return self._send(200, render_locked("page", setup=why == 409).encode(), "text/html; charset=utf-8")
             stem = (parse_qs(u.query).get("stem") or [""])[0]
             return self._send(200, render_page(stem).encode(), "text/html; charset=utf-8")
         if u.path == "/healthz":
@@ -1694,7 +1666,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "GET",
             u.path,
             q,
-            presented,
+            self.headers.get(TOKEN_HEADER),
             client=self._client(),
             admin_token=self.headers.get(ADMIN_HEADER, ""),
             headers=dict(self.headers.items()),
@@ -1882,7 +1854,6 @@ def serve(port: int = 0):
     resolve_token()  # generates and prints the VALUE on first start, before anything is served
     announce_token()  # and on every start, says where to find it
     startup_auth()
-    configure_login()  # the optional username/password in front of the token; Task 8 retires it
     srv = BoundedHTTPServer((REVIEW_BIND, port or REVIEW_PORT), Handler)
     log(f"review server: listening on {REVIEW_BIND}:{port or REVIEW_PORT}")
     # Started BEFORE serve_forever and as a daemon: the port must open immediately either

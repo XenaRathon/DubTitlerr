@@ -16,7 +16,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("REVIEW_TOKEN", TOKEN)
     monkeypatch.setenv("REVIEW_ADMIN_TOKEN", ADMIN)
     monkeypatch.delenv("REVIEW_AUTH", raising=False)
-    monkeypatch.setattr(rs, "_LOGIN", None)
     root = tmp_path / "Anime"
     (root / "One Pace").mkdir(parents=True)
     monkeypatch.setenv("ANIME_ROOT", str(root))

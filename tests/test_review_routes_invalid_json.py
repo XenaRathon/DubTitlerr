@@ -24,7 +24,6 @@ def server(tmp_path, monkeypatch):
     monkeypatch.setenv("REVIEW_TOKEN", TOKEN)
     monkeypatch.setenv("REVIEW_ADMIN_TOKEN", ADMIN)
     monkeypatch.delenv("REVIEW_AUTH", raising=False)
-    monkeypatch.setattr(rs, "_LOGIN", None)
     monkeypatch.setenv("GLOSSARY_DIR", str(tmp_path))
     # The inbox route in the last test walks ROOTS and fills the stem cache: keep that off the real roots and restore it.
     monkeypatch.setattr(rs, "ROOTS", [str(tmp_path / "media")])

@@ -23,7 +23,6 @@ def env(monkeypatch):
     monkeypatch.delenv("REVIEW_AUTH", raising=False)
     monkeypatch.delenv("REVIEW_ADMIN_TOKEN", raising=False)
     monkeypatch.delenv("REVIEW_ADMIN_TOKEN_FILE", raising=False)
-    monkeypatch.setattr(rs, "_LOGIN", None)
     monkeypatch.setitem(rs.ADMIN_ROUTES, PROBE, lambda body: (200, {"ok": True, "echo": body.get("x")}))
     monkeypatch.setitem(rs.ADMIN_ROUTES, ("GET", "/api/_admin_probe_get"), lambda body: (200, {"ok": True}))
     return monkeypatch
@@ -82,10 +81,10 @@ def test_existing_callers_that_omit_admin_token_still_work(env):
     assert rs.route("GET", "/api/nothing-here", {}, TOKEN)[0] == 404
 
 
-def test_auth_mode_reports_admin_enabled_and_keeps_password_login(env):
-    assert rs.route("GET", "/api/auth-mode", {}, None) == (200, {"password_login": False, "admin_enabled": False})
+def test_auth_mode_reports_admin_enabled(env):
+    assert rs.route("GET", "/api/auth-mode", {}, None)[1]["admin_enabled"] is False
     env.setenv("REVIEW_ADMIN_TOKEN", ADMIN)
-    assert rs.route("GET", "/api/auth-mode", {}, None) == (200, {"password_login": False, "admin_enabled": True})
+    assert rs.route("GET", "/api/auth-mode", {}, None)[1]["admin_enabled"] is True
 
 
 def test_auth_mode_never_reveals_the_token(env):

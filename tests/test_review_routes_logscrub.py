@@ -38,7 +38,6 @@ def test_every_method_and_a_malformed_line_are_scrubbed(capsys):
 def test_a_real_request_with_a_token_in_the_query_logs_without_it(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("REVIEW_TOKEN", "review-token")
     monkeypatch.setenv("WEBHOOK_TOKEN", SECRET)
-    monkeypatch.setattr(rs, "_LOGIN", None)
     srv = rs.BoundedHTTPServer(("127.0.0.1", 0), rs.Handler)
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
     thread.start()

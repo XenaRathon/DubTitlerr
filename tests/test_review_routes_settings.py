@@ -13,7 +13,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("REVIEW_TOKEN", TOKEN)
     monkeypatch.delenv("REVIEW_ADMIN_TOKEN", raising=False)
     monkeypatch.delenv("REVIEW_AUTH", raising=False)
-    monkeypatch.setattr(rs, "_LOGIN", None)
     monkeypatch.setattr(review_settings, "EFFECTIVE_ENV_PATH", str(tmp_path / "effective.env"))
     return tmp_path
 

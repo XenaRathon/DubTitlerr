@@ -37,9 +37,7 @@ def main():
         # Settings writes: runtime.env lands in this directory; the one profile the page may pick is this server itself.
         (base / "config").mkdir()
         os.environ["CONFIG_DIR"] = str(base / "config")
-        os.environ["REPAIR_PROFILES"] = json.dumps(
-            {"local": {"backend": "llamacpp", "url": "http://127.0.0.1:18842/healthz"}}
-        )
+        os.environ["REPAIR_PROFILES"] = json.dumps({"local": {"backend": "llamacpp", "url": "http://127.0.0.1:18842/healthz"}})
         os.environ["LONGCATAI_API_KEY"] = "fixture-secret-key-value"  # must show as "set", never as a value
         os.environ.pop("COMMANDCODE_API_KEY", None)
         os.environ.pop("WEBHOOK_TOKEN", None)
@@ -48,13 +46,14 @@ def main():
         os.environ["DECISIONS_DIR"] = str(ddir)
         import common
         import decisions
+        import review_auth
         import review_server as rs
         import review_settings
         import unresolved
 
         common.heartbeat(last_sweep_end=time.time(), roots_readable=True, order_file_present=True)
         review_settings.EFFECTIVE_ENV_PATH = str(base / "no-effective.env")  # absent: settings come from the environment
-        rs.configure_login()  # the optional username/password in front of the token
+        review_auth.import_env_admin()  # REVIEW_USERNAME/REVIEW_PASSWORD become the browser tests' admin account
         rs.ROOTS = [str(media)]
         decisions.GLOSSARY_DIR = str(glossary_dir)
         decisions.DECISIONS_DIR = str(ddir)

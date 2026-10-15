@@ -819,3 +819,90 @@ def import_env_admin(env=None) -> bool:
         return False
     log("review server: REVIEW_USERNAME imported as the first admin; REVIEW_PASSWORD is not read again once accounts exist")
     return True
+
+
+def is_https(headers) -> bool:
+    """True when the request says it came over TLS (X-Forwarded-Proto: https). This server speaks plain HTTP only:
+    native TLS is not served here, a reverse proxy in front of it terminates TLS. A client that sends the header
+    over plain HTTP just receives a Secure cookie its browser will not return."""
+    return header(headers, "X-Forwarded-Proto").split(",")[0].strip().lower() == "https"
+
+
+def session_cookie(sid: str, remember: bool, secure: bool) -> str:
+    parts = [f"{SESSION_COOKIE}={sid}", "Path=/", "HttpOnly", "SameSite=Strict"]
+    if remember:
+        parts.append(f"Max-Age={REMEMBER_SECONDS}")
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def clear_cookie(secure: bool) -> str:
+    parts = [f"{SESSION_COOKIE}=", "Path=/", "HttpOnly", "SameSite=Strict", "Max-Age=0"]
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def accounts_ok() -> bool:
+    try:
+        read_users()
+        return True
+    except Unreadable:
+        return False
+
+
+def check_login(users: list, name, password) -> dict | None:
+    """The account for a correct name and password, else None. One scrypt either way: a missing user is verified against a
+    dummy hash, so a wrong username takes as long as a wrong password."""
+    row = find_user(users, name)
+    ok = verify_password(password if isinstance(password, str) else "", row["hash"] if row else dummy_hash())
+    return row if (row is not None and ok) else None
+
+
+LEGACY_CLEAR = f"{LEGACY_COOKIE}=; Path=/; Max-Age=0; SameSite=Strict"
+
+
+def handle_login(body, client: str, throttle, headers=None) -> tuple:
+    body = body if isinstance(body, dict) else {}
+    name = body.get("username")
+    # Counted per address AND per username: behind a proxy every client shares one address.
+    keys = [client] + (["user:" + name.lower()[:64]] if isinstance(name, str) and name else [])
+    wait = max(throttle.retry_after(k) for k in keys)
+    if wait:
+        log("review server: login throttled")
+        return 429, {"error": "too many failed logins; wait before trying again", "retry_after": wait}, {}
+    try:
+        users = read_users()
+    except Unreadable as e:
+        return 503, {"error": e.message}, {}
+    if not users:
+        return 409, {"error": "setup required"}, {}
+    row = check_login(users, body.get("username"), body.get("password"))
+    if row is None:
+        for k in keys:
+            throttle.failure(k)
+        log("review server: login refused")  # the same line for a wrong username and a wrong password
+        return 401, {"error": "wrong username or password"}, {}
+    for k in keys:
+        throttle.success(k)
+    remember = body.get("remember") is True
+    try:
+        sid = sessions().create(row["name"], remember, int(row.get("session_epoch", 0)))  # a fresh id every time
+    except AuthError as e:
+        return e.status, {"error": e.message}, {}
+    out = {"username": row["name"], "role": row["role"]}
+    if row["role"] == "admin":
+        out["token"] = api_key()  # TRANSITIONAL: the deployed bundle's password sign-in reads it; removed in Task 15
+    cookies = [session_cookie(sid, remember, is_https(headers)), LEGACY_CLEAR]  # the legacy token cookie must not outlive a login
+    return 200, out, {"Set-Cookie": cookies}
+
+
+def handle_logout(principal, headers=None) -> tuple:
+    if principal is not None and principal.kind == "session":
+        sessions().revoke(principal.sid)
+    return 200, {"ok": True}, {"Set-Cookie": clear_cookie(is_https(headers))}
+
+
+def handle_me(principal) -> tuple:
+    return 200, {"username": principal.name or "anonymous", "role": principal.role}

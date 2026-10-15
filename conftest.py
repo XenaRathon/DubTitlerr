@@ -39,5 +39,4 @@ def _accounts_are_installed_by_default(request, monkeypatch, tmp_path_factory):
     import review_auth
 
     monkeypatch.setattr(review_auth, "setup_required", lambda: False)
-    if "CONFIG_DIR" not in os.environ:
-        monkeypatch.setenv("CONFIG_DIR", str(tmp_path_factory.mktemp("auth_config")))
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path_factory.mktemp("auth_config")))  # even when the shell or CI already set one
