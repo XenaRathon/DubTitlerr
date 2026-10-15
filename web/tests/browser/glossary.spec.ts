@@ -1,11 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
-import { expectNoAxeViolations, reset } from './helpers';
+import { expectNoAxeViolations, reset, signIn } from './helpers';
 
 async function openGlossary(page: Page) {
   await page.goto('/review#/glossary');
-  await page.getByRole('button', { name: 'Use a token instead' }).click();
-  await page.getByLabel('Access token').fill('browser-fixture-token');
-  await page.getByRole('button', { name: 'Unlock workspace' }).click();
+  await signIn(page);
   await expect(page.getByRole('region', { name: 'Glossary editor' })).toBeVisible();
   await expect(page.getByLabel('New term')).toBeVisible();
 }

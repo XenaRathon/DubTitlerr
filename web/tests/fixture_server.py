@@ -25,7 +25,6 @@ def main():
         os.environ["REVIEW_PASSWORD"] = "browser-fixture-password"
         os.environ.pop("REVIEW_AUTH", None)
         # The new pages' backends: admin-guarded run requests, a settings read and two backend probes.
-        os.environ["REVIEW_ADMIN_TOKEN"] = "browser-admin-token"
         os.environ["ANIME_ROOT"] = str(media)
         os.environ["REQUESTS_DIR"] = str(base / "requests")
         os.environ["SCHEDULE_FILE"] = str(base / "schedule.json")
@@ -145,7 +144,7 @@ def main():
 
         class FixtureHandler(rs.Handler):
             def do_POST(self):
-                if self.path == "/__test/reset" and self.headers.get(rs.TOKEN_HEADER) == "browser-fixture-token":
+                if self.path == "/__test/reset" and self.headers.get("X-Api-Key") == "browser-fixture-token":
                     for file in ddir.glob("*.json"):
                         file.unlink()
                     for file in media.rglob("*.dubtitles.unresolved.jsonl"):

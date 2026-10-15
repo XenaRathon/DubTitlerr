@@ -3,9 +3,9 @@ import { expectNoAxeViolations, navTo, openSignedIn } from './helpers';
 
 // Hash routing: the location hash names the view; a deep link survives the login gate; back/forward follow it.
 async function signIn(page: import('@playwright/test').Page) {
-  await page.getByRole('button', { name: 'Use a token instead' }).click();
-  await page.getByLabel('Access token').fill('browser-fixture-token');
-  await page.getByRole('button', { name: 'Unlock workspace' }).click();
+  await page.getByLabel('Username').fill('reviewer');
+  await page.getByLabel('Password').fill('browser-fixture-password');
+  await page.getByRole('button', { name: 'Sign in' }).click();
 }
 const nav = (page: import('@playwright/test').Page) =>
   page.getByRole('navigation', { name: 'Primary navigation' });
@@ -110,13 +110,17 @@ test('every hash route renders its own page', async ({ page }) => {
 });
 
 test('every hash route can be opened directly after sign-in', async ({ context }) => {
+  const first = await context.newPage();
+  await openSignedIn(first);
+  await first.close();
   for (const [hash, marker] of [
     ['#/dashboard', 'Pipeline status'],
     ['#/runs', 'Run requests'],
     ['#/settings', 'Settings'],
   ] as const) {
-    const fresh = await context.newPage(); // a new tab: its own sessionStorage, so the login gate shows again
-    await openSignedIn(fresh, hash);
+    // A new tab shares the session cookie: the deep link opens straight into the page, no second sign-in.
+    const fresh = await context.newPage();
+    await fresh.goto('/review' + hash);
     await expect(fresh.getByRole('heading', { name: marker, level: 1 })).toBeVisible();
     expect(new URL(fresh.url()).hash).toBe(hash);
     await fresh.close();

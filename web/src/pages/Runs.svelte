@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { ApiError } from '../lib/api.js';
-  import { adminHeaders, clearAdminToken, loadAdminToken, storeAdminToken } from '../lib/adminToken.js';
   import {
     buildRequestBody,
     checkShowPick,
@@ -16,8 +15,7 @@
   } from '../lib/runs.js';
   import StatusBadge from '../lib/StatusBadge.svelte';
 
-  // Authenticated fetch wrapper: reads take the review token the wrapper holds;
-  // writes additionally pass the admin token via options.headers.
+  // Authenticated fetch wrapper: the session cookie and the CSRF header are added by session.js.
   let {
     api,
   }: {
@@ -49,7 +47,6 @@
   let season = $state('');
   let episodeRe = $state('');
   let requireEng = $state(false);
-  let adminToken = $state('');
   let requests = $state<RunRequest[]>([]);
   let loading = $state(false);
   let queuing = $state(false);
@@ -76,20 +73,6 @@
     const running = requests.filter((r) => r.status === 'running').length;
     return `${pending} pending, ${running} running, ${requests.length} listed.`;
   });
-
-  function adminHeadersForCall(): Record<string, string> {
-    return adminHeaders(adminToken);
-  }
-
-  function rememberAdminToken() {
-    storeAdminToken(adminToken);
-  }
-
-  function forgetAdminToken() {
-    adminToken = '';
-    clearAdminToken();
-    document.getElementById('runs-admin-token')?.focus();
-  }
 
   function reportError(exc: unknown, fallback: string) {
     if (exc instanceof ApiError)
@@ -123,16 +106,10 @@
       formError = problem;
       return;
     }
-    if (!adminToken) {
-      errorMsg = 'Admin token required: enter it below and retry.';
-      document.getElementById('runs-admin-token')?.focus();
-      return;
-    }
     queuing = true;
     try {
       const res = (await api('/api/requests', {
         body: buildRequestBody({ show, season, episodeRe, requireEng }),
-        headers: adminHeadersForCall(),
       })) as { id: string };
       statusMsg = `Queued as ${shortId(res.id)}.`;
       show = '';
@@ -189,17 +166,11 @@
       schedFormError = problem;
       return;
     }
-    if (!adminToken) {
-      schedError = 'Admin token required: enter it below and retry.';
-      document.getElementById('runs-admin-token')?.focus();
-      return;
-    }
     schedSaving = true;
     try {
       await api('/api/schedule', {
         method: 'PUT',
         body: scheduleBody({ enabled: schedEnabled, open: schedOpen, close: schedClose, tz: schedTz }),
-        headers: adminHeadersForCall(),
       });
       schedMsg = 'Schedule saved.';
     } catch (exc) {
@@ -224,7 +195,6 @@
   }
 
   onMount(() => {
-    adminToken = loadAdminToken();
     void loadShows();
     try {
       tzPlaceholder = Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'UTC';
@@ -254,24 +224,6 @@
     {#if errorMsg}<p class="notice failure" role="alert">{errorMsg}</p>{/if}
     {#if statusMsg}<p class="notice success" role="status">{statusMsg}</p>{/if}
   </div>
-
-  <!-- The token comes before the forms that need it. -->
-  <section class="runs-token form-narrow" aria-label="Admin token">
-    <label for="runs-admin-token">Admin token</label>
-    <div class="runs-token-field">
-      <input
-        id="runs-admin-token"
-        type="password"
-        bind:value={adminToken}
-        oninput={rememberAdminToken}
-        placeholder="Needed for queueing runs"
-        autocomplete="off"
-        spellcheck="false"
-      />
-      <button class="secondary" type="button" onclick={forgetAdminToken}>Forget</button>
-    </div>
-    <small class="runs-hint">Kept in this tab only, never in a link or download.</small>
-  </section>
 
   <h2 class="runs-heading">Queue a run</h2>
   <form
@@ -408,19 +360,6 @@
   }
   .form-narrow {
     max-width: 40rem;
-  }
-  .runs-token {
-    display: grid;
-    gap: 6px;
-    margin-bottom: 8px;
-  }
-  .runs-token-field {
-    display: flex;
-    gap: 8px;
-  }
-  .runs-token-field input {
-    flex: 1;
-    min-width: 0;
   }
   .runs-hint,
   .runs-note {

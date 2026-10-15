@@ -29,6 +29,9 @@
   import Runs from './pages/Runs.svelte';
   import Settings from './pages/Settings.svelte';
   import { ApiError } from './lib/api.js';
+  import Login from './pages/Login.svelte';
+  import Setup from './pages/Setup.svelte';
+  import { apiFetch, logout as endSession, me as fetchMe } from './lib/session.js';
   import { hashFor, parseHash } from './lib/route.js';
   import { EPISODE_SORTS, LINE_SORTS, readSortPref, sortEpisodes, writeSortPref } from './lib/episodeSort.js';
   import type { Draft, Entry, Episode, SaveResult, Shared, Verdict } from './types';
@@ -47,14 +50,10 @@
   // signed out keeps its hash because nothing below rewrites it until the operator navigates.
   const initialView = parseHash(typeof location === 'undefined' ? '' : location.hash);
   let view = $state<View>(initialView);
-  let token = $state('');
-  let username = $state('');
-  let password = $state('');
-  // The server says whether a username/password login sits in front of the token; the token field is always available.
-  let passwordLogin = $state(false);
-  let useToken = $state(false);
+  type Account = { state: 'loading' | 'setup' | 'login' | 'in'; username: string; role: string };
+  let account = $state<Account>({ state: 'loading', username: '', role: '' });
+  let accountsOk = $state(true);
   let authenticated = $state(false);
-  let authenticating = $state(false);
   let loading = $state(false);
   let saving = $state(false);
   let message = $state('');
@@ -152,7 +151,7 @@
   const draft = $derived(current ? drafts[current.id] : undefined);
   const remaining = $derived(visible.filter((e) => !drafts[e.id]).length);
 
-  // `extra` carries per-call headers (the admin token); they go in the request headers, never in the JSON body.
+  // `extra` carries per-call headers; they go in the request headers, never in the JSON body.
   // `method` defaults to POST with a body and GET without; PUT and body-less POST (reset) name theirs.
   async function api<T>(
     path: string,
@@ -160,19 +159,19 @@
     extra?: Record<string, string>,
     method?: string,
   ): Promise<T> {
-    const res = await fetch(path, {
+    const res = await apiFetch(path, {
       method: method ?? (body ? 'POST' : 'GET'),
-      headers: { 'X-Review-Token': token, ...extra, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      headers: { ...extra, ...(body ? { 'Content-Type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
     if (res.status === 401) {
       authenticated = false;
-      forgetToken(); // a refused token must not linger in memory or storage and block the next sign-in
+      account = { state: 'login', username: '', role: '' };
       // Staged review choices live in this tab; glossary or run-form text does not survive the login panel.
       error =
         view === 'inbox' || view === 'shared'
-          ? 'Access token not accepted. Your staged choices are still held in this tab.'
-          : 'Access token not accepted. Sign in again; unsaved text on that page was not kept.';
+          ? 'Your session ended. Sign in again. Your staged choices are still held in this tab.'
+          : 'Your session ended. Sign in again; unsaved text on that page was not kept.';
       throw new Error(error);
     }
     const result = await res.json();
@@ -186,48 +185,19 @@
     path: string,
     options?: { method?: string; body?: object; headers?: Record<string, string> },
   ) => api<any>(path, options?.body, options?.headers, options?.method);
-  function forgetToken() {
-    token = '';
-    try {
-      sessionStorage.removeItem('dubtitlerr_review_token');
-    } catch {
-      /* storage unavailable; the memory copy is cleared */
-    }
-  }
   function report(exc: unknown) {
     error = exc instanceof Error ? exc.message : 'Request failed. Please try again.';
   }
   async function loadIndex() {
     episodes = (await api<{ episodes: Episode[] }>('/api/episodes')).episodes;
   }
-  async function passwordSignIn() {
-    const res = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.token) {
-      const wait = res.status === 429 && data.retry_after ? ` Try again in ${data.retry_after} s.` : '';
-      throw new Error((data.error || `Sign-in failed (${res.status})`) + wait);
-    }
-    token = data.token;
-    password = '';
-  }
-  // `restore` is the page-load attempt with a token kept from earlier; every explicit submit in password mode signs in with the
-  // typed credentials, whatever token the tab holds.
-  async function login(restore = false) {
-    authenticating = true;
+  // Called once a session exists (a restored one on page load, or a fresh sign-in or setup).
+  async function enter(user: { username: string; role: string }) {
+    account = { state: 'in', username: user.username, role: user.role };
     error = '';
     try {
-      if (!restore && passwordLogin && !useToken) await passwordSignIn();
       await loadIndex();
       authenticated = true;
-      try {
-        sessionStorage.setItem('dubtitlerr_review_token', token);
-      } catch {
-        /* storage unavailable; token stays in memory */
-      }
       try {
         const res = await fetch('/healthz');
         const data = await res.json();
@@ -239,8 +209,6 @@
       else if (selected) await loadEpisode(selected);
     } catch (exc) {
       report(exc);
-    } finally {
-      authenticating = false;
     }
   }
   function stopAudio() {
@@ -503,7 +471,7 @@
         id: current.id,
         occurrence: String(occurrence),
       });
-      const res = await fetch('/api/audio?' + params, { headers: { 'X-Review-Token': token } });
+      const res = await apiFetch('/api/audio?' + params);
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.error || 'Audio preview failed');
@@ -560,8 +528,13 @@
       e.returnValue = '';
     }
   }
-  function logout() {
+  async function logout() {
     if (saving || loading || !discardOK()) return;
+    try {
+      await endSession();
+    } catch {
+      /* the next request answers 401 and the page falls back to the sign-in form */
+    }
     glossaryDirty = false;
     stopAudio();
     drafts = {};
@@ -570,29 +543,26 @@
     episodes = [];
     selected = null;
     authenticated = false;
-    token = '';
-    username = '';
-    password = '';
+    account = { state: 'login', username: '', role: '' };
     message = '';
     error = '';
-    try {
-      sessionStorage.removeItem('dubtitlerr_review_token');
-    } catch {
-      /* memory token already cleared */
-    }
   }
   onMount(() => {
-    try {
-      token = sessionStorage.getItem('dubtitlerr_review_token') ?? '';
-    } catch {
-      /* storage is optional */
-    }
-    fetch('/api/auth-mode')
-      .then((r) => r.json())
-      .then((d) => (passwordLogin = d.password_login === true))
-      .catch(() => (passwordLogin = false));
     if (location.hash !== '' && location.hash !== hashFor(view))
       history.replaceState(null, '', hashFor(view));
+    void (async () => {
+      try {
+        const who = await fetchMe();
+        if (who.state === 'in') await enter(who);
+        else account = { state: who.state, username: '', role: '' };
+        if (who.state === 'login') {
+          const mode = await fetch('/api/auth-mode').then((r) => r.json());
+          accountsOk = mode.accounts_ok !== false;
+        }
+      } catch {
+        account = { state: 'login', username: '', role: '' };
+      }
+    })();
     const narrowQuery = window.matchMedia('(max-width: 768px)');
     narrow = narrowQuery.matches;
     const syncNarrow = (e: MediaQueryListEvent) => {
@@ -600,7 +570,6 @@
       if (!narrow) mobileNav = false; // a drawer left open must not freeze the page after the window widens
     };
     narrowQuery.addEventListener('change', syncNarrow);
-    if (token) void login(true);
     return () => {
       narrowQuery.removeEventListener('change', syncNarrow);
       stopAudio();
@@ -638,7 +607,7 @@
         <span class="health"
           ><span class:warning={health !== 'Healthy'} class="status-dot"></span>{authenticated
             ? health
-            : 'Token protected'}</span
+            : 'Sign in required'}</span
         >{#if view === 'inbox' || view === 'shared'}<button
             class="icon-button"
             aria-label="Keyboard shortcuts"
@@ -653,75 +622,24 @@
     </header>
 
     <main id="main" tabindex="-1">
-      {#if !authenticated}
-        <section class="login-panel">
-          <form
-            class="login-form"
-            onsubmit={(e) => {
-              e.preventDefault();
-              void login();
-            }}
-          >
-            <div class="login-lock"><LockKeyhole size={24} /></div>
-            <h1>Open your review workspace</h1>
-            {#if passwordLogin && !useToken}
-              <p>Sign in with the review username and password.</p>
-              <label for="username">Username</label><input
-                id="username"
-                name="username"
-                type="text"
-                bind:value={username}
-                autocomplete="username"
-                autocapitalize="none"
-                spellcheck="false"
-              />
-              <label for="password">Password</label><input
-                id="password"
-                name="password"
-                type="password"
-                bind:value={password}
-                autocomplete="current-password"
-              />
-              <button
-                type="button"
-                class="link-button"
-                onclick={() => {
-                  useToken = true;
-                  error = '';
-                }}>Use a token instead</button
-              >
-            {:else}
-              <p>Use the review token from your container log or <code>review_token</code> file.</p>
-              <label for="access-token">Access token</label><input
-                id="access-token"
-                type="password"
-                bind:value={token}
-                placeholder="Paste your review token"
-                autocomplete="off"
-                spellcheck="false"
-              />
-              {#if passwordLogin}<button
-                  type="button"
-                  class="link-button"
-                  onclick={() => {
-                    useToken = false;
-                    error = '';
-                  }}>Use username and password instead</button
-                >{/if}
-            {/if}
-            <button class="primary" disabled={authenticating}
-              >{#if authenticating}<LoaderCircle class="spin" size={17} />{:else}<ChevronRight
-                  size={17}
-                />{/if}{authenticating
-                ? 'Opening workspace…'
-                : passwordLogin && !useToken
-                  ? 'Sign in'
-                  : 'Unlock workspace'}</button
-            >{#if error}<p class="inline-error" role="alert">{error}</p>{/if}<small
-              ><ShieldCheck size={14} />Kept in this browser tab only. No external services.</small
-            >
-          </form>
-        </section>
+      {#if account.state === 'loading'}
+        <p class="page-sub" role="status">Checking your session…</p>
+      {:else if account.state === 'setup'}
+        <Setup
+          onsignedin={enter}
+          onalreadysetup={(message) => {
+            account = { state: 'login', username: '', role: '' };
+            error = message;
+          }}
+        />
+      {:else if !authenticated}
+        <Login
+          onsignedin={enter}
+          notice={error ||
+            (accountsOk
+              ? ''
+              : 'The accounts file cannot be read. An administrator can recover with: python3 review_users.py reset-admin <name>')}
+        />
       {:else if view === 'glossary'}
         <Glossary {api} bind:dirty={glossaryDirty} />
       {:else if view === 'dashboard'}

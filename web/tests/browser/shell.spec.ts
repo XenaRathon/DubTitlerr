@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { ADMIN_TOKEN, REVIEW_TOKEN, expectNoAxeViolations, openSignedIn, reset } from './helpers';
+import { API_KEY, expectNoAxeViolations, openSignedIn, reset } from './helpers';
 
 const nav = (page: Page) => page.getByRole('navigation', { name: 'Primary navigation' });
 const toggle = (page: Page) => page.getByRole('button', { name: 'Toggle navigation' });
@@ -32,7 +32,7 @@ test('Skip to content is the first tab stop, lands on <main>, and leaves the rou
   page,
 }) => {
   await openSignedIn(page, '#/runs');
-  await page.reload(); // a fresh page: the token is kept in the tab, and Tab starts from the top of the document
+  await page.reload(); // a fresh page: the session cookie is kept, and Tab starts from the top of the document
   await expect(page.getByRole('heading', { name: 'Run requests', level: 1 })).toBeVisible();
   await page.keyboard.press('Tab');
   const skip = page.getByRole('link', { name: 'Skip to content' });
@@ -118,7 +118,7 @@ test('a session that expires mid-page says so on the login panel and keeps the r
     route.fulfill({
       status: 401,
       contentType: 'application/json',
-      body: JSON.stringify({ error: 'a token is required' }),
+      body: JSON.stringify({ error: 'login required' }),
     }),
   );
   await page.getByLabel('New term').fill('lost text');
@@ -132,7 +132,7 @@ test('a session that expires mid-page says so on the login panel and keeps the r
 
 test('no page scrolls sideways on a phone, even with a populated queue', async ({ page, request }) => {
   const made = await request.post('/api/requests', {
-    headers: { 'X-Review-Token': REVIEW_TOKEN, 'X-Review-Admin-Token': ADMIN_TOKEN },
+    headers: { 'X-Api-Key': API_KEY },
     data: { show: 'Neon Harbor', season: 1, episode_re: '[Ss]0*1[Ee]0*1(?!\\d)' },
   });
   expect(made.ok()).toBe(true);

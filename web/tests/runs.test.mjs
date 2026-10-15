@@ -56,11 +56,11 @@ test('validateForm caps the regex at 200 chars and needs it to compile', () => {
   assert.equal(validateForm({ show: 'One Pace', season: '', episodeRe: 'E0*5' }), null);
 });
 
-test('describeError separates the two admin problems and names the 409 id', () => {
-  assert.match(describeError(403, { error: 'admin writes are disabled' }), /disabled.*REVIEW_ADMIN_TOKEN/);
-  assert.match(describeError(403, { error: 'admin token required' }), /enter it below/);
+test('describeError names the admin-only refusal and the 409 id', () => {
+  assert.equal(describeError(403, { error: 'admin only' }), 'Only administrators can do this.');
+  assert.equal(describeError(403, { error: 'cross-site request refused' }), 'Not allowed.');
   assert.match(describeError(409, { existing_id: 'abc123' }), /abc123/);
-  assert.match(describeError(401, { error: 'a token is required' }), /sign in again/i);
+  assert.match(describeError(401, { error: 'login required' }), /sign in again/i);
   assert.match(describeError(400, { error: 'show must not be empty' }), /show must not be empty/);
   assert.equal(typeof describeError(500, {}), 'string');
 });

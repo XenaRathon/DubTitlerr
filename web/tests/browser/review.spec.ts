@@ -7,7 +7,7 @@ test('human review workspace keeps real workflow semantics', async ({ page, requ
   // slimming the journey; the global 30 s default stays for every other spec.
   test.setTimeout(90_000);
   const reset = await request.post('/__test/reset', {
-    headers: { 'X-Review-Token': 'browser-fixture-token' },
+    headers: { 'X-Api-Key': 'browser-fixture-token' },
   });
   expect(reset.ok()).toBe(true);
   const errors: string[] = [];
@@ -18,22 +18,18 @@ test('human review workspace keeps real workflow semantics', async ({ page, requ
     .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
     .analyze();
   expect(loginAccessibility.violations).toEqual([]);
-  // The fixture server has a username and password configured: that is the first thing the login shows.
+  // The fixture server imported a username and password as its first admin: the sign-in form is all there is.
   await expect(page.getByLabel('Username')).toBeVisible();
   await expect(page.getByLabel('Password')).toHaveAttribute('type', 'password');
   await expect(page.getByLabel('Password')).toHaveAttribute('autocomplete', 'current-password');
+  await expect(page.getByLabel('Access token')).toHaveCount(0);
   await expect(page.getByText('Make every')).toHaveCount(0);
   await page.getByLabel('Username').fill('reviewer');
   await page.getByLabel('Password').fill('not-the-password');
   await page.getByLabel('Password').press('Enter');
   await expect(page.getByRole('alert')).toContainText('wrong username or password');
-  // The token stays available.
-  await page.getByRole('button', { name: 'Use a token instead' }).click();
-  await page.getByLabel('Access token').fill('wrong-token');
-  await page.getByRole('button', { name: 'Unlock workspace' }).click();
-  await expect(page.getByRole('alert')).toContainText('Access token not accepted');
-  await page.getByLabel('Access token').fill('browser-fixture-token');
-  await page.getByRole('button', { name: 'Unlock workspace' }).click();
+  await page.getByLabel('Password').fill('browser-fixture-password');
+  await page.getByLabel('Password').press('Enter');
   await expect(page.getByRole('heading', { name: 'Review inbox', level: 1 })).toBeVisible();
   await expect(page.getByLabel('Search episodes')).toBeVisible();
   await page.getByLabel('Search episodes').fill('Neon Harbor');
@@ -84,12 +80,12 @@ test('human review workspace keeps real workflow semantics', async ({ page, requ
         (
           await (
             await page.request.get('/api/episodes', {
-              headers: { 'X-Review-Token': 'browser-fixture-token' },
+              headers: { 'X-Api-Key': 'browser-fixture-token' },
             })
           ).json()
         ).episodes.find((ep: { name: string }) => ep.name.includes('S01E01')).stem,
       ),
-    { headers: { 'X-Review-Token': 'browser-fixture-token' } },
+    { headers: { 'X-Api-Key': 'browser-fixture-token' } },
   );
   expect((await rows.json()).entries.length).toBeGreaterThan(1);
   await page.getByRole('button', { name: 'Review line 1', exact: true }).click();
@@ -148,8 +144,7 @@ test('human review workspace keeps real workflow semantics', async ({ page, requ
   expect(errors).toEqual([]);
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page.getByRole('heading', { name: 'Open your review workspace' })).toBeVisible();
-  // Signing in with the password returns the same token and opens the same workspace.
-  await page.getByRole('button', { name: 'Use username and password instead' }).click();
+  // Signing in again opens the same workspace, and no token was ever put in storage.
   await page.getByLabel('Username').fill('reviewer');
   await page.getByLabel('Password').fill('browser-fixture-password');
   const passwordAccessibility = await new AxeBuilder({ page })
@@ -158,7 +153,5 @@ test('human review workspace keeps real workflow semantics', async ({ page, requ
   expect(passwordAccessibility.violations).toEqual([]);
   await page.getByLabel('Password').press('Enter');
   await expect(page.getByRole('heading', { name: 'Review inbox', level: 1 })).toBeVisible();
-  expect(await page.evaluate(() => sessionStorage.getItem('dubtitlerr_review_token'))).toBe(
-    'browser-fixture-token',
-  );
+  expect(await page.evaluate(() => sessionStorage.length + localStorage.length)).toBe(0);
 });

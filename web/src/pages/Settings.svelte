@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { ApiError } from '../lib/api.js';
-  import { adminHeaders, clearAdminToken, loadAdminToken, storeAdminToken } from '../lib/adminToken.js';
   import { CircleCheck, CircleMinus } from '@lucide/svelte';
   import {
     buildSettingsBody,
@@ -19,9 +18,6 @@
   } from '../lib/settings.js';
 
   // The options-style wrapper the Runs page uses: api(path, { method, body, headers }).
-  // NOTE (mount mismatch, boss to fix): App.svelte mounts <Settings {api}/> with the raw
-  // (path, body?) wrapper, so PUT bodies and X-Review-Admin-Token headers cannot reach the
-  // server until this page is mounted with the runsApi adapter like Runs is.
   let {
     api,
   }: {
@@ -58,7 +54,6 @@
   let editRequireEng = $state(false);
   let acquireApply = $state<{ enabled?: boolean; source?: string } | null>(null);
   let editAcquireApply = $state(true);
-  let adminToken = $state('');
   let saving = $state(false);
   let resetting = $state(false);
   let writeError = $state('');
@@ -95,12 +90,6 @@
     editAcquireApply = acquireApply?.enabled ?? true;
   }
 
-  function forgetAdminToken() {
-    adminToken = '';
-    clearAdminToken();
-    document.getElementById('settings-admin-token')?.focus();
-  }
-
   function reportWriteError(exc: unknown, fallback: string) {
     if (exc instanceof ApiError)
       writeError = describeWriteError(exc.status, exc.payload as { error?: unknown });
@@ -134,14 +123,9 @@
       writeMsg = 'Nothing changed.';
       return;
     }
-    if (!adminToken) {
-      writeError = 'Admin token required: enter it below and retry.';
-      document.getElementById('settings-admin-token')?.focus();
-      return;
-    }
     saving = true;
     try {
-      await api('/api/settings', { method: 'PUT', body, headers: adminHeaders(adminToken) });
+      await api('/api/settings', { method: 'PUT', body });
       writeMsg = 'Saved. Overrides apply at the next sweep.';
       await load();
     } catch (exc) {
@@ -158,14 +142,9 @@
     if (!window.confirm('Delete all runtime overrides and go back to the container environment?')) return;
     writeError = '';
     writeMsg = '';
-    if (!adminToken) {
-      writeError = 'Admin token required: enter it below and retry.';
-      document.getElementById('settings-admin-token')?.focus();
-      return;
-    }
     resetting = true;
     try {
-      await api('/api/settings/reset', { method: 'POST', headers: adminHeaders(adminToken) });
+      await api('/api/settings/reset', { method: 'POST' });
       writeMsg = 'Overrides cleared.';
       await load();
     } catch (exc) {
@@ -271,7 +250,6 @@
   }
 
   onMount(() => {
-    adminToken = loadAdminToken();
     void load();
   });
 </script>
@@ -379,22 +357,6 @@
   {#if writable}
     <section class="settings-section settings-edit" aria-label="Edit settings">
       <h2>Edit settings</h2>
-      <div class="settings-token">
-        <label for="settings-admin-token">Admin token</label>
-        <div class="settings-token-field">
-          <input
-            id="settings-admin-token"
-            type="password"
-            bind:value={adminToken}
-            oninput={() => storeAdminToken(adminToken)}
-            placeholder="Needed for saving settings"
-            autocomplete="off"
-            spellcheck="false"
-          />
-          <button class="secondary" type="button" onclick={forgetAdminToken}>Forget</button>
-        </div>
-        <small class="settings-hint">Kept in this tab only, never in a link or download.</small>
-      </div>
       <div id="settings-write-result" tabindex="-1">
         {#if writeFormError}<p class="notice failure" role="alert">{writeFormError}</p>{/if}
         {#if writeError}<p class="notice failure" role="alert">{writeError}</p>{/if}
@@ -470,7 +432,9 @@
             disabled={saving}
           />Apply acquired names</label
         >
-        <small id="settings-acquire-apply-note" class="settings-hint">{describeAcquireApply(acquireApply)}</small>
+        <small id="settings-acquire-apply-note" class="settings-hint"
+          >{describeAcquireApply(acquireApply)}</small
+        >
         {#if pendingFor('acquire_apply') !== undefined}<span class="badge neutral"
             >pending next sweep: {describePendingAcquireApply(pendingFor('acquire_apply'))}</span
           >{/if}
@@ -565,20 +529,6 @@
   }
   .settings-backend .notice {
     margin: 0;
-  }
-  .settings-token {
-    display: grid;
-    gap: 6px;
-    max-width: 40rem;
-    margin-bottom: 16px;
-  }
-  .settings-token-field {
-    display: flex;
-    gap: 8px;
-  }
-  .settings-token-field input {
-    flex: 1;
-    min-width: 0;
   }
   .settings-hint,
   .settings-note {

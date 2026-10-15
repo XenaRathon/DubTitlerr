@@ -85,7 +85,7 @@ export function validateForm(form) {
 
 /**
  * One plain sentence for a run-request error, keeping status and body apart so
- * the two admin-token problems read differently and a 409 names its request.
+ * an admin-only refusal reads differently from a rejected cross-site request and a 409 names its request.
  * @param {number} status
  * @param {{ error?: unknown, existing_id?: unknown } | null | undefined} payload
  * @returns {string}
@@ -98,12 +98,7 @@ export function describeError(status, payload) {
     return id ? `Already queued as ${id}.` : 'Already queued.';
   }
   if (status === 401) return 'Session expired. Sign in again.';
-  if (status === 403) {
-    if (detail === 'admin writes are disabled')
-      return 'Admin writes are disabled: set REVIEW_ADMIN_TOKEN on the server.';
-    if (detail === 'admin token required') return 'Admin token required: enter it below and retry.';
-    return 'Not allowed. Check the admin token and retry.';
-  }
+  if (status === 403) return detail === 'admin only' ? 'Only administrators can do this.' : 'Not allowed.';
   if (status === 400) return detail ? `Invalid request: ${detail}.` : 'Invalid request. Check the form.';
   return detail ? `${detail} (HTTP ${status}).` : `Request failed (${status}).`;
 }

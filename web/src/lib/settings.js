@@ -98,7 +98,8 @@ export function describeTestResult(result) {
     typeof result?.error === 'string' && result.error.trim() !== ''
       ? result.error.trim()
       : 'Connection failed.';
-  if (/access token not accepted/i.test(err)) return 'Session expired. Sign in again and retry.';
+  if (/session ended|access token not accepted/i.test(err))
+    return 'Session expired. Sign in again and retry.';
   if (typeof result?.status === 'number') {
     if (result.status === 429) return 'Too many checks. Wait a moment and retry.';
     if (result.status >= 500) return `Settings tester failed (HTTP ${result.status}): ${err}`;
@@ -190,7 +191,8 @@ const ACQUIRE_SOURCES = { runtime: 'runtime file', env: 'environment', default: 
  */
 export function describeAcquireApply(state) {
   if (typeof state?.enabled !== 'boolean') return 'Current value unknown.';
-  const from = ACQUIRE_SOURCES[/** @type {keyof typeof ACQUIRE_SOURCES} */ (state.source)] ?? 'unknown source';
+  const from =
+    ACQUIRE_SOURCES[/** @type {keyof typeof ACQUIRE_SOURCES} */ (state.source)] ?? 'unknown source';
   return `Currently ${state.enabled ? 'on' : 'off'} (from the ${from}). A change takes effect at the next sweep.`;
 }
 
@@ -204,8 +206,8 @@ export function describePendingAcquireApply(value) {
 }
 
 /**
- * One plain sentence for a settings-write error. The two admin-token problems
- * read differently; validation and server text pass through with their status.
+ * One plain sentence for a settings-write error. An admin-only refusal reads
+ * differently from a rejected cross-site request; validation and server text pass through with their status.
  * @param {number} status
  * @param {{ error?: unknown } | null | undefined} payload
  * @returns {string}
@@ -214,12 +216,7 @@ export function describeWriteError(status, payload) {
   const raw = typeof payload?.error === 'string' ? payload.error.trim() : '';
   const detail = raw.replace(/\.+$/, '');
   if (status === 401) return 'Session expired. Sign in again.';
-  if (status === 403) {
-    if (detail === 'admin writes are disabled')
-      return 'Admin writes are disabled: set REVIEW_ADMIN_TOKEN on the server.';
-    if (detail === 'admin token required') return 'Admin token required: enter it below and retry.';
-    return 'Not allowed. Check the admin token and retry.';
-  }
+  if (status === 403) return detail === 'admin only' ? 'Only administrators can do this.' : 'Not allowed.';
   if (status === 400) {
     // An allow-list refusal ("verify backend not allowed: the operator lists … in RUNTIME_…") names what to change.
     const refused = /^(.+?) not allowed: (.+)$/.exec(detail);

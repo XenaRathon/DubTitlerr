@@ -36,7 +36,10 @@ export async function request(path, { method = 'GET', body } = {}) {
   return payload;
 }
 
-/** Who this browser is: first-run setup, a login form, or a signed-in account. */
+/**
+ * Who this browser is: first-run setup, a login form, or a signed-in account.
+ * @returns {Promise<{ state: 'setup' } | { state: 'login' } | { state: 'in', username: string, role: string }>}
+ */
 export async function me() {
   const res = await apiFetch('/api/me');
   const payload = await res.json().catch(() => ({}));

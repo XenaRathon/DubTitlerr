@@ -14,7 +14,6 @@ import {
   sourceNote,
   validateModel,
 } from '../src/lib/settings.js';
-import { adminHeaders } from '../src/lib/adminToken.js';
 
 const FULL = {
   repair_backend: 'llamacpp',
@@ -109,7 +108,7 @@ test('describeTestResult passes errors through and maps statuses', () => {
   assert.match(describeTestResult({ ok: false, latency_ms: 0, error: 'x', status: 429 }), /wait/i);
   assert.match(describeTestResult({ ok: false, latency_ms: 0, error: 'boom', status: 503 }), /503/);
   assert.match(
-    describeTestResult({ ok: false, latency_ms: 0, error: 'Access token not accepted.' }),
+    describeTestResult({ ok: false, latency_ms: 0, error: 'Your session ended.' }),
     /sign in again/i,
   );
   assert.equal(typeof describeTestResult(null), 'string');
@@ -196,9 +195,9 @@ test('buildSettingsBody sends only changed fields', () => {
 });
 
 test('describeWriteError explains auth states and passes validation through', () => {
-  assert.match(describeWriteError(401, { error: 'a token is required' }), /sign in again/i);
-  assert.match(describeWriteError(403, { error: 'admin writes are disabled' }), /disabled/);
-  assert.match(describeWriteError(403, { error: 'admin token required' }), /enter it below/);
+  assert.match(describeWriteError(401, { error: 'login required' }), /sign in again/i);
+  assert.equal(describeWriteError(403, { error: 'admin only' }), 'Only administrators can do this.');
+  assert.equal(describeWriteError(403, { error: 'cross-site request refused' }), 'Not allowed.');
   assert.match(describeWriteError(400, { error: 'unknown key: foo' }), /unknown key: foo/);
   assert.match(describeWriteError(500, { error: 'disk full' }), /disk full/);
   assert.equal(typeof describeWriteError(500, {}), 'string');
@@ -211,11 +210,6 @@ test('pendingEntries lists pending overrides sorted with values', () => {
   ]);
   assert.deepEqual(pendingEntries({}), []);
   assert.deepEqual(pendingEntries(null), []);
-});
-
-test('adminHeaders carries the token or nothing', () => {
-  assert.deepEqual(adminHeaders('sekrit'), { 'X-Review-Admin-Token': 'sekrit' });
-  assert.deepEqual(adminHeaders(''), {});
 });
 
 test('allowedChoices offers only the server list, trimmed and deduplicated', () => {
@@ -263,8 +257,13 @@ test('buildSettingsBody leaves acquire_apply out when the toggle still equals it
   const current = { repair_model: 'old', verify_backend: 'llamacpp', require_eng: '1', acquire_apply: '' };
   const seed = { enabled: true, source: 'default' };
   // Another field changes, the unset (= apply) toggle is untouched: saving must not write acquire_apply=0.
-  assert.deepEqual(buildSettingsBody(current, { ...EDITED, acquireApply: true }, seed), { repair_model: 'qwen' });
-  assert.deepEqual(buildSettingsBody(current, { ...EDITED, repair_model: 'old', acquireApply: true }, seed), {});
+  assert.deepEqual(buildSettingsBody(current, { ...EDITED, acquireApply: true }, seed), {
+    repair_model: 'qwen',
+  });
+  assert.deepEqual(
+    buildSettingsBody(current, { ...EDITED, repair_model: 'old', acquireApply: true }, seed),
+    {},
+  );
 });
 
 test('buildSettingsBody sends acquire_apply as a real boolean when the toggle moves', () => {
@@ -300,8 +299,13 @@ test('formatValue reads the raw acquire_apply string by the shell rule: empty me
 });
 
 test('groupSettings files acquire_apply under Acquire', () => {
-  const acquire = groupSettings({ acquire_apply: '', acquire_backend: '' }).find((g) => g.title === 'Acquire');
-  assert.deepEqual(acquire.entries.map((e) => e.key), ['acquire_backend', 'acquire_apply']);
+  const acquire = groupSettings({ acquire_apply: '', acquire_backend: '' }).find(
+    (g) => g.title === 'Acquire',
+  );
+  assert.deepEqual(
+    acquire.entries.map((e) => e.key),
+    ['acquire_backend', 'acquire_apply'],
+  );
 });
 
 test('pendingEntries passes a boolean acquire_apply through', () => {

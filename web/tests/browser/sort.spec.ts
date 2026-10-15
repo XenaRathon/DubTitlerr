@@ -53,7 +53,7 @@ test('the episode list sorts by episode order and pending count, and remembers t
     .toEqual(['Neon Harbor S01E02', 'Alpha Show S10E01', 'Neon Harbor S01E10']);
 
   await sort.selectOption('episode');
-  // The tab keeps its token, so a reload signs straight back in.
+  // The session cookie survives the reload, so the page signs straight back in.
   await page.reload();
   await expect(page.getByLabel('Sort episodes')).toHaveValue('episode');
   await expect

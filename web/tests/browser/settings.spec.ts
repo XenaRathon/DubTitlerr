@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { ADMIN_TOKEN, REVIEW_TOKEN, expectNoAxeViolations, openSignedIn, reset } from './helpers';
+import { API_KEY, expectNoAxeViolations, openSignedIn, reset } from './helpers';
 
 test.beforeEach(async ({ request }) => reset(request));
 
@@ -78,31 +78,47 @@ const seenRequests = (page: import('@playwright/test').Page, pattern: string) =>
 };
 
 test('GET /api/settings reports profiles, pending and whether writes are possible', async ({ request }) => {
-  const res = await request.get('/api/settings', { headers: { 'X-Review-Token': REVIEW_TOKEN } });
+  const res = await request.get('/api/settings', { headers: { 'X-Api-Key': API_KEY } });
   const payload = await res.json();
   expect(payload.profiles).toEqual(['local']);
   expect(payload.pending).toEqual({});
   expect(payload.writable).toBe(true);
 });
 
-test('saving sends a PUT with the admin token in a header and never in the body', async ({ page }) => {
+test('saving sends a PUT with the CSRF header and no token header', async ({ page }) => {
   await openSignedIn(page, '#/settings');
   const seen = seenRequests(page, '**/api/settings');
   await expect(page.getByLabel('Repair model')).toBeVisible();
   await page.getByLabel('Repair model').fill('browser-test-model');
-  await page.locator('#settings-admin-token').fill(ADMIN_TOKEN);
   await page.getByRole('button', { name: 'Save settings' }).click();
 
   await expect(page.getByText(/Saved\./)).toBeVisible();
   const put = seen.find((r) => r.method === 'PUT');
   expect(put, 'a PUT request was sent').toBeTruthy();
-  expect(put!.headers['x-review-admin-token']).toBe(ADMIN_TOKEN);
-  expect(put!.headers['x-review-token']).toBe(REVIEW_TOKEN);
+  expect(put!.headers['x-dubtitlerr-request']).toBe('1');
+  expect(put!.headers['x-review-token']).toBeUndefined();
+  expect(put!.headers['x-review-admin-token']).toBeUndefined();
   expect(put!.headers['content-type']).toContain('application/json');
-  expect(put!.body).not.toContain(ADMIN_TOKEN);
   expect(JSON.parse(put!.body)).toEqual({ repair_model: 'browser-test-model' });
-  // The page reloads settings after the write and shows the change as pending.
   await expect(page.getByText('pending next sweep: browser-test-model')).toBeVisible();
+});
+
+test('Reset overrides is a POST with the CSRF header', async ({ page, request }) => {
+  await request.put('/api/settings', {
+    headers: { 'X-Api-Key': API_KEY },
+    data: { repair_model: 'about-to-be-reset' },
+  });
+  await openSignedIn(page, '#/settings');
+  await expect(page.getByText('pending next sweep: about-to-be-reset')).toBeVisible();
+  const seen = seenRequests(page, '**/api/settings/reset');
+  page.once('dialog', (d) => void d.accept());
+  await page.getByRole('button', { name: 'Reset overrides' }).click();
+
+  await expect(page.getByText('Overrides cleared.')).toBeVisible();
+  expect(seen).toHaveLength(1);
+  expect(seen[0].method).toBe('POST');
+  expect(seen[0].headers['x-dubtitlerr-request']).toBe('1');
+  await expect(page.getByText(/pending next sweep/)).toHaveCount(0);
 });
 
 test('a profile is picked from the server list and sent by name only', async ({ page }) => {
@@ -113,7 +129,6 @@ test('a profile is picked from the server list and sent by name only', async ({ 
     'local',
   ]);
   await page.getByLabel('Repair profile').selectOption('local');
-  await page.locator('#settings-admin-token').fill(ADMIN_TOKEN);
   await page.getByRole('button', { name: 'Save settings' }).click();
   await expect(page.getByText(/Saved\./)).toBeVisible();
   const put = seen.find((r) => r.method === 'PUT')!;
@@ -121,51 +136,9 @@ test('a profile is picked from the server list and sent by name only', async ({ 
   expect(put.body).not.toMatch(/http|127\.0\.0\.1/);
 });
 
-test('Reset overrides is a POST with the admin header and no token in a body', async ({ page, request }) => {
-  await request.put('/api/settings', {
-    headers: { 'X-Review-Token': REVIEW_TOKEN, 'X-Review-Admin-Token': ADMIN_TOKEN },
-    data: { repair_model: 'about-to-be-reset' },
-  });
-  await openSignedIn(page, '#/settings');
-  await expect(page.getByText('pending next sweep: about-to-be-reset')).toBeVisible();
-  const seen = seenRequests(page, '**/api/settings/reset');
-  await page.locator('#settings-admin-token').fill(ADMIN_TOKEN);
-  page.once('dialog', (d) => void d.accept());
-  await page.getByRole('button', { name: 'Reset overrides' }).click();
-
-  await expect(page.getByText('Overrides cleared.')).toBeVisible();
-  expect(seen).toHaveLength(1);
-  expect(seen[0].method).toBe('POST');
-  expect(seen[0].headers['x-review-admin-token']).toBe(ADMIN_TOKEN);
-  expect(seen[0].body).not.toContain(ADMIN_TOKEN);
-  await expect(page.getByText(/pending next sweep/)).toHaveCount(0);
-});
-
-test('saving without an admin token asks for it and sends nothing', async ({ page }) => {
-  await openSignedIn(page, '#/settings');
-  const seen = seenRequests(page, '**/api/settings');
-  await page.getByLabel('Repair model').fill('some-model');
-  await page.getByRole('button', { name: 'Save settings' }).click();
-  await expect(page.getByRole('alert').filter({ hasText: /Admin token required/ })).toBeVisible();
-  expect(seen.filter((r) => r.method === 'PUT')).toHaveLength(0);
-});
-
-test('a wrong admin token is refused by the server and nothing is written', async ({ page, request }) => {
-  await openSignedIn(page, '#/settings');
-  await page.getByLabel('Repair model').fill('some-model');
-  await page.locator('#settings-admin-token').fill('not-the-admin-token');
-  await page.getByRole('button', { name: 'Save settings' }).click();
-  await expect(page.getByRole('alert').filter({ hasText: /Admin token required|Not allowed/ })).toBeVisible();
-  const payload = await (
-    await request.get('/api/settings', { headers: { 'X-Review-Token': REVIEW_TOKEN } })
-  ).json();
-  expect(payload.overrides).toEqual({});
-});
-
 test('a model name the server would refuse is stopped in the form', async ({ page }) => {
   await openSignedIn(page, '#/settings');
   const seen = seenRequests(page, '**/api/settings');
-  await page.locator('#settings-admin-token').fill(ADMIN_TOKEN);
   await page.getByLabel('Repair model').fill('bad model; rm -rf /');
   await page.getByRole('button', { name: 'Save settings' }).click();
   await expect(page.getByRole('alert').filter({ hasText: /Repair model/ })).toBeVisible();
@@ -218,7 +191,6 @@ test('the verify backend and decision model offer only what the server allows', 
   const seen = seenRequests(page, '**/api/settings');
   await page.getByLabel('Verify backend').selectOption('decision');
   await page.getByLabel('Verify decision model').selectOption('acme/judge-1');
-  await page.locator('#settings-admin-token').fill(ADMIN_TOKEN);
   await page.getByRole('button', { name: 'Save settings' }).click();
   await expect(page.getByText(/Saved\./)).toBeVisible();
   const put = seen.find((r) => r.method === 'PUT')!;
@@ -245,7 +217,6 @@ test('a backend the server refuses comes back as a readable sentence naming the 
   await withAllowLists(page, { allowed_verify_backends: ['llamacpp', 'openai'] });
   await openSignedIn(page, '#/settings');
   await page.getByLabel('Verify backend').selectOption('openai');
-  await page.locator('#settings-admin-token').fill(ADMIN_TOKEN);
   await page.getByRole('button', { name: 'Save settings' }).click();
   const alert = page.getByRole('alert').filter({ hasText: /RUNTIME_VERIFY_BACKENDS/ });
   await expect(alert).toBeVisible();
@@ -255,7 +226,9 @@ test('a backend the server refuses comes back as a readable sentence naming the 
 
 // --- acquire apply: unset means apply, so the toggle starts on and a save of another field leaves it alone ---------
 
-test('the acquire-apply toggle starts on when nothing is set, with its source and timing', async ({ page }) => {
+test('the acquire-apply toggle starts on when nothing is set, with its source and timing', async ({
+  page,
+}) => {
   await openSignedIn(page, '#/settings');
   const toggle = page.getByLabel('Apply acquired names');
   await expect(toggle).toBeChecked();
@@ -269,10 +242,11 @@ test('saving another field never writes acquire_apply while the toggle is untouc
   await openSignedIn(page, '#/settings');
   const seen = seenRequests(page, '**/api/settings');
   await page.getByLabel('Repair model').fill('browser-test-model');
-  await page.locator('#settings-admin-token').fill(ADMIN_TOKEN);
   await page.getByRole('button', { name: 'Save settings' }).click();
   await expect(page.getByText(/Saved\./)).toBeVisible();
-  expect(JSON.parse(seen.find((r) => r.method === 'PUT')!.body)).toEqual({ repair_model: 'browser-test-model' });
+  expect(JSON.parse(seen.find((r) => r.method === 'PUT')!.body)).toEqual({
+    repair_model: 'browser-test-model',
+  });
 });
 
 test('turning the toggle off sends acquire_apply:false and shows it from the runtime file, pending', async ({
@@ -281,11 +255,12 @@ test('turning the toggle off sends acquire_apply:false and shows it from the run
   await openSignedIn(page, '#/settings');
   const seen = seenRequests(page, '**/api/settings');
   await page.getByLabel('Apply acquired names').uncheck();
-  await page.locator('#settings-admin-token').fill(ADMIN_TOKEN);
   await page.getByRole('button', { name: 'Save settings' }).click();
   await expect(page.getByText(/Saved\./)).toBeVisible();
   expect(JSON.parse(seen.find((r) => r.method === 'PUT')!.body)).toEqual({ acquire_apply: false });
   await expect(page.getByLabel('Apply acquired names')).not.toBeChecked();
-  await expect(page.locator('#settings-acquire-apply-note')).toContainText('Currently off (from the runtime file)');
+  await expect(page.locator('#settings-acquire-apply-note')).toContainText(
+    'Currently off (from the runtime file)',
+  );
   await expect(page.getByText('pending next sweep: off')).toBeVisible();
 });
