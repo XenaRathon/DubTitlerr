@@ -37,7 +37,9 @@ def test_a_configured_admin_token_changes_nothing(env):
     assert rs.route("POST", "/api/_admin_probe", {}, TOKEN, admin_token="old-admin") == (200, {"ok": True})
 
 
-def test_auth_off_opens_admin_routes_as_before(env):
+def test_admin_routes_are_open_with_auth_off(env):
+    """With REVIEW_AUTH=off an admin route needs no credential at all (only the CSRF header). In 0.2.x the admin token kept
+    these routes closed even with auth off; since it was retired, startup logs a loud warning instead."""
     env.setenv("REVIEW_AUTH", "off")
     assert rs.route("POST", "/api/_admin_probe", {}, None, headers={"X-DubTitlerr-Request": "1"}) == (200, {"ok": True})
 

@@ -1009,6 +1009,8 @@ def preview_audio(body: dict) -> tuple:
         _AUDIO_SLOTS.release()
 
 
+# debt: ``admin_token`` is accepted and ignored (the admin token is retired); drop the parameter in v0.4.0. It stays until then
+# because tests and older callers still pass it as a keyword.
 def route(
     method: str, path: str, body: dict, token, client: str = "", admin_token: str = "", headers: dict | None = None
 ) -> tuple:
@@ -1016,6 +1018,8 @@ def route(
     return route_full(method, path, body, token, client, admin_token, headers)[:2]
 
 
+# debt: ``admin_token`` is accepted and ignored (the admin token is retired); drop the parameter in v0.4.0. It stays until then
+# because tests and older callers still pass it as a keyword.
 def route_full(
     method: str, path: str, body: dict, token, client: str = "", admin_token: str = "", headers: dict | None = None
 ) -> tuple:
@@ -1042,6 +1046,8 @@ def route_full(
     return status, payload, extra
 
 
+# debt: ``admin_token`` is accepted and ignored (the admin token is retired); drop the parameter in v0.4.0. It stays until then
+# because tests and older callers still pass it as a keyword.
 def _route(method: str, path: str, bare: str, body: dict, decision, client: str, admin_token: str, headers: dict | None) -> tuple:
     """The old route() body: (status, payload) or (status, payload, extra_headers). ``headers`` are read by the webhook
     routes (their own X-Webhook-Token)."""
@@ -1801,8 +1807,9 @@ def _warm_cache_forever() -> None:
 
 def startup_auth() -> None:
     """Auth on: refuse to start without scrypt, import REVIEW_USERNAME/REVIEW_PASSWORD once, seed the API key from the
-    review token. Auth off (REVIEW_AUTH=off): nothing to prepare."""
+    review token. Auth off (REVIEW_AUTH=off): nothing to prepare, but say so loudly."""
     if not auth_required():
+        log("review server: WARNING auth is off: admin writes are open to anyone who can reach this port")
         return
     if os.environ.get("REVIEW_ADMIN_TOKEN") or os.environ.get("REVIEW_ADMIN_TOKEN_FILE"):
         log("review server: REVIEW_ADMIN_TOKEN is retired and ignored; admins sign in with an account or use the API key")

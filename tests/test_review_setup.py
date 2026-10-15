@@ -230,3 +230,15 @@ def test_the_import_log_line_says_which_source_supplied_the_password_never_its_v
     assert review_auth.import_env_admin({"REVIEW_USERNAME": "a", "REVIEW_PASSWORD": "env-password-1"})
     out = capsys.readouterr().out
     assert "password from REVIEW_PASSWORD" in out and "REVIEW_PASSWORD_FILE" not in out and "env-password-1" not in out
+
+
+def test_startup_with_auth_off_says_loudly_once_that_admin_writes_are_open(env, monkeypatch, capsys):
+    monkeypatch.setenv("REVIEW_AUTH", "off")
+    rs.startup_auth()
+    out = capsys.readouterr().out
+    assert out.count("auth is off: admin writes are open to anyone who can reach this port") == 1
+
+
+def test_startup_with_auth_on_does_not_say_it(env, capsys):
+    rs.startup_auth()
+    assert "auth is off" not in capsys.readouterr().out
