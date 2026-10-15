@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+import review_auth
 import settings_api as api
 import settings_registry as reg
 import settings_store as store
@@ -126,7 +127,7 @@ def test_review_server_registers_the_entries_and_serves_the_routes(monkeypatch, 
 
     monkeypatch.setenv("REVIEW_AUTH", "off")
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
-    assert "register_routes(settings_api.ROLE_ENTRIES)" in open(rs.__file__).read()
+    assert api.ROLE_ENTRIES.items() <= review_auth.ROUTE_ROLES.items()
     status, payload = rs.route("GET", "/api/settings/schema", {}, None)
     assert status == 200 and "categories" in payload
     status, payload = rs.route("GET", "/api/settings", {}, None)
@@ -138,11 +139,17 @@ def test_get_redacts_credentials_in_urls_and_hides_extra_bodies(env):
     env["VERIFY_OPENAI_URL"] = "http://h/v1?key=k"
     env["VERIFY_OPENAI_EXTRA_BODY"] = '{"api_key":"sk-x"}'
     env["REPAIR_EXTRA_BODY"] = ""
+    env["SUBS_REPO"] = "HTTPS://u:secret_tok@github.com/x"
+    env["SHOWS"] = "Show1,https://u:secret_mid@h"
+    env["WATCH_QUEUE_PIN"] = "ssh://u:secret_ssh@h"
     payload = values(env)
     text = json.dumps(payload)
-    for leaked in ("u:pw", "X-Plex-Token", "key=k", "sk-x", "api_key"):
+    for leaked in ("u:pw", "X-Plex-Token", "key=k", "sk-x", "api_key", "secret_tok", "secret_mid", "secret_ssh"):
         assert leaked not in text
     assert payload["values"]["PLEX_URL"]["value"] == "https://plex.lan:32400/x"
+    assert payload["values"]["SUBS_REPO"]["value"] == "HTTPS://github.com/x"
+    assert payload["values"]["SHOWS"]["value"] == "Show1,https://h"
+    assert payload["values"]["WATCH_QUEUE_PIN"]["value"] == "ssh://h"
     assert payload["values"]["VERIFY_OPENAI_EXTRA_BODY"]["set"] is True
     assert "value" not in payload["values"]["VERIFY_OPENAI_EXTRA_BODY"]
     assert payload["values"]["REPAIR_EXTRA_BODY"]["set"] is False

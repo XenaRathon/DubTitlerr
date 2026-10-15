@@ -1,4 +1,4 @@
-"""/api/settings and /api/settings/test through route(): review token only; the probe is read-only, so no admin token."""
+"""/api/settings and /api/settings/test routes: role enforcement (admin for test, user for settings)."""
 
 import pytest
 
@@ -52,3 +52,16 @@ def test_wrong_methods_on_the_settings_routes_do_not_exist(env):
 
 def test_the_settings_routes_are_not_open(env):
     assert not any("settings" in p for _m, p in rs.OPEN_ROUTES)
+
+
+def test_user_principal_gets_403_on_test_connection(env, tmp_path, monkeypatch):
+    import review_auth
+
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setattr(review_auth, "SCRYPT_N", 2**4)
+    review_auth.create_user("alice", "user", "user-password-10ch")
+    sid = review_auth.sessions().create("alice", False)
+    headers = {"Cookie": f"dubtitlerr_session={sid}", "X-DubTitlerr-Request": "1"}
+    status, payload, _ = rs.route_full("POST", "/api/settings/test", {"backend": "repair"}, None, headers=headers)
+    assert status == 403
+    assert payload == {"error": "admin only"}

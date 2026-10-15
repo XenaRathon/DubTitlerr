@@ -6,11 +6,14 @@ are registered there from ROLE_ENTRIES. The one thing checked here is the secret
 
 import errno
 import os
+import re
 
 import review_auth
 import review_settings
 import settings_registry as reg
 import settings_store as store
+
+_URL_USERINFO_RE = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^\s/@,]*@")
 
 ROLE_ENTRIES = {
     ("GET", "/api/settings"): "user",
@@ -109,8 +112,13 @@ def _redact(key, out):
         return out
     if key.endswith("_EXTRA_BODY"):
         out["set"] = bool(str(out.pop("value") or "").strip())
-    elif isinstance(out["value"], str) and (reg.REGISTRY[key]["type"] == "url" or reg.URL_RE.match(out["value"])):
-        out["value"] = store.redact_url(out["value"]) if out["value"] else out["value"]
+    elif isinstance(out["value"], str):
+        v = out["value"]
+        if reg.REGISTRY[key]["type"] == "url" or reg.URL_RE.match(v):
+            v = store.redact_url(v) if v else v
+        out["value"] = _URL_USERINFO_RE.sub(r"\1", v)
+    elif isinstance(out["value"], list):
+        out["value"] = [_URL_USERINFO_RE.sub(r"\1", item) if isinstance(item, str) else item for item in out["value"]]
     return out
 
 
