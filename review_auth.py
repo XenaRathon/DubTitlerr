@@ -262,12 +262,34 @@ def _digest(sid: str) -> str:
     return hashlib.sha256(sid.encode("utf-8")).hexdigest()
 
 
+MAX_PER_ACCOUNT = 20
+CLOCK_SKEW = 300.0  # a last_seen further ahead than this means the clock stepped; the session is no longer trusted
+
+
+def _num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _valid_session(r) -> bool:
+    return (
+        isinstance(r, dict)
+        and isinstance(r.get("id_sha256"), str)
+        and isinstance(r.get("name"), str)
+        and _num(r.get("created"))
+        and _num(r.get("last_seen"))
+        and isinstance(r.get("remember"), bool)
+        and (_num(r.get("epoch", 0)) and isinstance(r.get("epoch", 0), int))
+    )
+
+
 class SessionStore:
     """Sessions held in memory and mirrored to ``path`` as SHA-256 hashes of the ids; never the ids themselves.
 
-    ``last_seen`` slides in memory on every lookup and reaches the file at most every FLUSH_EVERY seconds, with a lock
-    wait of zero, so a request never waits on the disk and a failed flush is logged, not raised. create() and
-    revoke_user() persist for real: a session that was not saved must not be handed out."""
+    ``last_seen`` is set to now on every lookup and reaches the file at most every FLUSH_EVERY seconds. That flush
+    runs in the request thread with a lock wait of zero: it never waits for the lock, but the write itself is
+    synchronous disk I/O. A failed flush is logged, not raised. create() raises when the session could not be saved
+    (a session that was not saved must not be handed out); revoke() and revoke_user() log a failed save and keep the
+    change in memory. Every write takes its snapshot inside the file lock, so writes land in snapshot order."""
 
     def __init__(self, path: str):
         self.path = path
@@ -282,18 +304,27 @@ class SessionStore:
         rows = {}
         try:
             with open(self.path, encoding="utf-8") as f:
-                for r in json.load(f).get("sessions", []):
-                    if isinstance(r, dict) and {"id_sha256", "name", "created", "last_seen", "remember"} <= set(r):
-                        r.setdefault("epoch", 0)
-                        rows[r["id_sha256"]] = r
-        except (OSError, ValueError, AttributeError):
-            rows = {}
+                doc = json.load(f)
+            listed = doc.get("sessions") if isinstance(doc, dict) else None
+            if not isinstance(listed, list):
+                raise ValueError("no sessions list")
+            for r in listed:
+                if _valid_session(r):
+                    r.setdefault("epoch", 0)
+                    rows[r["id_sha256"]] = r
+            if len(rows) != len(listed):
+                log(f"review server: dropped {len(listed) - len(rows)} malformed session(s) from {self.path}")
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError) as e:
+            log(f"review server: sessions file unreadable ({e}); starting with no sessions, the next save replaces it")
         self._rows, self._flushed = rows, CLOCK()
 
     @staticmethod
     def _live(row: dict, now: float) -> bool:
-        idle = max(0.0, now - row["last_seen"])  # a clock that stepped back never extends or kills a session
-        return idle <= (REMEMBER_SECONDS if row["remember"] else IDLE_SECONDS)
+        if row["last_seen"] - now > CLOCK_SKEW:  # the clock stepped back (or forward and was corrected)
+            return False
+        return now - row["last_seen"] <= (REMEMBER_SECONDS if row["remember"] else IDLE_SECONDS)
 
     def _snapshot(self, now: float) -> dict:  # caller holds _mu; prunes the expired
         for d in [d for d, r in self._rows.items() if not self._live(r, now)]:
@@ -301,15 +332,16 @@ class SessionStore:
             self._cookie_at.pop(d, None)
         return {"version": 1, "sessions": [dict(r) for r in self._rows.values()]}
 
-    def _persist(self, doc: dict, wait: float) -> None:
+    def _persist(self, wait: float, now: float) -> None:
+        """Snapshot and write under the file lock, so a slower writer can never put an older list over a newer one."""
         with _locked(self.path, wait):
+            with self._mu:
+                doc = self._snapshot(now)
             _write_json(self.path, doc)
 
     def _persist_quietly(self, now: float) -> None:
-        with self._mu:
-            doc = self._snapshot(now)
         try:
-            self._persist(doc, LOCK_WAIT)
+            self._persist(LOCK_WAIT, now)
         except AuthError as e:
             log(f"review server: could not save the session list ({e.message}); the change holds in memory")
 
@@ -328,9 +360,12 @@ class SessionStore:
             self._load()
             self._rows[row["id_sha256"]] = row
             self._cookie_at[row["id_sha256"]] = now
-            doc = self._snapshot(now)
+            mine = [d for d, r in self._rows.items() if r["name"].lower() == name.lower()]
+            for d in sorted(mine, key=lambda d: self._rows[d]["created"])[: max(0, len(mine) - MAX_PER_ACCOUNT)]:
+                del self._rows[d]
+                self._cookie_at.pop(d, None)
         try:
-            self._persist(doc, LOCK_WAIT)
+            self._persist(LOCK_WAIT, now)
         except AuthError:
             with self._mu:
                 self._rows.pop(row["id_sha256"], None)
@@ -343,27 +378,27 @@ class SessionStore:
     def lookup(self, sid) -> SessionInfo | None:
         if not isinstance(sid, str) or not sid:
             return None
-        digest, now, doc = _digest(sid), CLOCK(), None
+        digest, now, flush = _digest(sid), CLOCK(), False
         with self._mu:
             self._load()
             row = self._rows.get(digest)
-            if row is None or not secrets.compare_digest(row["id_sha256"], digest):
+            if row is None:
                 return None
             if not self._live(row, now):
                 del self._rows[digest]
                 self._cookie_at.pop(digest, None)
                 return None
-            row["last_seen"] = max(row["last_seen"], now)
+            row["last_seen"] = now
             refresh = bool(row["remember"]) and now - self._cookie_at.get(digest, row["created"]) >= COOKIE_REFRESH_EVERY
             if refresh:
                 self._cookie_at[digest] = now
             info = SessionInfo(row["name"], bool(row["remember"]), row.get("epoch", 0), refresh)
             if now - self._flushed >= FLUSH_EVERY:
                 self._flushed = now  # also on failure: one attempt per interval
-                doc = self._snapshot(now)
-        if doc is not None:
+                flush = True
+        if flush:
             try:
-                self._persist(doc, 0.0)
+                self._persist(0.0, now)
             except AuthError as e:
                 log(f"review server: could not flush sessions ({e.message}); keeping them in memory")
         return info
