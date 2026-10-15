@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import time
 import urllib.parse
+import uuid
 
 import pysubs2
 
@@ -312,6 +313,15 @@ def read_words(stem, rec=None, expect: dict | None = None):
     if rec:
         rec.count("words_reused")
     return doc
+
+
+_PROCESS_BOOT_ID = uuid.uuid4().hex
+
+
+def boot_id():
+    """Changes on every container start. container_run.sh exports DT_CONTAINER_BOOT_ID once at start, so a review server that
+    crashed and was restarted by the supervisor keeps the id; a server started by hand falls back to an id of its own process."""
+    return os.environ.get("DT_CONTAINER_BOOT_ID") or _PROCESS_BOOT_ID
 
 
 def stop_requested():

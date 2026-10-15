@@ -46,7 +46,9 @@ def test_status_is_not_an_open_route():
 
 def test_an_empty_cache_is_503_cache_warming(tok, monkeypatch):
     monkeypatch.setattr(review_server, "_STEMS_CACHE", None)
-    assert review_server.route("GET", "/api/status", {}, tok) == (503, {"error": "cache warming"})
+    status, payload = review_server.route("GET", "/api/status", {}, tok)
+    assert (status, payload["error"]) == (503, "cache warming")
+    assert payload["boot_id"], "the restart overlay polls this route while the cache warms"
 
 
 def test_a_filled_cache_lists_both_episodes_with_show_season_episode(tok, stems):

@@ -75,7 +75,7 @@ def _wave(key, category, label, help, type_, default, scope, applies, **kw):
 
 # --- first wave (editable in v0.3.0) -------------------------------------------------------------------------------------
 # fmt: off
-_wave('REVIEW_PORT', 'general', 'Web UI port', 'TCP port the review server listens on.', 'int', 8842, 'server', 'restart', min=1, max=65535)
+_wave('REVIEW_PORT', 'general', 'Web UI port', 'TCP port the review server listens on. The compose port mapping must match the new port, or the page becomes unreachable after the restart.', 'int', 8842, 'server', 'restart', min=1, max=65535)
 _wave('REVIEW_BIND', 'general', 'Web UI bind address', 'Address the review server binds to; 0.0.0.0 listens on every interface.', 'string', '0.0.0.0', 'server', 'restart', pattern=r"[A-Za-z0-9.:\-\[\]]{1,253}", pattern_help='must be a host name or IP address')
 _wave('REQUIRE_ENG', 'library', 'Require English audio', 'Only transcribe episodes that carry an English audio track.', 'bool', True, 'gen', 'next_show')
 _wave('SKIP_IF_SRT', 'library', 'Skip finished episodes', 'Skip an episode that already has a dubtitles file; turn off to force a fresh transcription.', 'bool', True, 'gen', 'next_show')

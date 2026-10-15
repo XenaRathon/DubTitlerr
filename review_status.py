@@ -294,7 +294,7 @@ def handle_status(
 ) -> tuple[int, dict]:
     """Return status and JSON payload for GET /api/status."""
     if stems_cache is None:
-        return 503, {"error": "cache warming"}
+        return 503, {"error": "cache warming", "boot_id": common.boot_id()}
 
     # Handle positional 3rd argument passed as now
     if isinstance(open_entries, (int, float)) and now is None:
@@ -327,7 +327,7 @@ def handle_status(
     episodes = [_inspect_episode_safe(stem, open_entries, stores) for stem in slice_stems]
     header = _read_header(now, filled_at, episodes, total=total, page=page, limit=limit, pages=pages)
 
-    return 200, {"header": header, "episodes": episodes}
+    return 200, {"header": header, "episodes": episodes, "boot_id": common.boot_id()}
 
 
 def handle(

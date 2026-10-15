@@ -29,6 +29,7 @@ SKIP_DIRS = {
 CALLS = {"get", "getenv", "env_int", "env_float", "_env_num", "_fraction", "_count", "pop", "setdefault"}
 # Names the scan sees that are not settings: shell locals, and the per-show inputs the loops set for each child.
 NON_SETTINGS = {
+    "DT_CONTAINER_BOOT_ID": "exported by container_run.sh at start, read by common.boot_id()",
     "ACQ_FLAGS": "gen_loop.sh local",
     "ANIME": "gen_loop.sh local",
     "APP": "merge_pass.sh and publish tool local",

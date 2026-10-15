@@ -33,6 +33,11 @@ if [ -f "$APP_DIR/review_settings_write.py" ]; then
 	eval "$(python3 "$APP_DIR/review_settings_write.py" export --boot --scope server)" || true
 fi
 # <<< stored settings
+# One id per container start. /api/status reports it, so a page that asked for a restart can tell the new server from the old one
+# that is still answering while the builder finishes its episode. A crash-restarted review server keeps the id. (Not DT_BOOT_*:
+# that prefix belongs to the exporter's per-key copies.)
+DT_CONTAINER_BOOT_ID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s)
+export DT_CONTAINER_BOOT_ID
 : "${MERGE_INTERVAL:=600}"    # seconds between merge sweeps
 : "${RESCAN_INTERVAL:=21600}" # seconds to idle after a full generate sweep (default 6h)
 : "${REVIEW_RESTART:=15}"     # seconds before restarting the review server after an exit
