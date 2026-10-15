@@ -52,9 +52,9 @@ def test_a_wrong_or_missing_admin_token_is_403(env):
 
 
 def test_the_review_token_is_checked_first_so_a_missing_one_is_401(env):
-    assert call(token=None, admin=ADMIN) == (401, {"error": "a token is required"}), "admin unset"
+    assert call(token=None, admin=ADMIN) == (401, {"error": "login required"}), "admin unset"
     env.setenv("REVIEW_ADMIN_TOKEN", ADMIN)
-    assert call(token=None, admin=ADMIN) == (401, {"error": "a token is required"}), "admin right"
+    assert call(token=None, admin=ADMIN) == (401, {"error": "login required"}), "admin right"
     assert call(token="wrong", admin=ADMIN)[0] == 401
 
 

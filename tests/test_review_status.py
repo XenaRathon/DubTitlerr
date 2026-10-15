@@ -25,7 +25,7 @@ def test_status_requires_auth():
     assert ("GET", "/api/status") not in review_server.OPEN_ROUTES
     status, payload = review_server.route("GET", "/api/status", {}, None)
     assert status == 401
-    assert payload == {"error": "a token is required"}
+    assert payload == {"error": "login required"}
 
 
 def test_status_registered(tmp_path):

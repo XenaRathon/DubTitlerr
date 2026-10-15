@@ -79,7 +79,7 @@ def test_a_real_socket_get_api_episodes_gated_by_token(monkeypatch, tmp_path):
         body = resp.read()
         assert resp.status == 401
         data = json.loads(body.decode("utf-8"))
-        assert data.get("error") == "a token is required"
+        assert data.get("error") == "login required"
         conn.close()
 
         # With token → 200

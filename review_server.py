@@ -66,6 +66,7 @@ import common
 import decisions
 import review_admin
 import review_apply
+import review_auth
 import review_glossary
 import review_requests
 import review_settings
@@ -232,6 +233,9 @@ def resolve_token(token_dir: str = "") -> str:
     return tok
 
 
+review_auth.set_token_fallback(lambda: resolve_token())  # until a key file exists, the 0.2.x review token IS the API key
+
+
 def announce_token(token_dir: str = "", bind: str = "") -> None:
     """Say WHERE the token is on every start; say what it IS only when it is new.
 
@@ -311,8 +315,7 @@ def authorised(method: str, presented, path: str = "") -> bool:
     """All routes require the token when auth is enabled."""
     if not auth_required():
         return True
-    # compare_digest, not ==: timing-safe -- the only guard between a LAN and a write.
-    return bool(presented) and secrets.compare_digest(str(presented), resolve_token())
+    return review_auth.key_matches(presented)  # the classic pages' token box: the API key by its old name
 
 
 def _stems_ttl(elapsed: float) -> float:
@@ -1071,10 +1074,31 @@ def preview_audio(body: dict) -> tuple:
 def route(
     method: str, path: str, body: dict, token, client: str = "", admin_token: str = "", headers: dict | None = None
 ) -> tuple:
-    """(status, payload) for one request. ``client`` is the peer address, used only to throttle /api/login.
-    ``admin_token`` is the X-Review-Admin-Token header value (never a cookie or query value), "" when absent.
-    ``headers`` are the request headers, read only by the webhook routes (their own X-Webhook-Token)."""
+    """(status, payload) for one request; route_full is the same call with the response headers (a Set-Cookie) as a third item."""
+    return route_full(method, path, body, token, client, admin_token, headers)[:2]
+
+
+def route_full(
+    method: str, path: str, body: dict, token, client: str = "", admin_token: str = "", headers: dict | None = None
+) -> tuple:
+    """(status, payload, extra_headers). ``token`` is the pre-accounts calling convention and counts as X-Review-Token;
+    ``headers`` carry the Cookie, X-Api-Key and CSRF header. review_auth.decide runs first, on the bare path (no query
+    string): no handler is reached by a caller its route's role does not allow. ``admin_token`` is the X-Review-Admin-Token
+    value, read only by the legacy rule. ``client`` is the peer address, used only to throttle /api/login."""
     bare = path.partition("?")[0]
+    hdrs = dict(headers or {})
+    if token and not (review_auth.header(hdrs, review_auth.API_KEY_HEADER) or review_auth.header(hdrs, review_auth.ALIAS_HEADER)):
+        hdrs[review_auth.ALIAS_HEADER] = token
+    decision = review_auth.decide(method, bare, hdrs)
+    if decision.status is not None:
+        return decision.status, {"error": decision.error}, {}
+    result = _route(method, path, bare, body, decision, client, admin_token, hdrs)
+    return result if len(result) == 3 else (*result, {})
+
+
+def _route(method: str, path: str, bare: str, body: dict, decision, client: str, admin_token: str, headers: dict | None) -> tuple:
+    """The old route() body: (status, payload) or (status, payload, extra_headers). ``headers`` are read by the webhook
+    routes (their own X-Webhook-Token)."""
     if method == "GET" and (path == "/review" or path.startswith("/review/")):
         return workspace_asset(path)
     if method == "GET" and path == "/healthz":
@@ -1095,13 +1119,14 @@ def route(
             list_requests=review_requests.list_requests,
             anime_root=_anime_root(),
         )
-    if not authorised(method, token, path):
-        return 401, {"error": "a token is required"}
     admin_handler = ADMIN_ROUTES.get((method, bare))
     if admin_handler is not None:
-        refusal = admin_guard(admin_token)
-        if refusal:
-            return refusal
+        # Compatibility until the admin token is retired: the legacy callers (the review-token argument or header, and
+        # REVIEW_AUTH=off) keep the two-secret rule on these routes. The API key and admin sessions do not.
+        if decision.principal is not None and decision.principal.kind in ("alias", "open"):
+            refusal = admin_guard(admin_token)
+            if refusal:
+                return refusal
         return (400, {"error": "invalid JSON"}) if body is None else admin_handler(body)
     if body is None:  # only the strict JSON routes produce None (see Handler._with_body)
         return 400, {"error": "invalid JSON"}
@@ -1616,7 +1641,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """The peer address (throttle key); empty when the transport has none."""
         return (getattr(self, "client_address", None) or ("",))[0]
 
-    def _send(self, status, payload, ctype="application/json"):
+    def _send(self, status, payload, ctype="application/json", extra=None):
         raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", ctype)
@@ -1636,6 +1661,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; "
                 "object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
             )
+        for name, value in (extra or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(raw)
 
@@ -1660,8 +1687,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             status, payload = handle_healthz()
             return self._send(status, payload)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
-        status, payload = route(
-            "GET", u.path, q, presented, client=self._client(), admin_token=self.headers.get(ADMIN_HEADER, "")
+        status, payload, extra = route_full(
+            "GET",
+            u.path,
+            q,
+            presented,
+            client=self._client(),
+            admin_token=self.headers.get(ADMIN_HEADER, ""),
+            headers=dict(self.headers.items()),
         )
         ctype = "application/json"
         if isinstance(payload, bytes):
@@ -1671,7 +1704,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 ctype = {".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2"}.get(
                     Path(u.path).suffix, "text/html; charset=utf-8"
                 )
-        self._send(status, payload, ctype)
+        self._send(status, payload, ctype, extra)
 
     def do_POST(self):
         self._with_body("POST")
@@ -1713,7 +1746,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body = None if strict else {}
             if body is not None and not isinstance(body, dict):
                 body = None if strict else {}  # None reaches route(), which answers 400 once the caller is authorised
-        status, payload = route(
+        status, payload, extra = route_full(
             method,
             self.path,
             body,
@@ -1722,7 +1755,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             admin_token=self.headers.get(ADMIN_HEADER, ""),  # the header only: a cookie or query value is never consulted
             headers=dict(self.headers.items()),
         )
-        self._send(status, payload)
+        self._send(status, payload, extra=extra)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 - the base class names it this
         # Never log a query string: the webhook routes accept ?token=, and a token in the request line would reach the log.

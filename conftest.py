@@ -28,3 +28,16 @@ def _isolated_wiki_cache(monkeypatch, tmp_path):
     import glossary_verify
 
     monkeypatch.setattr(glossary_verify, "CACHE_DIR", str(tmp_path / "wiki_cache"))
+
+
+@pytest.fixture(autouse=True)
+def _accounts_are_installed_by_default(request, monkeypatch, tmp_path_factory):
+    """Suites that predate accounts assert 401 for a missing token, which is the behaviour of an instance that has accounts.
+    First run (409 setup required) is exercised only by files marked real_accounts, which get the real functions."""
+    if request.node.get_closest_marker("real_accounts"):
+        return
+    import review_auth
+
+    monkeypatch.setattr(review_auth, "setup_required", lambda: False)
+    if "CONFIG_DIR" not in os.environ:
+        monkeypatch.setenv("CONFIG_DIR", str(tmp_path_factory.mktemp("auth_config")))

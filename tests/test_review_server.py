@@ -406,8 +406,12 @@ def test_the_token_comparison_is_timing_safe():
     catches a silent revert, even though it pins the decision rather than the behaviour."""
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "review_server.py")).read()
     body = src[src.index("def authorised(") : src.index("def known_stems(")]
+    auth_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "review_auth.py")).read()
+    matcher = auth_src[auth_src.index("def key_matches(") : auth_src.index("def _warn_if_env_token_differs(")]
 
-    assert "compare_digest" in body, "the token comparison must be constant-time"
+    # The comparison moved into review_auth.key_matches when the token became the API key; authorised() must delegate to it.
+    assert "review_auth.key_matches" in body, "authorised() must use the one constant-time matcher"
+    assert "compare_digest" in matcher, "the token comparison must be constant-time"
     assert "== resolve_token" not in body and "resolve_token() ==" not in body
 
 
@@ -2071,7 +2075,7 @@ def test_get_api_episodes_without_token_is_401_with_the_literal_body(tmp_path, m
     h = wire.as_handler("/api/episodes")
     h.do_GET()
     assert wire.status == 401
-    assert json.loads(wire.wfile.getvalue()) == {"error": "a token is required"}
+    assert json.loads(wire.wfile.getvalue()) == {"error": "login required"}
 
     wire2 = _Wire()
     wire2.headers[review_server.TOKEN_HEADER] = tok
