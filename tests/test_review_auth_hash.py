@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import sys
 
 import pytest
 
@@ -95,7 +96,11 @@ def test_password_length_limits(pw, ok):
 def _fresh_copy():
     spec = importlib.util.spec_from_file_location("review_auth_fresh", review_auth.__file__)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    sys.modules[spec.name] = mod  # dataclasses looks its module up by name while the class body runs
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        del sys.modules[spec.name]
     return mod
 
 

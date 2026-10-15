@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import dataclasses
 import hashlib
+import http.cookies
 import json
 import os
 import re
@@ -502,3 +504,209 @@ def reset_api_key() -> str:
         _write_atomic(apikey_path(), key + "\n")
     log("review server: API key reset")
     return key
+
+
+SESSION_COOKIE = "dubtitlerr_session"
+LEGACY_COOKIE = "dubtitlerr_token"
+API_KEY_HEADER = "X-Api-Key"
+ALIAS_HEADER = "X-Review-Token"
+CSRF_HEADER = "X-DubTitlerr-Request"
+
+ROUTE_ROLES: dict[tuple[str, str], str] = {}
+_ROLE_VALUES = ("public", "user", "admin")
+_ERRORS = {401: "login required", 403: "admin only", 409: "setup required"}
+
+
+def register_routes(entries: dict) -> None:
+    """Add routes to the role table. Validates every entry first, so a bad one adds none of them."""
+    for (method, path), role in entries.items():
+        if role not in _ROLE_VALUES:
+            raise ValueError(f"unknown role {role!r} for {method} {path}")
+        if ROUTE_ROLES.get((method, path), role) != role:
+            raise ValueError(f"{method} {path} is already registered as {ROUTE_ROLES[(method, path)]}")
+    ROUTE_ROLES.update(entries)
+
+
+register_routes(
+    {
+        ("GET", "/healthz"): "public",
+        ("GET", "/api/auth-mode"): "public",
+        ("POST", "/api/login"): "public",
+        ("POST", "/api/setup"): "public",
+        ("GET", "/review"): "public",
+        ("GET", "/review/*"): "public",
+        ("POST", "/api/webhook/sonarr"): "public",  # these two carry their own secret in the URL (decided 2026-10-13)
+        ("POST", "/api/webhook/radarr"): "public",
+        ("GET", "/"): "user",  # the classic pages; Handler.do_GET asks role_for before it renders them
+        ("GET", "/index.html"): "user",
+        ("GET", "/shared"): "user",
+        ("GET", "/api/audio"): "user",
+        ("GET", "/api/episodes"): "user",
+        ("GET", "/api/shows"): "user",
+        ("GET", "/api/episode"): "user",
+        ("POST", "/api/decide"): "user",
+        ("GET", "/api/shared"): "user",
+        ("POST", "/api/shared"): "user",
+        ("POST", "/api/apply"): "user",
+        ("GET", "/api/requests"): "user",
+        ("GET", "/api/schedule"): "user",
+        ("GET", "/api/settings"): "user",
+        ("GET", "/api/settings/schema"): "user",
+        ("GET", "/api/status"): "user",
+        ("GET", "/api/glossary"): "user",
+        ("POST", "/api/glossary"): "user",
+        ("GET", "/api/me"): "user",
+        ("PUT", "/api/me/password"): "user",
+        ("POST", "/api/logout"): "user",
+        ("POST", "/api/requests"): "admin",
+        ("PUT", "/api/schedule"): "admin",
+        ("PUT", "/api/settings"): "admin",
+        ("POST", "/api/settings/reset"): "admin",
+        ("POST", "/api/settings/test"): "admin",
+        ("POST", "/api/system/restart"): "admin",
+        ("GET", "/api/apikey"): "admin",
+        ("POST", "/api/apikey/reset"): "admin",
+        ("GET", "/api/users"): "admin",
+        ("POST", "/api/users"): "admin",
+        ("PUT", "/api/users/*"): "admin",
+        ("DELETE", "/api/users/*"): "admin",
+    }
+)
+
+
+def _required_role(method: str, path: str) -> tuple:
+    """(role the route needs, whether the table lists it). An exact entry wins, then the longest ``prefix/*``; an unlisted
+    route needs admin, so a route someone forgot to list is closed rather than open."""
+    exact = ROUTE_ROLES.get((method, path))
+    if exact is not None:
+        return exact, True
+    best, found = "", "admin"
+    for (m, pattern), role in ROUTE_ROLES.items():
+        if m == method and pattern.endswith("/*") and path.startswith(pattern[:-1]) and len(pattern) > len(best):
+            best, found = pattern, role
+    return (found, True) if best else ("admin", False)
+
+
+def header(headers, name: str) -> str:
+    """One request header, whatever the case the client sent, from a dict or an http message; "" when absent."""
+    if headers is None or not hasattr(headers, "items"):
+        return ""
+    wanted = name.lower()
+    for key, value in headers.items():
+        if isinstance(key, str) and key.lower() == wanted:
+            return value or ""
+    return ""
+
+
+def _cookie(headers, name: str) -> str:
+    raw = header(headers, "Cookie")
+    if not raw:
+        return ""
+    jar = http.cookies.SimpleCookie()
+    try:
+        jar.load(raw)
+    except http.cookies.CookieError:
+        return ""
+    morsel = jar.get(name)
+    return morsel.value if morsel else ""
+
+
+def auth_on() -> bool:
+    """False only for REVIEW_AUTH=off, as before."""
+    return os.environ.get("REVIEW_AUTH", "") != "off"
+
+
+@dataclasses.dataclass(frozen=True)
+class Principal:
+    kind: str  # "key" | "alias" | "session" | "open"
+    name: str
+    role: str
+    sid: str = ""
+    refresh: bool = False
+    remember: bool = False
+
+
+@dataclasses.dataclass(frozen=True)
+class Decision:
+    role: str | None
+    status: int | None
+    error: str
+    required: str
+    known: bool
+    principal: Principal | None
+
+
+_ALIAS_LOGGED = False
+
+
+def _note_alias() -> None:
+    global _ALIAS_LOGGED
+    if not _ALIAS_LOGGED:
+        _ALIAS_LOGGED = True
+        log("review server: X-Review-Token is deprecated; it works as an alias of X-Api-Key for this release only")
+
+
+_PAGE_PATHS = ("/", "/index.html", "/shared")
+
+
+def _session_principal(headers) -> Principal | None:
+    sid = _cookie(headers, SESSION_COOKIE)
+    info = sessions().lookup(sid) if sid else None
+    if info is None:
+        return None
+    try:
+        row = find_user(read_users(), info.name)
+    except Unreadable:
+        return None
+    if row is None or info.epoch != int(row.get("session_epoch", 0)):
+        return None  # deleted, or the password or role changed after this login (possibly from another process)
+    return Principal("session", row["name"], row["role"], sid=sid, refresh=info.refresh, remember=info.remember)
+
+
+def authenticate(headers, method: str = "GET", path: str = "") -> Principal | None:
+    """Who is asking. X-Api-Key decides when present, right or wrong. Otherwise a valid session wins over the legacy token,
+    so a stale token header or cookie can neither raise a user to admin nor lock a signed-in browser out. The alias header
+    works on every route for this release; the legacy token COOKIE authenticates the classic page routes only, never /api/*."""
+    presented = header(headers, API_KEY_HEADER)
+    if presented:
+        return Principal("key", "api key", "admin") if key_matches(presented) else None
+    principal = _session_principal(headers)
+    if principal is not None:
+        return principal
+    presented = header(headers, ALIAS_HEADER)
+    if presented:
+        if not key_matches(presented):
+            return None
+        _note_alias()
+        return Principal("alias", "api key", "admin")
+    if method in ("GET", "HEAD") and path in _PAGE_PATHS:
+        legacy = _cookie(headers, LEGACY_COOKIE)
+        if legacy and key_matches(legacy):
+            _note_alias()
+            return Principal("alias", "api key", "admin")
+    return None
+
+
+def _refuse(status: int, required: str, known: bool, error: str = "") -> Decision:
+    return Decision(None, status, error or _ERRORS[status], required, known, None)
+
+
+def decide(method: str, path: str, headers) -> Decision:
+    required, known = _required_role(method, path)
+    if not auth_on():
+        return Decision("admin", None, "", required, known, Principal("open", "", "admin"))
+    principal = authenticate(headers, method, path)
+    if required == "public":
+        return Decision(principal.role if principal else "public", None, "", required, known, principal)
+    if principal is None:
+        if header(headers, API_KEY_HEADER) or header(headers, ALIAS_HEADER):
+            return _refuse(401, required, known)
+        return _refuse(409 if setup_required() else 401, required, known)
+    if required == "admin" and principal.role != "admin":
+        return _refuse(403, required, known)
+    return Decision(principal.role, None, "", required, known, principal)
+
+
+def role_for(method: str, path: str, headers) -> tuple:
+    d = decide(method, path, headers)
+    return d.role, d.status
