@@ -111,3 +111,151 @@ test('the card grid and a category page have no accessibility violations', async
   await expect(page.locator('[data-key="ACQUIRE_APPLY"]')).toBeVisible();
   await expectNoAxeViolations(page);
 });
+
+test('Show Advanced reveals the advanced rows and the choice survives a reload', async ({ page }) => {
+  await openSignedIn(page, '#/settings/glossary');
+  await expect(page.locator('[data-key="MINE_MIN_COUNT"]')).toBeVisible();
+  await expect(page.locator('[data-key="ACQUIRE_MIN_SIM"]')).toHaveCount(0);
+  const toggle = page.getByRole('checkbox', { name: 'Show Advanced' });
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await expect(page.locator('[data-key="ACQUIRE_MIN_SIM"]')).toBeVisible();
+  await expect(page.locator('[data-key="VERIFY_DECISION_TAU"]')).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('checkbox', { name: 'Show Advanced' })).toBeChecked();
+  await expect(page.locator('[data-key="ACQUIRE_MIN_SIM"]')).toBeVisible();
+  await page.getByRole('checkbox', { name: 'Show Advanced' }).uncheck();
+  await expect(page.locator('[data-key="ACQUIRE_MIN_SIM"]')).toHaveCount(0);
+});
+
+test('editing a field turns No Changes into Save Changes, and Ctrl+S saves it', async ({ page }) => {
+  await openSignedIn(page, '#/settings/library');
+  await expect(page.getByRole('button', { name: 'No Changes' })).toBeDisabled();
+  await page.getByLabel('Require English audio', { exact: true }).uncheck();
+  await expect(page.getByRole('button', { name: 'Save Changes' })).toBeEnabled();
+  await page.keyboard.press('Control+s');
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'No Changes' })).toBeDisabled();
+  const row = page.locator('[data-key="REQUIRE_ENG"]');
+  await expect(row).toContainText('Set here');
+  await expect(page.getByLabel('Require English audio', { exact: true })).not.toBeChecked();
+  await page.reload();
+  await expect(page.getByLabel('Require English audio', { exact: true })).not.toBeChecked();
+});
+
+test('leaving an edited page asks first: Stay and review keeps the edit, Discard drops it', async ({
+  page,
+}) => {
+  await openSignedIn(page, '#/settings/library');
+  await page.getByLabel('Require English audio', { exact: true }).uncheck();
+  await page.evaluate(() => (location.hash = '#/settings/output'));
+  const dialog = page.getByRole('dialog', { name: 'Unsaved changes' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Stay and review' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page).toHaveURL(/#\/settings\/library$/);
+  await expect(page.getByLabel('Require English audio', { exact: true })).not.toBeChecked();
+  await page.evaluate(() => (location.hash = '#/settings/output'));
+  await page
+    .getByRole('dialog', { name: 'Unsaved changes' })
+    .getByRole('button', { name: 'Discard' })
+    .click();
+  await expect(page.getByRole('heading', { name: 'Output', level: 1 })).toBeVisible();
+  await page.evaluate(() => (location.hash = '#/settings/library'));
+  await expect(page.getByLabel('Require English audio', { exact: true })).toBeChecked();
+  await expect(page.getByRole('button', { name: 'No Changes' })).toBeDisabled();
+});
+
+test('the sidebar also asks before an edited page is left, and a saved page leaves without a question', async ({
+  page,
+}) => {
+  await openSignedIn(page, '#/settings/library');
+  await page.getByLabel('Require English audio', { exact: true }).uncheck();
+  const toggle = page.getByRole('button', { name: 'Toggle navigation' });
+  if (await toggle.isVisible()) await toggle.click();
+  await page
+    .getByRole('navigation', { name: 'Primary navigation' })
+    .getByRole('button', { name: 'Glossary' })
+    .click();
+  await page
+    .getByRole('dialog', { name: 'Unsaved changes' })
+    .getByRole('button', { name: 'Stay and review' })
+    .click();
+  await expect(page).toHaveURL(/#\/settings\/library$/);
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await page.evaluate(() => (location.hash = '#/settings/output'));
+  await expect(page.getByRole('heading', { name: 'Output', level: 1 })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('a server refusal shows red text under the named field, saves nothing, and keeps the edit', async ({
+  page,
+}) => {
+  await openSignedIn(page, '#/settings/transcription');
+  const beam = page.getByLabel('Beam size', { exact: true });
+  await beam.fill('99');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  const error = page.locator('[data-key="WHISPER_BEAM_SIZE"] .field-error');
+  await expect(error).toHaveText('must be between 1 and 20');
+  await expect(error).toHaveAttribute('role', 'alert');
+  await expect(beam).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.getByRole('button', { name: 'Save Changes' })).toBeEnabled();
+  await beam.fill('lots');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(error).toHaveText('must be a whole number');
+  await beam.fill('5');
+  await expect(error).toHaveCount(0);
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(page.locator('[data-key="WHISPER_BEAM_SIZE"]')).toContainText('Set here');
+});
+
+test('one bad value refuses the whole save: the valid edit beside it is not written', async ({ page }) => {
+  await openSignedIn(page, '#/settings/transcription');
+  await page.getByLabel('Beam size', { exact: true }).fill('99');
+  await page.getByLabel('Whisper model', { exact: true }).fill('large-v3');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.locator('[data-key="WHISPER_BEAM_SIZE"] .field-error')).toHaveText(
+    'must be between 1 and 20',
+  );
+  await page.evaluate(() => (location.hash = '#/settings'));
+  await page
+    .getByRole('dialog', { name: 'Unsaved changes' })
+    .getByRole('button', { name: 'Discard' })
+    .click();
+  await page.evaluate(() => (location.hash = '#/settings/transcription'));
+  await expect(page.locator('[data-key="WHISPER_MODEL"]')).toContainText('Default');
+});
+
+test('a stored value can be reset to the container value or the default', async ({ page }) => {
+  await openSignedIn(page, '#/settings/transcription');
+  await page.getByLabel('Beam size', { exact: true }).fill('5');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.locator('[data-key="WHISPER_BEAM_SIZE"]')).toContainText('Set here');
+  await page.getByRole('button', { name: 'Reset Beam size' }).click();
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(page.locator('[data-key="WHISPER_BEAM_SIZE"]')).toContainText('Default');
+  await expect(page.getByLabel('Beam size', { exact: true })).toHaveValue('7');
+});
+
+test('a category page with editable rows has no accessibility violations, errors shown or not', async ({
+  page,
+}) => {
+  await openSignedIn(page, '#/settings/transcription');
+  await expectNoAxeViolations(page);
+  await page.getByLabel('Beam size', { exact: true }).fill('99');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.locator('[data-key="WHISPER_BEAM_SIZE"] .field-error')).toBeVisible();
+  await expectNoAxeViolations(page);
+});
+
+test('Cmd+S (Meta+S) saves an edited settings page as Ctrl+S does', async ({ page }) => {
+  await openSignedIn(page, '#/settings/library');
+  await page.getByLabel('Require English audio', { exact: true }).uncheck();
+  await page.keyboard.press('Meta+s');
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'No Changes' })).toBeDisabled();
+  await expect(page.locator('[data-key="REQUIRE_ENG"]')).toContainText('Set here');
+});

@@ -27,12 +27,14 @@
   import Glossary from './pages/Glossary.svelte';
   import Runs from './pages/Runs.svelte';
   import Settings from './pages/Settings.svelte';
+  import UnsavedDialog from './lib/UnsavedDialog.svelte';
   import { ApiError } from './lib/api.js';
   import Login from './pages/Login.svelte';
   import Setup from './pages/Setup.svelte';
   import AccountMenu from './lib/AccountMenu.svelte';
   import { apiFetch, logout as endSession, me as fetchMe } from './lib/session.js';
   import { canonicalHash, hashFor, parseHash, parseSettingsCategory } from './lib/route.js';
+  import { isSaveShortcut } from './lib/settingsModel.js';
   import { EPISODE_SORTS, LINE_SORTS, readSortPref, sortEpisodes, writeSortPref } from './lib/episodeSort.js';
   import type { Draft, Entry, Episode, SaveResult, Shared, Verdict } from './types';
   import { blank, diffParts, nextOpenIndex, riskLabels, timecode, verdictLabels } from './review';
@@ -55,6 +57,10 @@
   let accountsOk = $state(true);
   // The settings category page ('' is the card grid); it rides in the hash as #/settings/<category>.
   let settingsCategory = $state(parseSettingsCategory(typeof location === 'undefined' ? '' : location.hash));
+  let settingsDirty = $state(false); // Settings.svelte reports unsaved edits through bind:dirty
+  let settingsPage = $state<{ save: () => Promise<void> } | undefined>();
+  // A move away from an edited settings page waits here until the operator answers the "Unsaved changes" dialog.
+  let unsavedGo = $state<(() => void) | null>(null);
   let authenticated = $state(false);
   let loading = $state(false);
   let saving = $state(false);
@@ -225,6 +231,8 @@
   // The glossary page reports unsaved add-form/edit-row text through bind:dirty.
   let glossaryDirty = $state(false);
   function discardOK() {
+    if (view === 'settings' && settingsDirty)
+      return window.confirm('Discard your unsaved settings edits? Nothing has been saved yet.');
     if (view === 'glossary' && glossaryDirty)
       return window.confirm('Discard your unsaved glossary edits? Nothing has been saved yet.');
     return !staged || window.confirm('Discard your unsaved review choices? Nothing has been saved yet.');
@@ -235,14 +243,29 @@
   let agreedHash = '';
   function navigate(next: View) {
     if (next === view) {
-      if (next === 'settings' && settingsCategory) location.hash = '#/settings'; // the sidebar item returns to the card grid
+      if (next === 'settings' && settingsCategory) {
+        const toGrid = () => (location.hash = '#/settings'); // the sidebar item returns to the card grid
+        if (settingsDirty) askDiscard(toGrid);
+        else toGrid();
+      }
       closeDrawer(true);
       return;
     }
     mobileNav = false;
-    if (saving || loading || !discardOK()) return;
+    if (saving || loading) return;
+    if (view === 'settings' && settingsDirty) {
+      askDiscard(() => go(next));
+      return;
+    }
+    if (!discardOK()) return;
+    go(next);
+  }
+  function go(next: View) {
     agreedHash = hashFor(next);
     location.hash = agreedHash;
+  }
+  function askDiscard(proceed: () => void) {
+    unsavedGo = proceed;
   }
   // Back/forward and typed hashes land here. Declining the discard prompt puts the hash back for the view we stay on.
   async function onHashChange() {
@@ -250,6 +273,15 @@
     const target = canonicalHash(location.hash);
     const agreed = agreedHash === target;
     agreedHash = '';
+    if (view === 'settings' && settingsDirty && !agreed && target !== currentHash()) {
+      // A typed hash, a settings link or Back while the page holds edits: put the address back and ask first.
+      history.replaceState(null, '', currentHash());
+      askDiscard(() => {
+        agreedHash = target;
+        location.hash = target;
+      });
+      return;
+    }
     if (next === view) {
       const category = parseSettingsCategory(location.hash);
       if (view === 'settings' && category !== settingsCategory) {
@@ -292,6 +324,7 @@
       return;
     }
     glossaryDirty = false; // the glossary page is about to unmount; the caller already confirmed the discard
+    settingsDirty = false; // likewise the settings page
     drafts = {};
     stopAudio();
     view = next;
@@ -504,6 +537,11 @@
       closeDrawer(true);
       return;
     }
+    if (view === 'settings' && isSaveShortcut(e) && authenticated) {
+      e.preventDefault(); // Ctrl+S / Cmd+S saves the settings page, never the browser's "save page as"
+      void settingsPage?.save();
+      return;
+    }
     if (view !== 'inbox' && view !== 'shared') return; // the review shortcuts and Ctrl+S belong to the review views
     const input =
       e.target instanceof HTMLElement &&
@@ -535,7 +573,7 @@
     if (key === '?') showHelp = !showHelp;
   }
   function beforeUnload(e: BeforeUnloadEvent) {
-    if (staged || (view === 'glossary' && glossaryDirty)) {
+    if (staged || (view === 'glossary' && glossaryDirty) || (view === 'settings' && settingsDirty)) {
       e.preventDefault();
       e.returnValue = '';
     }
@@ -661,7 +699,13 @@
       {:else if view === 'runs'}
         <Runs api={optionsApi} role={account.role} />
       {:else if view === 'settings'}
-        <Settings api={optionsApi} role={account.role} category={settingsCategory} />
+        <Settings
+          bind:this={settingsPage}
+          bind:dirty={settingsDirty}
+          api={optionsApi}
+          role={account.role}
+          category={settingsCategory}
+        />
       {:else}
         <header class="page-header">
           <h1 tabindex="-1">{view === 'shared' ? 'Shared lines' : 'Review inbox'}</h1>
@@ -1005,3 +1049,15 @@
         <span>{item[1]}</span><kbd>{item[0]}</kbd>
       </div>{/each}<button class="primary" onclick={() => (showHelp = false)}>Back to review</button>
   </dialog>{/if}
+
+{#if unsavedGo}
+  <UnsavedDialog
+    onstay={() => (unsavedGo = null)}
+    ondiscard={() => {
+      const proceed = unsavedGo;
+      unsavedGo = null;
+      settingsDirty = false;
+      proceed?.();
+    }}
+  />
+{/if}

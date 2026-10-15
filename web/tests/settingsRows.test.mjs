@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { categoryRows, describeRow, displayValue, readOnlyReason } from '../src/lib/settingsModel.js';
+import {
+  categoryRows,
+  describeRow,
+  displayValue,
+  loadShowAdvanced,
+  readOnlyReason,
+  saveShowAdvanced,
+} from '../src/lib/settingsModel.js';
 
 const SCHEMA = {
   settings: [
@@ -138,4 +145,36 @@ test('displayValue shows secrets only as Set or Not set and booleans as On or Of
   assert.equal(displayValue({ type: 'string', value: '' }), 'Not set');
   assert.equal(displayValue({ type: 'int', value: 7 }), '7');
   assert.equal(displayValue({ type: 'string', value: 'x'.repeat(200) }).length, 121);
+});
+
+test('Show Advanced is persisted and survives a storage that throws', () => {
+  const store = new Map();
+  const storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) };
+  assert.equal(loadShowAdvanced(storage), false);
+  saveShowAdvanced(storage, true);
+  assert.equal(loadShowAdvanced(storage), true);
+  saveShowAdvanced(storage, false);
+  assert.equal(loadShowAdvanced(storage), false);
+  const broken = {
+    getItem: () => {
+      throw new Error('denied');
+    },
+    setItem: () => {
+      throw new Error('denied');
+    },
+  };
+  assert.equal(loadShowAdvanced(broken), false);
+  assert.doesNotThrow(() => saveShowAdvanced(broken, true));
+  assert.equal(loadShowAdvanced(null), false);
+});
+
+test('advanced rows are not listed while Show Advanced is off, and appear when it is on', () => {
+  assert.deepEqual(
+    categoryRows(SCHEMA, 'glossary', false).rows.map((r) => r.key),
+    ['MINE_MIN_COUNT'],
+  );
+  assert.deepEqual(
+    categoryRows(SCHEMA, 'glossary', true).rows.map((r) => r.key),
+    ['ACQUIRE_MIN_SIM', 'MINE_MIN_COUNT', 'VERIFY_TIMEOUT'],
+  );
 });
