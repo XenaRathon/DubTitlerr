@@ -394,9 +394,8 @@ class SessionStore:
                 self._cookie_at.pop(digest, None)
                 return None
             row["last_seen"] = now
+            # Only reported here; the caller marks it used with cookie_sent() once the cookie really went out.
             refresh = bool(row["remember"]) and now - self._cookie_at.get(digest, row["created"]) >= COOKIE_REFRESH_EVERY
-            if refresh:
-                self._cookie_at[digest] = now
             info = SessionInfo(row["name"], bool(row["remember"]), row.get("epoch", 0), refresh)
             if now - self._flushed >= FLUSH_EVERY:
                 self._flushed = now  # also on failure: one attempt per interval
@@ -407,6 +406,13 @@ class SessionStore:
             except AuthError as e:
                 log(f"review server: could not flush sessions ({e.message}); keeping them in memory")
         return info
+
+    def cookie_sent(self, sid) -> None:
+        """The caller put a fresh cookie for ``sid`` on a response: the next refresh is due a day from now."""
+        if isinstance(sid, str) and sid:
+            with self._mu:
+                if _digest(sid) in self._rows:
+                    self._cookie_at[_digest(sid)] = CLOCK()
 
     def revoke(self, sid) -> None:
         if not isinstance(sid, str) or not sid:
@@ -876,6 +882,11 @@ def is_https(headers) -> bool:
     return header(headers, "X-Forwarded-Proto").split(",")[0].strip().lower() == "https"
 
 
+def cookie_secure(headers) -> bool:
+    """Secure flag for our cookies: the request came through a TLS proxy, or REVIEW_COOKIE_SECURE=1 says it always does."""
+    return is_https(headers) or os.environ.get("REVIEW_COOKIE_SECURE") == "1"
+
+
 def session_cookie(sid: str, remember: bool, secure: bool) -> str:
     parts = [f"{SESSION_COOKIE}={sid}", "Path=/", "HttpOnly", "SameSite=Strict"]
     if remember:
@@ -932,24 +943,28 @@ def handle_login(body, client: str, throttle, headers=None) -> tuple:
             throttle.failure(k)
         log("review server: login refused")  # the same line for a wrong username and a wrong password
         return 401, {"error": "wrong username or password"}, {}
-    for k in keys:
+    for k in keys[1:]:  # the username's counter only: a success must not wipe the address's record of guessing at other names
         throttle.success(k)
+    presented = _cookie(headers, SESSION_COOKIE)
+    if presented:
+        sessions().revoke(presented)  # the browser's old session ends with this login
     remember = body.get("remember") is True
     try:
         sid = sessions().create(row["name"], remember, int(row.get("session_epoch", 0)))  # a fresh id every time
     except AuthError as e:
         return e.status, {"error": e.message}, {}
     out = {"username": row["name"], "role": row["role"]}
-    if row["role"] == "admin":
-        out["token"] = api_key()  # TRANSITIONAL: the deployed bundle's password sign-in reads it; removed in Task 15
-    cookies = [session_cookie(sid, remember, is_https(headers)), LEGACY_CLEAR]  # the legacy token cookie must not outlive a login
+    cookies = [
+        session_cookie(sid, remember, cookie_secure(headers)),
+        LEGACY_CLEAR,
+    ]  # the legacy token cookie must not outlive a login
     return 200, out, {"Set-Cookie": cookies}
 
 
 def handle_logout(principal, headers=None) -> tuple:
     if principal is not None and principal.kind == "session":
         sessions().revoke(principal.sid)
-    return 200, {"ok": True}, {"Set-Cookie": clear_cookie(is_https(headers))}
+    return 200, {"ok": True}, {"Set-Cookie": clear_cookie(cookie_secure(headers))}
 
 
 def handle_me(principal) -> tuple:
@@ -959,8 +974,10 @@ def handle_me(principal) -> tuple:
 def handle_apikey(method: str, path: str) -> tuple:
     """GET /api/apikey and POST /api/apikey/reset. The key is shown here only; the role table makes both admin only."""
     try:
-        if method == "POST" and path == "/api/apikey/reset":
+        if (method, path) == ("POST", "/api/apikey/reset"):
             return 200, {"key": reset_api_key()}
-        return 200, {"key": api_key()}
+        if (method, path) == ("GET", "/api/apikey"):
+            return 200, {"key": api_key()}
+        return 405, {"error": "method not allowed"}
     except AuthError as e:
         return e.status, {"error": e.message}

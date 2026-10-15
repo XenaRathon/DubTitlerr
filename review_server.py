@@ -1044,7 +1044,11 @@ def route_full(
     status, payload, extra = result if len(result) == 3 else (*result, {})
     p = decision.principal
     if p is not None and p.kind == "session" and p.refresh and status < 400 and "Set-Cookie" not in extra:
-        extra = {**extra, "Set-Cookie": review_auth.session_cookie(p.sid, True, review_auth.is_https(hdrs))}  # sliding 30 days
+        extra = {
+            **extra,
+            "Set-Cookie": review_auth.session_cookie(p.sid, True, review_auth.cookie_secure(hdrs)),
+        }  # sliding 30 days
+        review_auth.sessions().cookie_sent(p.sid)
     return status, payload, extra
 
 
@@ -1059,8 +1063,6 @@ def _route(method: str, path: str, bare: str, body: dict, decision, client: str,
         return (
             200,
             {
-                # old meaning (a login exists); the deployed bundle reads it; removed in Task 15
-                "password_login": not review_auth.setup_required(),
                 "admin_enabled": review_admin.admin_enabled(),  # removed with the admin token in Task 13
                 "setup_required": review_auth.setup_required(),
                 "accounts_ok": review_auth.accounts_ok(),
@@ -1095,7 +1097,7 @@ def _route(method: str, path: str, bare: str, body: dict, decision, client: str,
             if refusal:
                 return refusal
         return (400, {"error": "invalid JSON"}) if body is None else admin_handler(body)
-    if bare in ("/api/apikey", "/api/apikey/reset") and method in ("GET", "POST"):
+    if bare in ("/api/apikey", "/api/apikey/reset"):
         return review_auth.handle_apikey(method, bare)
     if body is None:  # only the strict JSON routes produce None (see Handler._with_body)
         return 400, {"error": "invalid JSON"}

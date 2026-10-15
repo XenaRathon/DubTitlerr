@@ -127,6 +127,7 @@ REVIEW_STEMS_TTL_FACTOR^general^float^20^server^restart^-^Episode list cache fac
 REVIEW_RESTART^general^int^15^container^restart^-^Server restart delay (s)^Wait before the supervisor restarts a review server that exited.
 REVIEW_AUTH^general^string^""^server^restart^bootstrap^Authentication mode^Only the value off disables authentication; set in the container environment.
 REQUIRE_TOKEN^general^bool^false^server^restart^bootstrap^Refuse to start without auth^When 1 the server refuses to start with authentication off.
+REVIEW_COOKIE_SECURE^general^bool^false^server^restart^bootstrap^Always mark the sign-in cookie Secure^When 1 the session cookie always carries the Secure flag, for a server reached over HTTPS through a proxy that does not send X-Forwarded-Proto.
 REVIEW_TOKEN^general^secret^^server^restart^bootstrap^Review token^Shared review token from the container environment.
 REVIEW_ADMIN_TOKEN^general^secret^^server^restart^bootstrap^Admin token^Admin token from the container environment.
 REVIEW_ADMIN_TOKEN_FILE^general^string^""^server^restart^bootstrap^Admin token file^File holding the admin token.

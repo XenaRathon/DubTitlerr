@@ -63,7 +63,7 @@ def me(cookie):
 
 def test_a_correct_login_sets_an_httponly_samesite_strict_cookie_and_me_returns_the_user(env):
     status, payload, extra = login()
-    assert (status, payload) == (200, {"username": "Reviewer", "role": "admin", "token": KEY})  # "token": transitional, Task 15
+    assert (status, payload) == (200, {"username": "Reviewer", "role": "admin"})
     flags = set_cookie(extra).split("; ")
     assert flags[0].startswith("dubtitlerr_session=") and {"Path=/", "HttpOnly", "SameSite=Strict"} <= set(flags)
     assert "Secure" not in flags and not any(f.startswith("Max-Age") for f in flags), "a browser-session cookie over plain http"
@@ -129,13 +129,12 @@ def test_failures_against_one_username_from_many_addresses_lock_that_username(en
     assert login(client="10.0.1.99")[0] == 429, "behind a proxy the address is shared; the name is counted too"
 
 
-def test_a_login_clears_the_legacy_token_cookie_and_the_old_token_only_comes_back_for_an_admin(env):
-    extra = login()[2]
-    assert set_cookie(extra).startswith("dubtitlerr_session=")
+def test_a_login_clears_the_legacy_token_cookie_and_never_returns_the_api_key(env):
+    status, payload, extra = login()
+    assert status == 200 and "token" not in payload and set_cookie(extra).startswith("dubtitlerr_session=")
     assert any(c.startswith("dubtitlerr_token=;") and "Max-Age=0" in c for c in extra["Set-Cookie"])
     review_auth.create_user("viewer", "user", "viewer password")
-    status, payload, _ = login(user="viewer", password="viewer password")
-    assert status == 200 and "token" not in payload, "the transitional token field is for admins only"
+    assert "token" not in login(user="viewer", password="viewer password")[1]
 
 
 def test_is_https_documents_that_native_tls_is_not_served():
@@ -147,7 +146,9 @@ def test_every_login_gets_a_new_session_id_even_when_the_browser_presents_an_old
     first = cookie_of(login()[2])
     second = cookie_of(login(headers={"Cookie": first})[2])
     third = cookie_of(login()[2])
-    assert len({first, second, third}) == 3 and me(first)[0] == me(second)[0] == me(third)[0] == 200
+    assert len({first, second, third}) == 3
+    assert me(first)[0] == 401, "the session the browser presented is revoked by the login that replaced it"
+    assert me(second)[0] == me(third)[0] == 200
 
 
 def test_logout_ends_the_session_and_clears_the_cookie(env):
@@ -187,7 +188,7 @@ def test_logged_in_requests_keep_answering_while_a_glossary_lock_is_held(env):
 def test_auth_mode_reports_setup_and_account_health_and_nothing_secret(env):
     status, payload = rs.route("GET", "/api/auth-mode", {}, None)
     assert status == 200 and payload["setup_required"] is False and payload["accounts_ok"] is True
-    assert payload["password_login"] is True and payload["admin_enabled"] is False
+    assert "password_login" not in payload and payload["admin_enabled"] is False  # admin_enabled goes with Task 13
     assert KEY not in json.dumps(payload) and PASSWORD not in json.dumps(payload)
     (env.tmp / "config" / "users.json").write_text("{not json")
     assert rs.route("GET", "/api/auth-mode", {}, None)[1]["accounts_ok"] is False
@@ -263,3 +264,40 @@ def test_the_classic_pages_accept_a_session_and_otherwise_point_at_setup_or_logi
     assert b"needs-token" in locked[1] and b"/review/login" in locked[1]
     (env.tmp / "config" / "users.json").unlink()
     assert b"/review/setup" in request(server, "GET", "/shared")[1]
+
+
+def test_a_successful_login_clears_the_username_counter_but_never_the_address_counter(env):
+    for i in range(4):  # four failures from one address, each against a different name: only the address is counted
+        assert login(user=f"ghost{i}", password="wrong password")[0] == 401
+    assert login()[0] == 200, "a correct login from that address"
+    assert login(user="ghost9", password="wrong password")[0] == 401
+    assert login()[0] == 429, "the address count survived the success: the fifth failure locked it"
+
+
+def test_logging_in_while_holding_a_session_revokes_that_session(env):
+    old = cookie_of(login()[2])
+    assert me(old)[0] == 200
+    new = cookie_of(login(headers={"Cookie": old})[2])
+    assert me(old)[0] == 401 and me(new)[0] == 200
+
+
+def test_the_remember_me_refresh_is_not_used_up_by_a_response_that_sends_no_cookie(env):
+    cookie = cookie_of(login(remember=True)[2])
+    env.clock.now += 2 * 86400
+    status, _, extra = rs.route_full("GET", "/api/nope", {}, None, headers={"Cookie": cookie})
+    assert status == 404 and "Set-Cookie" not in extra
+    again = rs.route_full("GET", "/api/me", {}, None, headers={"Cookie": cookie})
+    assert again[0] == 200 and again[2]["Set-Cookie"].startswith(cookie), "the cookie is still due"
+    assert "Set-Cookie" not in rs.route_full("GET", "/api/me", {}, None, headers={"Cookie": cookie})[2]
+
+
+def test_review_cookie_secure_forces_the_secure_flag_without_a_forwarded_proto(env, monkeypatch):
+    assert "Secure" not in set_cookie(login()[2]).split("; ")
+    monkeypatch.setenv("REVIEW_COOKIE_SECURE", "1")
+    cookie = cookie_of(login(remember=True)[2])
+    assert "Secure" in set_cookie(login()[2]).split("; ")
+    _, _, out = rs.route_full("POST", "/api/logout", {}, None, headers={"Cookie": cookie, **CSRF})
+    assert "Secure" in out["Set-Cookie"].split("; ")
+    env.clock.now += 2 * 86400
+    refreshed = rs.route_full("GET", "/api/me", {}, None, headers={"Cookie": cookie_of(login(remember=True)[2])})
+    assert refreshed[2] == {} or "Secure" in refreshed[2]["Set-Cookie"].split("; ")

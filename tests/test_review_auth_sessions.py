@@ -169,6 +169,8 @@ def test_a_remember_me_cookie_is_refreshed_once_a_day_and_a_browser_session_neve
         store.clock.now += 11 * 3600
         assert store.lookup(b).refresh is False
     assert store.lookup(r).refresh is True
+    assert store.lookup(r).refresh is True, "looking at the session does not use the refresh up"
+    store.cookie_sent(r)
     assert store.lookup(r).refresh is False
     assert store.lookup(b).refresh is False
 

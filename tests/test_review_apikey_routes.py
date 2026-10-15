@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+import glossary_lock
 import review_auth
 import review_server as rs
 
@@ -75,3 +76,30 @@ def test_the_alias_works_for_this_release_and_logs_once_per_start(env, capsys):
         assert rs.route("GET", "/api/episodes", {}, None, headers={"X-Review-Token": OLD})[0] == 200
     lines = [ln for ln in capsys.readouterr().out.splitlines() if "X-Review-Token is deprecated" in ln]
     assert len(lines) == 1 and OLD not in lines[0]
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("POST", "/api/apikey"),
+        ("PUT", "/api/apikey"),
+        ("DELETE", "/api/apikey"),
+        ("GET", "/api/apikey/reset"),
+        ("PUT", "/api/apikey/reset"),
+    ],
+)
+def test_the_key_routes_answer_405_to_the_wrong_method(env, method, path):
+    rs.startup_auth()
+    review_auth.create_user("root", "admin", "admin password")
+    assert rs.route(method, path, {}, None, headers=session("root"))[0] == 405
+    assert review_auth.api_key() == OLD, "a wrong-method request neither shows nor resets the key"
+
+
+def test_a_busy_key_lock_makes_reset_a_503_and_keeps_the_key(env, monkeypatch):
+    rs.startup_auth()
+    review_auth.create_user("root", "admin", "admin password")
+    monkeypatch.setattr(review_auth, "LOCK_WAIT", 0.05)
+    with glossary_lock.locked(review_auth.apikey_path(), "holder", wait=0):
+        status, payload = rs.route("POST", "/api/apikey/reset", {}, None, headers=session("root"))
+    assert (status, payload) == (503, {"error": "busy, try again"})
+    assert review_auth.api_key() == OLD
