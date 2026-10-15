@@ -124,11 +124,9 @@ def test_the_api_key_needs_no_admin_token(env, monkeypatch):
     assert seen == [{"x": 1}]
 
 
-def test_the_alias_still_needs_the_admin_token_until_it_is_retired(env, monkeypatch):
+def test_the_alias_reaches_an_admin_route_with_no_second_secret(env, monkeypatch):
     monkeypatch.setitem(rs.ADMIN_ROUTES, ("POST", "/api/_t6_probe"), lambda body: (200, {"ok": True}))
-    assert rs.route("POST", "/api/_t6_probe", {}, KEY) == (403, {"error": "admin writes are disabled"})
-    monkeypatch.setenv("REVIEW_ADMIN_TOKEN", "adm")
-    assert rs.route("POST", "/api/_t6_probe", {}, KEY, admin_token="adm") == (200, {"ok": True})
+    assert rs.route("POST", "/api/_t6_probe", {}, KEY) == (200, {"ok": True})
 
 
 def test_route_keeps_its_two_tuple_shape(env):

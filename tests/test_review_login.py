@@ -188,7 +188,7 @@ def test_logged_in_requests_keep_answering_while_a_glossary_lock_is_held(env):
 def test_auth_mode_reports_setup_and_account_health_and_nothing_secret(env):
     status, payload = rs.route("GET", "/api/auth-mode", {}, None)
     assert status == 200 and payload["setup_required"] is False and payload["accounts_ok"] is True
-    assert "password_login" not in payload and payload["admin_enabled"] is False  # admin_enabled goes with Task 13
+    assert "password_login" not in payload and "admin_enabled" not in payload
     assert KEY not in json.dumps(payload) and PASSWORD not in json.dumps(payload)
     (env.tmp / "config" / "users.json").write_text("{not json")
     assert rs.route("GET", "/api/auth-mode", {}, None)[1]["accounts_ok"] is False

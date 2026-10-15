@@ -61,7 +61,6 @@ from urllib.parse import quote
 
 import common
 import decisions
-import review_admin
 import review_apply
 import review_auth
 import review_glossary
@@ -262,7 +261,6 @@ def announce_token(token_dir: str = "", bind: str = "") -> None:
     log("review server:   docker exec <container> cat " + path)
 
 
-ADMIN_HEADER = "X-Review-Admin-Token"
 # A request target after whitespace -- origin-form (/path) or absolute-form (scheme://host/path) -- and the query that
 # follows it, whatever the method token (PROPFIND, lowercase get, M-SEARCH...).
 _REQUEST_LINE_QUERY = re.compile(r'(\s(?:[A-Za-z][A-Za-z0-9+.-]*://[^\s"?/]*)?/[^\s"?]*)\?[^\s"]*')
@@ -279,9 +277,8 @@ _JSON_REQUIRED = frozenset(
         ("PUT", "/api/me/password"),
     )
 )
-# (method, path) -> handler(body) for routes that need the admin token (specs/webui-admin-token). route() checks the review
-# token first, then admin_guard(); the HTTP layer fills ``admin_token`` from the header only. Empty until settings, run
-# requests and the schedule land; tests register a probe here.
+# (method, path) -> handler(body) for routes the role table marks admin; route_full has already checked the role. Tests
+# register a probe here.
 ADMIN_ROUTES: dict = {}
 
 
@@ -290,7 +287,7 @@ def _anime_root():
     return os.environ.get("ANIME_ROOT") or None
 
 
-# Builder-affecting writes: review token first, then the admin token (see route()).
+# Builder-affecting writes (admin role, enforced by route_full before these run).
 ADMIN_ROUTES[("POST", "/api/requests")] = lambda body: review_requests.handle(
     "POST", "/api/requests", body, anime_root=_anime_root()
 )
@@ -299,15 +296,6 @@ ADMIN_ROUTES[("POST", "/api/settings/reset")] = lambda body: review_settings_wri
 ADMIN_ROUTES[("PUT", "/api/schedule")] = lambda body: review_requests.handle(
     "PUT", "/api/schedule", body, anime_root=_anime_root()
 )
-
-
-def admin_guard(presented):
-    """None when the admin token is configured and matches; else the (403, payload) to answer with."""
-    return review_admin.check_admin(presented)
-
-
-def admin_authorised(presented) -> bool:
-    return admin_guard(presented) is None
 
 
 def authorised(method: str, presented, path: str = "") -> bool:
@@ -1033,8 +1021,8 @@ def route_full(
 ) -> tuple:
     """(status, payload, extra_headers). ``token`` is the pre-accounts calling convention and counts as X-Review-Token;
     ``headers`` carry the Cookie, X-Api-Key and CSRF header. review_auth.decide runs first, on the bare path (no query
-    string): no handler is reached by a caller its route's role does not allow. ``admin_token`` is the X-Review-Admin-Token
-    value, read only by the legacy rule. ``client`` is the peer address, used only to throttle /api/login."""
+    string): no handler is reached by a caller its route's role does not allow. ``admin_token`` is accepted and ignored (the
+    admin token is retired). ``client`` is the peer address, used only to throttle /api/login."""
     bare = path.partition("?")[0]
     hdrs = dict(headers or {})
     if token and not (review_auth.header(hdrs, review_auth.API_KEY_HEADER) or review_auth.header(hdrs, review_auth.ALIAS_HEADER)):
@@ -1065,7 +1053,6 @@ def _route(method: str, path: str, bare: str, body: dict, decision, client: str,
         return (
             200,
             {
-                "admin_enabled": review_admin.admin_enabled(),  # removed with the admin token in Task 13
                 "setup_required": review_auth.setup_required(),
                 "accounts_ok": review_auth.accounts_ok(),
             },
@@ -1092,12 +1079,6 @@ def _route(method: str, path: str, bare: str, body: dict, decision, client: str,
         )
     admin_handler = ADMIN_ROUTES.get((method, bare))
     if admin_handler is not None:
-        # Compatibility until the admin token is retired: the legacy callers (the review-token argument or header, and
-        # REVIEW_AUTH=off) keep the two-secret rule on these routes. The API key and admin sessions do not.
-        if decision.principal is not None and decision.principal.kind in ("alias", "open"):
-            refusal = admin_guard(admin_token)
-            if refusal:
-                return refusal
         return (400, {"error": "invalid JSON"}) if body is None else admin_handler(body)
     if bare in ("/api/apikey", "/api/apikey/reset"):
         return review_auth.handle_apikey(method, bare)
@@ -1139,7 +1120,7 @@ def _route(method: str, path: str, bare: str, body: dict, decision, client: str,
     if method == "GET" and bare in ("/api/requests", "/api/schedule"):
         return review_requests.handle("GET", bare, body, anime_root=_anime_root())
     if (method, bare) in (("GET", "/api/settings"), ("POST", "/api/settings/test")):
-        # The connection test is a read-only probe, so it needs the review token only, not the admin token.
+        # The connection test is a read-only probe, so it needs a signed-in caller only.
         result = review_settings.handle(method, bare, body)
         # GET gains the profile names, pending overrides and whether writes are possible (review_settings_write.py).
         return review_settings_write.augment_get(*result) if method == "GET" else result
@@ -1651,7 +1632,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             q,
             self.headers.get(TOKEN_HEADER),
             client=self._client(),
-            admin_token=self.headers.get(ADMIN_HEADER, ""),
             headers=dict(self.headers.items()),
         )
         ctype = "application/json"
@@ -1718,7 +1698,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body,
             self.headers.get(TOKEN_HEADER),
             client=self._client(),
-            admin_token=self.headers.get(ADMIN_HEADER, ""),  # the header only: a cookie or query value is never consulted
             headers=dict(self.headers.items()),
         )
         self._send(status, payload, extra=extra)
@@ -1825,6 +1804,8 @@ def startup_auth() -> None:
     review token. Auth off (REVIEW_AUTH=off): nothing to prepare."""
     if not auth_required():
         return
+    if os.environ.get("REVIEW_ADMIN_TOKEN") or os.environ.get("REVIEW_ADMIN_TOKEN_FILE"):
+        log("review server: REVIEW_ADMIN_TOKEN is retired and ignored; admins sign in with an account or use the API key")
     if not review_auth.scrypt_available():
         log("review server: hashlib.scrypt is not available in this Python/OpenSSL build; refusing to start with auth on")
         raise SystemExit(2)

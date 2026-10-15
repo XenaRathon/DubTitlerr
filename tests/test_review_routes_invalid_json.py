@@ -67,12 +67,6 @@ def test_no_token_still_gets_401_before_the_body_is_judged(server, method, path,
     assert send(server, method, path, b"{not json")[0] == 401
 
 
-@pytest.mark.parametrize("method, path", [("POST", "/api/requests"), ("PUT", "/api/schedule")])
-def test_admin_routes_check_the_admin_token_before_the_body(server, method, path):
-    status, payload = send(server, method, path, b"{not json", {rs.TOKEN_HEADER: TOKEN})
-    assert (status, payload) == (403, {"error": "admin token required"})
-
-
 def test_the_old_inbox_routes_keep_treating_garbage_as_an_empty_body(server):
     status, payload = send(server, "POST", "/api/decide", b"{not json", {rs.TOKEN_HEADER: TOKEN})
     assert payload != {"error": "invalid JSON"}
