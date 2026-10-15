@@ -24,6 +24,7 @@ ENTRYPOINTS = [
     # be in the image. qc.py passed 987 tests and ImportError'd on container start for
     # exactly this reason.
     "review_server.py",
+    "review_users.py",
 ]
 
 
