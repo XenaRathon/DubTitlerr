@@ -10,7 +10,6 @@ import collections
 import contextlib
 import dataclasses
 import hashlib
-import http.cookies
 import json
 import os
 import re
@@ -653,13 +652,13 @@ def _cookie(headers, name: str) -> str:
     raw = header(headers, "Cookie")
     if not raw:
         return ""
-    jar = http.cookies.SimpleCookie()
-    try:
-        jar.load(raw)
-    except http.cookies.CookieError:
-        return ""
-    morsel = jar.get(name)
-    return morsel.value if morsel else ""
+    # Not SimpleCookie: one malformed cookie from another app on this host would make it drop ours too.
+    for part in raw.split(";"):
+        key, sep, value = part.partition("=")
+        if sep and key.strip() == name:
+            value = value.strip()
+            return value[1:-1] if len(value) >= 2 and value[0] == value[-1] == '"' else value
+    return ""
 
 
 def auth_on() -> bool:
@@ -742,10 +741,16 @@ def _refuse(status: int, required: str, known: bool, error: str = "") -> Decisio
     return Decision(None, status, error or _ERRORS[status], required, known, None)
 
 
+_NO_PRINCIPAL_PREFIXES = ("/healthz", "/review", "/api/webhook/")  # public routes that never read who is asking
+
+
 def decide(method: str, path: str, headers) -> Decision:
+    path = path.split("?", 1)[0].split("#", 1)[0]  # the table knows routes, not query strings
     required, known = _required_role(method, path)
     if not auth_on():
         return Decision("admin", None, "", required, known, Principal("open", "", "admin"))
+    if required == "public" and path.startswith(_NO_PRINCIPAL_PREFIXES):
+        return Decision("public", None, "", required, known, None)
     principal = authenticate(headers, method, path)
     if required == "public":
         return Decision(principal.role if principal else "public", None, "", required, known, principal)

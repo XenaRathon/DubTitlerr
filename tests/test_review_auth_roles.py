@@ -199,3 +199,59 @@ def test_the_settings_routes_of_webui_full_settings_have_their_roles():
     }
     assert {k: review_auth.ROUTE_ROLES[k] for k in expect} == expect
     assert set(review_auth.ROUTE_ROLES.values()) <= {"public", "user", "admin"}
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ['theme={"a":1}; ', "x=a b; ", 'other="a\\"b; ', "junk; ", "=; ", "a=b;c=d; "],
+)
+def test_a_foreign_cookie_before_ours_does_not_drop_the_session(people, prefix):
+    cookie = people["alice"]["Cookie"]
+    assert review_auth.role_for("GET", "/api/episodes", {"Cookie": prefix + cookie}) == ("user", None)
+    assert review_auth.role_for("GET", "/api/episodes", {"Cookie": cookie + "; " + prefix}) == ("user", None)
+
+
+def test_the_first_cookie_of_a_name_wins_and_names_match_exactly(people):
+    cookie = people["alice"]["Cookie"]
+    sid = cookie.split("=", 1)[1]
+    assert review_auth.role_for("GET", "/api/episodes", {"Cookie": f"x_dubtitlerr_session=nope; {cookie}"}) == ("user", None)
+    assert review_auth.role_for("GET", "/api/episodes", {"Cookie": f"dubtitlerr_session=forged; dubtitlerr_session={sid}"}) == (
+        None,
+        401,
+    )
+    assert review_auth.role_for("GET", "/api/episodes", {"Cookie": f'dubtitlerr_session="{sid}"'}) == ("user", None)
+
+
+def test_a_query_string_or_fragment_does_not_change_the_route(people):
+    user = people["alice"]
+    assert review_auth.role_for("GET", "/api/episode?stem=x", user) == ("user", None)
+    assert review_auth.role_for("GET", "/api/episodes?show=a&x=/api/users", user) == ("user", None)
+    assert review_auth.role_for("GET", "/api/users?x=1", user) == (None, 403)
+    assert review_auth.role_for("GET", "/api/users#frag", user) == (None, 403)
+    assert review_auth.role_for("GET", "/healthz?probe=1", {}) == ("public", None)
+
+
+def test_a_hand_edited_non_integer_session_epoch_is_a_401_not_a_crash(env, people):
+    path = env.dir / "users.json"
+    doc = json.loads(path.read_text())
+    doc["users"][1]["session_epoch"] = "zero"
+    path.write_text(json.dumps(doc))
+    assert review_auth.role_for("GET", "/api/episodes", people["alice"]) == (None, 401)
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [("GET", "/healthz"), ("GET", "/review"), ("GET", "/review/assets/app.js"), ("POST", "/api/webhook/sonarr")],
+)
+def test_public_routes_that_ignore_the_principal_do_no_lookup(people, monkeypatch, method, path):
+    def no_lookup(*a, **k):
+        raise AssertionError("authenticate ran on a public route")
+
+    monkeypatch.setattr(review_auth, "authenticate", no_lookup)
+    assert review_auth.role_for(method, path, people["alice"]) == ("public", None)
+
+
+@pytest.mark.parametrize("path", ["/healthz", "/api/auth-mode", "/review/assets/app.js", "/api/login"])
+def test_a_wrong_api_key_on_a_public_route_does_not_block_it(people, path):
+    method = "POST" if path == "/api/login" else "GET"
+    assert review_auth.role_for(method, path, {"X-Api-Key": "wrong"}) == ("public", None)
