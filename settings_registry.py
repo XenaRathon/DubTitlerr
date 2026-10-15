@@ -158,10 +158,10 @@ GITHUB_WIKI^general^url^""^container^restart^bootstrap^GitHub wiki^Publish tool 
 FORGEJO_WIKI^general^url^""^container^restart^bootstrap^Forgejo wiki^Publish tool wiki remote.
 PUBLISH_APPLY^general^bool^false^container^restart^bootstrap^Publish for real^Publish tool: push instead of a dry run.
 SHOWS^general^string^""^container^restart^bootstrap^Publish shows^Publish tool: shows to publish.
-DECISIONS_DIR^general^string^"/config/decisions"^server^restart^-^Decisions folder^Where review verdicts are stored.
-REQUESTS_DIR^general^string^"/config/requests"^server^restart^-^Requests folder^Where run requests are queued.
-SCHEDULE_FILE^general^string^"/config/schedule.json"^server^restart^-^Schedule file^Where the run window is stored.
-HEARTBEAT_PATH^general^string^"/config/heartbeat.json"^server^restart^-^Heartbeat file^Where the builder reports progress.
+DECISIONS_DIR^general^string^"/config/decisions"^merge,server^next_merge_pass^-^Decisions folder^Where review verdicts are stored.
+REQUESTS_DIR^general^string^"/config/requests"^gen,server^next_sweep^-^Requests folder^Where run requests are queued.
+SCHEDULE_FILE^general^string^"/config/schedule.json"^gen,server^next_sweep^-^Schedule file^Where the run window is stored.
+HEARTBEAT_PATH^general^string^"/config/heartbeat.json"^container,gen,merge,server^next_show^-^Heartbeat file^Where the builder reports progress.
 GLOSSARY_LOCK_WAIT^general^float^5^gen,merge,server^next_show^-^Lock wait (s)^How long a background writer waits for a busy glossary.
 GLOSSARY_LOCK_WAIT_INTERACTIVE^general^float^600^server^restart^-^Interactive lock wait (s)^How long a person waits for a busy glossary.
 REPAIR_PROFILES^general^string^""^server^restart^retired^Repair profiles (retired)^Imported once as Connections; no longer read.

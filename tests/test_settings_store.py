@@ -157,3 +157,74 @@ def test_locked_raises_if_lock_cannot_be_opened(tmp_path):
                 pass
     finally:
         os.chmod(unwritable, 0o755)
+
+
+@pytest.mark.parametrize(
+    "text, why",
+    [("{not json", "not valid JSON"), ('["a"]', "unexpected shape"), ('{"version": 2, "values": {}}', "another version")],
+)
+def test_an_unusable_secrets_file_loads_empty_with_the_reason(env, tmp_path, text, why):
+    path = tmp_path / "secrets.json"
+    path.write_text(text)
+    os.chmod(path, 0o600)
+    state = store.load(env)
+    assert why in state.secrets_error and state.secret_values == {} and state.conn_keys == {}
+
+
+def test_connections_and_stages_round_trip_through_save_and_load(env):
+    state = store.load(env)
+    conn = {
+        "name": "fast",
+        "kind": "llamacpp",
+        "url": "http://127.0.0.1:8090/v1",
+        "model": "qwen",
+        "extra_body": "{}",
+        "timeout_connect": 10.0,
+        "timeout_read": 120.0,
+    }
+    state.connections = [conn]
+    state.stages = {"repair": "fast", "verify": "fast"}
+    state.conn_keys = {"fast": "secret-key-123"}
+    store.save(state, env)
+
+    loaded = store.load(env)
+    assert loaded.connections == [conn]
+    assert loaded.stages == {"repair": "fast", "verify": "fast"}
+    assert loaded.conn_keys == {"fast": "secret-key-123"}
+
+
+def test_state_copy_is_independent():
+    state = store.State()
+    state.values["WHISPER_BEAM_SIZE"] = 5
+    state.connections.append({"name": "test"})
+    state.stages["repair"] = "test"
+    state.secret_values["PLEX_TOKEN"] = "abc"
+    state.conn_keys["test"] = "key"
+    state.notes.append("note1")
+
+    clone = state.copy()
+    clone.values["WHISPER_BEAM_SIZE"] = 7
+    clone.connections[0]["name"] = "changed"
+    clone.stages["repair"] = "other"
+    clone.secret_values["PLEX_TOKEN"] = "xyz"
+    clone.conn_keys["test"] = "key2"
+    clone.notes.append("note2")
+
+    assert state.values["WHISPER_BEAM_SIZE"] == 5
+    assert state.connections[0]["name"] == "test"
+    assert state.stages["repair"] == "test"
+    assert state.secret_values["PLEX_TOKEN"] == "abc"
+    assert state.conn_keys["test"] == "key"
+    assert state.notes == ["note1"]
+
+
+def test_audit_url_with_raw_at_in_password_leaks_nothing(capsys):
+    store.audit(
+        "admin",
+        [],
+        [],
+        {"PLEX_URL": "http://user:p@ssword@plex.lan:32400/web?query=1#frag"},
+    )
+    out = capsys.readouterr().out
+    assert "url PLEX_URL=http://plex.lan:32400/web" in out
+    assert "user" not in out and "p@ssword" not in out and "query" not in out and "frag" not in out

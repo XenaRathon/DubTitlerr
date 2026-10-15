@@ -138,3 +138,27 @@ def test_review_gate_shows_and_stale_days_help_and_rules():
     assert "comma" not in shows["help"].lower()
     stale = reg.REGISTRY["REVIEW_GATE_STALE_DAYS"]
     assert "log line" in stale["help"].lower()
+
+
+def test_pinned_scopes_for_decisions_requests_schedule_heartbeat():
+    assert set(reg.REGISTRY["DECISIONS_DIR"]["scope"]) == {"merge", "server"}
+    assert set(reg.REGISTRY["REQUESTS_DIR"]["scope"]) == {"gen", "server"}
+    assert set(reg.REGISTRY["SCHEDULE_FILE"]["scope"]) == {"gen", "server"}
+    assert set(reg.REGISTRY["HEARTBEAT_PATH"]["scope"]) == {"container", "gen", "merge", "server"}
+
+
+def test_path_list_validation_accepts_absolute_and_rejects_relative():
+    assert reg.validate("MUX_ROOTS", "/data/a:/data/b") == "/data/a:/data/b"
+    assert reg.validate("MUX_ROOTS", "") == ""
+    for bad in ("relative/path", "/absolute:relative", "rel/one:/data/two"):
+        with pytest.raises(reg.Invalid, match="must be absolute paths separated by colons"):
+            reg.validate("MUX_ROOTS", bad)
+
+
+def test_from_env_rejects_bad_enum_and_malformed_numbers():
+    assert reg.from_env("COMPUTE_TYPE", "invalid_enum") == ("invalid_enum", False)
+    assert reg.from_env("WHISPER_BEAM_SIZE", "not_an_int") == ("not_an_int", False)
+    assert reg.from_env("MIN_FREE_GB", "not_a_float") == ("not_a_float", False)
+    assert reg.from_env("MIN_FREE_GB", "nan") == ("nan", False)
+    assert reg.from_env("MIN_FREE_GB", "inf") == ("inf", False)
+    assert reg.from_env("MIN_FREE_GB", "-inf") == ("-inf", False)
