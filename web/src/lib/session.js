@@ -1,3 +1,4 @@
+/* global Headers */
 // Every call the web UI makes to the review API goes through here: the session is an HttpOnly cookie the browser sends
 // by itself, and every request that changes something carries X-DubTitlerr-Request (a cross-site form cannot set it).
 // No token is stored, read or sent from this module.
