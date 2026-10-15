@@ -11,6 +11,7 @@ script reaches its own logic instead of exiting at the FATAL guard."""
 import json
 import os
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -474,3 +475,64 @@ def test_a_stopped_repair_holds_the_stem_back_and_the_next_pass_retries_it(tmp_p
     res2, calls2 = _gated_run(tmp_path, root)
     assert calls2 == ["repair ep01", "repair ep01", "signs ep01", "mux ep01"], (calls2, res2.stdout, res2.stderr)
     assert "MERGE PASS COMPLETE" in res2.stdout
+
+
+# --- LIBRARY_SWEEP off: only shows with a run request are merged -------------------------------------------------------
+
+
+def _two_shows(tmp_path):
+    root = tmp_path / "library"
+    for show in ("Requested", "Second"):
+        d = root / show
+        d.mkdir(parents=True)
+        (d / "ep01.mkv").write_text("")
+        (d / "ep01.eng.dubtitles.srt").write_text("")
+    (tmp_path / "calls.log").write_text("")
+    rdir = tmp_path / "requests"
+    rdir.mkdir()
+    shutil.copy(os.path.join(_REPO, "review_requests.py"), _stub_app(tmp_path) / "review_requests.py")
+    return root, rdir
+
+
+def _called_dirs(calls):
+    return sorted({c.split()[1] for c in calls})
+
+
+def test_sweep_off_merges_only_the_show_with_a_request(tmp_path):
+    # Mutation caught: the pass still walks every show in MERGE_ROOTS with LIBRARY_SWEEP off.
+    root, rdir = _two_shows(tmp_path)
+    (rdir / "r1.json").write_text(json.dumps({"id": "r1", "show": "Requested", "status": "pending"}))
+    res, calls = _gated_run(tmp_path, root, extra_env={"LIBRARY_SWEEP": "false", "REQUESTS_DIR": str(rdir)})
+    assert calls  # the requested show was processed
+    assert (root / "Requested" / "ep01.eng.dubtitles.ass").exists()
+    assert (root / "Second" / "ep01.eng.dubtitles.srt").exists()
+    assert not (root / "Second" / "ep01.eng.dubtitles.ass").exists()
+    assert "MERGE PASS COMPLETE" in res.stdout, res.stdout + res.stderr
+
+
+def test_sweep_off_counts_a_finished_request_in_the_done_dir(tmp_path):
+    root, rdir = _two_shows(tmp_path)
+    (rdir / "done").mkdir()
+    (rdir / "done" / "r1.json").write_text(json.dumps({"id": "r1", "show": "Requested", "status": "done"}))
+    res, _ = _gated_run(tmp_path, root, extra_env={"LIBRARY_SWEEP": "off", "REQUESTS_DIR": str(rdir)})
+    assert (root / "Requested" / "ep01.eng.dubtitles.ass").exists()
+    assert not (root / "Second" / "ep01.eng.dubtitles.ass").exists()
+
+
+def test_sweep_off_with_no_request_touches_nothing_and_says_so(tmp_path):
+    # Mutation caught: an empty show list falls back to scanning the whole library.
+    root, rdir = _two_shows(tmp_path)
+    res, calls = _gated_run(tmp_path, root, extra_env={"LIBRARY_SWEEP": "0", "REQUESTS_DIR": str(rdir)})
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert calls == []
+    assert res.stdout.count("LIBRARY_SWEEP is off") == 1, res.stdout
+    for show in ("Requested", "Second"):
+        assert not (root / show / "ep01.eng.dubtitles.ass").exists()
+
+
+def test_sweep_on_still_merges_every_show(tmp_path):
+    # Guard: today's behaviour. Passes before the change too.
+    root, rdir = _two_shows(tmp_path)
+    res, calls = _gated_run(tmp_path, root, extra_env={"LIBRARY_SWEEP": "true", "REQUESTS_DIR": str(rdir)})
+    assert (root / "Requested" / "ep01.eng.dubtitles.ass").exists()
+    assert (root / "Second" / "ep01.eng.dubtitles.ass").exists()

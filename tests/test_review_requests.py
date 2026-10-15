@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import stat
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -1220,3 +1221,43 @@ def test_write_effective_env_never_reports_any_extra_body(tmp_path):
     )
     text = out_file.read_text()
     assert "EXTRA_BODY" not in text and "leak" not in text and "VERIFY_MODEL=m" in text
+
+
+def _req(rdir, sub, name, show, status):
+    d = rdir / sub if sub else rdir
+    d.mkdir(parents=True, exist_ok=True)
+    ext = ".running" if status == "running" else ".json"
+    (d / (name + ext)).write_text(json.dumps({"id": name, "show": show, "status": status}))
+
+
+def test_shows_lists_pending_running_and_done_but_not_failed(tmp_path):
+    # Mutation caught: a show with only a finished/running request is left out, or a failed one is let in.
+    _req(tmp_path, "", "a", "Pending Show", "pending")
+    _req(tmp_path, "", "b", "Running Show", "running")
+    _req(tmp_path, "done", "c", "Done Show", "done")
+    _req(tmp_path, "failed", "d", "Failed Show", "failed")
+    _req(tmp_path, "", "e", "Pending Show", "pending")
+    assert review_requests.request_shows(str(tmp_path)) == ["Done Show", "Pending Show", "Running Show"]
+
+
+def test_shows_ignores_old_done_files_and_unsafe_show_names(tmp_path):
+    _req(tmp_path, "done", "old", "Old Show", "done")
+    old = time.time() - 8 * 86400
+    os.utime(tmp_path / "done" / "old.json", (old, old))
+    _req(tmp_path, "", "x", "../escape", "pending")
+    _req(tmp_path, "", "y", "a/b", "pending")
+    _req(tmp_path, "", "z", ".", "pending")  # "." is the library root: merge_pass would run every show
+    (tmp_path / "bad.json").write_text("not json")
+    assert review_requests.request_shows(str(tmp_path), days=7) == []
+
+
+def test_shows_cli_prints_one_show_per_line(tmp_path):
+    _req(tmp_path, "", "a", "Show A", "pending")
+    _req(tmp_path, "", "b", "Show B", "pending")
+    out = subprocess.run(
+        [sys.executable, str(Path(review_requests.__file__)), "shows", str(tmp_path), "7"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert out == "Show A\nShow B\n"

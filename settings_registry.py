@@ -108,6 +108,7 @@ _wave('MERGE_INTERVAL', 'output', 'Merge interval (s)', 'Seconds between merge p
 _wave('MERGE_WINDOW', 'schedule', 'Merge window', 'Hours in which a merge pass may run, HH:MM-HH:MM; empty means always.', 'string', '', 'container', 'restart', pattern=r"|(?:[01]\d|2[0-3]):[0-5]\d-(?:[01]\d|2[0-3]):[0-5]\d", pattern_help='use HH:MM-HH:MM or leave empty')
 _wave('WATCH_QUEUE_WINDOW_DAYS', 'schedule', 'Watch queue window (days)', 'Queue only shows watched within this many days; empty turns the watch queue off.', 'int', None, 'gen', 'next_sweep', min=1, max=3650)
 _wave('WATCH_QUEUE_PIN', 'schedule', 'Always-queued show', 'A show queued however long since it was watched.', 'string', '', 'gen', 'next_sweep')
+_wave('LIBRARY_SWEEP', 'schedule', 'Sweep the whole library', 'Off: the builder only runs queued requests, and the merge pass only handles shows with a request.', 'bool', True, ['gen', 'merge'], 'next_sweep')
 _wave('PLEX_URL', 'connect', 'Plex URL', 'Address of your Plex server; tokens belong in a secret field.', 'url', '', ['gen', 'merge'], 'next_show')
 _wave('PLEX_TOKEN', 'connect', 'Plex token', 'Token the builder uses to refresh Plex and read watch history.', 'secret', None, ['gen', 'merge'], 'next_show')
 _wave('PLEX_SECTION', 'connect', 'Plex library section', 'Plex library section id to refresh.', 'string', '7', ['gen', 'merge'], 'next_show', pattern=r"[A-Za-z0-9_-]{1,32}", pattern_help='must be a section id')

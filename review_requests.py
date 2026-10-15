@@ -576,6 +576,40 @@ def prune(
     return pruned
 
 
+def request_shows(requests_dir: str | None = None, days: int = 7) -> list[str]:
+    """Sorted show names that have a run request: pending, running, or finished OK within `days`.
+
+    Read-only. Failed requests do not count (nothing was built for them); unsafe or unreadable entries are skipped.
+    """
+    rdir = requests_dir or os.environ.get("REQUESTS_DIR", REQUESTS_DIR)
+    cutoff = time.time() - max(1, int(days)) * 86400
+    shows = set()
+    for d in (rdir, os.path.join(rdir, "done")):
+        try:
+            entries = list(os.scandir(d))
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_file() or entry.name.startswith(".") or not entry.name.endswith((".json", ".running")):
+                continue
+            try:
+                if d != rdir and entry.stat().st_mtime < cutoff:
+                    continue
+                with open(entry.path, encoding="utf-8") as f:
+                    show = json.load(f).get("show")
+            except (OSError, ValueError, AttributeError):
+                continue
+            if (
+                isinstance(show, str)
+                and show
+                and show != "."
+                and not any(bad in show for bad in ("/", "\\", "..", "\0"))
+                and not _has_control_or_format_chars(show)
+            ):
+                shows.add(show)
+    return sorted(shows)
+
+
 def next_pending(dir: str | None = None) -> str | None:
     """Find the oldest pending request path (FIFO by filename timestamp)."""
     rdir = dir or os.environ.get("REQUESTS_DIR", REQUESTS_DIR)
@@ -1055,13 +1089,13 @@ def handle(
 
 
 def main() -> None:
-    """CLI for shell loops (next | unpack | start | finish | recover | prune | window-open | write-effective-env)."""
+    """CLI for shell loops (next | unpack | start | finish | recover | prune | shows | window-open | write-effective-env)."""
     args = sys.argv[1:]
     if not args:
         print(
             "Usage: review_requests.py next [DIR]|unpack JSON|start PATH|requeue PATH|"
             "finish PATH ok|fail [reason]|recover [DIR]|prune [DIR] [DAYS]|"
-            "window-open [FILE]|write-effective-env [FILE]",
+            "shows [DIR] [DAYS]|window-open [FILE]|write-effective-env [FILE]",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1163,6 +1197,11 @@ def main() -> None:
         days = int(args[2]) if len(args) > 2 else 7
         pruned = prune(os.path.join(rdir, "done"), os.path.join(rdir, "failed"), days=days)
         print(f"pruned {pruned} files")
+
+    elif cmd == "shows":
+        days = int(args[2]) if len(args) > 2 else 7
+        for show in request_shows(args[1] if len(args) > 1 else None, days=days):
+            print(show)
 
     elif cmd == "window-open":
         sfile = args[1] if len(args) > 1 else None

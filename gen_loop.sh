@@ -53,6 +53,7 @@ if [ -f "$APP_DIR/shell/lib.sh" ]; then
 else # lib missing (misbuilt image): never stop, plain sleeps
 	stop_requested() { return 1; }
 	sleep_unless_stopped() { sleep "$1"; }
+	library_sweep_enabled() { return 0; }
 fi
 
 check_window_open() {
@@ -299,19 +300,26 @@ while :; do
 	# is a superset of the other. watch_queue.py exits non-zero and leaves $ORDER untouched
 	# if either is unreachable, so a `||` fallthrough is correct here -- last sweep's queue is
 	# a safe answer, an empty one is not. Disabled by leaving WATCH_QUEUE_WINDOW_DAYS unset.
-	if [ -n "${WATCH_QUEUE_WINDOW_DAYS:-}" ]; then
+	# LIBRARY_SWEEP off: nothing below walks the library; only queued requests run (drain_requests), then the idle wait.
+	sweep=1
+	library_sweep_enabled || sweep=0
+	if [ "$sweep" -eq 1 ] && [ -n "${WATCH_QUEUE_WINDOW_DAYS:-}" ]; then
 		echo "#### WATCH QUEUE $(date)"
 		ANIME_ROOT="$ANIME" python3 "$APP_DIR"/watch_queue.py \
 			--window-days "$WATCH_QUEUE_WINDOW_DAYS" --out "$ORDER" \
 			${WATCH_QUEUE_PIN:+--pin "$WATCH_QUEUE_PIN"} </dev/null ||
 			echo "  watch_queue declined to write (keeping the existing order file)"
 	fi
-	if [ ! -f "$ORDER" ]; then
+	if [ "$sweep" -eq 1 ] && [ ! -f "$ORDER" ]; then
 		echo "gen_loop: no order file $ORDER — idle 300s"
 		sleep_unless_stopped 300
 		continue
 	fi
 	echo "==== GENERATE SWEEP $(date) ===="
+	if [ "$sweep" -eq 0 ]; then
+		echo "gen_loop: LIBRARY_SWEEP is off, running queued requests only"
+		ORDER=/dev/null
+	fi
 	python3 "$APP_DIR"/review_requests.py recover "$REQUESTS_DIR" </dev/null 2>&1 || echo "  recover failed (continuing)"
 	[ -f "$APP_DIR/review_settings_write.py" ] || python3 "$APP_DIR"/review_requests.py write-effective-env "$EFFECTIVE_ENV_FILE" </dev/null 2>&1 || echo "  effective.env write failed (continuing)"
 	drain_requests

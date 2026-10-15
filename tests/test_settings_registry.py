@@ -29,7 +29,7 @@ FIRST_WAVE = {
         "REPAIR_EPISODE_DEADLINE",
     ],
     "output": ["DUB_FANSUB_FONT", "SIGNS_CROSS_TRACK_DEDUP", "REVIEW_GATE_SHOWS", "REVIEW_GATE_STALE_DAYS", "MERGE_INTERVAL"],
-    "schedule": ["MERGE_WINDOW", "WATCH_QUEUE_WINDOW_DAYS", "WATCH_QUEUE_PIN"],
+    "schedule": ["MERGE_WINDOW", "WATCH_QUEUE_WINDOW_DAYS", "WATCH_QUEUE_PIN", "LIBRARY_SWEEP"],
     "connect": ["PLEX_URL", "PLEX_TOKEN", "PLEX_SECTION", "WATCHSTATE_URL", "WATCHSTATE_API_KEY", "WEBHOOK_TOKEN"],
 }
 FIELDS = ("key", "category", "label", "help", "type", "default", "advanced", "applies", "scope", "editable", "secret")
@@ -187,3 +187,12 @@ def test_a_url_with_a_query_or_fragment_is_refused_everywhere():
 
 def test_rescan_interval_is_read_by_the_server_too():
     assert set(reg.REGISTRY["RESCAN_INTERVAL"]["scope"]) == {"gen", "server"}
+
+
+def test_library_sweep_is_an_editable_bool_read_by_the_builder_and_the_merge_pass():
+    entry = reg.REGISTRY["LIBRARY_SWEEP"]
+    assert (entry["type"], entry["default"], entry["applies"]) == ("bool", True, "next_sweep")
+    assert set(entry["scope"]) == {"gen", "merge"}
+    assert entry["label"] == "Sweep the whole library"
+    assert "only runs queued requests" in entry["help"]
+    assert reg.from_env("LIBRARY_SWEEP", "off") == (False, True)

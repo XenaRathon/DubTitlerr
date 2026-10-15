@@ -58,3 +58,13 @@ sleep_unless_stopped() {
 	done
 	return 0
 }
+
+# library_sweep_enabled — false only when LIBRARY_SWEEP is an explicit off spelling (0, false, no, off, dry-run; any case,
+# surrounding whitespace ignored): unset, empty or anything else keeps today's behaviour, the whole-library sweep. The same
+# spellings the registry's bool type reads as off.
+library_sweep_enabled() {
+	case "$(printf '%s' "${LIBRARY_SWEEP:-}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" in
+	0 | false | no | off | dry-run) return 1 ;;
+	*) return 0 ;;
+	esac
+}
