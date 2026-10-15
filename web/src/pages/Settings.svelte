@@ -3,6 +3,7 @@
   import { ApiError } from '../lib/api.js';
   import { SETTINGS_CATEGORIES, settingsHash } from '../lib/route.js';
   import {
+    CLEAR,
     RESET,
     RESTART_POLL_MS,
     buildValues,
@@ -65,14 +66,19 @@
   const restartLabels = $derived(restartKeys.map((k) => entries.find((e) => e.key === k)?.label ?? k));
   const values = $derived<Record<string, any>>(loaded?.values ?? {});
   const secretsWritable = $derived(Boolean(loaded?.secrets_writable));
+  // Only an admin edits, saves, resets or restarts; every other role sees the same page read-only.
+  const canEdit = $derived(isAdmin(role));
+  const retired = $derived<string[]>(loaded?.retired_env ?? []);
   const meta = $derived(SETTINGS_CATEGORIES.find((c) => c.id === category));
   const summaries = $derived<Record<string, string>>(
     Object.fromEntries((schema?.categories ?? []).map((c: any) => [c.id, c.summary])),
   );
   const view = $derived(categoryRows(schema, category, showAdvanced));
-  const rows = $derived(view.rows.map((e: any) => describeRow(e, values[e.key], { secretsWritable })));
+  const rows = $derived(
+    view.rows.map((e: any) => describeRow(e, values[e.key], { secretsWritable, canEdit })),
+  );
   const bootstrapRows = $derived(
-    view.bootstrap.map((e: any) => describeRow(e, values[e.key], { secretsWritable })),
+    view.bootstrap.map((e: any) => describeRow(e, values[e.key], { secretsWritable, canEdit })),
   );
 
   const valuesBody = $derived(buildValues(entries, values, drafts));
@@ -149,6 +155,21 @@
     }
   }
 
+  /** An unusable settings.json cannot be saved over: move it aside and start from the container values. */
+  async function resetStore() {
+    saveError = '';
+    try {
+      await api('/api/settings/reset', { method: 'POST', body: { all: true } });
+      saveMessage = 'The settings file was reset.';
+      await load();
+    } catch (exc) {
+      saveError =
+        exc instanceof ApiError
+          ? describeSaveError(exc.status, exc.payload as { error?: unknown })
+          : 'Could not reset the settings.';
+    }
+  }
+
   function stopWatching() {
     if (watcher) clearInterval(watcher);
     watcher = undefined;
@@ -217,9 +238,11 @@
         />
         Show Advanced
       </label>
-      <button class="primary" type="button" disabled={!dirty || saving} onclick={() => void save()}>
-        {saveLabel(dirty)}
-      </button>
+      {#if canEdit}
+        <button class="primary" type="button" disabled={!dirty || saving} onclick={() => void save()}>
+          {saveLabel(dirty)}
+        </button>
+      {/if}
     </div>
   </header>
   {#if meta}<p class="page-sub">{summaries[meta.id] ?? ''}</p>{/if}
@@ -231,7 +254,23 @@
   {#if loaded?.restart_pending && !overlay}
     <p class="notice info-notice" role="status">
       Restart pending: saved settings that apply at a restart are not running yet.
-      <button class="secondary" type="button" onclick={() => void restartNow()}>Restart Now</button>
+      {#if canEdit}
+        <button class="secondary" type="button" onclick={() => void restartNow()}>Restart Now</button>
+      {/if}
+    </p>
+  {/if}
+  {#if loaded?.store_error}
+    <p class="notice failure" role="alert">
+      The settings file cannot be used: {loaded.store_error}. The container values apply, and saving is
+      refused until it is reset.
+      {#if canEdit}
+        <button class="secondary" type="button" onclick={() => void resetStore()}>Reset settings</button>
+      {/if}
+    </p>
+  {/if}
+  {#if loaded?.secrets_error}
+    <p class="notice failure" role="alert">
+      Secrets cannot be used: {loaded.secrets_error}. Saved secrets are not applied until that is fixed.
     </p>
   {/if}
 
@@ -257,9 +296,12 @@
           error={errors[row.key] ?? ''}
           onchange={(value) => setDraft(row.key, value)}
           onreset={() => setDraft(row.key, RESET)}
+          onclear={() => setDraft(row.key, CLEAR)}
         />
       {/each}
     </div>
+    <!-- The login plan's account tools live on the General page, for admins only. -->
+    {#if category === 'general' && canEdit}<Security /><Accounts />{/if}
     {#if bootstrapRows.length}
       <section class="settings-section" aria-label="Bootstrap">
         <h2>Bootstrap</h2>
@@ -271,10 +313,15 @@
         </div>
       </section>
     {/if}
+    {#if category === 'general' && retired.length}
+      <section class="settings-section" aria-label="Retired environment variables">
+        <h2>Retired environment variables</h2>
+        <p class="page-sub">
+          These are still set on the container but nothing reads them any more: {retired.join(', ')}.
+        </p>
+      </section>
+    {/if}
   {/if}
-
-  <!-- The login plan's account tools live on the General page, for admins only. -->
-  {#if meta?.id === 'general' && isAdmin(role)}<Security /><Accounts />{/if}
 </section>
 
 {#if restartKeys.length}

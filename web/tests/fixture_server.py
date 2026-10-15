@@ -35,6 +35,7 @@ def main():
         os.environ["CONFIG_DIR"] = str(base / "config")
         os.environ["STOP_FLAG"] = str(base / "stop")  # a restart request lands here, never in /tmp
         os.environ["DT_CONTAINER_BOOT_ID"] = "fixture-boot-1"
+        os.environ["REPAIR_PROFILES"] = "{}"  # retired: the General page lists it
         os.environ["LONGCATAI_API_KEY"] = "fixture-secret-key-value"  # must show as "set", never as a value
         os.environ.pop("COMMANDCODE_API_KEY", None)
         os.environ.pop("WEBHOOK_TOKEN", None)

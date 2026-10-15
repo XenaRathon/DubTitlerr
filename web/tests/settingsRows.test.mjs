@@ -178,3 +178,40 @@ test('advanced rows are not listed while Show Advanced is off, and appear when i
     ['ACQUIRE_MIN_SIM', 'MINE_MIN_COUNT', 'VERIFY_TIMEOUT'],
   );
 });
+
+test('a role that cannot edit sees every row read-only, with the reason', () => {
+  const entry = SCHEMA.settings.find((s) => s.key === 'WHISPER_BEAM_SIZE');
+  assert.equal(readOnlyReason(entry, { canEdit: false }), 'Only an admin can change settings');
+  assert.equal(readOnlyReason(entry, { canEdit: true }), '');
+  assert.equal(readOnlyReason(entry, {}), '');
+  assert.equal(describeRow(entry, { value: 7, source: 'default' }, { canEdit: false }).editable, false);
+  const later = SCHEMA.settings.find((s) => s.key === 'VERIFY_TIMEOUT');
+  assert.equal(
+    readOnlyReason(later, { canEdit: false }),
+    'edit in a later release',
+    'the first-wave rule comes first',
+  );
+});
+
+test('every bootstrap value lists under General, whatever category the registry gives it', () => {
+  const schema = {
+    settings: [
+      ...SCHEMA.settings,
+      {
+        key: 'LONGCATAI_API_KEY',
+        category: 'connections',
+        type: 'secret',
+        secret: true,
+        editable: false,
+        advanced: false,
+        managed_by: 'bootstrap',
+        applies: 'next_show',
+      },
+    ],
+  };
+  assert.deepEqual(
+    categoryRows(schema, 'general', false).bootstrap.map((r) => r.key),
+    ['CONFIG_DIR', 'LONGCATAI_API_KEY'],
+  );
+  assert.deepEqual(categoryRows(schema, 'connections', true), { rows: [], bootstrap: [] });
+});

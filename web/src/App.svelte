@@ -231,8 +231,6 @@
   // The glossary page reports unsaved add-form/edit-row text through bind:dirty.
   let glossaryDirty = $state(false);
   function discardOK() {
-    if (view === 'settings' && settingsDirty)
-      return window.confirm('Discard your unsaved settings edits? Nothing has been saved yet.');
     if (view === 'glossary' && glossaryDirty)
       return window.confirm('Discard your unsaved glossary edits? Nothing has been saved yet.');
     return !staged || window.confirm('Discard your unsaved review choices? Nothing has been saved yet.');
@@ -579,7 +577,12 @@
     }
   }
   async function logout() {
-    if (saving || loading || !discardOK()) return;
+    if (saving || loading) return;
+    if (view === 'settings' && settingsDirty) {
+      askDiscard(() => void logout()); // Discard clears settingsDirty, so the second call signs out
+      return;
+    }
+    if (!discardOK()) return;
     try {
       await endSession();
     } catch {

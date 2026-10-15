@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { expectNoAxeViolations, openSignedIn, reset } from './helpers';
+import { expectNoAxeViolations, openSignedIn, reset, signOut } from './helpers';
 
 test.beforeEach(async ({ request }) => reset(request));
 
@@ -88,15 +88,15 @@ test('back and forward move between category pages', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Library', level: 1 })).toBeVisible();
 });
 
-test('every row shows its value and where the value comes from, and secrets only as set or not set', async ({
+test('every row shows its value and where it comes from, and a secret only as set or not set', async ({
   page,
 }) => {
   await openSignedIn(page, '#/settings/connect');
-  await expect(page.locator('[data-key="PLEX_TOKEN"]')).toContainText('Not set');
+  await expect(page.getByLabel('Plex token', { exact: true })).toHaveAttribute('placeholder', 'Not set');
   await expect(page.locator('[data-key="PLEX_SECTION"]')).toContainText('Default');
-  // The fixture sets LONGCATAI_API_KEY in the container environment; it renders in the Bootstrap section of this page.
-  await page.goto('/review#/settings/connections');
-  const key = page.locator('[data-key="LONGCATAI_API_KEY"]');
+  // The fixture sets LONGCATAI_API_KEY in the container environment; it lists under General, in the Bootstrap section.
+  await page.goto('/review#/settings/general');
+  const key = page.getByRole('region', { name: 'Bootstrap' }).locator('[data-key="LONGCATAI_API_KEY"]');
   await expect(key.locator('.setting-value')).toHaveText('Set');
   await expect(key).toContainText('From the container');
   const body = (await page.locator('body').innerText()) + (await page.content());
@@ -358,4 +358,146 @@ test('the restart dialog and the overlay have no accessibility violations', asyn
   await page.getByRole('button', { name: 'Save Changes' }).click();
   await expect(page.getByRole('dialog', { name: 'Restart required' })).toBeVisible();
   await expectNoAxeViolations(page);
+});
+
+type Entry = {
+  key: string;
+  category: string;
+  editable: boolean;
+  secret: boolean;
+  managed_by: string | null;
+  advanced: boolean;
+};
+
+test('every first-wave setting is editable and every other registry entry is read-only with its value and source', async ({
+  page,
+}) => {
+  await page.addInitScript(() => localStorage.setItem('dubtitlerr.settings.showAdvanced', '1'));
+  const schemaResponse = page.waitForResponse((r) => r.url().endsWith('/api/settings/schema'));
+  await openSignedIn(page, '#/settings');
+  const entries: Entry[] = (await (await schemaResponse).json()).settings;
+  expect(entries.length).toBeGreaterThan(150);
+  const reasons: Record<string, string> = {
+    bootstrap: 'Set in the container environment',
+    connections: 'Set through a Connection',
+    retired: 'Retired: no longer read',
+  };
+  // Bootstrap values all list under General, whatever category the registry gives them.
+  const pageOf = (e: Entry) => (e.managed_by === 'bootstrap' ? 'general' : e.category);
+  let seen = 0;
+  for (const category of [...new Set(entries.map(pageOf))]) {
+    await page.evaluate((c) => (location.hash = `#/settings/${c}`), category);
+    await expect(page).toHaveURL(new RegExp(`#/settings/${category}$`));
+    await expect(page.locator('.setting-row').first()).toBeVisible();
+    const rows: Record<string, { controls: number; text: string }> = await page.evaluate(() =>
+      Object.fromEntries(
+        [...document.querySelectorAll('.setting-row')].map((el) => [
+          el.getAttribute('data-key') ?? '',
+          { controls: el.querySelectorAll('input, select, textarea').length, text: el.textContent ?? '' },
+        ]),
+      ),
+    );
+    for (const entry of entries.filter((e) => pageOf(e) === category)) {
+      const row = rows[entry.key];
+      expect(row, entry.key).toBeDefined();
+      if (entry.editable) {
+        expect(row.controls, entry.key).toBe(1);
+      } else {
+        expect(row.controls, entry.key).toBe(0);
+        expect(row.text, entry.key).toContain(reasons[entry.managed_by ?? ''] ?? 'edit in a later release');
+      }
+      expect(row.text, entry.key).toMatch(/Default|From the container|Set here/);
+      seen += 1;
+    }
+  }
+  expect(seen).toBe(entries.length);
+});
+
+test('a secret is entered in a password field, saved, shown only as Set, kept out of browser storage, and cleared', async ({
+  page,
+}) => {
+  const token = 'plex-token-0123456789abcdef';
+  await openSignedIn(page, '#/settings/connect');
+  const field = page.getByLabel('Plex token', { exact: true });
+  await expect(field).toHaveAttribute('type', 'password');
+  await field.fill(token);
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  const row = page.locator('[data-key="PLEX_TOKEN"]');
+  await expect(row).toContainText('Set here');
+  await expect(field).toHaveValue('');
+  await expect(field).toHaveAttribute('placeholder', /Set\./);
+  expect((await page.locator('body').innerText()) + (await page.content())).not.toContain(token);
+  const stored = await page.evaluate(() => JSON.stringify([{ ...localStorage }, { ...sessionStorage }]));
+  expect(stored).not.toContain(token);
+  // The webhook token is write-only too: a password field that never carries a value back.
+  const webhook = page.getByLabel('Webhook token', { exact: true });
+  await expect(webhook).toHaveAttribute('type', 'password');
+  await expect(webhook).toHaveValue('');
+  await page.getByRole('button', { name: 'Clear Plex token' }).click();
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(field).toHaveAttribute('placeholder', 'Not set');
+  await expect(row).not.toContainText('Set here');
+});
+
+test('before login is enabled a secret is read-only and says why', async ({ page }) => {
+  await page.route('**/api/settings', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({ response, json: { ...body, secrets_writable: false } });
+  });
+  await openSignedIn(page, '#/settings/connect');
+  const row = page.locator('[data-key="WEBHOOK_TOKEN"]');
+  await expect(row).toContainText('available after login is enabled');
+  await expect(row).toContainText('Not set');
+  await expect(row.locator('input')).toHaveCount(0);
+});
+
+test('General lists the bootstrap values, the retired variables still set, and the account tools for an admin', async ({
+  page,
+}) => {
+  await openSignedIn(page, '#/settings/general');
+  await expect(page.getByRole('region', { name: 'Bootstrap' })).toContainText('Config folder');
+  await expect(page.locator('[data-key="CONFIG_DIR"] input')).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Retired environment variables' })).toContainText(
+    'REPAIR_PROFILES',
+  );
+  await expect(page.getByRole('region', { name: 'Security' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Accounts' })).toBeVisible();
+});
+
+test('an unusable settings file shows a banner and Reset settings asks the server to start over', async ({
+  page,
+}) => {
+  await page.route('**/api/settings', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({ response, json: { ...body, store_error: 'settings.json is not valid JSON' } });
+  });
+  await openSignedIn(page, '#/settings/library');
+  await expect(page.getByRole('alert').filter({ hasText: 'settings.json is not valid JSON' })).toBeVisible();
+  const reset = page.waitForRequest((r) => r.url().endsWith('/api/settings/reset') && r.method() === 'POST');
+  await page.getByRole('button', { name: 'Reset settings' }).click();
+  expect((await reset).postDataJSON()).toEqual({ all: true });
+});
+
+test('signing out of an edited settings page asks with the Unsaved changes dialog first', async ({
+  page,
+}) => {
+  await openSignedIn(page, '#/settings/library');
+  await page.getByLabel('Require English audio', { exact: true }).uncheck();
+  await signOut(page);
+  const dialog = page.getByRole('dialog', { name: 'Unsaved changes' });
+  await dialog.getByRole('button', { name: 'Stay and review' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByLabel('Require English audio', { exact: true })).not.toBeChecked();
+  await signOut(page);
+  await page
+    .getByRole('dialog', { name: 'Unsaved changes' })
+    .getByRole('button', { name: 'Discard' })
+    .click();
+  await expect(page.getByRole('heading', { name: 'Open your review workspace' })).toBeVisible();
 });

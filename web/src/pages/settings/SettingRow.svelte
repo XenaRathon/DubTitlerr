@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { RESET, displayValue } from '../../lib/settingsModel.js';
+  import { CLEAR, RESET, displayValue } from '../../lib/settingsModel.js';
 
   type Row = ReturnType<typeof import('../../lib/settingsModel.js').describeRow>;
   let {
@@ -8,6 +8,7 @@
     error = '',
     onchange,
     onreset,
+    onclear,
   }: {
     row: Row;
     /** What the operator typed or chose, or undefined when the row is untouched. */
@@ -16,10 +17,13 @@
     error?: string;
     onchange?: (value: unknown) => void;
     onreset?: () => void;
+    /** Clear a stored secret (only secrets offer it). */
+    onclear?: () => void;
   } = $props();
 
   const id = $derived(`setting-${row.key}`);
-  const editing = $derived(row.editable && !row.secret);
+  const editing = $derived(row.editable);
+  const clearing = $derived(draft === CLEAR);
   const resetting = $derived(draft === RESET);
   const shown = $derived(draft === undefined || draft === RESET ? row.value : draft);
   const text = $derived(shown === null || shown === undefined ? '' : String(shown));
@@ -52,6 +56,28 @@
           aria-describedby={error ? `${id}-error` : undefined}
           onchange={(e) => onchange?.(e.currentTarget.checked)}
         />
+      {:else if row.secret}
+        <!-- Write-only: the stored value never reaches the page, so the field starts empty and only says whether one is set. -->
+        <input
+          {id}
+          type="password"
+          autocomplete="new-password"
+          spellcheck="false"
+          placeholder={row.isSet ? 'Set. Type to replace it.' : 'Not set'}
+          value={typeof draft === 'string' ? draft : ''}
+          aria-invalid={error ? 'true' : undefined}
+          aria-describedby={error ? `${id}-error` : undefined}
+          oninput={(e) => onchange?.(e.currentTarget.value)}
+        />
+        {#if row.isSet && !clearing}
+          <button
+            class="secondary"
+            type="button"
+            aria-label={`Clear ${row.label}`}
+            onclick={() => onclear?.()}>Clear</button
+          >
+        {/if}
+        {#if clearing}<span class="setting-reason">Cleared when you save.</span>{/if}
       {:else if row.type === 'enum'}
         <select
           {id}
@@ -75,7 +101,7 @@
           oninput={(e) => onchange?.(e.currentTarget.value)}
         />
       {/if}
-      {#if row.source === 'ui' && !resetting}
+      {#if row.source === 'ui' && !resetting && !row.secret}
         <button class="secondary" type="button" aria-label={`Reset ${row.label}`} onclick={() => onreset?.()}
           >Reset</button
         >

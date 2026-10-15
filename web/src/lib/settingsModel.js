@@ -10,17 +10,20 @@
  * @param {boolean} showAdvanced
  */
 export function categoryRows(schema, category, showAdvanced) {
-  const inCategory = (schema?.settings ?? []).filter((s) => s.category === category);
+  const settings = schema?.settings ?? [];
   return {
-    rows: inCategory.filter((s) => s.managed_by !== 'bootstrap' && (showAdvanced || !s.advanced)),
-    bootstrap: inCategory.filter((s) => s.managed_by === 'bootstrap'),
+    rows: settings.filter(
+      (s) => s.category === category && s.managed_by !== 'bootstrap' && (showAdvanced || !s.advanced),
+    ),
+    // Every bootstrap value lists under General, whatever category the registry gives it (the provider keys are 'connections').
+    bootstrap: category === 'general' ? settings.filter((s) => s.managed_by === 'bootstrap') : [],
   };
 }
 
 /**
  * Why a row cannot be edited, or '' when it can. The wording of the first-wave rule is the spec's.
  * @param {any} entry
- * @param {{ secretsWritable?: boolean } | null | undefined} ctx
+ * @param {{ secretsWritable?: boolean, canEdit?: boolean } | null | undefined} ctx
  * @returns {string}
  */
 export function readOnlyReason(entry, ctx) {
@@ -28,6 +31,7 @@ export function readOnlyReason(entry, ctx) {
   if (entry.managed_by === 'connections') return 'Set through a Connection';
   if (entry.managed_by === 'retired') return 'Retired: no longer read';
   if (!entry.editable) return 'edit in a later release';
+  if (ctx?.canEdit === false) return 'Only an admin can change settings';
   if (entry.secret && !ctx?.secretsWritable) return 'available after login is enabled';
   return '';
 }
@@ -203,7 +207,7 @@ const SOURCE_LABELS = { ui: 'Set here', env: 'From the container', default: 'Def
  * One row's display model from its schema entry and its GET /api/settings info.
  * @param {any} entry
  * @param {any} info
- * @param {{ secretsWritable?: boolean } | null | undefined} ctx
+ * @param {{ secretsWritable?: boolean, canEdit?: boolean } | null | undefined} ctx
  */
 export function describeRow(entry, info, ctx) {
   const reason = readOnlyReason(entry, ctx);

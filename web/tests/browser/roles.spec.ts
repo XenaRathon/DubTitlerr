@@ -43,3 +43,35 @@ test('as an admin the same controls are present', async ({ page }) => {
   await expect(page.getByRole('region', { name: 'Security' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Accounts' })).toBeVisible();
 });
+
+test('as a user every settings row is read-only and no admin control is offered', async ({
+  page,
+  request,
+}) => {
+  await makeUser(request);
+  // Show the store-error and restart-pending banners, so their admin buttons would have somewhere to appear.
+  await page.route('**/api/settings', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...body, store_error: 'settings.json is not valid JSON', restart_pending: true },
+    });
+  });
+  await page.goto('/review#/settings/library');
+  await signIn(page, 'viewer', 'viewer password!');
+  const row = page.locator('[data-key="REQUIRE_ENG"]');
+  await expect(row).toContainText('Only an admin can change settings');
+  await expect(page.getByText('Restart pending')).toBeVisible();
+  await expect(page.getByRole('alert').filter({ hasText: 'settings.json is not valid JSON' })).toBeVisible();
+  await expect(page.locator('.setting-row input, .setting-row select')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'No Changes' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Save Changes' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Reset settings' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Restart Now' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Test/ })).toHaveCount(0);
+  await page.goto('/review#/settings/connections');
+  await expect(page.getByRole('heading', { name: 'Connections', level: 1 })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Test/ })).toHaveCount(0);
+});
