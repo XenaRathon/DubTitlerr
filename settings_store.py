@@ -185,7 +185,7 @@ def locked(environ=None):
         fd = os.open(lpath, os.O_RDWR | os.O_CREAT, 0o664)
         os.close(fd)
     except OSError as e:
-        raise OSError(f"cannot open settings lock {lpath}: {e}") from e
+        raise OSError(e.errno, f"cannot open settings lock {lpath}: {e.strerror or e}") from e
     with glossary_lock.locked(path, "settings") as got:
         yield got
 
@@ -245,11 +245,26 @@ def save(state, environ=None):
         "connections": {n: {"api_key": k} for n, k in sorted(state.conn_keys.items())},
     }
     spath, ppath = settings_path(environ), secrets_path(environ)
+    prev_secrets = None
     if not state.secrets_error:  # an unusable secrets.json is left as it is; only a reset-all moves it aside
+        try:
+            with open(ppath, "rb") as f:
+                prev_secrets = f.read()
+        except OSError:
+            prev_secrets = None
         _keep_prev(ppath, 0o600)
         atomic_write(ppath, _dump(private), 0o600)
-    _keep_prev(spath, 0o664)
-    atomic_write(spath, _dump(plain), 0o664)
+    try:
+        _keep_prev(spath, 0o664)
+        atomic_write(spath, _dump(plain), 0o664)
+    except BaseException:
+        if not state.secrets_error:
+            if prev_secrets is not None:
+                atomic_write(ppath, prev_secrets, 0o600)
+            else:
+                with contextlib.suppress(OSError):
+                    os.unlink(ppath)
+        raise
     state.rev = new_rev
 
 

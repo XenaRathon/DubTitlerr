@@ -264,6 +264,45 @@ def test_the_server_routes_put_and_reset_through_the_settings_api(env, monkeypat
     assert ("POST", "/api/settings/reset") in rs._JSON_REQUIRED
 
 
+def test_whitespace_only_secret_is_refused_with_400(env):
+    status, payload = put(env, {"PLEX_TOKEN": "   "})
+    assert status == 400
+    assert "PLEX_TOKEN" in payload["errors"]
+
+
+def test_url_with_query_or_fragment_is_refused_with_400(env):
+    status, payload = put(env, {"PLEX_URL": "https://plex.lan:32400/x?token=secret"})
+    assert status == 400
+    assert "PLEX_URL" in payload["errors"]
+    status, payload = put(env, {"PLEX_URL": "https://plex.lan:32400/x#frag"})
+    assert status == 400
+    assert "PLEX_URL" in payload["errors"]
+
+
+def test_reset_response_carries_only_reset_not_changed(env):
+    put(env, {"WHISPER_BEAM_SIZE": 5})
+    status, payload = api.handle("POST", "/api/settings/reset", {"keys": ["WHISPER_BEAM_SIZE"]}, environ=env)
+    assert status == 200
+    assert "reset" in payload
+    assert "changed" not in payload
+
+
+def test_reset_non_string_keys_returns_400(env):
+    status, payload = api.handle("POST", "/api/settings/reset", {"keys": [1, None]}, environ=env)
+    assert status == 400
+    assert "keys" in payload["errors"]
+
+
+def test_lock_failure_with_enospc_returns_507(env, monkeypatch):
+    def open_enospc(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "open", open_enospc)
+    status, payload = put(env, {"WHISPER_BEAM_SIZE": 5})
+    assert status == 507
+    assert "full" in payload["error"]
+
+
 def test_the_audit_line_names_the_calling_principal(env, monkeypatch, tmp_path, capsys):
     import review_server as rs
 

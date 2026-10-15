@@ -108,10 +108,10 @@ _wave('MERGE_INTERVAL', 'output', 'Merge interval (s)', 'Seconds between merge p
 _wave('MERGE_WINDOW', 'schedule', 'Merge window', 'Hours in which a merge pass may run, HH:MM-HH:MM; empty means always.', 'string', '', 'container', 'restart', pattern=r"|(?:[01]\d|2[0-3]):[0-5]\d-(?:[01]\d|2[0-3]):[0-5]\d", pattern_help='use HH:MM-HH:MM or leave empty')
 _wave('WATCH_QUEUE_WINDOW_DAYS', 'schedule', 'Watch queue window (days)', 'Queue only shows watched within this many days; empty turns the watch queue off.', 'int', None, 'gen', 'next_sweep', min=1, max=3650)
 _wave('WATCH_QUEUE_PIN', 'schedule', 'Always-queued show', 'A show queued however long since it was watched.', 'string', '', 'gen', 'next_sweep')
-_wave('PLEX_URL', 'connect', 'Plex URL', 'Address of your Plex server.', 'url', '', ['gen', 'merge'], 'next_show')
+_wave('PLEX_URL', 'connect', 'Plex URL', 'Address of your Plex server; tokens belong in a secret field.', 'url', '', ['gen', 'merge'], 'next_show')
 _wave('PLEX_TOKEN', 'connect', 'Plex token', 'Token the builder uses to refresh Plex and read watch history.', 'secret', None, ['gen', 'merge'], 'next_show')
 _wave('PLEX_SECTION', 'connect', 'Plex library section', 'Plex library section id to refresh.', 'string', '7', ['gen', 'merge'], 'next_show', pattern=r"[A-Za-z0-9_-]{1,32}", pattern_help='must be a section id')
-_wave('WATCHSTATE_URL', 'connect', 'WatchState URL', 'Address of your WatchState server.', 'url', '', 'gen', 'next_show')
+_wave('WATCHSTATE_URL', 'connect', 'WatchState URL', 'Address of your WatchState server; tokens belong in a secret field.', 'url', '', 'gen', 'next_show')
 _wave('WATCHSTATE_API_KEY', 'connect', 'WatchState API key', 'API key for WatchState.', 'secret', None, 'gen', 'next_show')
 _wave('WEBHOOK_TOKEN', 'connect', 'Webhook token', 'Secret in the Sonarr and Radarr webhook URL.', 'secret', None, 'server', 'restart')
 # Read-only in v0.3.0 (not first wave per binding review fix)
@@ -155,8 +155,8 @@ CONFIG_ROOT^general^string^"./dubtitlerr-config"^container^restart^bootstrap^Con
 SUBS_REPO^general^string^""^container^restart^bootstrap^Subtitle repo^Publish tool: local clone of the subtitle repository.
 GITHUB_PAT^general^secret^^container^restart^bootstrap^GitHub token^Publish tool credential.
 GITHUB_USER^general^string^"x-access-token"^container^restart^bootstrap^GitHub user^Publish tool user name.
-GITHUB_WIKI^general^url^""^container^restart^bootstrap^GitHub wiki^Publish tool wiki remote.
-FORGEJO_WIKI^general^url^""^container^restart^bootstrap^Forgejo wiki^Publish tool wiki remote.
+GITHUB_WIKI^general^url^""^container^restart^bootstrap^GitHub wiki^Publish tool wiki remote; tokens belong in a secret field.
+FORGEJO_WIKI^general^url^""^container^restart^bootstrap^Forgejo wiki^Publish tool wiki remote; tokens belong in a secret field.
 PUBLISH_APPLY^general^bool^false^container^restart^bootstrap^Publish for real^Publish tool: push instead of a dry run.
 SHOWS^general^string^""^container^restart^bootstrap^Publish shows^Publish tool: shows to publish.
 DECISIONS_DIR^general^string^"/config/decisions"^merge,server^next_merge_pass^-^Decisions folder^Where review verdicts are stored.

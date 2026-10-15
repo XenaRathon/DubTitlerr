@@ -228,3 +228,36 @@ def test_audit_url_with_raw_at_in_password_leaks_nothing(capsys):
     out = capsys.readouterr().out
     assert "url PLEX_URL=http://plex.lan:32400/web" in out
     assert "user" not in out and "p@ssword" not in out and "query" not in out and "frag" not in out
+
+
+def test_save_restores_secrets_bytes_when_settings_write_fails(env, tmp_path, monkeypatch):
+    state = store.load(env)
+    state.secret_values["PLEX_TOKEN"] = "original-secret"
+    store.save(state, env)
+    secrets_before = (tmp_path / "secrets.json").read_bytes()
+
+    real_atomic = store.atomic_write
+
+    def failing_atomic(path, data, mode):
+        if path.endswith("settings.json"):
+            raise OSError(28, "No space left on device")
+        return real_atomic(path, data, mode)
+
+    monkeypatch.setattr(store, "atomic_write", failing_atomic)
+    state.secret_values["PLEX_TOKEN"] = "new-secret"
+    state.values["WHISPER_BEAM_SIZE"] = 3
+    with pytest.raises(OSError):
+        store.save(state, env)
+
+    assert (tmp_path / "secrets.json").read_bytes() == secrets_before
+
+
+def test_locked_keeps_errno_when_lock_cannot_be_opened(env, monkeypatch):
+    def open_enospc(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "open", open_enospc)
+    with pytest.raises(OSError) as exc:
+        with store.locked(env):
+            pass
+    assert exc.value.errno == 28

@@ -162,3 +162,8 @@ def test_from_env_rejects_bad_enum_and_malformed_numbers():
     assert reg.from_env("MIN_FREE_GB", "nan") == ("nan", False)
     assert reg.from_env("MIN_FREE_GB", "inf") == ("inf", False)
     assert reg.from_env("MIN_FREE_GB", "-inf") == ("-inf", False)
+
+
+def test_url_help_mentions_tokens():
+    for key in ("PLEX_URL", "WATCHSTATE_URL", "GITHUB_WIKI", "FORGEJO_WIKI"):
+        assert "tokens belong in a secret field" in reg.REGISTRY[key]["help"]

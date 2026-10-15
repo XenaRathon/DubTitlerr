@@ -7,6 +7,7 @@ are registered there from ROLE_ENTRIES. The one thing checked here is the secret
 import errno
 import os
 import re
+import urllib.parse
 
 import review_auth
 import review_settings
@@ -164,12 +165,28 @@ def _validate_values(values):
                 continue
             if value is None or (isinstance(value, dict) and value == {"clear": True}):
                 plan[key] = ("secret_clear", None)
-            elif isinstance(value, str) and "\n" not in value and "\r" not in value and "\x00" not in value and len(value) <= 512:
+            elif (
+                isinstance(value, str)
+                and "\n" not in value
+                and "\r" not in value
+                and "\x00" not in value
+                and len(value) <= 512
+                and value.strip()
+            ):
                 plan[key] = ("secret_set", value)
             else:
                 errors[key] = 'must be one line of at most 512 characters, or {"clear": true}'
         elif value is None:
             plan[key] = ("reset", None)
+        elif entry["type"] == "url" and isinstance(value, str):
+            parts = urllib.parse.urlsplit(value.strip())
+            if parts.query or parts.fragment:
+                errors[key] = "must not contain a query or fragment; tokens belong in a secret field"
+            else:
+                try:
+                    plan[key] = ("set", reg.validate(key, value))
+                except reg.Invalid as e:
+                    errors[key] = str(e)
         else:
             try:
                 plan[key] = ("set", reg.validate(key, value))
@@ -271,7 +288,9 @@ def reset_settings(body, environ=None, who="admin"):
     writable = _secrets_writable()
     everything = body.get("all") is True
     if isinstance(body.get("keys"), list):
-        keys = [k for k in body["keys"] if isinstance(k, str)]
+        if not all(isinstance(k, str) for k in body["keys"]):
+            return 400, {"errors": {"keys": "must be a list of strings"}}
+        keys = body["keys"]
         bad = {k: "unknown setting" for k in keys if k not in reg.REGISTRY}
         if bad:
             return 400, {"errors": bad}
@@ -321,7 +340,7 @@ def reset_settings(body, environ=None, who="admin"):
 
     status, payload = _commit(environ, who, build, touches_secrets, prepare if everything else None)
     if status == 200:
-        payload = {**payload, "reset": payload.pop("changed")}
+        payload["reset"] = payload.pop("changed")
     return status, payload
 
 
