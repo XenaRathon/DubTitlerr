@@ -144,6 +144,15 @@ def test_phonetic_matches_spondum():
     assert glossary.correct("it was Spondum today", g)[0] == "it was Spandam today"
 
 
+def test_phonetic_ignores_short_metaphone_codes():
+    # "soba" (noodles) and "Sabo" both Metaphone to the 2-char "SB": too collision-prone
+    # to trust, and "soba" is absent from the production word list.
+    g = gloss(names=["Sabo", "Sanji"])
+    assert glossary._phonetic_match("soba", ["Sabo", "Sanji"]) is None
+    assert glossary.correct("he ate soba", g) == ("he ate soba", 0)
+    assert glossary.correct("he ate soba.", g) == ("he ate soba.", 0)
+
+
 def test_phonetic_does_not_match_english_word():
     # "frank" Metaphones identically to "Franky" (FRNK) but is a real English word --
     # the is_english() gate (checked before any correction tier fires) must still block

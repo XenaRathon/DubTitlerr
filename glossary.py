@@ -30,6 +30,8 @@ except ImportError:
 
 # Guarded-fuzzy thresholds: short words demand near-identical matches.
 MIN_FUZZY_LEN = 4
+# Metaphone codes shorter than this collide too often ('soba' and 'Sabo' are both 'SB').
+MIN_PHONETIC_CODE_LEN = 3
 
 
 def fuzzy_cutoff(n: int) -> float:
@@ -347,7 +349,7 @@ def _phonetic_match(token: str, names: list[str]) -> str | None:
     if jellyfish is None or not names:
         return None
     code = jellyfish.metaphone(token)
-    if not code:
+    if len(code) < MIN_PHONETIC_CODE_LEN:
         return None
     for nm in names:
         if jellyfish.metaphone(nm) == code:
