@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
+  import { SETTINGS_CATEGORIES, settingsHash } from './route.js';
   import {
     AudioLines,
     BookOpen,
@@ -20,7 +21,9 @@
     count,
     open = false,
     narrow = false,
+    settingsCategory = '',
     onnavigate,
+    onpick,
   }: {
     view: View;
     authenticated: boolean;
@@ -32,7 +35,11 @@
     open?: boolean;
     /** Below 768px the sidebar is a slide-in drawer (App owns the media query, so the page and drawer agree). */
     narrow?: boolean;
+    /** The settings category page that is open ('' for the card grid); the sidebar lists the categories under Settings. */
+    settingsCategory?: string;
     onnavigate: (next: View) => void;
+    /** A settings category link was followed; App closes the mobile drawer. */
+    onpick?: () => void;
   } = $props();
 
   const ITEMS = [
@@ -69,6 +76,20 @@
             >{authenticated ? count : '—'}</span
           >{/if}</button
       >
+      {#if item.key === 'settings' && view === 'settings'}
+        <ul class="subnav" aria-label="Settings categories">
+          {#each SETTINGS_CATEGORIES as c (c.id)}
+            <li>
+              <a
+                href={settingsHash(c.id)}
+                class:nav-active={settingsCategory === c.id}
+                aria-current={settingsCategory === c.id ? 'page' : undefined}
+                onclick={() => onpick?.()}>{c.label}</a
+              >
+            </li>
+          {/each}
+        </ul>
+      {/if}
     {/each}
   </nav>
   <div class="sidebar-bottom">
@@ -76,3 +97,33 @@
     <div class="version-line">Review workspace v0.1</div>
   </div>
 </aside>
+
+<style>
+  .subnav {
+    list-style: none;
+    margin: 0 0 4px;
+    padding: 0;
+    display: grid;
+    gap: 1px;
+  }
+  .subnav a {
+    display: block;
+    padding: 6px 12px 6px 40px;
+    border-left: 3px solid transparent;
+    color: var(--muted);
+    text-decoration: none;
+  }
+  .subnav a:hover {
+    background: var(--surface);
+    color: var(--text);
+  }
+  .subnav a:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+  .subnav a.nav-active {
+    color: var(--text);
+    background: var(--surface);
+    border-left-color: var(--accent);
+  }
+</style>

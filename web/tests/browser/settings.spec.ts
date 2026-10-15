@@ -1,266 +1,113 @@
-import { expect, test } from '@playwright/test';
-import { API_KEY, expectNoAxeViolations, openSignedIn, reset } from './helpers';
+import { expect, test, type Page } from '@playwright/test';
+import { expectNoAxeViolations, openSignedIn, reset } from './helpers';
 
 test.beforeEach(async ({ request }) => reset(request));
 
-test('#/settings shows the grouped cards, with no inline editing', async ({ page }) => {
+const CATEGORIES = [
+  'General',
+  'Library',
+  'Transcription',
+  'Glossary',
+  'Repair',
+  'Connections',
+  'Output',
+  'Schedule',
+  'Connect',
+];
+
+/** The settings links of the sidebar, opening the mobile drawer first when it is collapsed. */
+async function sidebarCategories(page: Page) {
+  const toggle = page.getByRole('button', { name: 'Toggle navigation' });
+  if (await toggle.isVisible()) await toggle.click();
+  return page
+    .getByRole('navigation', { name: 'Primary navigation' })
+    .getByRole('list', { name: 'Settings categories' });
+}
+
+test('#/settings shows one card per category, each with a heading and a one-line summary', async ({
+  page,
+}) => {
   await openSignedIn(page, '#/settings');
   await expect(page.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible();
   const cards = page.locator('.settings-card');
-  await expect(cards.first()).toBeVisible();
-  expect(await cards.count()).toBeGreaterThanOrEqual(2);
-  for (const card of await cards.all()) await expect(card.getByRole('heading', { level: 3 })).toBeVisible();
-  // The fixture sets REPAIR_LLAMACPP_URL; it is reported, and nothing offers to edit it.
-  await expect(page.getByText('http://127.0.0.1:18842/healthz')).toBeVisible();
-  await expect(page.getByText(/Overrides apply at the next sweep; the builder keeps working/)).toBeVisible();
-  await expect(page.locator('.settings-card input, .settings-card textarea')).toHaveCount(0);
+  await expect(cards).toHaveCount(9);
+  for (const [i, label] of CATEGORIES.entries()) {
+    await expect(cards.nth(i).getByRole('heading', { level: 3, name: label })).toBeVisible();
+    await expect(cards.nth(i).locator('p')).not.toHaveText('');
+  }
 });
 
-test('secrets appear only as set or not set, never as a value', async ({ page }) => {
+test('a card opens its category page, which lists only that category', async ({ page }) => {
   await openSignedIn(page, '#/settings');
-  const secrets = page.getByRole('region', { name: 'Secrets' });
-  await expect(secrets.getByText('LONGCATAI_API_KEY: set')).toBeVisible();
-  await expect(secrets.getByText('COMMANDCODE_API_KEY: not set')).toBeVisible();
-  const text = (await page.locator('body').innerText()) + (await page.content());
-  expect(text).not.toContain('fixture-secret-key-value');
-  expect(text).not.toContain('browser-fixture-token');
-  expect(text).not.toContain('browser-fixture-password');
+  await page.locator('.settings-card', { hasText: 'Library' }).click();
+  await expect(page).toHaveURL(/#\/settings\/library$/);
+  await expect(page.getByRole('heading', { name: 'Library', level: 1 })).toBeVisible();
+  await expect(page.locator('[data-key="REQUIRE_ENG"]')).toBeVisible();
+  await expect(page.locator('[data-key="SKIP_IF_SRT"]')).toBeVisible();
+  await expect(page.locator('[data-key="WHISPER_MODEL"]')).toHaveCount(0);
+  await expect(page.locator('[data-key="PLEX_URL"]')).toHaveCount(0);
 });
 
-test('test connection: a reachable backend reads ok, an unreachable one reads as a failure', async ({
+test('the sidebar lists the categories under Settings and highlights the open one', async ({ page }) => {
+  await openSignedIn(page, '#/settings/transcription');
+  const list = await sidebarCategories(page);
+  await expect(list.getByRole('link')).toHaveText(CATEGORIES);
+  await expect(list.locator('a[aria-current="page"]')).toHaveText('Transcription');
+  await list.getByRole('link', { name: 'Glossary' }).click();
+  await expect(page).toHaveURL(/#\/settings\/glossary$/);
+  await expect(page.getByRole('heading', { name: 'Glossary', level: 1 })).toBeVisible();
+  const again = await sidebarCategories(page);
+  await expect(again.locator('a[aria-current="page"]')).toHaveText('Glossary');
+  await expect(again.locator('a[aria-current="page"]')).toHaveCount(1);
+});
+
+test('the Settings sidebar item returns from a category to the card grid', async ({ page }) => {
+  await openSignedIn(page, '#/settings/repair');
+  await expect(page.getByRole('heading', { name: 'Repair', level: 1 })).toBeVisible();
+  const toggle = page.getByRole('button', { name: 'Toggle navigation' });
+  if (await toggle.isVisible()) await toggle.click();
+  await page
+    .getByRole('navigation', { name: 'Primary navigation' })
+    .getByRole('button', { name: 'Settings' })
+    .click();
+  await expect(page).toHaveURL(/#\/settings$/);
+  await expect(page.locator('.settings-card')).toHaveCount(9);
+});
+
+test('an unknown category falls back to the card grid and the address is normalised', async ({ page }) => {
+  await openSignedIn(page, '#/settings/nope');
+  await expect(page.locator('.settings-card')).toHaveCount(9);
+  await expect.poll(() => new URL(page.url()).hash).toBe('#/settings');
+});
+
+test('back and forward move between category pages', async ({ page }) => {
+  await openSignedIn(page, '#/settings/library');
+  await page.evaluate(() => (location.hash = '#/settings/output'));
+  await expect(page.getByRole('heading', { name: 'Output', level: 1 })).toBeVisible();
+  await page.goBack();
+  await expect(page.getByRole('heading', { name: 'Library', level: 1 })).toBeVisible();
+});
+
+test('every row shows its value and where the value comes from, and secrets only as set or not set', async ({
   page,
 }) => {
-  await openSignedIn(page, '#/settings');
-  await page.getByRole('button', { name: 'Test repair connection' }).click();
-  await expect(page.locator('#settings-test-repair')).toContainText(/Connection ok in \d+ ms/);
-  await expect(page.locator('#settings-test-repair')).toHaveAttribute('role', 'status');
-
-  await page.getByRole('button', { name: 'Test verify connection' }).click();
-  const failed = page.locator('#settings-test-verify');
-  await expect(failed).toBeVisible();
-  await expect(failed).toHaveAttribute('role', 'alert');
-  await expect(failed).not.toContainText(/Connection ok/);
+  await openSignedIn(page, '#/settings/connect');
+  await expect(page.locator('[data-key="PLEX_TOKEN"]')).toContainText('Not set');
+  await expect(page.locator('[data-key="PLEX_SECTION"]')).toContainText('Default');
+  // The fixture sets LONGCATAI_API_KEY in the container environment; it renders in the Bootstrap section of this page.
+  await page.goto('/review#/settings/connections');
+  const key = page.locator('[data-key="LONGCATAI_API_KEY"]');
+  await expect(key.locator('.setting-value')).toHaveText('Set');
+  await expect(key).toContainText('From the container');
+  const body = (await page.locator('body').innerText()) + (await page.content());
+  expect(body).not.toContain('fixture-secret-key-value');
 });
 
-test('a refused probe request is a readable failure, not a blank result', async ({ page }) => {
+test('the card grid and a category page have no accessibility violations', async ({ page }) => {
   await openSignedIn(page, '#/settings');
-  await page.route('**/api/settings/test', (route) =>
-    route.fulfill({
-      status: 429,
-      contentType: 'application/json',
-      body: JSON.stringify({ error: 'slow down' }),
-    }),
-  );
-  await page.getByRole('button', { name: 'Test acquire connection' }).click();
-  await expect(page.locator('#settings-test-acquire')).toHaveAttribute('role', 'alert');
-  await expect(page.locator('#settings-test-acquire')).toContainText(/Too many checks/);
-});
-
-test('the settings page has no accessibility violations, results shown or not', async ({ page }) => {
-  await openSignedIn(page, '#/settings');
-  await expect(page.locator('.settings-card').first()).toBeVisible();
+  await expect(page.locator('.settings-card')).toHaveCount(9);
   await expectNoAxeViolations(page);
-  await page.getByRole('button', { name: 'Test verify connection' }).click();
-  await expect(page.locator('#settings-test-verify')).toBeVisible();
+  await page.locator('.settings-card', { hasText: 'Glossary' }).click();
+  await expect(page.locator('[data-key="ACQUIRE_APPLY"]')).toBeVisible();
   await expectNoAxeViolations(page);
-});
-
-// --- writes: PUT /api/settings and POST /api/settings/reset carry the method and the admin header ----------------
-
-const seenRequests = (page: import('@playwright/test').Page, pattern: string) => {
-  const seen: { method: string; headers: Record<string, string>; body: string }[] = [];
-  void page.route(pattern, (route) => {
-    const req = route.request();
-    seen.push({ method: req.method(), headers: req.headers(), body: req.postData() ?? '' });
-    return route.continue();
-  });
-  return seen;
-};
-
-test('GET /api/settings reports profiles, pending and whether writes are possible', async ({ request }) => {
-  const res = await request.get('/api/settings', { headers: { 'X-Api-Key': API_KEY } });
-  const payload = await res.json();
-  expect(payload.profiles).toEqual(['local']);
-  expect(payload.pending).toEqual({});
-  expect(payload.writable).toBe(true);
-});
-
-test('saving sends a PUT with the CSRF header and no token header', async ({ page }) => {
-  await openSignedIn(page, '#/settings');
-  const seen = seenRequests(page, '**/api/settings');
-  await expect(page.getByLabel('Repair model')).toBeVisible();
-  await page.getByLabel('Repair model').fill('browser-test-model');
-  await page.getByRole('button', { name: 'Save settings' }).click();
-
-  await expect(page.getByText(/Saved\./)).toBeVisible();
-  const put = seen.find((r) => r.method === 'PUT');
-  expect(put, 'a PUT request was sent').toBeTruthy();
-  expect(put!.headers['x-dubtitlerr-request']).toBe('1');
-  expect(put!.headers['x-review-token']).toBeUndefined();
-  expect(put!.headers['x-review-admin-token']).toBeUndefined();
-  expect(put!.headers['content-type']).toContain('application/json');
-  expect(JSON.parse(put!.body)).toEqual({ repair_model: 'browser-test-model' });
-  await expect(page.getByText('pending next sweep: browser-test-model')).toBeVisible();
-});
-
-test('Reset overrides is a POST with the CSRF header', async ({ page, request }) => {
-  await request.put('/api/settings', {
-    headers: { 'X-Api-Key': API_KEY },
-    data: { repair_model: 'about-to-be-reset' },
-  });
-  await openSignedIn(page, '#/settings');
-  await expect(page.getByText('pending next sweep: about-to-be-reset')).toBeVisible();
-  const seen = seenRequests(page, '**/api/settings/reset');
-  page.once('dialog', (d) => void d.accept());
-  await page.getByRole('button', { name: 'Reset overrides' }).click();
-
-  await expect(page.getByText('Overrides cleared.')).toBeVisible();
-  expect(seen).toHaveLength(1);
-  expect(seen[0].method).toBe('POST');
-  expect(seen[0].headers['x-dubtitlerr-request']).toBe('1');
-  await expect(page.getByText(/pending next sweep/)).toHaveCount(0);
-});
-
-test('a profile is picked from the server list and sent by name only', async ({ page }) => {
-  await openSignedIn(page, '#/settings');
-  const seen = seenRequests(page, '**/api/settings');
-  await expect(page.getByLabel('Repair profile').locator('option')).toHaveText([
-    '(container default)',
-    'local',
-  ]);
-  await page.getByLabel('Repair profile').selectOption('local');
-  await page.getByRole('button', { name: 'Save settings' }).click();
-  await expect(page.getByText(/Saved\./)).toBeVisible();
-  const put = seen.find((r) => r.method === 'PUT')!;
-  expect(JSON.parse(put.body)).toEqual({ repair_profile: 'local' });
-  expect(put.body).not.toMatch(/http|127\.0\.0\.1/);
-});
-
-test('a model name the server would refuse is stopped in the form', async ({ page }) => {
-  await openSignedIn(page, '#/settings');
-  const seen = seenRequests(page, '**/api/settings');
-  await page.getByLabel('Repair model').fill('bad model; rm -rf /');
-  await page.getByRole('button', { name: 'Save settings' }).click();
-  await expect(page.getByRole('alert').filter({ hasText: /Repair model/ })).toBeVisible();
-  expect(seen.filter((r) => r.method === 'PUT')).toHaveLength(0);
-});
-
-test('when the server says writes are disabled the form is replaced by the reason', async ({ page }) => {
-  await page.route('**/api/settings', async (route) => {
-    if (route.request().method() !== 'GET') return route.continue();
-    const res = await route.fetch();
-    const payload = await res.json();
-    await route.fulfill({
-      response: res,
-      json: { ...payload, writable: false, writable_reason: 'REPAIR_PROFILES is not valid JSON' },
-    });
-  });
-  await openSignedIn(page, '#/settings');
-  await expect(page.getByText(/Writes are disabled on this server/)).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Save settings' })).toHaveCount(0);
-});
-
-test('the edit form has no accessibility violations', async ({ page }) => {
-  await openSignedIn(page, '#/settings');
-  await expect(page.getByRole('button', { name: 'Save settings' })).toBeVisible();
-  await expectNoAxeViolations(page);
-});
-
-// GET /api/settings with the server's allow-lists replaced, everything else as the fixture sent it.
-async function withAllowLists(page: import('@playwright/test').Page, lists: Record<string, string[]>) {
-  await page.route('**/api/settings', async (route) => {
-    if (route.request().method() !== 'GET') return route.continue();
-    const res = await route.fetch();
-    await route.fulfill({ response: res, json: { ...(await res.json()), ...lists } });
-  });
-}
-
-test('the verify backend and decision model offer only what the server allows', async ({ page }) => {
-  await openSignedIn(page, '#/settings');
-  await expect(page.getByLabel('Verify backend').locator('option')).toHaveText([
-    '(container default)',
-    'llamacpp',
-    'ollama',
-    'decision',
-  ]);
-  await expect(page.getByLabel('Verify decision model').locator('option')).toHaveText([
-    '(container default)',
-    'typesafe/jev',
-    'acme/judge-1',
-  ]);
-  const seen = seenRequests(page, '**/api/settings');
-  await page.getByLabel('Verify backend').selectOption('decision');
-  await page.getByLabel('Verify decision model').selectOption('acme/judge-1');
-  await page.getByRole('button', { name: 'Save settings' }).click();
-  await expect(page.getByText(/Saved\./)).toBeVisible();
-  const put = seen.find((r) => r.method === 'PUT')!;
-  expect(JSON.parse(put.body)).toEqual({ verify_backend: 'decision', verify_decision_model: 'acme/judge-1' });
-});
-
-test('with no decision models enabled the page says how to enable them instead of offering a field', async ({
-  page,
-}) => {
-  await withAllowLists(page, { allowed_decision_models: [] });
-  await openSignedIn(page, '#/settings');
-  await expect(
-    page.getByText('No decision models are enabled on this server; set RUNTIME_DECISION_MODELS'),
-  ).toBeVisible();
-  await expect(page.getByLabel('Verify decision model')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Save settings' })).toBeVisible();
-  await expectNoAxeViolations(page);
-});
-
-test('a backend the server refuses comes back as a readable sentence naming the env var', async ({
-  page,
-}) => {
-  // The page is told openai is allowed; the server's own list (the fixture's RUNTIME_VERIFY_BACKENDS) is not.
-  await withAllowLists(page, { allowed_verify_backends: ['llamacpp', 'openai'] });
-  await openSignedIn(page, '#/settings');
-  await page.getByLabel('Verify backend').selectOption('openai');
-  await page.getByRole('button', { name: 'Save settings' }).click();
-  const alert = page.getByRole('alert').filter({ hasText: /RUNTIME_VERIFY_BACKENDS/ });
-  await expect(alert).toBeVisible();
-  await expect(alert).toContainText('Not allowed on this server: verify backend.');
-  await expect(page.getByText(/Saved\./)).toHaveCount(0);
-});
-
-// --- acquire apply: unset means apply, so the toggle starts on and a save of another field leaves it alone ---------
-
-test('the acquire-apply toggle starts on when nothing is set, with its source and timing', async ({
-  page,
-}) => {
-  await openSignedIn(page, '#/settings');
-  const toggle = page.getByLabel('Apply acquired names');
-  await expect(toggle).toBeChecked();
-  await expect(page.locator('#settings-acquire-apply-note')).toContainText(
-    'Currently on (from the default). A change takes effect at the next sweep.',
-  );
-  await expectNoAxeViolations(page);
-});
-
-test('saving another field never writes acquire_apply while the toggle is untouched', async ({ page }) => {
-  await openSignedIn(page, '#/settings');
-  const seen = seenRequests(page, '**/api/settings');
-  await page.getByLabel('Repair model').fill('browser-test-model');
-  await page.getByRole('button', { name: 'Save settings' }).click();
-  await expect(page.getByText(/Saved\./)).toBeVisible();
-  expect(JSON.parse(seen.find((r) => r.method === 'PUT')!.body)).toEqual({
-    repair_model: 'browser-test-model',
-  });
-});
-
-test('turning the toggle off sends acquire_apply:false and shows it from the runtime file, pending', async ({
-  page,
-}) => {
-  await openSignedIn(page, '#/settings');
-  const seen = seenRequests(page, '**/api/settings');
-  await page.getByLabel('Apply acquired names').uncheck();
-  await page.getByRole('button', { name: 'Save settings' }).click();
-  await expect(page.getByText(/Saved\./)).toBeVisible();
-  expect(JSON.parse(seen.find((r) => r.method === 'PUT')!.body)).toEqual({ acquire_apply: false });
-  await expect(page.getByLabel('Apply acquired names')).not.toBeChecked();
-  await expect(page.locator('#settings-acquire-apply-note')).toContainText(
-    'Currently off (from the runtime file)',
-  );
-  await expect(page.getByText('pending next sweep: off')).toBeVisible();
 });

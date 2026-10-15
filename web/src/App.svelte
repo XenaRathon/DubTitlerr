@@ -32,7 +32,7 @@
   import Setup from './pages/Setup.svelte';
   import AccountMenu from './lib/AccountMenu.svelte';
   import { apiFetch, logout as endSession, me as fetchMe } from './lib/session.js';
-  import { hashFor, parseHash } from './lib/route.js';
+  import { canonicalHash, hashFor, parseHash, parseSettingsCategory } from './lib/route.js';
   import { EPISODE_SORTS, LINE_SORTS, readSortPref, sortEpisodes, writeSortPref } from './lib/episodeSort.js';
   import type { Draft, Entry, Episode, SaveResult, Shared, Verdict } from './types';
   import { blank, diffParts, nextOpenIndex, riskLabels, timecode, verdictLabels } from './review';
@@ -53,6 +53,8 @@
   type Account = { state: 'loading' | 'setup' | 'login' | 'in'; username: string; role: string };
   let account = $state<Account>({ state: 'loading', username: '', role: '' });
   let accountsOk = $state(true);
+  // The settings category page ('' is the card grid); it rides in the hash as #/settings/<category>.
+  let settingsCategory = $state(parseSettingsCategory(typeof location === 'undefined' ? '' : location.hash));
   let authenticated = $state(false);
   let loading = $state(false);
   let saving = $state(false);
@@ -233,6 +235,7 @@
   let agreedHash = '';
   function navigate(next: View) {
     if (next === view) {
+      if (next === 'settings' && settingsCategory) location.hash = '#/settings'; // the sidebar item returns to the card grid
       closeDrawer(true);
       return;
     }
@@ -244,20 +247,28 @@
   // Back/forward and typed hashes land here. Declining the discard prompt puts the hash back for the view we stay on.
   async function onHashChange() {
     const next = parseHash(location.hash);
-    const agreed = agreedHash === hashFor(next);
+    const target = canonicalHash(location.hash);
+    const agreed = agreedHash === target;
     agreedHash = '';
     if (next === view) {
-      if (location.hash !== hashFor(next) && location.hash !== '')
-        history.replaceState(null, '', hashFor(next));
+      const category = parseSettingsCategory(location.hash);
+      if (view === 'settings' && category !== settingsCategory) {
+        settingsCategory = category;
+        void focusHeading(); // a new category page: its title takes focus, as a new view's does
+      }
+      if (location.hash !== target && location.hash !== '') history.replaceState(null, '', target);
       return;
     }
     if (saving || loading || (!agreed && !discardOK())) {
-      history.replaceState(null, '', hashFor(view));
+      history.replaceState(null, '', currentHash());
       return;
     }
     await switchView(next);
-    if (location.hash !== hashFor(next)) history.replaceState(null, '', hashFor(next)); // '#/glossary?x=1' -> '#/glossary'
+    if (location.hash !== target) history.replaceState(null, '', target); // '#/glossary?x=1' -> '#/glossary'
   }
+  // The canonical hash of the page that is open, for putting the address bar back when a move is declined.
+  const currentHash = () =>
+    view === 'settings' ? canonicalHash('#/settings/' + settingsCategory) : hashFor(view);
   // Drawer: closing it returns focus to the toggle when the operator did not pick a page.
   let toggleBtn = $state<HTMLButtonElement>();
   let narrow = $state(false);
@@ -275,6 +286,7 @@
     document.getElementById('main')?.focus();
   }
   async function switchView(next: View) {
+    if (next === 'settings') settingsCategory = parseSettingsCategory(location.hash);
     if (!authenticated) {
       view = next; // signed out: just remember the requested view; login() loads whatever it needs
       return;
@@ -548,8 +560,8 @@
     error = '';
   }
   onMount(() => {
-    if (location.hash !== '' && location.hash !== hashFor(view))
-      history.replaceState(null, '', hashFor(view));
+    if (location.hash !== '' && location.hash !== canonicalHash(location.hash))
+      history.replaceState(null, '', canonicalHash(location.hash));
     void (async () => {
       try {
         const who = await fetchMe();
@@ -588,7 +600,9 @@
     count={toReview}
     open={mobileNav}
     {narrow}
+    {settingsCategory}
     onnavigate={navigate}
+    onpick={() => closeDrawer(false)}
   />
 
   <div class="main-shell" inert={mobileNav && narrow}>
@@ -647,7 +661,7 @@
       {:else if view === 'runs'}
         <Runs api={optionsApi} role={account.role} />
       {:else if view === 'settings'}
-        <Settings api={optionsApi} role={account.role} />
+        <Settings api={optionsApi} role={account.role} category={settingsCategory} />
       {:else}
         <header class="page-header">
           <h1 tabindex="-1">{view === 'shared' ? 'Shared lines' : 'Review inbox'}</h1>

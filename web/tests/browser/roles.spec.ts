@@ -23,17 +23,12 @@ test('as a user the Runs page has no request form and no schedule editor', async
   await expectNoAxeViolations(page);
 });
 
-test('as a user Settings is read-only: no save, reset, test, Security or Accounts', async ({
-  page,
-  request,
-}) => {
+test('as a user the General settings page has no Security or Accounts', async ({ page, request }) => {
   await makeUser(request);
-  await page.goto('/review#/settings');
+  await page.goto('/review#/settings/general');
   await signIn(page, 'viewer', 'viewer password!');
-  await expect(page.getByRole('region', { name: 'Secrets' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Save settings' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Reset overrides' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /connection$/ })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'General', level: 1 })).toBeVisible();
+  await expect(page.locator('[data-key="REVIEW_PORT"]')).toBeVisible();
   await expect(page.getByRole('region', { name: 'Security' })).toHaveCount(0);
   await expect(page.getByRole('region', { name: 'Accounts' })).toHaveCount(0);
 });
@@ -43,9 +38,8 @@ test('as an admin the same controls are present', async ({ page }) => {
   await expect(page.locator('#runs-show')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Queue run' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Schedule' })).toBeVisible();
-  await page.goto('/review#/settings');
-  await expect(page.getByRole('button', { name: 'Save settings' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Reset overrides' })).toBeVisible();
+  await page.goto('/review#/settings/general');
+  await expect(page.locator('[data-key="REVIEW_PORT"]')).toBeVisible();
   await expect(page.getByRole('region', { name: 'Security' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Accounts' })).toBeVisible();
 });

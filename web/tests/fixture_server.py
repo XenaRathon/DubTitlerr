@@ -30,13 +30,9 @@ def main():
         os.environ["SCHEDULE_FILE"] = str(base / "schedule.json")
         os.environ["REPAIR_LLAMACPP_URL"] = "http://127.0.0.1:18842/healthz"  # this very server: the probe succeeds
         os.environ["VERIFY_LLAMACPP_URL"] = "http://127.0.0.1:9/"  # nothing listens here: the probe fails
-        # The settings form offers only what the server allows: these two lists come back in GET /api/settings.
-        os.environ["RUNTIME_VERIFY_BACKENDS"] = "llamacpp,ollama,decision"
-        os.environ["RUNTIME_DECISION_MODELS"] = "typesafe/jev,acme/judge-1"
-        # Settings writes: runtime.env lands in this directory; the one profile the page may pick is this server itself.
+        # Settings writes (settings.json, secrets.json) land in this directory.
         (base / "config").mkdir()
         os.environ["CONFIG_DIR"] = str(base / "config")
-        os.environ["REPAIR_PROFILES"] = json.dumps({"local": {"backend": "llamacpp", "url": "http://127.0.0.1:18842/healthz"}})
         os.environ["LONGCATAI_API_KEY"] = "fixture-secret-key-value"  # must show as "set", never as a value
         os.environ.pop("COMMANDCODE_API_KEY", None)
         os.environ.pop("WEBHOOK_TOKEN", None)
@@ -155,7 +151,7 @@ def main():
                     rs._QUEUE_CACHE.clear()
                     for file in (base / "requests").glob("*") if (base / "requests").is_dir() else []:
                         file.unlink()
-                    for stale in ("runtime.env", "runtime.env.prev"):
+                    for stale in ("settings.json", "settings.json.prev", "secrets.json", "secrets.json.prev"):
                         (base / "config" / stale).unlink(missing_ok=True)
                     (base / "schedule.json").unlink(missing_ok=True)
                     for show in ("Neon Harbor", "Paper Moon"):

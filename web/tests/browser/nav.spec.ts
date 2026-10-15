@@ -59,7 +59,7 @@ test('the settings view mounts its page and the glossary view mounts the editor'
   await page.goto('/review#/settings');
   await signIn(page);
   await expect(page.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Backend connectivity' })).toBeVisible();
+  await expect(page.locator('.settings-grid')).toBeVisible();
   await expect(page.getByText('Coming soon.')).toHaveCount(0);
   await page.goto('/review#/glossary');
   await expect(page.getByRole('heading', { name: /glossary/i }).first()).toBeVisible();
@@ -94,7 +94,7 @@ test('every hash route renders its own page', async ({ page }) => {
     ['#/dashboard', 'Dashboard', page.getByRole('heading', { name: 'Pipeline status' })],
     ['#/glossary', 'Glossary', page.getByRole('region', { name: 'Glossary editor' })],
     ['#/runs', 'Runs', page.getByRole('heading', { name: 'Run requests', level: 1 })],
-    ['#/settings', 'Settings', page.getByRole('region', { name: 'Backend connectivity' })],
+    ['#/settings', 'Settings', page.locator('.settings-grid')],
     ['#/inbox', 'Review inbox', page.getByRole('heading', { name: 'Review inbox', level: 1 })],
   ];
   for (const [hash, label, marker] of pages) {
@@ -133,7 +133,7 @@ test('a typed hash (not a click) switches the page, and Back returns to the prev
   await openSignedIn(page, '#/runs');
   await expect(page.getByRole('heading', { name: 'Run requests', level: 1 })).toBeVisible();
   await page.evaluate(() => (location.hash = '#/settings'));
-  await expect(page.getByRole('region', { name: 'Backend connectivity' })).toBeVisible();
+  await expect(page.locator('.settings-grid')).toBeVisible();
   await page.goBack();
   await expect(page.getByRole('heading', { name: 'Run requests', level: 1 })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('#/runs');
@@ -159,7 +159,7 @@ test('the drawer: closed means unreachable by keyboard, open means its buttons t
   await settings.focus();
   await expect(settings).toBeFocused();
   await page.keyboard.press('Enter');
-  await expect(page.getByRole('region', { name: 'Backend connectivity' })).toBeVisible();
+  await expect(page.locator('.settings-grid')).toBeVisible();
   await expect(sidebar).toHaveAttribute('inert', '');
 });
 

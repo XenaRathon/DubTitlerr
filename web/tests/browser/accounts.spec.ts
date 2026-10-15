@@ -36,7 +36,7 @@ test('an admin sees Security and Accounts, adds a user, and that user sees neith
   page,
   request,
 }) => {
-  await openSignedIn(page, '#/settings');
+  await openSignedIn(page, '#/settings/general');
   await expect(page.getByRole('heading', { name: 'Security' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Accounts' })).toBeVisible();
   await expectNoAxeViolations(page);
@@ -47,7 +47,7 @@ test('an admin sees Security and Accounts, adds a user, and that user sees neith
   await expect(page.getByRole('row', { name: new RegExp(name) })).toBeVisible();
   await signOut(page);
   await signIn(page, name, 'pat has a password');
-  await page.goto('/review#/settings');
+  await page.goto('/review#/settings/general');
   await expect(page.getByRole('heading', { name: 'Security' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Accounts' })).toHaveCount(0);
   const refused = await request.get('/api/users', { headers: { 'X-Api-Key': 'wrong' } });
@@ -55,7 +55,7 @@ test('an admin sees Security and Accounts, adds a user, and that user sees neith
 });
 
 test('the last admin cannot be demoted or deleted and the page says why', async ({ page }) => {
-  await openSignedIn(page, '#/settings');
+  await openSignedIn(page, '#/settings/general');
   const row = page.getByRole('row', { name: new RegExp(USERNAME) });
   page.on('dialog', (d) => void d.accept());
   await row.getByRole('button', { name: 'Delete' }).click();
@@ -67,7 +67,7 @@ test('Security shows the key hidden, reveals it on request, and Reset asks befor
   page,
   request,
 }) => {
-  await openSignedIn(page, '#/settings');
+  await openSignedIn(page, '#/settings/general');
   const field = page.getByLabel('API key');
   await expect(field).toHaveAttribute('type', 'password');
   await page.getByRole('button', { name: 'Show key' }).click();
@@ -85,7 +85,7 @@ test('confirming Reset shows the new key the server issued', async ({ page }) =>
       body: JSON.stringify({ key: 'mocked-new-key-value' }),
     }),
   );
-  await openSignedIn(page, '#/settings');
+  await openSignedIn(page, '#/settings/general');
   page.once('dialog', (d) => void d.accept());
   await page.getByRole('button', { name: 'Reset key' }).click();
   await page.getByRole('button', { name: 'Show key' }).click();
@@ -97,10 +97,10 @@ test('confirming Reset shows the new key the server issued', async ({ page }) =>
 
 test('on a phone the Security and Accounts sections do not push the page sideways', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 800 });
-  await openSignedIn(page, '#/settings');
+  await openSignedIn(page, '#/settings/general');
   await expect(page.getByRole('row', { name: new RegExp(USERNAME) })).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-  expect(overflow, `#/settings overflows by ${overflow}px`).toBeLessThanOrEqual(0);
+  expect(overflow, `#/settings/general overflows by ${overflow}px`).toBeLessThanOrEqual(0);
 });
 
 test('the account menu closes on a click outside it and stays open on a click inside', async ({ page }) => {
