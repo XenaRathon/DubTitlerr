@@ -9,7 +9,7 @@ hostile file can produce nothing but registered settings with valid values. It a
 stderr line naming what it ignored, so a bad file falls back to the container environment audibly.
 
 Subcommands
-  export --scope gen|merge|server|container [--plain] [--boot] [--reset-to-init]
+  export --scope gen|merge|server|container [--plain] [--boot] [--reset-to-init] [--secrets-only]
       the stored settings of one scope (a merge pass also receives the gen keys, as it always has).
       --plain       NAME=value lines, no `export`, stored values only (for tests and for reading). Never a secret.
       --boot        also `export DT_BOOT_<KEY>=<container value>` for each stored key the container already sets, so the server
@@ -17,9 +17,14 @@ Subcommands
                     Never a secret.
       --reset-to-init  for every key of the scope with no stored value, restore the value the loop saw at start (the _INIT_
                     snapshot below) or unset it, so a reset takes effect in a long-running loop without a restart.
+      --secrets-only  only the stored secrets of the scope, plus `export DT_BOOT_<KEY>=1` (or empty) saying whether the container
+                    held a value of its own: a flag, never a copy of it. container_run.sh evals this inside the review server's
+                    own subshell, so a restart-applied secret reaches that process and no other.
   snapshot --scope gen|merge
-      the `_INIT_<KEY>` / `_HAS_INIT_<KEY>` assignments that --reset-to-init restores from, generated from the registry so the
-      list of keys cannot drift from it.
+      the `_INIT_<KEY>` / `_HAS_INIT_<KEY>` assignments that --reset-to-init restores from, plus a `restore_runtime_env()`
+      function that restores every key of the scope at once (the loop calls it before the exporter, so a crashed exporter
+      cannot leave the previous show's stored value in force). Both are generated from the registry so the list of keys
+      cannot drift from it.
 
 stdout carries only `export`/`unset` lines (what the shell evaluates): everything else, including the store's own log lines,
 goes to stderr."""
@@ -33,7 +38,10 @@ import settings_registry as reg
 import settings_store as store
 
 SCOPES = ("gen", "merge", "server", "container")
-USAGE = "usage: review_settings_write.py export|snapshot --scope gen|merge|server|container [--plain] [--boot] [--reset-to-init]"
+USAGE = (
+    "usage: review_settings_write.py export|snapshot --scope gen|merge|server|container"
+    " [--plain] [--boot] [--reset-to-init] [--secrets-only]"
+)
 
 
 def scope_names(scope):
@@ -41,7 +49,7 @@ def scope_names(scope):
     return sorted(reg.keys_for_scope(scope))
 
 
-def export_assignments(environ=None, scope="merge", notes=None, boot=False, plain=False):
+def export_assignments(environ=None, scope="merge", notes=None, boot=False, plain=False, secrets_only=False):
     """([(NAME, value)] to export, {NAME} of every scope key that has a stored value). Re-validated on load, so a bad file
     yields nothing but a note. --plain and --boot never include a secret."""
     notes = [] if notes is None else notes
@@ -57,13 +65,15 @@ def export_assignments(environ=None, scope="merge", notes=None, boot=False, plai
     for key in sorted(reg.keys_for_scope(scope)):
         entry = reg.REGISTRY[key]
         if entry["secret"]:
-            if key in state.secret_values and not (plain or boot):
+            if key in state.secret_values and (secrets_only or not (plain or boot)):
                 out.append((key, state.secret_values[key]))
                 stored.add(key)
-        elif key in state.values:
+                if secrets_only:
+                    out.append(("DT_BOOT_" + key, "1" if (environ.get(key) or "").strip() else ""))
+        elif key in state.values and not secrets_only:
             out.append((key, reg.to_env(state.values[key])))
             stored.add(key)
-    if boot:
+    if boot and not secrets_only:
         out.extend(("DT_BOOT_" + key, environ[key]) for key in sorted(stored) if key in environ)
     return out, stored
 
@@ -78,7 +88,9 @@ def format_restore(name):
 
 
 def format_snapshot(scope):
-    return "".join(f'_INIT_{n}="${{{n}:-}}"\n_HAS_INIT_{n}="${{{n}+1}}"\n' for n in scope_names(scope))
+    names = scope_names(scope)
+    values = "".join(f'_INIT_{n}="${{{n}:-}}"\n_HAS_INIT_{n}="${{{n}+1}}"\n' for n in names)
+    return values + "restore_runtime_env() {\n" + "".join("\t" + format_restore(n) for n in names) + "}\n"
 
 
 def main(argv=None):
@@ -86,7 +98,7 @@ def main(argv=None):
     if not argv or argv[0] not in ("export", "snapshot"):
         print(USAGE, file=sys.stderr)
         return 2
-    command, plain, boot, reset, scope = argv[0], False, False, False, "merge"
+    command, plain, boot, reset, scope, secrets_only = argv[0], False, False, False, "merge", False
     rest = argv[1:]
     while rest:
         arg = rest.pop(0)
@@ -96,6 +108,8 @@ def main(argv=None):
             boot = True
         elif arg == "--reset-to-init":
             reset = True
+        elif arg == "--secrets-only":
+            secrets_only = True
         elif arg == "--scope" and rest:
             scope = rest.pop(0)
         elif arg.startswith("--scope="):
@@ -103,6 +117,9 @@ def main(argv=None):
         else:
             print(f"unknown argument: {arg}\n{USAGE}", file=sys.stderr)
             return 2
+    if secrets_only and (plain or command != "export"):  # --plain never prints a secret, so the two cannot combine
+        print(f"--secrets-only is for export without --plain\n{USAGE}", file=sys.stderr)
+        return 2
     if scope not in SCOPES or (command == "snapshot" and scope not in ("gen", "merge")):
         print(f"unknown scope: {scope}\n{USAGE}", file=sys.stderr)
         return 2
@@ -113,9 +130,11 @@ def main(argv=None):
             if command == "snapshot":
                 text = format_snapshot(scope)
             else:
-                assignments, stored = export_assignments(scope=scope, notes=notes, boot=boot, plain=plain)
+                assignments, stored = export_assignments(
+                    scope=scope, notes=notes, boot=boot, plain=plain, secrets_only=secrets_only
+                )
                 text = format_assignments(assignments, plain)
-                if reset and not plain:
+                if reset and not plain and not secrets_only:
                     text += "".join(format_restore(n) for n in scope_names(scope) if n not in stored)
         out.write(text)
     except Exception as e:  # noqa: BLE001 - a loop must never die because a settings file is odd

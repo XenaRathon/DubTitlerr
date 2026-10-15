@@ -225,3 +225,217 @@ pathlib.Path(os.environ["STOP_FLAG"]).touch()
     assert json.loads(runs_file.read_text().splitlines()[0])["beam"] == "5"
     for root in (work, config_dir, tmp_path, app):
         assert not (root / "PWNED").exists()
+
+
+
+
+# --- stored settings (settings.json) reach the loop at its boundaries -----------------------------------------------------
+
+
+def _store(config_dir, values=None, secrets=None):
+    """Write settings.json / secrets.json the way the store does, without importing it (the app dir is a stub)."""
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "settings.json").write_text(json.dumps({"version": 1, "rev": 1, "values": values or {}}))
+    if secrets:
+        (config_dir / "secrets.json").write_text(json.dumps({"version": 1, "values": secrets, "connections": {}}))
+        os.chmod(config_dir / "secrets.json", 0o600)
+
+
+def _loop_env(tmp_path, app, config_dir, order_text="Show1\nShow2\n", **extra):
+    anime = tmp_path / "anime"
+    for name in ("Show1", "Show2"):
+        (anime / name).mkdir(parents=True, exist_ok=True)
+    order = tmp_path / "order.txt"
+    order.write_text(order_text)
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("REQUIRE_ENG", "WATCH_QUEUE_WINDOW_DAYS", "WHISPER_BEAM_SIZE", "ACQUIRE_APPLY")
+    }
+    env.update(
+        APP_DIR=str(app),
+        ANIME_ROOT=str(anime),
+        ANIME_ORDER=str(order),
+        CONFIG_DIR=str(config_dir),
+        REQUESTS_DIR=str(config_dir / "requests"),
+        STOP_FLAG=str(tmp_path / "stop"),
+        RESCAN_INTERVAL="0",
+    )
+    env.update(extra)
+    return env
+
+
+def _recording_generate(app, runs_file, settings_file, on_show1, keys=("WHISPER_BEAM_SIZE", "REQUIRE_ENG", "PLEX_TOKEN")):
+    (app / "generate.py").write_text(f"""\
+import os, json, pathlib
+show = os.environ.get("SHOW_NAME", "")
+with open(r"{runs_file}", "a") as f:
+    f.write(json.dumps({{"show": show, **{{k: os.environ.get(k) for k in {keys!r}}}}}) + "\\n")
+if show == "Show1":
+    {on_show1}
+elif show == "Show2":
+    pathlib.Path(os.environ["STOP_FLAG"]).touch()
+""")
+
+
+def _runs(runs_file):
+    return [json.loads(line) for line in runs_file.read_text().splitlines()]
+
+
+def test_a_stored_value_and_secret_reach_the_next_show_and_a_change_applies_to_the_one_after(tmp_path):
+    app = _setup_app(tmp_path)
+    config = tmp_path / "config"
+    _store(config, {"WHISPER_BEAM_SIZE": 5}, {"PLEX_TOKEN": "tok-1"})
+    runs = tmp_path / "runs.jsonl"
+    newer = json.dumps({"version": 1, "values": {"WHISPER_BEAM_SIZE": 9}})
+    rewrite = f"pathlib.Path(r'{config}/settings.json').write_text({newer!r})"
+    _recording_generate(app, runs, config / "settings.json", rewrite)
+    proc = subprocess.run(
+        ["sh", str(REPO / "gen_loop.sh")], env=_loop_env(tmp_path, app, config), capture_output=True, text=True, timeout=30
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    got = _runs(runs)
+    assert [(r["show"], r["WHISPER_BEAM_SIZE"], r["PLEX_TOKEN"]) for r in got] == [
+        ("Show1", "5", "tok-1"),
+        ("Show2", "9", "tok-1"),
+    ]
+    assert "tok-1" not in (config / "effective.env").read_text()
+    assert "WHISPER_BEAM_SIZE=9" in (config / "effective.env").read_text()
+
+
+def test_a_reset_gives_the_next_show_the_container_value_or_nothing(tmp_path):
+    app = _setup_app(tmp_path)
+    config = tmp_path / "config"
+    _store(config, {"WHISPER_BEAM_SIZE": 5, "REQUIRE_ENG": False}, {"PLEX_TOKEN": "tok-1"})
+    runs = tmp_path / "runs.jsonl"
+    _recording_generate(
+        app,
+        runs,
+        config / "settings.json",
+        f"""pathlib.Path(r"{config}/settings.json").unlink(); pathlib.Path(r"{config}/secrets.json").unlink()""",
+    )
+    env = _loop_env(tmp_path, app, config, WHISPER_BEAM_SIZE="7")
+    proc = subprocess.run(["sh", str(REPO / "gen_loop.sh")], env=env, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    got = _runs(runs)
+    assert (got[0]["WHISPER_BEAM_SIZE"], got[0]["REQUIRE_ENG"]) == ("5", "0")
+    # REQUIRE_ENG is back to nothing in the loop's environment, so gen_loop.sh hands generate.py its own default, 1
+    assert (got[1]["WHISPER_BEAM_SIZE"], got[1]["REQUIRE_ENG"], got[1]["PLEX_TOKEN"]) == ("7", "1", None)
+
+
+def test_a_request_require_eng_still_beats_the_stored_value(tmp_path):
+    app = _setup_app(tmp_path)
+    config = tmp_path / "config"
+    _store(config, {"REQUIRE_ENG": True})
+    runs = tmp_path / "runs.jsonl"
+    (app / "generate.py").write_text(f"""\
+import os, json, pathlib
+open(r"{runs}", "a").write(json.dumps({{"require_eng": os.environ.get("REQUIRE_ENG")}}) + "\\n")
+pathlib.Path(os.environ["STOP_FLAG"]).touch()
+""")
+    requests_dir = config / "requests"
+    requests_dir.mkdir(parents=True)
+    (requests_dir / "20261012T100000Z-11111111.json").write_text(
+        json.dumps(
+            {"id": "20261012T100000Z-11111111", "show": "Show1", "generate_only_re": "E01", "require_eng": 0, "status": "pending"}
+        )
+    )
+    proc = subprocess.run(
+        ["sh", str(REPO / "gen_loop.sh")], env=_loop_env(tmp_path, app, config), capture_output=True, text=True, timeout=30
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _runs(runs) == [{"require_eng": "0"}]
+
+
+def test_a_missing_exporter_leaves_the_container_environment_in_force(tmp_path):
+    app = _setup_app(tmp_path, include_exporter=False)
+    config = tmp_path / "config"
+    _store(config, {"WHISPER_BEAM_SIZE": 5})
+    runs = tmp_path / "runs.jsonl"
+    _recording_generate(app, runs, config / "settings.json", "pass")
+    proc = subprocess.run(
+        ["sh", str(REPO / "gen_loop.sh")],
+        env=_loop_env(tmp_path, app, config, WHISPER_BEAM_SIZE="7"),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert [r["WHISPER_BEAM_SIZE"] for r in _runs(runs)] == ["7", "7"]
+
+
+def test_a_corrupt_store_keeps_the_container_value_and_logs_once_per_sweep(tmp_path):
+    app = _setup_app(tmp_path)
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "settings.json").write_text("{nope")
+    runs = tmp_path / "runs.jsonl"
+    _recording_generate(app, runs, config / "settings.json", "pass")
+    proc = subprocess.run(
+        ["sh", str(REPO / "gen_loop.sh")],
+        env=_loop_env(tmp_path, app, config, WHISPER_BEAM_SIZE="7"),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert [r["WHISPER_BEAM_SIZE"] for r in _runs(runs)] == ["7", "7"]
+    assert proc.stderr.count("not valid JSON") == 1
+
+
+def test_a_stored_acquire_apply_false_makes_the_next_acquire_a_dry_run(tmp_path):
+    env, log_file, _ = _prep_env(tmp_path, "Frieren\n", {"generate": "pathlib.Path(os.environ['STOP_FLAG']).touch()"})
+    _store(Path(env["CONFIG_DIR"]), {"ACQUIRE_APPLY": False})
+    _run_gen_loop(env)
+    assert "acquire Frieren dry" in log_file.read_text()
+
+
+def test_a_saved_acquire_apply_true_applies_and_an_empty_store_means_apply(tmp_path):
+    env, log_file, _ = _prep_env(tmp_path, "Frieren\n", {"generate": "pathlib.Path(os.environ['STOP_FLAG']).touch()"})
+    _run_gen_loop(env)
+    assert "acquire Frieren apply" in log_file.read_text()
+
+
+
+
+def test_the_sweep_exits_zero_on_a_soft_stop_with_stored_settings(tmp_path):
+    app = _setup_app(tmp_path)
+    config = tmp_path / "config"
+    _store(config, {"WHISPER_BEAM_SIZE": 5})
+    (app / "generate.py").write_text("raise SystemExit('must not run')")
+    env = _loop_env(tmp_path, app, config)
+    Path(env["STOP_FLAG"]).touch()
+    proc = subprocess.run(["sh", str(REPO / "gen_loop.sh")], env=env, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0 and "soft stop" in proc.stdout
+
+
+def test_an_exporter_that_raises_cannot_leave_the_previous_shows_stored_value_in_force(tmp_path):
+    """Stored 5, container 7: show 1 runs on 5; the exporter then breaks; show 2 must run on 7, not on 5 left over from show 1.
+    The registry-generated restore_runtime_env() runs first, so it does not depend on the exporter succeeding."""
+    app = _setup_app(tmp_path)
+    config = tmp_path / "config"
+    _store(config, {"WHISPER_BEAM_SIZE": 5})
+    runs = tmp_path / "runs.jsonl"
+    break_exporter = f"pathlib.Path(r'{app}/review_settings_write.py').write_text('raise RuntimeError(\"boom\")')"
+    _recording_generate(app, runs, config / "settings.json", break_exporter)
+    env = _loop_env(tmp_path, app, config, WHISPER_BEAM_SIZE="7")
+    proc = subprocess.run(["sh", str(REPO / "gen_loop.sh")], env=env, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert [(r["show"], r["WHISPER_BEAM_SIZE"]) for r in _runs(runs)] == [("Show1", "5"), ("Show2", "7")]
+
+
+def test_a_stored_show_order_file_is_ignored_because_the_path_is_read_only_in_this_release(tmp_path):
+    """Review fix, Task 1: ANIME_ORDER is not editable (watch_queue.py --out would overwrite any stored path as root), so a
+    hand-written value in settings.json never changes which file the sweep reads."""
+    app = _setup_app(tmp_path)
+    config = tmp_path / "config"
+    other = tmp_path / "other-order.txt"
+    other.write_text("Show2\n")
+    _store(config, {"ANIME_ORDER": str(other)})
+    runs = tmp_path / "runs.jsonl"
+    _recording_generate(app, runs, config / "settings.json", "pass")
+    proc = subprocess.run(
+        ["sh", str(REPO / "gen_loop.sh")], env=_loop_env(tmp_path, app, config), capture_output=True, text=True, timeout=30
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert [r["show"] for r in _runs(runs)] == ["Show1", "Show2"]

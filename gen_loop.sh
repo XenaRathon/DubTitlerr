@@ -17,51 +17,27 @@ EFFECTIVE_ENV_FILE="${EFFECTIVE_ENV_FILE:-$CONFIG_DIR/effective.env}"
 RUNTIME_ENV_FILE="${RUNTIME_ENV_FILE:-$CONFIG_DIR/runtime.env}"
 export CONFIG_DIR RUNTIME_ENV_FILE EFFECTIVE_ENV_FILE
 
-# Snapshot initial container environment for allow-listed runtime settings
-_INIT_REPAIR_BACKEND="${REPAIR_BACKEND:-}"
-_HAS_INIT_REPAIR_BACKEND="${REPAIR_BACKEND+1}"
+# Soft stop (container_run.sh touches $STOP_FLAG on SIGTERM): stop STARTING work, never kill
+# work in flight -- a killed generate.py leaves a permanent .dubtitles.fail poison marker. So
+# this script has no `trap` and no `wait`; it only looks at the flag between units.
+APP_DIR="${APP_DIR:-/app}"
 
-_INIT_REPAIR_LLAMACPP_URL="${REPAIR_LLAMACPP_URL:-}"
-_HAS_INIT_REPAIR_LLAMACPP_URL="${REPAIR_LLAMACPP_URL+1}"
+# What this loop saw at start (the container environment), generated from the settings registry: the _INIT_ values and a
+# restore_runtime_env() that puts every key of the scope back. apply_runtime_env calls it first, so a reset reaches this
+# long-running loop without a restart and a crashing exporter cannot leave the previous show's stored value in force.
+# If the exporter is missing or fails here, nothing is restored and nothing is applied: the loop keeps the container environment.
+if [ -f "$APP_DIR/review_settings_write.py" ]; then
+	eval "$(python3 "$APP_DIR/review_settings_write.py" snapshot --scope gen 2>/dev/null)" || true
+fi
 
-_INIT_REPAIR_OPENAI_URL="${REPAIR_OPENAI_URL:-}"
-_HAS_INIT_REPAIR_OPENAI_URL="${REPAIR_OPENAI_URL+1}"
-
-_INIT_REPAIR_OPENAI_KEY_ENV="${REPAIR_OPENAI_KEY_ENV:-}"
-_HAS_INIT_REPAIR_OPENAI_KEY_ENV="${REPAIR_OPENAI_KEY_ENV+1}"
-
-_INIT_REPAIR_MODEL="${REPAIR_MODEL:-}"
-_HAS_INIT_REPAIR_MODEL="${REPAIR_MODEL+1}"
-
-_INIT_VERIFY_BACKEND="${VERIFY_BACKEND:-}"
-_HAS_INIT_VERIFY_BACKEND="${VERIFY_BACKEND+1}"
-
-_INIT_VERIFY_DECISION_MODEL="${VERIFY_DECISION_MODEL:-}"
-_HAS_INIT_VERIFY_DECISION_MODEL="${VERIFY_DECISION_MODEL+1}"
-
-_INIT_REQUIRE_ENG="${REQUIRE_ENG:-}"
-_HAS_INIT_REQUIRE_ENG="${REQUIRE_ENG+1}"
-
-_INIT_ACQUIRE_APPLY="${ACQUIRE_APPLY:-}"
-_HAS_INIT_ACQUIRE_APPLY="${ACQUIRE_APPLY+1}"
-
-restore_runtime_env() {
-	if [ -n "$_HAS_INIT_REPAIR_BACKEND" ]; then export REPAIR_BACKEND="$_INIT_REPAIR_BACKEND"; else unset REPAIR_BACKEND; fi
-	if [ -n "$_HAS_INIT_REPAIR_LLAMACPP_URL" ]; then export REPAIR_LLAMACPP_URL="$_INIT_REPAIR_LLAMACPP_URL"; else unset REPAIR_LLAMACPP_URL; fi
-	if [ -n "$_HAS_INIT_REPAIR_OPENAI_URL" ]; then export REPAIR_OPENAI_URL="$_INIT_REPAIR_OPENAI_URL"; else unset REPAIR_OPENAI_URL; fi
-	if [ -n "$_HAS_INIT_REPAIR_OPENAI_KEY_ENV" ]; then export REPAIR_OPENAI_KEY_ENV="$_INIT_REPAIR_OPENAI_KEY_ENV"; else unset REPAIR_OPENAI_KEY_ENV; fi
-	if [ -n "$_HAS_INIT_REPAIR_MODEL" ]; then export REPAIR_MODEL="$_INIT_REPAIR_MODEL"; else unset REPAIR_MODEL; fi
-	if [ -n "$_HAS_INIT_VERIFY_BACKEND" ]; then export VERIFY_BACKEND="$_INIT_VERIFY_BACKEND"; else unset VERIFY_BACKEND; fi
-	if [ -n "$_HAS_INIT_VERIFY_DECISION_MODEL" ]; then export VERIFY_DECISION_MODEL="$_INIT_VERIFY_DECISION_MODEL"; else unset VERIFY_DECISION_MODEL; fi
-	if [ -n "$_HAS_INIT_REQUIRE_ENG" ]; then export REQUIRE_ENG="$_INIT_REQUIRE_ENG"; else unset REQUIRE_ENG; fi
-	if [ -n "$_HAS_INIT_ACQUIRE_APPLY" ]; then export ACQUIRE_APPLY="$_INIT_ACQUIRE_APPLY"; else unset ACQUIRE_APPLY; fi
-}
-
+# Stored settings (settings.json / secrets.json) for the generate loop, applied at every boundary where a value may change:
+# each sweep, each show, each request -- never mid-episode. The exporter is parsed and re-validated, never sourced; its stderr is
+# logged once per sweep.
 apply_runtime_env() {
-	restore_runtime_env
 	if [ -f "$APP_DIR/review_settings_write.py" ]; then
+		if command -v restore_runtime_env >/dev/null 2>&1; then restore_runtime_env; fi
 		_exp_err_file="${CONFIG_DIR:-/config}/.exporter.err"
-		_exp_out=$(python3 "$APP_DIR/review_settings_write.py" export --scope gen 2>"$_exp_err_file") || true
+		_exp_out=$(python3 "$APP_DIR/review_settings_write.py" export --scope gen --reset-to-init 2>"$_exp_err_file") || true
 		if [ -s "$_exp_err_file" ] && [ "${_EXPORTER_LOGGED_THIS_SWEEP:-0}" -eq 0 ]; then
 			cat "$_exp_err_file" >&2
 			_EXPORTER_LOGGED_THIS_SWEEP=1
@@ -71,11 +47,6 @@ apply_runtime_env() {
 		python3 "$APP_DIR"/review_requests.py write-effective-env "$EFFECTIVE_ENV_FILE" </dev/null 2>&1 || echo "  effective.env write failed (continuing)"
 	fi
 }
-
-# Soft stop (container_run.sh touches $STOP_FLAG on SIGTERM): stop STARTING work, never kill
-# work in flight -- a killed generate.py leaves a permanent .dubtitles.fail poison marker. So
-# this script has no `trap` and no `wait`; it only looks at the flag between units.
-APP_DIR="${APP_DIR:-/app}"
 if [ -f "$APP_DIR/shell/lib.sh" ]; then
 	# shellcheck disable=SC1091
 	. "$APP_DIR/shell/lib.sh"
@@ -320,6 +291,9 @@ while :; do
 		echo "gen_loop: soft stop, not starting the next sweep"
 		exit 0
 	fi
+	# Stored settings first: the show order file and the watch queue below read ANIME_ORDER and WATCH_QUEUE_* from them.
+	apply_runtime_env
+	ORDER="${ANIME_ORDER:-/config/anime_order.txt}"
 	# Watch-gated queue: rewrite $ORDER from what is actually being watched, unioning
 	# WatchState (household/Jellyfin) with Plex history across ALL accounts. Neither source
 	# is a superset of the other. watch_queue.py exits non-zero and leaves $ORDER untouched
@@ -339,7 +313,6 @@ while :; do
 	fi
 	echo "==== GENERATE SWEEP $(date) ===="
 	python3 "$APP_DIR"/review_requests.py recover "$REQUESTS_DIR" </dev/null 2>&1 || echo "  recover failed (continuing)"
-	apply_runtime_env
 	[ -f "$APP_DIR/review_settings_write.py" ] || python3 "$APP_DIR"/review_requests.py write-effective-env "$EFFECTIVE_ENV_FILE" </dev/null 2>&1 || echo "  effective.env write failed (continuing)"
 	drain_requests
 	while IFS= read -r show; do

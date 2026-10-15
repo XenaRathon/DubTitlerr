@@ -106,6 +106,8 @@ GLOSS_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
 # tests/test_dockerfile_copy.py cannot see that, and it is recorded here as the known gap.
 MODEL = os.environ.get("WHISPER_MODEL", "large-v3-turbo")
 COMPUTE = os.environ.get("COMPUTE_TYPE", "int8")
+# cuda is what the image ships for; cpu and auto exist so a card-less test box can run the same code (settings: ASR_DEVICE).
+ASR_DEVICE = os.environ.get("ASR_DEVICE", "cuda")
 MODEL_DIR = os.environ.get("MODEL_DIR", "/subgen/models")
 # V2 A8: optional pre-transcription audio cleanup (default highpass + dynamic-range
 # compand, tuned for noisy/quiet anime dub tracks). Empty string ("") disables it
@@ -1182,7 +1184,7 @@ def main():
         # the loops below break on their first check; do not pay the load for nothing
         log("stop requested: not loading the model")
     elif transcribe_todo:
-        globals()["WMODEL"] = WhisperModel(MODEL, device="cuda", compute_type=COMPUTE, download_root=MODEL_DIR)
+        globals()["WMODEL"] = WhisperModel(MODEL, device=ASR_DEVICE, compute_type=COMPUTE, download_root=MODEL_DIR)
     else:
         log("text-tier work only — skipping the model load")
     t0 = time.monotonic()  # V2 C1: per-show run summary

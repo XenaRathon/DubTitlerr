@@ -13,13 +13,13 @@
 ROOT="${MERGE_ROOTS:-/media/Anime Library}"
 APP="${APP_DIR:-/scripts}"
 export PYTHONPATH="$APP${PYTHONPATH:+:$PYTHONPATH}" # so inline `python3 -c "import common"` snippets resolve
-# Runtime settings the web UI wrote (/config/runtime.env): applied at the start of EVERY pass, so a change takes
-# effect at the next pass boundary and never mid-episode. NOT `source`d: the file is parsed and re-validated by
-# review_settings_write.py, which prints only allow-listed, shell-quoted `export` lines. If the exporter is missing
-# or fails, the pass runs on the container environment.
-# (The exporter's stderr is kept: it names anything it ignored, which would otherwise be invisible.)
-if [ -f "${RUNTIME_ENV_FILE:-${CONFIG_DIR:-/config}/runtime.env}" ] && [ -f "$APP/review_settings_write.py" ]; then
-	eval "$(python3 "$APP/review_settings_write.py" export)" || true
+# Stored settings (settings.json / secrets.json, written by the web UI): applied at the start of EVERY pass, so a change takes
+# effect at the next pass boundary and never mid-episode. NOT `source`d: review_settings_write.py parses and re-validates the
+# files and prints only registered, shell-quoted `export` lines. The guard is the exporter, not a settings file: once the old
+# runtime.env is migrated away there is no file to test for. If the exporter is missing or fails, the pass runs on the container
+# environment. (The exporter's stderr is kept: it names anything it ignored, which would otherwise be invisible.)
+if [ -f "$APP/review_settings_write.py" ]; then
+	eval "$(python3 "$APP/review_settings_write.py" export --scope merge)" || true
 fi
 # Report what THIS pass runs with, to its own file: the generate loop writes effective.env from an environment that never
 # applies the repair profile, so sharing one file would make the Settings page's "pending" flip as the two take turns.

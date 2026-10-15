@@ -153,3 +153,41 @@ def test_a_hostile_key_in_settings_json_creates_no_file_when_the_output_is_evalu
     out = subprocess.run(["sh", "-c", script], env=env, capture_output=True, text=True, timeout=30)
     assert out.stdout.strip() == "0", out.stderr
     assert not (work / "PWNED").exists() and not (cfg / "PWNED").exists() and list(work.iterdir()) == []
+
+
+def test_the_snapshot_defines_a_restore_function_for_every_gen_key(cfg):
+    out = run(cfg, "snapshot", "--scope", "gen").stdout
+    assert "restore_runtime_env() {\n" in out
+    body = out.split("restore_runtime_env() {\n", 1)[1].split("\n}\n", 1)[0]
+    one = 'if [ -n "${_HAS_INIT_WHISPER_BEAM_SIZE:-}" ]; then export WHISPER_BEAM_SIZE="$_INIT_WHISPER_BEAM_SIZE"; else unset'
+    assert one in body
+    shell = f'set -u\nWHISPER_BEAM_SIZE=7\neval "$({sys.executable} {EXPORTER} snapshot --scope gen)"\n'
+    shell += "WHISPER_BEAM_SIZE=5; REQUIRE_ENG=0; export WHISPER_BEAM_SIZE REQUIRE_ENG\nrestore_runtime_env\n"
+    shell += 'echo "${WHISPER_BEAM_SIZE-unset}:${REQUIRE_ENG-unset}"\n'
+    env = {k: v for k, v in os.environ.items() if k not in ("WHISPER_BEAM_SIZE", "REQUIRE_ENG")}
+    env["CONFIG_DIR"] = str(cfg)
+    got = subprocess.run(["sh", "-c", shell], env=env, capture_output=True, text=True, timeout=30)
+    assert got.stdout.strip() == "7:unset", got.stderr
+
+
+def test_secrets_only_prints_the_stored_secrets_of_the_scope_and_a_presence_flag_never_a_container_copy(cfg):
+    save(cfg, {"REVIEW_PORT": 9000}, {"WEBHOOK_TOKEN": "hook-stored", "PLEX_TOKEN": "plex-stored"})
+    res = run(cfg, "export", "--scope", "server", "--secrets-only", env={"WEBHOOK_TOKEN": "container-hook"})
+    assert res.returncode == 0 and res.stderr == ""
+    assert res.stdout.splitlines() == ["export WEBHOOK_TOKEN=hook-stored", "export DT_BOOT_WEBHOOK_TOKEN=1"]
+    assert "container-hook" not in res.stdout and "REVIEW_PORT" not in res.stdout and "PLEX_TOKEN" not in res.stdout
+    none = run(cfg, "export", "--scope", "server", "--secrets-only")
+    assert none.stdout.splitlines() == ["export WEBHOOK_TOKEN=hook-stored", "export DT_BOOT_WEBHOOK_TOKEN=''"]
+
+
+def test_secrets_only_withholds_secrets_when_secrets_json_cannot_be_trusted(cfg):
+    save(cfg, {}, {"WEBHOOK_TOKEN": "hook-stored"})
+    (cfg / "secrets.json").write_text("{nope")
+    res = run(cfg, "export", "--scope", "server", "--secrets-only")
+    assert res.stdout == "" and "secrets.json" in res.stderr
+
+
+def test_secrets_only_cannot_be_combined_with_plain(cfg):
+    save(cfg, {}, {"WEBHOOK_TOKEN": "hook-stored"})
+    res = run(cfg, "export", "--scope", "server", "--secrets-only", "--plain")
+    assert res.returncode == 2 and res.stdout == ""
