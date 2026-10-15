@@ -1,5 +1,6 @@
 import importlib.util
 import pathlib
+import re
 
 import pytest
 
@@ -51,3 +52,20 @@ def test_startup_says_once_that_the_admin_token_is_retired(env, tmp_path, capsys
     rs.startup_auth()
     out = capsys.readouterr().out
     assert out.count("REVIEW_ADMIN_TOKEN is retired") == 1 and "old-admin-secret" not in out
+
+
+def test_the_registry_marks_the_admin_token_keys_retired_with_a_pointer_to_the_api_key():
+    import settings_registry as reg
+
+    by_key = {s["key"]: s for s in reg.schema()["settings"]}
+    for key in ("REVIEW_ADMIN_TOKEN", "REVIEW_ADMIN_TOKEN_FILE"):
+        entry = by_key[key]
+        assert entry["managed_by"] == "retired" and entry["editable"] is False, key
+        assert "retired" in entry["label"].lower() and "0.3.0" in entry["help"] and "API key" in entry["help"], key
+
+
+def test_compose_no_longer_offers_the_admin_token_and_says_it_is_retired():
+    text = (pathlib.Path(__file__).resolve().parent.parent / "compose.yaml").read_text()
+    assert not [ln for ln in text.splitlines() if re.match(r"\s*#?\s*REVIEW_ADMIN_TOKEN(_FILE)?:", ln)], "no option line"
+    assert "X-Review-Admin-Token" not in text
+    assert "REVIEW_ADMIN_TOKEN is retired" in text and "Settings -> General -> Security" in text

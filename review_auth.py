@@ -993,15 +993,16 @@ def list_users() -> list:
     return [{"name": u["name"], "role": u["role"]} for u in read_users()]
 
 
-def update_user(name, *, role=None, password=None) -> dict:
+def update_user(name, *, role=None, password=None, actor: str = "") -> dict:
     if role is not None and role not in ROLES:
         raise Invalid("role must be admin or user")
     if role is None and password is None:
         raise Invalid("nothing to change")
-    if password is not None and validate_password(password):
-        raise Invalid(validate_password(password))
+    problem = validate_password(password) if password is not None else None
+    if problem:
+        raise Invalid(problem)
     stored = hash_password(password) if password is not None else None
-    role_changed = False
+    role_changed, old_role = False, None
     with _locked(users_path()):
         users = read_users()
         row = find_user(users, name)
@@ -1010,19 +1011,23 @@ def update_user(name, *, role=None, password=None) -> dict:
         if role is not None and role != row["role"]:
             if row["role"] == "admin" and _admin_count(users) <= 1:
                 raise Conflict("cannot remove or demote the last admin")
-            row["role"], role_changed = role, True
+            old_role, row["role"], role_changed = row["role"], role, True
         if stored is not None:
             row["hash"], row["pw_changed_at"] = stored, CLOCK()
         if role_changed or stored is not None:
             row["session_epoch"] = int(row.get("session_epoch", 0)) + 1  # every existing session of the account is now invalid
         _write_json(users_path(), {"version": 1, "users": users})
         out = {"name": row["name"], "role": row["role"]}
+    if role_changed:
+        log(f"review server: account role changed: {out['name']} {old_role} -> {out['role']} (by {actor or 'unknown'})")
+    if stored is not None:
+        log(f"review server: account password reset: {out['name']} role={out['role']} (by {actor or 'unknown'})")
     if role_changed or stored is not None:
         sessions().revoke_user(out["name"])
     return out
 
 
-def delete_user(name) -> None:
+def delete_user(name, *, actor: str = "") -> None:
     with _locked(users_path()):
         users = read_users()
         row = find_user(users, name)
@@ -1032,6 +1037,7 @@ def delete_user(name) -> None:
             raise Conflict("cannot remove or demote the last admin")
         users.remove(row)
         _write_json(users_path(), {"version": 1, "users": users})
+    log(f"review server: account deleted: {row['name']} role={row['role']} (by {actor or 'unknown'})")
     sessions().revoke_user(row["name"])
 
 
@@ -1057,6 +1063,9 @@ def set_password(name, new) -> int:
 
 
 def handle_users(method: str, bare: str, body, principal) -> tuple:
+    if not auth_on():  # there is no signed-in actor to audit and no session to end: accounts are not managed in this mode
+        return 409, {"error": "accounts cannot be managed while REVIEW_AUTH=off"}
+    actor = getattr(principal, "name", "") or ""
     try:
         if bare == "/api/users":
             if method == "GET":
@@ -1072,10 +1081,10 @@ def handle_users(method: str, bare: str, body, principal) -> tuple:
         if validate_username(name):
             raise Invalid("invalid username")
         if method == "DELETE":
-            delete_user(name)
+            delete_user(name, actor=actor)
             return 200, {"ok": True}
         body = body if isinstance(body, dict) else {}
-        return 200, update_user(name, role=body.get("role"), password=body.get("password"))
+        return 200, update_user(name, role=body.get("role"), password=body.get("password"), actor=actor)
     except AuthError as e:
         return e.status, {"error": e.message}
 
@@ -1083,7 +1092,8 @@ def handle_users(method: str, bare: str, body, principal) -> tuple:
 def handle_change_password(body, principal, client: str, throttle, headers=None) -> tuple:
     if principal is None or principal.kind != "session":
         return 403, {"error": "sign in with your own account to change its password"}, {}
-    wait = throttle.retry_after(client)
+    key = "pw:" + str(principal.name).lower()  # per account: from every address, and apart from the login counters
+    wait = throttle.retry_after(key)
     if wait:
         log("review server: password change throttled")
         return 429, {"error": "too many failed attempts; wait before trying again", "retry_after": wait}, {}
@@ -1094,13 +1104,13 @@ def handle_change_password(body, principal, client: str, throttle, headers=None)
             return 401, {"error": "login required"}, {}
         current = body.get("current")
         if not verify_password(current if isinstance(current, str) else "", row["hash"]):
-            throttle.failure(client)
+            throttle.failure(key)
             log("review server: password change refused")
             return 403, {"error": "current password is wrong"}, {}
         epoch = set_password(row["name"], body.get("new"))
     except AuthError as e:
         return e.status, {"error": e.message}, {}
-    throttle.success(client)
+    throttle.success(key)
     try:  # rotation: the old id (and any copy of it) is dead; this browser continues on a new one
         sid = sessions().create(row["name"], principal.remember, epoch)
     except AuthError:

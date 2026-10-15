@@ -190,3 +190,78 @@ def test_the_http_layer_serves_delete_without_a_body_and_rejects_garbage_json(en
         srv.shutdown()
         srv.server_close()
         thread.join(timeout=5)
+
+
+def test_a_path_name_in_another_case_edits_the_stored_account(env):
+    review_auth.create_user("ann", "user", "anns password")
+    assert call("PUT", "/api/users/ANN", {"role": "admin"}, sess("root")) == (200, {"name": "ann", "role": "admin"})
+    assert [u["name"] for u in review_auth.read_users()].count("ann") == 1
+
+
+def test_a_delete_without_the_csrf_header_is_refused_and_deletes_nothing(env):
+    no_header = {"Cookie": sess("root")["Cookie"]}
+    assert call("DELETE", "/api/users/alice", headers=no_header) == (403, {"error": "cross-site request refused"})
+    assert review_auth.find_user(review_auth.read_users(), "alice") is not None
+
+
+def test_every_account_change_leaves_one_audit_line_with_name_role_and_actor_never_a_password(env, capsys):
+    admin = sess("root")
+    call("PUT", "/api/users/alice", {"role": "admin"}, admin)
+    call("PUT", "/api/users/alice", {"password": "very secret new pw"}, admin)
+    call("DELETE", "/api/users/alice", headers=admin)
+    out = capsys.readouterr().out
+    lines = [ln for ln in out.splitlines() if "account " in ln]
+    assert any("account role changed: alice user -> admin (by root)" in ln for ln in lines)
+    assert any("account password reset: alice role=admin (by root)" in ln for ln in lines)
+    assert any("account deleted: alice role=admin (by root)" in ln for ln in lines)
+    assert "very secret new pw" not in out and "scrypt$" not in out
+
+
+def test_a_failed_change_leaves_no_audit_line(env, capsys):
+    call("DELETE", "/api/users/root", headers=sess("root"))
+    call("PUT", "/api/users/ghost", {"role": "user"}, sess("root"))
+    assert not [ln for ln in capsys.readouterr().out.splitlines() if "account deleted" in ln or "account role changed" in ln]
+
+
+def test_password_change_failures_are_counted_per_account_not_per_address(env):
+    here = sess("alice")
+    bad = {"current": "nope nope nope", "new": "a fresh password"}
+    for i in range(5):
+        assert call("PUT", "/api/me/password", bad, here, client=f"10.0.2.{i}")[0] == 403
+    assert call("PUT", "/api/me/password", bad, here, client="10.0.2.99")[0] == 429, "the account is locked from every address"
+    assert (
+        rs.route("POST", "/api/login", {"username": "root", "password": "admin password"}, None, client="10.0.2.0")[0] == 200
+    ), "the password-change failures did not count against the address"
+
+
+def test_a_password_change_success_clears_only_that_accounts_counter(env):
+    review_auth.create_user("bob", "user", "bobs password")
+    alice, bob = sess("alice"), sess("bob")
+    bad = {"current": "nope nope nope", "new": "a fresh password"}
+    for _ in range(4):
+        call("PUT", "/api/me/password", bad, alice)
+        call("PUT", "/api/me/password", bad, bob)
+    good = {"current": "alice password", "new": "a fresh password"}
+    assert call("PUT", "/api/me/password", good, alice)[0] == 200
+    assert call("PUT", "/api/me/password", bad, bob)[0] == 403
+    assert call("PUT", "/api/me/password", bad, bob)[0] == 429, "bob's own fifth failure still locks bob"
+
+
+@pytest.mark.parametrize(
+    "method,path", [("GET", "/api/users"), ("POST", "/api/users"), ("PUT", "/api/users/alice"), ("DELETE", "/api/users/alice")]
+)
+def test_account_routes_are_refused_with_409_while_auth_is_off(env, monkeypatch, method, path):
+    monkeypatch.setenv("REVIEW_AUTH", "off")
+    before = (env.tmp / "config" / "users.json").read_bytes()
+    body = {"username": "mallory", "password": "mallory password", "role": "admin", "password_x": 1}
+    assert call(method, path, body, CSRF) == (409, {"error": "accounts cannot be managed while REVIEW_AUTH=off"})
+    assert (env.tmp / "config" / "users.json").read_bytes() == before
+
+
+def test_update_user_validates_the_password_once(env, monkeypatch):
+    seen = []
+    real = review_auth.validate_password
+    monkeypatch.setattr(review_auth, "validate_password", lambda p: seen.append(p) or real(p))
+    with pytest.raises(review_auth.Invalid):
+        review_auth.update_user("alice", password="short")
+    assert seen == ["short"]

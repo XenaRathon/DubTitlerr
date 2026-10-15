@@ -129,8 +129,8 @@ REVIEW_AUTH^general^string^""^server^restart^bootstrap^Authentication mode^Only 
 REQUIRE_TOKEN^general^bool^false^server^restart^bootstrap^Refuse to start without auth^When 1 the server refuses to start with authentication off.
 REVIEW_COOKIE_SECURE^general^bool^false^server^restart^bootstrap^Always mark the sign-in cookie Secure^When 1 the session cookie always carries the Secure flag, for a server reached over HTTPS through a proxy that does not send X-Forwarded-Proto.
 REVIEW_TOKEN^general^secret^^server^restart^bootstrap^Review token^Shared review token from the container environment.
-REVIEW_ADMIN_TOKEN^general^secret^^server^restart^bootstrap^Admin token^Admin token from the container environment.
-REVIEW_ADMIN_TOKEN_FILE^general^string^""^server^restart^bootstrap^Admin token file^File holding the admin token.
+REVIEW_ADMIN_TOKEN^general^secret^^server^restart^retired^Admin token (retired)^The admin token was retired in 0.3.0; the API key (Settings -> General -> Security) replaces it.
+REVIEW_ADMIN_TOKEN_FILE^general^string^""^server^restart^retired^Admin token file (retired)^The admin token was retired in 0.3.0; the API key replaces it.
 REVIEW_USERNAME^general^string^""^server^restart^bootstrap^Initial user name^User name imported as the first admin.
 REVIEW_PASSWORD^general^secret^^server^restart^bootstrap^Initial password^Password imported as the first admin.
 REVIEW_PASSWORD_FILE^general^string^""^server^restart^bootstrap^Initial password file^File holding the initial password.

@@ -106,11 +106,8 @@ services:
       # REVIEW_PASSWORD_FILE: /config/review_password # read once at start; or REVIEW_PASSWORD
 
       # --- web UI run control, settings writes and Sonarr/Radarr webhooks (all optional) ---
-      # Writes that affect the builder (queue a run, set the schedule) need this second
-      # token, sent as the X-Review-Admin-Token header. Unset means those routes stay
-      # disabled. Use REVIEW_ADMIN_TOKEN_FILE to read it from a file instead.
-      # REVIEW_ADMIN_TOKEN: ${REVIEW_ADMIN_TOKEN:-}
-      # REVIEW_ADMIN_TOKEN_FILE: /config/review_admin_token
+      # REVIEW_ADMIN_TOKEN is retired (0.3.0): administrators sign in with an account, and the API key in
+      # Settings -> General -> Security replaces the old admin token for scripts.
       # Webhook receiver for Sonarr/Radarr (Settings > Connect > Webhook, POST to
       # http://<host>:8842/api/webhook/sonarr or /radarr, header X-Webhook-Token).
       # Unset means the routes answer 404. REMOTE_PATH_MAPPINGS translates the paths
