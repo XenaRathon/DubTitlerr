@@ -1,19 +1,24 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import { ApiError } from '../lib/api.js';
   import { SETTINGS_CATEGORIES, settingsHash } from '../lib/route.js';
   import {
     RESET,
+    RESTART_POLL_MS,
     buildValues,
     categoryRows,
+    describeRestartWait,
     describeRow,
     describeSaveError,
     fieldErrors,
     isDirty,
     loadShowAdvanced,
+    restartStep,
     saveLabel,
     saveShowAdvanced,
   } from '../lib/settingsModel.js';
+  import RestartDialog from './settings/RestartDialog.svelte';
+  import RestartOverlay from './settings/RestartOverlay.svelte';
   import { isAdmin } from '../lib/roles.js';
   import SettingRow from './settings/SettingRow.svelte';
   import Security from './Security.svelte';
@@ -49,10 +54,15 @@
   let saving = $state(false);
   let saveError = $state('');
   let saveMessage = $state('');
+  // Restart (S-12): the dialog lists the saved keys that need one; the overlay waits for a different boot_id.
+  let restartKeys = $state<string[]>([]);
+  let overlay = $state<{ step: 'waiting' | 'timeout'; detail: string } | null>(null);
+  let watcher: ReturnType<typeof setInterval> | undefined;
   const storage = () => (typeof localStorage === 'undefined' ? undefined : localStorage);
   let showAdvanced = $state(loadShowAdvanced(storage()));
 
   const entries = $derived<any[]>(schema?.settings ?? []);
+  const restartLabels = $derived(restartKeys.map((k) => entries.find((e) => e.key === k)?.label ?? k));
   const values = $derived<Record<string, any>>(loaded?.values ?? {});
   const secretsWritable = $derived(Boolean(loaded?.secrets_writable));
   const meta = $derived(SETTINGS_CATEGORIES.find((c) => c.id === category));
@@ -114,10 +124,16 @@
     saveMessage = '';
     errors = {};
     try {
-      await api('/api/settings', { method: 'PUT', body: { values: valuesBody, revision: loaded?.revision } });
+      const result = await api('/api/settings', {
+        method: 'PUT',
+        body: { values: valuesBody, revision: loaded?.revision },
+      });
       drafts = {};
       saveMessage = 'Saved.';
       await load();
+      if (Array.isArray(result?.restart_required) && result.restart_required.length) {
+        restartKeys = result.restart_required;
+      }
     } catch (exc) {
       if (exc instanceof ApiError) {
         errors = fieldErrors(exc.payload as { errors?: unknown });
@@ -133,9 +149,57 @@
     }
   }
 
+  function stopWatching() {
+    if (watcher) clearInterval(watcher);
+    watcher = undefined;
+  }
+
+  /** Ask the builder for a soft stop, then wait for a server with a different boot_id: the old one keeps answering meanwhile. */
+  async function restartNow() {
+    restartKeys = [];
+    saveError = '';
+    try {
+      const reply = await api('/api/system/restart', { method: 'POST', body: {} });
+      watchRestart(String(reply?.boot_id ?? ''));
+    } catch (exc) {
+      saveError =
+        exc instanceof ApiError
+          ? describeSaveError(exc.status, exc.payload as { error?: unknown })
+          : 'Could not ask for a restart.';
+    }
+  }
+
+  function watchRestart(oldBootId: string) {
+    const startedAt = Date.now();
+    stopWatching();
+    overlay = { step: 'waiting', detail: describeRestartWait(null) };
+    watcher = setInterval(async () => {
+      let status: any = null;
+      try {
+        status = await api('/api/status?limit=1');
+      } catch (exc) {
+        status = exc instanceof ApiError ? exc.payload : null; // a 503 while the cache warms still names the boot
+      }
+      if (!watcher) return; // stopped while this poll was in flight
+      const step = restartStep({ oldBootId, startedAt, now: Date.now(), status });
+      if (step === 'back') {
+        stopWatching();
+        overlay = null;
+        saveMessage = 'The builder restarted.';
+        await load();
+      } else if (step === 'timeout') {
+        stopWatching();
+        overlay = { step, detail: '' };
+      } else {
+        overlay = { step, detail: describeRestartWait(status) };
+      }
+    }, RESTART_POLL_MS);
+  }
+
   onMount(() => {
     void load();
   });
+  onDestroy(stopWatching);
 </script>
 
 <section aria-label="Settings">
@@ -164,6 +228,12 @@
   {#if statusMsg}<p class="visually-hidden" role="status">{statusMsg}</p>{/if}
   {#if saveError}<p class="notice failure" role="alert">{saveError}</p>{/if}
   {#if saveMessage}<p class="notice success" role="status">{saveMessage}</p>{/if}
+  {#if loaded?.restart_pending && !overlay}
+    <p class="notice info-notice" role="status">
+      Restart pending: saved settings that apply at a restart are not running yet.
+      <button class="secondary" type="button" onclick={() => void restartNow()}>Restart Now</button>
+    </p>
+  {/if}
 
   {#if !schema || !loaded}
     {#if loading}<p class="page-sub">Loading settings…</p>{/if}
@@ -206,6 +276,18 @@
   <!-- The login plan's account tools live on the General page, for admins only. -->
   {#if meta?.id === 'general' && isAdmin(role)}<Security /><Accounts />{/if}
 </section>
+
+{#if restartKeys.length}
+  <RestartDialog
+    labels={restartLabels}
+    portChanged={restartKeys.includes('REVIEW_PORT')}
+    onlater={() => (restartKeys = [])}
+    onnow={() => void restartNow()}
+  />
+{/if}
+{#if overlay}
+  <RestartOverlay step={overlay.step} detail={overlay.detail} onclose={() => (overlay = null)} />
+{/if}
 
 <style>
   .settings-toolbar {

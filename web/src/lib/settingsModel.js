@@ -166,6 +166,35 @@ export function describeSaveError(status, payload) {
   return detail ? `${detail} (HTTP ${status}).` : `Could not save (HTTP ${status}).`;
 }
 
+// --- Restart (S-12) ---------------------------------------------------------------------------------------------------------
+
+export const RESTART_TIMEOUT_MS = 10 * 60 * 1000;
+export const RESTART_POLL_MS = 2000;
+
+/**
+ * The step the restart overlay is in. Only a boot_id different from the one seen before the restart ends it: the old server keeps
+ * answering while the builder finishes the episode in flight, so "the server answers" proves nothing.
+ * @param {{ oldBootId: string, startedAt: number, now: number, status?: { boot_id?: unknown } | null }} s
+ * @returns {'waiting' | 'back' | 'timeout'}
+ */
+export function restartStep({ oldBootId, startedAt, now, status }) {
+  const id = status?.boot_id;
+  if (typeof id === 'string' && id !== '' && id !== oldBootId) return 'back';
+  return now - startedAt >= RESTART_TIMEOUT_MS ? 'timeout' : 'waiting';
+}
+
+/**
+ * The line under "restarting" in the overlay. A heartbeat stamped by a clock slightly ahead of the server's reads as 0 s, never
+ * as a negative age.
+ * @param {{ header?: { builder_heartbeat_age_s?: unknown } } | null | undefined} status
+ */
+export function describeRestartWait(status) {
+  const age = status?.header?.builder_heartbeat_age_s;
+  return typeof age === 'number'
+    ? `Last builder heartbeat ${Math.max(0, Math.round(age))} s ago.`
+    : 'Waiting for the builder to come back.';
+}
+
 // --- Row display --------------------------------------------------------------------------------------------------------------
 
 const SOURCE_LABELS = { ui: 'Set here', env: 'From the container', default: 'Default' };

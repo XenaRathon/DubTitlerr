@@ -33,6 +33,8 @@ def main():
         # Settings writes (settings.json, secrets.json) land in this directory.
         (base / "config").mkdir()
         os.environ["CONFIG_DIR"] = str(base / "config")
+        os.environ["STOP_FLAG"] = str(base / "stop")  # a restart request lands here, never in /tmp
+        os.environ["DT_CONTAINER_BOOT_ID"] = "fixture-boot-1"
         os.environ["LONGCATAI_API_KEY"] = "fixture-secret-key-value"  # must show as "set", never as a value
         os.environ.pop("COMMANDCODE_API_KEY", None)
         os.environ.pop("WEBHOOK_TOKEN", None)
@@ -153,6 +155,7 @@ def main():
                         file.unlink()
                     for stale in ("settings.json", "settings.json.prev", "secrets.json", "secrets.json.prev"):
                         (base / "config" / stale).unlink(missing_ok=True)
+                    (base / "stop").unlink(missing_ok=True)
                     (base / "schedule.json").unlink(missing_ok=True)
                     for show in ("Neon Harbor", "Paper Moon"):
                         (glossary_dir / f"{show}.json").write_text(json.dumps({"show": show}))

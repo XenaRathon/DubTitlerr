@@ -259,3 +259,103 @@ test('Cmd+S (Meta+S) saves an edited settings page as Ctrl+S does', async ({ pag
   await expect(page.getByRole('button', { name: 'No Changes' })).toBeDisabled();
   await expect(page.locator('[data-key="REQUIRE_ENG"]')).toContainText('Set here');
 });
+
+test('saving a restart-only setting opens the Restart required dialog; saving a next-show one does not', async ({
+  page,
+}) => {
+  await openSignedIn(page, '#/settings/transcription');
+  await page.getByLabel('Whisper model', { exact: true }).fill('large-v3');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.evaluate(() => (location.hash = '#/settings/general'));
+  await page.getByLabel('Web UI port', { exact: true }).fill('9001');
+  await expect(page.locator('[data-key="REVIEW_PORT"]')).toContainText('Restart required');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Restart required' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('Web UI port');
+  await expect(dialog).toContainText('unless-stopped or always');
+  await expect(dialog).toContainText('compose port mapping must match');
+});
+
+test('Restart Later leaves a restart pending banner until the next start', async ({ page }) => {
+  await openSignedIn(page, '#/settings/general');
+  await page.getByLabel('Web UI port', { exact: true }).fill('9001');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await page
+    .getByRole('dialog', { name: 'Restart required' })
+    .getByRole('button', { name: 'Restart Later' })
+    .click();
+  await expect(page.getByText('Restart pending')).toBeVisible();
+  await page.reload();
+  await expect(page.getByText('Restart pending')).toBeVisible();
+  await expect(page.locator('[data-key="REVIEW_PORT"]')).toContainText('Pending');
+});
+
+test('Restart Now asks for a soft stop and the overlay stays until a different boot_id answers', async ({
+  page,
+}) => {
+  await openSignedIn(page, '#/settings/general');
+  await page.getByLabel('Web UI port', { exact: true }).fill('9001');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  let polls = 0;
+  await page.route('**/api/status*', async (route) => {
+    polls += 1;
+    // The old server keeps answering with its own boot_id while the builder finishes the episode.
+    await route.fulfill({
+      json: { boot_id: polls < 3 ? 'fixture-boot-1' : 'fixture-boot-2', header: {}, episodes: [] },
+    });
+  });
+  const restart = page.waitForResponse((r) => r.url().endsWith('/api/system/restart'));
+  await page
+    .getByRole('dialog', { name: 'Restart required' })
+    .getByRole('button', { name: 'Restart Now' })
+    .click();
+  expect((await restart).status()).toBe(202);
+  const overlay = page.getByRole('dialog', { name: 'Restarting' });
+  await expect(overlay).toContainText('Restarting, finishing the current episode');
+  await expect.poll(() => polls, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+  await expect(overlay).toBeVisible();
+  await expect(overlay).toHaveCount(0, { timeout: 15_000 });
+  expect(polls).toBeGreaterThanOrEqual(3);
+  await expect(page.getByRole('status').filter({ hasText: 'The builder restarted.' })).toBeVisible();
+});
+
+test('after ten minutes without a new boot_id the overlay says to start the container by hand', async ({
+  page,
+}) => {
+  await page.clock.install();
+  await openSignedIn(page, '#/settings/general');
+  await page.getByLabel('Web UI port', { exact: true }).fill('9001');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  // The old server never goes away: every poll answers with the boot_id from before the restart.
+  await page.route('**/api/status*', (route) =>
+    route.fulfill({ json: { boot_id: 'fixture-boot-1', header: {}, episodes: [] } }),
+  );
+  await page
+    .getByRole('dialog', { name: 'Restart required' })
+    .getByRole('button', { name: 'Restart Now' })
+    .click();
+  const overlay = page.getByRole('dialog', { name: 'Restarting' });
+  await expect(overlay).toContainText('Restarting, finishing the current episode');
+  await page.keyboard.press('Escape');
+  await expect(overlay).toBeVisible();
+  await page.clock.fastForward('09:50');
+  await page.clock.runFor(2_000);
+  await expect(overlay).toContainText('Restarting, finishing the current episode');
+  await page.clock.fastForward('00:12');
+  await page.clock.runFor(2_000);
+  await expect(overlay.getByRole('alert')).toContainText('did not come back within 10 minutes');
+  await expect(overlay).toContainText('start it by hand');
+  await overlay.getByRole('button', { name: 'Close' }).click();
+  await expect(overlay).toHaveCount(0);
+});
+
+test('the restart dialog and the overlay have no accessibility violations', async ({ page }) => {
+  await openSignedIn(page, '#/settings/general');
+  await page.getByLabel('Web UI port', { exact: true }).fill('9001');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.getByRole('dialog', { name: 'Restart required' })).toBeVisible();
+  await expectNoAxeViolations(page);
+});
