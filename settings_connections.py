@@ -32,6 +32,11 @@ NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 EXTRA_BODY_MAX = 2048
 TIMEOUT_DEFAULTS = {"timeout_connect": 10.0, "timeout_read": 120.0}
 LINK_LOCAL = (ipaddress.ip_network("169.254.0.0/16"), ipaddress.ip_network("fe80::/10"))
+NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
+METADATA_ADDRESSES = {
+    ipaddress.ip_address("100.100.100.200"),
+    ipaddress.ip_address("fd00:ec2::254"),
+}
 FIELDS = ("name", "kind", "url", "model", "extra_body", "timeout_connect", "timeout_read")
 ALLOWED_DECISION_HOSTS = {urllib.parse.urlsplit(u).hostname.lower() for u, _ in decision_client.PROVIDERS.values()} | {
     "127.0.0.1",
@@ -40,9 +45,32 @@ ALLOWED_DECISION_HOSTS = {urllib.parse.urlsplit(u).hostname.lower() for u, _ in 
 }
 
 
+def _unwrapped_addresses(addr):
+    """Yield addr plus any IPv4 address it wraps via ipv4_mapped, 6to4, or NAT64 (64:ff9b::/96)."""
+    yield addr
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        yield mapped
+    s24 = getattr(addr, "sixtofour", None)
+    if s24 is not None:
+        yield s24
+    if addr.version == 6 and addr in NAT64_PREFIX:
+        yield ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
+
+
+def _is_refused_address(addr):
+    for item in _unwrapped_addresses(addr):
+        if item in METADATA_ADDRESSES:
+            return True
+        if any(item in net for net in LINK_LOCAL if item.version == net.version):
+            return True
+    return False
+
+
 def host_problem(url):
-    """Why the host of ``url`` is refused, or "". Link-local and metadata addresses (169.254.0.0/16, fe80::/10) are never a
-    Connection target, however they are spelled (dotted, decimal, hex, IPv4-mapped); loopback and LAN hosts are normal."""
+    """Why the host of ``url`` is refused, or "". Link-local and metadata addresses (169.254.0.0/16, fe80::/10,
+    100.100.100.200, fd00:ec2::254) are never a Connection target, however they are spelled (dotted, decimal, hex,
+    IPv4-mapped, 6to4, NAT64); loopback and LAN hosts are normal."""
     host = urllib.parse.urlsplit(url).hostname or ""
     candidates = []
     try:
@@ -53,42 +81,36 @@ def host_problem(url):
         except (OSError, ValueError):
             pass
     for address in candidates:
-        mapped = getattr(address, "ipv4_mapped", None)
-        for item in (address, mapped):
-            if item is not None and any(item in net for net in LINK_LOCAL if item.version == net.version):
-                return "must not point at a link-local or metadata address (169.254.0.0/16, fe80::/10)"
+        if _is_refused_address(address):
+            return "must not point at a link-local or metadata address (169.254.0.0/16, fe80::/10)"
     return ""
 
 
 def check_test_target(url):
-    """(checked_url, headers_extra, error). Resolves host with getaddrinfo. Refuses if any resolved address
-    (including ipv4_mapped) is link-local. Returns the URL rewritten with the checked IP address to prevent
-    DNS rebinding TOCTOU."""
+    """(url, checked_ips, error). Resolves host with getaddrinfo. Refuses if any resolved address
+    (including ipv4_mapped, sixtofour, NAT64, or metadata) is link-local or metadata.
+    Returns (url, checked_ips, "") on success, keeping the hostname in the URL."""
     parts = urllib.parse.urlsplit(url)
     host = parts.hostname or ""
     port = parts.port or (443 if parts.scheme == "https" else 80)
     try:
         addrs = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as e:
-        return None, {}, f"name resolution failed: {e.strerror or e}"
+        return None, [], f"name resolution failed: {e.strerror or e}"
     if not addrs:
-        return None, {}, "name resolution returned no addresses"
+        return None, [], "name resolution returned no addresses"
+    checked_ips = []
     for *_, sockaddr in addrs:
         ip = sockaddr[0]
         try:
             addr = ipaddress.ip_address(ip)
         except ValueError:
             continue
-        mapped = getattr(addr, "ipv4_mapped", None)
-        for item in (addr, mapped):
-            if item is not None and any(item in net for net in LINK_LOCAL if item.version == net.version):
-                return None, {}, "must not point at a link-local or metadata address (169.254.0.0/16, fe80::/10)"
-    checked_ip = addrs[0][4][0]
-    target_host = f"[{checked_ip}]" if ":" in checked_ip else checked_ip
-    target_netloc = f"{target_host}:{parts.port}" if parts.port else target_host
-    target_url = urllib.parse.urlunsplit((parts.scheme, target_netloc, parts.path, parts.query, parts.fragment))
-    headers = {"Host": parts.netloc} if host != checked_ip else {}
-    return target_url, headers, ""
+        if _is_refused_address(addr):
+            return None, [], "must not point at a link-local or metadata address (169.254.0.0/16, fe80::/10)"
+        if ip not in checked_ips:
+            checked_ips.append(ip)
+    return url, checked_ips, ""
 
 
 def _number(item, field):
@@ -116,9 +138,13 @@ def validate_connection(item):
     if not isinstance(url, str) or not url.strip():
         errors["url"] = "is required"
     else:
-        why = reg.url_problem(url.strip()) or host_problem(url.strip())
-        if why:
-            errors["url"] = why
+        parts = urllib.parse.urlsplit(url.strip())
+        if parts.query or parts.fragment:
+            errors["url"] = "must not contain a query or fragment; tokens belong in a secret field"
+        else:
+            why = reg.url_problem(url.strip()) or host_problem(url.strip())
+            if why:
+                errors["url"] = why
     model = item.get("model", "")
     if not isinstance(model, str) or (model and not reg.MODEL_RE.fullmatch(model)):
         errors["model"] = "must look like qwen3-4b-instruct"
@@ -146,8 +172,8 @@ def validate_connection(item):
 def key_problem(conn, key):
     """Why ``key`` may not be stored for ``conn``, or "". A key is used only by OpenAI-compatible connections and only
     travels over https, or to a loopback host (the rule the pipeline itself applies before sending one)."""
-    if not isinstance(key, str) or not key or any(ch.isspace() or ord(ch) < 32 for ch in key) or len(key) > 512:
-        return "must be one line without spaces or control characters"
+    if not isinstance(key, str) or len(key) < 8 or len(key) > 512 or any(ch.isspace() or ord(ch) < 32 for ch in key):
+        return "must be one line of 8 to 512 characters without spaces or control characters"
     if conn["kind"] != "openai":
         return "is used only by OpenAI-compatible connections"
     parts = urllib.parse.urlsplit(conn["url"])

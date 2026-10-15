@@ -138,15 +138,15 @@ def test_check_test_target_refuses_link_local_and_probes_checked_address(monkeyp
     target_url, headers, problem = conns.check_test_target("http://evil-meta.test:8080/v1/models")
     assert "link-local" in problem
 
-    # 3. Host resolves to normal LAN IP -> returns URL with checked IP and Host header
+    # 3. Host resolves to normal LAN IP -> returns URL with hostname kept and checked IP list
     def mock_gai_lan(host, port, *args, **kwargs):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.55", port))]
 
     monkeypatch.setattr(socket, "getaddrinfo", mock_gai_lan)
-    target_url, headers, problem = conns.check_test_target("http://my-llm.lan:8090/v1/models")
+    target_url, checked_ips, problem = conns.check_test_target("http://my-llm.lan:8090/v1/models")
     assert problem == ""
-    assert target_url == "http://192.168.1.55:8090/v1/models"
-    assert headers == {"Host": "my-llm.lan:8090"}
+    assert target_url == "http://my-llm.lan:8090/v1/models"
+    assert checked_ips == ["192.168.1.55"]
 
 
 def state_with(stages, connections, keys=None):
@@ -222,3 +222,43 @@ def test_an_unset_stage_or_a_dangling_name_adds_nothing():
 def test_models_url_for_openai_endpoints():
     assert conns.models_url("https://api.example.test/v1/chat/completions") == "https://api.example.test/v1/models"
     assert conns.models_url("https://api.example.test/v1") == "https://api.example.test/v1/models"
+
+
+def test_host_problem_and_check_test_target_refuse_6to4_nat64_and_metadata_addresses(monkeypatch):
+    # NAT64 and 6to4 literals in host_problem
+    assert "link-local" in conns.host_problem("http://[64:ff9b::a9fe:a9fe]:8080/v1")
+    assert "link-local" in conns.host_problem("http://[2002:a9fe:a9fe::1]:8080/v1")
+    # Metadata addresses in host_problem
+    assert "link-local" in conns.host_problem("http://100.100.100.200:8080/v1")
+    assert "link-local" in conns.host_problem("http://[fd00:ec2::254]:8080/v1")
+
+    # Resolved via DNS in check_test_target
+    for bad_ip in (
+        "64:ff9b::a9fe:a9fe",
+        "2002:a9fe:a9fe::1",
+        "100.100.100.200",
+        "fd00:ec2::254",
+    ):
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda host, port, *a, bad=bad_ip, **kw: [
+                (socket.AF_INET6 if ":" in bad else socket.AF_INET, socket.SOCK_STREAM, 6, "", (bad, port))
+            ],
+        )
+        _, _, problem = conns.check_test_target("http://evil-meta.test:8080/v1")
+        assert "link-local" in problem
+
+
+def test_validate_connection_refuses_query_or_fragment():
+    _, err_query = conns.validate_connection({**conn(), "url": "https://api.example.test/v1?key=QLEAK"})
+    assert "query or fragment" in err_query["url"]
+    _, err_frag = conns.validate_connection({**conn(), "url": "https://api.example.test/v1#frag"})
+    assert "query or fragment" in err_frag["url"]
+
+
+def test_key_problem_requires_at_least_eight_characters():
+    hosted = conn(kind="openai", url="https://api.example.test/v1")
+    assert conns.key_problem(hosted, "abc1234") != ""
+    assert "one line" in conns.key_problem(hosted, "abc1234")
+    assert conns.key_problem(hosted, "abc12345") == ""

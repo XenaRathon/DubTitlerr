@@ -150,9 +150,18 @@ def test_backend(name: str, environ=None, opener=None, timeout: float = 5.0) -> 
     return probe(url, headers, key, timeout, opener)
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _no_redirect_opener():
+    return urllib.request.build_opener(_NoRedirectHandler).open
+
+
 def probe(url, headers, key="", timeout=5.0, opener=None):
     """GET ``url`` and map the outcome to {"ok", "latency_ms", "error"}. The error text can never carry the key or a URL query."""
-    opener = urllib.request.urlopen if opener is None else opener
+    opener = _no_redirect_opener() if opener is None else opener
     display = url.split("?", 1)[0]
     try:
         request = urllib.request.Request(display, headers=headers or {}, method="GET")
@@ -169,9 +178,7 @@ def probe(url, headers, key="", timeout=5.0, opener=None):
         reason = e.reason
         if isinstance(reason, TimeoutError):
             return {"ok": False, "latency_ms": 0, "error": "timed out"}
-        if isinstance(reason, ConnectionRefusedError) or (
-            isinstance(reason, OSError) and reason.errno == errno.ECONNREFUSED
-        ):
+        if isinstance(reason, ConnectionRefusedError) or (isinstance(reason, OSError) and reason.errno == errno.ECONNREFUSED):
             return {"ok": False, "latency_ms": 0, "error": "connection refused"}
         return {"ok": False, "latency_ms": 0, "error": _sanitize(f"connection failed: {reason}", key, url)}
     except OSError as e:

@@ -209,3 +209,47 @@ def test_userinfo_redacted_in_backend_probe_error():
     assert "secret" not in result["error"]
     assert "secret" not in dumped(result)
 
+
+def test_test_backend_redirect_reports_302_and_does_not_leak_auth_to_second_server():
+    import http.server
+    import threading
+
+    server2_seen = []
+
+    class Server2Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            server2_seen.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server2 = http.server.HTTPServer(("127.0.0.1", 0), Server2Handler)
+    s2_port = server2.server_address[1]
+    threading.Thread(target=server2.serve_forever, daemon=True).start()
+
+    class Server1Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{s2_port}/v1/models")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server1 = http.server.HTTPServer(("127.0.0.1", 0), Server1Handler)
+    s1_port = server1.server_address[1]
+    threading.Thread(target=server1.serve_forever, daemon=True).start()
+
+    e = env(
+        REPAIR_BACKEND="openai",
+        REPAIR_OPENAI_URL=f"http://127.0.0.1:{s1_port}",
+        REPAIR_OPENAI_KEY_ENV="TEST_KEY",
+        TEST_KEY="sk-PROBEKEY123",
+    )
+    result = st.test_backend("repair", e)  # opener is None
+    assert result["ok"] is False
+    assert result["error"] == "HTTP 302"
+    assert server2_seen == []
+

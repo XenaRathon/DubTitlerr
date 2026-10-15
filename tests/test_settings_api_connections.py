@@ -175,8 +175,8 @@ def test_the_test_action_probes_a_saved_connection_with_its_key_and_models_addre
 
     status, payload = api.handle("POST", "/api/settings/test", {"connection": "cloud"}, environ=env, opener=opener)
     assert status == 200 and payload["ok"] is True
-    # The checked IP (93.184.216.34) was probed in place of the hostname
-    assert seen == [("https://93.184.216.34/v1/models", f"Bearer {KEY}", 10.0)]
+    # The hostname (api.example.test) is kept in the URL; socket is pinned
+    assert seen == [("https://api.example.test/v1/models", f"Bearer {KEY}", 10.0)]
     assert KEY not in json.dumps(payload)
 
 
@@ -258,3 +258,148 @@ def test_the_test_action_redirect_reports_302_and_second_server_never_sees_auth(
     assert payload["ok"] is False
     assert payload["error"] == "HTTP 302"
     assert server2_seen == []
+
+
+def test_test_connection_over_tls_with_ca_pinned_context(env, tmp_path):
+    import ssl
+    import subprocess
+
+    key_path = str(tmp_path / "server_key.pem")
+    cert_path = str(tmp_path / "server_cert.pem")
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-keyout",
+            key_path,
+            "-out",
+            cert_path,
+            "-days",
+            "1",
+            "-nodes",
+            "-subj",
+            "/CN=localhost",
+            "-addext",
+            "subjectAltName=DNS:localhost",
+        ],
+        capture_output=True,
+        check=True,
+    )
+
+    class TLSHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"data": []}')
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), TLSHandler)
+    port = server.server_port
+    s_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    s_ctx.load_cert_chain(cert_path, key_path)
+    server.socket = s_ctx.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    c_ctx = ssl.create_default_context(cafile=cert_path)
+    put(
+        env,
+        connections=[
+            {"name": "tlsconn", "kind": "openai", "url": f"https://localhost:{port}/v1/chat/completions", "api_key": KEY}
+        ],
+    )
+
+    status, payload = api.test_connection("tlsconn", environ=env, context=c_ctx)
+    assert status == 200
+    assert payload["ok"] is True
+
+
+def test_test_connection_tries_every_checked_address_in_order(env, monkeypatch):
+    class ServerHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"data": []}')
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), ServerHandler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    # Host resolves to [dead_ip, 127.0.0.1]
+    dead_ip = "127.0.0.244"  # port not open on this loopback address
+
+    def mock_gai(host, p, *args, **kwargs):
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (dead_ip, p)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", p)),
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", mock_gai)
+
+    put(
+        env,
+        connections=[{"name": "fallback", "kind": "llamacpp", "url": f"http://myhost.test:{port}/v1/chat/completions"}],
+    )
+    status, payload = api.handle("POST", "/api/settings/test", {"connection": "fallback"}, environ=env)
+    assert status == 200
+    assert payload["ok"] is True
+
+
+def test_orphan_key_dropped_when_new_connection_has_no_key(env):
+    st = store.load(env)
+    st.conn_keys["cloud"] = KEY
+    store.save(st, env)
+    assert store.load(env).conn_keys == {"cloud": KEY}
+
+    # PUT creates connection "cloud" with NO key in save
+    status, payload = put(env, connections=[{k: v for k, v in CLOUD.items() if k != "api_key"}])
+    assert status == 200
+    assert store.load(env).conn_keys == {}
+    assert listed(env)["cloud"]["api_key"] == {"set": False}
+
+
+def test_get_redacts_connection_url_and_reports_extra_body_as_set_bool(env):
+    st = store.load(env)
+    st.connections = [
+        {
+            "name": "redactme",
+            "kind": "openai",
+            "url": "https://admin:pass123@api.example.test/v1/chat/completions?key=QLEAK",
+            "model": "gpt-x",
+            "extra_body": {"api_key": "sk-BODYLEAK"},
+            "timeout_connect": 10.0,
+            "timeout_read": 120.0,
+        }
+    ]
+    st.conn_keys = {"redactme": KEY}
+    store.save(st, env)
+
+    got = api.handle("GET", "/api/settings", environ=env)[1]
+    conn = next(c for c in got["connections"] if c["name"] == "redactme")
+    assert conn["url"] == "https://api.example.test/v1/chat/completions"
+    assert "admin" not in json.dumps(got)
+    assert "pass123" not in json.dumps(got)
+    assert "QLEAK" not in json.dumps(got)
+    assert conn["extra_body"] == {"set": True}
+    assert "sk-BODYLEAK" not in json.dumps(got)
+
+    # Refuse query or fragment on connection url at PUT
+    status, payload = put(
+        env,
+        connections=[
+            {
+                "name": "badurl",
+                "kind": "openai",
+                "url": "https://api.example.test/v1?key=QLEAK",
+            }
+        ],
+    )
+    assert status == 400
+    assert "query or fragment" in payload["errors"]["connections.badurl.url"]

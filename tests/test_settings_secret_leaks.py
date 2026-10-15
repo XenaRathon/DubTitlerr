@@ -12,6 +12,7 @@ import review_auth
 import review_requests
 import review_server as rs
 import settings_api as api
+import settings_store as store
 
 TOKEN = "plex-tok-7f3a91c2d8e54b60"
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -43,6 +44,10 @@ def exported_environment(scope, tmp_path):
     return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
 
 
+CONN_SECRET = "sk-conn-body-leak-987654321"
+URL_PW = "hunter2-conn-secret"
+
+
 def test_a_saved_token_appears_in_no_response_log_or_report(env, tmp_path, capsys):
     _, cur = api.handle("GET", "/api/settings", None, environ=env)
     rev = cur["revision"]
@@ -66,6 +71,37 @@ def test_a_saved_token_appears_in_no_response_log_or_report(env, tmp_path, capsy
     assert TOKEN not in json.dumps(bad_payload)
     bodies.append(json.dumps(bad_payload))
 
+    # Refuse query or fragment on connection URLs at PUT
+    bad_url_status, bad_url_payload = api.handle(
+        "PUT",
+        "/api/settings",
+        {
+            "revision": payload["revision"],
+            "connections": [{"name": "badurl", "kind": "openai", "url": "https://api.example.test/v1?key=QLEAK"}],
+        },
+        environ=env,
+    )
+    assert bad_url_status == 400
+    assert "query or fragment" in bad_url_payload["errors"]["connections.badurl.url"]
+    assert "QLEAK" not in json.dumps(bad_url_payload)
+    bodies.append(json.dumps(bad_url_payload))
+
+    # Store connection with credentials in url and sensitive extra_body
+    st = store.load(env)
+    st.connections = [
+        {
+            "name": "cloud",
+            "kind": "openai",
+            "url": f"https://admin:{URL_PW}@api.example.test/v1/chat/completions",
+            "model": "gpt-x",
+            "extra_body": {"api_key": CONN_SECRET},
+            "timeout_connect": 10.0,
+            "timeout_read": 120.0,
+        }
+    ]
+    st.conn_keys = {"cloud": "sk-conn-key-12345678"}
+    store.save(st, env)
+
     calls = [
         ("GET", "/api/settings/schema", None),
         ("GET", "/api/settings", None),
@@ -73,6 +109,11 @@ def test_a_saved_token_appears_in_no_response_log_or_report(env, tmp_path, capsy
     ]
     for method, path, call_body in calls:
         bodies.append(json.dumps(api.handle(method, path, call_body, environ=env)[1]))
+
+    get_payload = api.handle("GET", "/api/settings", None, environ=env)[1]
+    conn_pub = next(c for c in get_payload["connections"] if c["name"] == "cloud")
+    assert conn_pub["url"] == "https://api.example.test/v1/chat/completions"
+    assert conn_pub["extra_body"] == {"set": True}
 
     # walks every GET in review_auth.ROUTE_ROLES
     for method, path in review_auth.ROUTE_ROLES:
@@ -95,3 +136,5 @@ def test_a_saved_token_appears_in_no_response_log_or_report(env, tmp_path, capsy
 
     for text in [*bodies, captured.out, captured.err, *reports]:
         assert TOKEN not in text
+        assert CONN_SECRET not in text
+        assert URL_PW not in text

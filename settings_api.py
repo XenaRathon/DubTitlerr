@@ -5,8 +5,10 @@ The role of the caller (user or admin) is enforced before these functions run, b
 are registered there from ROLE_ENTRIES. The one thing checked here is the secret gate, _secrets_writable()."""
 
 import errno
+import http.client
 import os
 import re
+import socket
 import urllib.parse
 import urllib.request
 
@@ -127,7 +129,11 @@ def _redact(key, out):
 
 def public_connection(conn, state):
     """A Connection as the page sees it: every field, and whether a key is stored. Never the key."""
-    return {**{f: conn.get(f) for f in conns.FIELDS}, "api_key": {"set": conn["name"] in state.conn_keys}}
+    out = {f: conn.get(f) for f in conns.FIELDS}
+    out["url"] = store.redact_url(out["url"]) if out.get("url") else ""
+    out["extra_body"] = {"set": bool(out.get("extra_body"))}
+    out["api_key"] = {"set": conn["name"] in state.conn_keys}
+    return out
 
 
 def get_settings(environ=None):
@@ -309,8 +315,9 @@ def _apply_connections(state, clean, actions):
             touch(name)
         if prior is None or prior["url"] != conn["url"]:
             urls[f"connection {name}"] = conn["url"]
+        orphan = prior is None and action is None
         moved = prior is not None and (prior["url"] != conn["url"] or prior["kind"] != conn["kind"])
-        if (moved and action is None) or action == ("clear", None):
+        if ((moved or orphan) and action is None) or action == ("clear", None):
             if state.conn_keys.pop(name, None) is not None:
                 touch(name, True)
         elif action and action[0] == "set" and state.conn_keys.get(name) != action[1]:
@@ -449,11 +456,88 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _no_redirect_opener():
-    return urllib.request.build_opener(_NoRedirectHandler).open
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, host, port=None, *, checked_ips=None, **kwargs):
+        super().__init__(host, port, **kwargs)
+        self._checked_ips = checked_ips or []
+
+    def connect(self):
+        port = self.port or 80
+        errors = []
+        for ip in self._checked_ips:
+            try:
+                self.sock = socket.create_connection((ip, port), self.timeout, self.source_address)
+                try:
+                    self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except OSError:
+                    pass
+                return
+            except OSError as e:
+                errors.append(e)
+        if errors:
+            raise errors[-1]
+        raise OSError(f"no addresses to connect to for {self.host}")
 
 
-def test_connection(name, environ=None, opener=None):
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host, port=None, *, checked_ips=None, **kwargs):
+        super().__init__(host, port, **kwargs)
+        self._checked_ips = checked_ips or []
+
+    def connect(self):
+        port = self.port or 443
+        errors = []
+        for ip in self._checked_ips:
+            try:
+                sock = socket.create_connection((ip, port), self.timeout, self.source_address)
+                try:
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except OSError:
+                    pass
+                server_hostname = self._tunnel_host or self.host
+                self.sock = self._context.wrap_socket(sock, server_hostname=server_hostname)
+                return
+            except OSError as e:
+                errors.append(e)
+        if errors:
+            raise errors[-1]
+        raise OSError(f"no addresses to connect to for {self.host}")
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, checked_ips):
+        super().__init__()
+        self._checked_ips = checked_ips
+
+    def http_open(self, req):
+        return self.do_open(
+            lambda host, **kw: _PinnedHTTPConnection(host, checked_ips=self._checked_ips, **kw),
+            req,
+        )
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, checked_ips, context=None):
+        super().__init__(context=context)
+        self._checked_ips = checked_ips
+
+    def https_open(self, req):
+        return self.do_open(
+            lambda host, **kw: _PinnedHTTPSConnection(host, checked_ips=self._checked_ips, **kw),
+            req,
+            context=self._context,
+        )
+
+
+def _pinned_opener(checked_ips, context=None):
+    return urllib.request.build_opener(
+        _NoRedirectHandler,
+        _PinnedHTTPHandler(checked_ips),
+        _PinnedHTTPSHandler(checked_ips, context=context),
+    ).open
+
+
+def test_connection(name, environ=None, opener=None, context=None):
     """Probe one saved Connection with its own timeouts and key. Always 200 with {ok, latency_ms, error}; the key is read here
     and travels in the Authorization header only."""
     state = store.load(_env(environ))
@@ -467,20 +551,34 @@ def test_connection(name, environ=None, opener=None):
         url, headers = conns.models_url(conn["url"]), {"Authorization": f"Bearer {key}"}
     else:
         url, headers = conn["url"], {}
-    target_url, extra_headers, problem = conns.check_test_target(url)
+    target_url, checked_ips, problem = conns.check_test_target(url)
     if problem:
         return 200, {"ok": False, "latency_ms": 0, "error": problem}
-    headers = {**headers, **extra_headers}
     if opener is None:
-        opener = _no_redirect_opener()
+        opener = _pinned_opener(checked_ips, context=context)
     result = review_settings.probe(target_url, headers, key, conn["timeout_connect"], opener)
     return 200, {**result, "error": store.scrub(result["error"], state)}
+
+
+def request_restart(environ=None, who="admin"):
+    """Ask the builder for a soft stop: touch the flag every loop checks between units of work. The episode in flight (a mux
+    included) finishes, the loops exit 0, and the container's restart policy brings the container back with a new boot id."""
+    from common import boot_id, log
+
+    flag = _env(environ).get("STOP_FLAG") or "/tmp/dubtitlerr.stop"
+    try:
+        with open(flag, "a"):
+            os.utime(flag, None)
+    except OSError as e:
+        return 500, {"error": f"could not write the stop flag ({e.__class__.__name__})"}
+    log(f"review server: restart requested by {who}: soft stop flag written")
+    return 202, {"ok": True, "boot_id": boot_id()}
 
 
 # --- dispatch -------------------------------------------------------------------------------------------------------------
 
 
-def handle(method, path, body=None, environ=None, who="admin", opener=None):
+def handle(method, path, body=None, environ=None, who="admin", opener=None, context=None):
     route = (path or "").split("?", 1)[0]
     if method == "GET" and route == "/api/settings/schema":
         return 200, {**reg.schema(), "connections": conns.rules()}
@@ -492,6 +590,8 @@ def handle(method, path, body=None, environ=None, who="admin", opener=None):
         return reset_settings(body, environ, who)
     if method == "POST" and route == "/api/settings/test":
         if isinstance(body, dict) and "connection" in body:
-            return test_connection(body["connection"], environ, opener)
+            return test_connection(body["connection"], environ, opener, context=context)
         return review_settings.handle(method, route, body, environ=environ, opener=opener)
+    if method == "POST" and route == "/api/system/restart":
+        return request_restart(environ, who)
     return 404, {"error": "no such route"}
