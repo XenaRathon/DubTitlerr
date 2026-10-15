@@ -128,3 +128,11 @@ def test_a_missing_exporter_still_starts_the_server(tmp_path):
 def test_the_review_server_is_started_through_that_function_and_the_boot_block_never_names_a_secret_flag():
     assert "run_review_server &" in SCRIPT and 'python3 "$APP_DIR/review_server.py" &' not in SCRIPT
     assert "--secrets-only" not in block() or "--boot" not in block().split("--secrets-only")[0].splitlines()[-1]
+
+
+def test_the_one_time_migration_runs_before_the_exports_and_its_values_are_exported(tmp_path):
+    (tmp_path / "runtime.env").write_text("REQUIRE_ENG=0\n")
+    (tmp_path / "settings.json").write_text(json.dumps({"version": 1, "values": {"MERGE_INTERVAL": 120}}))
+    res = run_block(tmp_path, {"MERGE_INTERVAL": 120}, tail='echo "migrated=$(ls "$CONFIG_DIR" | grep -c runtime.env.migrated)"')
+    assert res.stdout.splitlines()[-1] == "migrated=1" and "interval=120 port=unset" in res.stdout, res.stderr
+    assert SCRIPT.index('review_settings_write.py" migrate') < SCRIPT.index('review_settings_write.py" export')

@@ -1,5 +1,6 @@
 """[S-1] The settings registry: schema, first-wave coverage, validation and the environment round trip."""
 
+import os
 import re
 
 import pytest
@@ -167,3 +168,10 @@ def test_from_env_rejects_bad_enum_and_malformed_numbers():
 def test_url_help_mentions_tokens():
     for key in ("PLEX_URL", "WATCHSTATE_URL", "GITHUB_WIKI", "FORGEJO_WIKI"):
         assert "tokens belong in a secret field" in reg.REGISTRY[key]["help"]
+
+
+def test_the_web_category_list_matches_the_registry():
+    """web/src/lib/route.js hard-codes the nine categories so the sidebar can render before the schema loads."""
+    text = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "src", "lib", "route.js")).read()
+    listed = re.findall(r"\{ id: '([a-z]+)', label: '([A-Za-z]+)' \}", text)
+    assert listed == [(c["id"], c["label"]) for c in reg.CATEGORIES]

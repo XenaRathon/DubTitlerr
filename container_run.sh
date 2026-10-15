@@ -21,12 +21,14 @@ export APP_DIR
 export STOP_FLAG
 rm -f "$STOP_FLAG" # a stale flag from an earlier `docker stop` + `docker start` must not stop a fresh run
 # >>> stored settings
-# Container- and server-scope settings from settings.json / secrets.json, exported BEFORE the defaults below and before any child
+# First the one-time import of an old runtime.env (idempotent). Then the container- and server-scope settings from settings.json /
+# secrets.json, exported BEFORE the defaults below and before any child
 # starts, so MERGE_INTERVAL, MERGE_WINDOW, REVIEW_PORT and the other restart-applied keys take the stored value. --boot also
 # exports DT_BOOT_<KEY>, the value the container held, so the page can still say what a stored value overrides. --boot never
 # prints a secret; the review server's own secrets are exported in run_review_server below. A missing or failing exporter
 # changes nothing: the container environment stands.
 if [ -f "$APP_DIR/review_settings_write.py" ]; then
+	python3 "$APP_DIR/review_settings_write.py" migrate || echo "settings migration failed (continuing)"
 	eval "$(python3 "$APP_DIR/review_settings_write.py" export --boot --scope container)" || true
 	eval "$(python3 "$APP_DIR/review_settings_write.py" export --boot --scope server)" || true
 fi

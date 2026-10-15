@@ -9,6 +9,8 @@ hostile file can produce nothing but registered settings with valid values. It a
 stderr line naming what it ignored, so a bad file falls back to the container environment audibly.
 
 Subcommands
+  migrate
+      the one-time import of runtime.env (settings_migrate.py); container_run.sh runs it first.
   export --scope gen|merge|server|container [--plain] [--boot] [--reset-to-init] [--secrets-only]
       the stored settings of one scope (a merge pass also receives the gen keys, as it always has).
       --plain       NAME=value lines, no `export`, stored values only (for tests and for reading). Never a secret.
@@ -39,7 +41,7 @@ import settings_store as store
 
 SCOPES = ("gen", "merge", "server", "container")
 USAGE = (
-    "usage: review_settings_write.py export|snapshot --scope gen|merge|server|container"
+    "usage: review_settings_write.py migrate | export|snapshot --scope gen|merge|server|container"
     " [--plain] [--boot] [--reset-to-init] [--secrets-only]"
 )
 
@@ -95,6 +97,14 @@ def format_snapshot(scope):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "migrate":
+        import settings_migrate
+
+        with contextlib.redirect_stdout(sys.stderr):
+            notes = settings_migrate.migrate()
+        if notes:
+            print("review_settings_write: migration: " + "; ".join(notes), file=sys.stderr)
+        return 0
     if not argv or argv[0] not in ("export", "snapshot"):
         print(USAGE, file=sys.stderr)
         return 2
