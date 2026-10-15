@@ -102,3 +102,15 @@ test('on a phone the Security and Accounts sections do not push the page sideway
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow, `#/settings overflows by ${overflow}px`).toBeLessThanOrEqual(0);
 });
+
+test('the account menu closes on a click outside it and stays open on a click inside', async ({ page }) => {
+  await openSignedIn(page);
+  const toggle = page.getByRole('button', { name: 'Account menu' });
+  await toggle.click();
+  const menu = page.getByRole('region', { name: 'Account' });
+  await menu.getByLabel('Current password').click();
+  await expect(menu).toBeVisible();
+  await page.getByRole('heading', { name: 'Review inbox', level: 1 }).click();
+  await expect(menu).toHaveCount(0);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+});

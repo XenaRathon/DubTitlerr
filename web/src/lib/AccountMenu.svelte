@@ -9,6 +9,7 @@
     disabled = false,
   }: { username: string; role: string; onlogout: () => void; disabled?: boolean } = $props();
   let open = $state(false);
+  let wrap = $state<HTMLDivElement>();
   let current = $state('');
   let next = $state('');
   let again = $state('');
@@ -35,9 +36,20 @@
       busy = false;
     }
   }
+  // A click anywhere outside the menu closes it, like Escape does.
+  function outside(e: MouseEvent) {
+    if (open && wrap && !wrap.contains(e.target as Node)) open = false;
+  }
 </script>
 
-<div class="account-menu-wrap" onkeydown={(e) => e.key === 'Escape' && (open = false)} role="presentation">
+<svelte:window onclick={outside} />
+
+<div
+  class="account-menu-wrap"
+  bind:this={wrap}
+  onkeydown={(e) => e.key === 'Escape' && (open = false)}
+  role="presentation"
+>
   <button
     class="icon-button"
     aria-label="Account menu"

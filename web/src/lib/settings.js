@@ -98,8 +98,7 @@ export function describeTestResult(result) {
     typeof result?.error === 'string' && result.error.trim() !== ''
       ? result.error.trim()
       : 'Connection failed.';
-  if (/session ended|access token not accepted/i.test(err))
-    return 'Session expired. Sign in again and retry.';
+  if (/session ended/i.test(err)) return 'Session expired. Sign in again and retry.';
   if (typeof result?.status === 'number') {
     if (result.status === 429) return 'Too many checks. Wait a moment and retry.';
     if (result.status >= 500) return `Settings tester failed (HTTP ${result.status}): ${err}`;

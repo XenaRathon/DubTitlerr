@@ -111,6 +111,11 @@ test('describeTestResult passes errors through and maps statuses', () => {
     describeTestResult({ ok: false, latency_ms: 0, error: 'Your session ended.' }),
     /sign in again/i,
   );
+  // The token wording is retired: a probe error that happens to say it is passed through, not read as a lost session.
+  assert.equal(
+    describeTestResult({ ok: false, latency_ms: 0, error: 'Access token not accepted.' }),
+    'Access token not accepted.',
+  );
   assert.equal(typeof describeTestResult(null), 'string');
 });
 

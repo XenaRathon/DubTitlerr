@@ -27,6 +27,7 @@
     try {
       await setupAccount({ username, password });
       const user = await login({ username, password, remember: false });
+      password = confirm = '';
       onsignedin(user);
     } catch (exc) {
       if (exc instanceof ApiError && exc.status === 409) {
