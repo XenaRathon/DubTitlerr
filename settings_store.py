@@ -16,6 +16,7 @@ import tempfile
 import urllib.parse
 
 import glossary_lock
+import settings_connections as conns
 import settings_registry as reg
 
 VERSION = 1
@@ -134,6 +135,33 @@ def _valid_secret(value):
     )
 
 
+def _load_connections(state, items):
+    """Keep the connections a PUT would accept; each dropped entry leaves a note naming it, never a value."""
+    seen = set()
+    for index, item in enumerate(items):
+        conn, problems = conns.validate_connection(item)
+        label = item.get("name") if isinstance(item, dict) and isinstance(item.get("name"), str) else f"#{index}"
+        if problems:
+            state.notes.append(f"connection {label} ignored: {'; '.join(f'{f} {m}' for f, m in sorted(problems.items()))}")
+        elif conn["name"] in seen:
+            state.notes.append(f"connection {label} ignored: the name is used twice")
+        else:
+            seen.add(conn["name"])
+            state.connections.append(conn)
+
+
+def _load_stages(state, stages):
+    """Keep the stage choices validate_stages accepts, dropping the refused ones until the rest agree."""
+    while True:
+        errors = conns.validate_stages(stages, state.connections)
+        if not errors:
+            break
+        for stage, why in sorted(errors.items()):
+            state.notes.append(f"stage {stage} ignored: {why}")
+            stages.pop(stage, None)
+    state.stages = stages
+
+
 def load(environ=None):
     """The current State. Never raises."""
     state = State()
@@ -157,9 +185,9 @@ def load(environ=None):
             except reg.Invalid as e:
                 state.notes.append(f"{key} ignored: {e}")
         if isinstance(data.get("connections"), list):
-            state.connections = [c for c in data["connections"] if isinstance(c, dict)]
+            _load_connections(state, data["connections"])
         if isinstance(data.get("stages"), dict):
-            state.stages = {k: v for k, v in data["stages"].items() if isinstance(k, str) and isinstance(v, str)}
+            _load_stages(state, {k: v for k, v in data["stages"].items() if isinstance(k, str) and isinstance(v, str)})
     state.secrets_error = ensure_secret_perms(secrets_path(environ))
     if not state.secrets_error:
         sdata, state.secrets_error = _read_json(secrets_path(environ))
@@ -180,7 +208,11 @@ def load(environ=None):
             for name, item in raw_conns.items():
                 if isinstance(item, dict) and "api_key" in item:
                     k = item["api_key"]
-                    if _valid_secret(k):
+                    conn = next((c for c in state.connections if c["name"] == name), None)
+                    why = conns.key_problem(conn, k) if conn and _valid_secret(k) else ""
+                    if why:
+                        state.notes.append(f"connection key {name} ignored: {why}")
+                    elif _valid_secret(k):
                         state.conn_keys[name] = k
                     elif k is not None and k != "":
                         state.notes.append(f"connection key {name} ignored: must be one line of at most 512 characters")

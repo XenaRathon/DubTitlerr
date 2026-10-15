@@ -875,7 +875,7 @@ def write_effective_env(out_file: str | None = None, env: dict | None = None) ->
 
     lines = []
     for k in sorted(source_env.keys()):
-        if k == "REPAIR_EXTRA_BODY":
+        if k.endswith("_EXTRA_BODY"):
             continue
         allowed = any(k.startswith(p) for p in EFFECTIVE_ENV_ALLOW_PREFIXES) or (k in EFFECTIVE_ENV_ALLOW_EXACT)
         allowed = allowed or _reportable(k)

@@ -237,3 +237,10 @@ def test_a_cleared_stage_is_restored_to_the_container_value_by_reset_to_init(cfg
     out = run(cfg, "export", "--scope", "merge", "--reset-to-init").stdout
     assert "else unset DT_CONN_KEY_REPAIR; fi" in out and "else unset REPAIR_BACKEND; fi" in out
     assert not any(line.startswith("export REPAIR_BACKEND=") for line in out.splitlines())
+
+
+def test_merge_scope_does_not_carry_gen_only_secrets(cfg):
+    save(cfg, {}, {"WATCHSTATE_API_KEY": "watch-secret-value", "PLEX_TOKEN": "plex-secret-value"})
+    merge = run(cfg, "export", "--scope", "merge").stdout
+    assert "WATCHSTATE_API_KEY" not in merge and "watch-secret-value" not in merge
+    assert "export WATCHSTATE_API_KEY=watch-secret-value" in run(cfg, "export", "--scope", "gen").stdout

@@ -1210,3 +1210,13 @@ def test_write_effective_env_reports_acquire_apply(tmp_path):
     out_file = tmp_path / "effective.env"
     write_effective_env(str(out_file), env={"ACQUIRE_APPLY": "0"})
     assert "ACQUIRE_APPLY=0\n" in out_file.read_text()
+
+
+def test_write_effective_env_never_reports_any_extra_body(tmp_path):
+    out_file = tmp_path / "effective.env"
+    write_effective_env(
+        str(out_file),
+        env={"VERIFY_OPENAI_EXTRA_BODY": '{"provider":{"x":"leak"}}', "REPAIR_EXTRA_BODY": '{"y":"leak"}', "VERIFY_MODEL": "m"},
+    )
+    text = out_file.read_text()
+    assert "EXTRA_BODY" not in text and "leak" not in text and "VERIFY_MODEL=m" in text

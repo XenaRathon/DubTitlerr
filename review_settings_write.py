@@ -69,6 +69,8 @@ def export_assignments(environ=None, scope="merge", notes=None, boot=False, plai
     for key in sorted(reg.keys_for_scope(scope)):
         entry = reg.REGISTRY[key]
         if entry["secret"]:
+            if scope == "merge" and "merge" not in entry["scope"]:
+                continue  # a merge pass is handed the gen keys, never the secrets only the generate loop reads
             if key in state.secret_values and (secrets_only or not (plain or boot)):
                 out.append((key, state.secret_values[key]))
                 stored.add(key)

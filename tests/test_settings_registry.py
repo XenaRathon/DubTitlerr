@@ -175,3 +175,15 @@ def test_the_web_category_list_matches_the_registry():
     text = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "src", "lib", "route.js")).read()
     listed = re.findall(r"\{ id: '([a-z]+)', label: '([A-Za-z]+)' \}", text)
     assert listed == [(c["id"], c["label"]) for c in reg.CATEGORIES]
+
+
+def test_a_url_with_a_query_or_fragment_is_refused_everywhere():
+    assert "query" in reg.url_problem("http://127.0.0.1:32400/?X-Plex-Token=abc")
+    assert "query" in reg.url_problem("http://127.0.0.1:32400/#frag")
+    assert reg.url_problem("http://127.0.0.1:32400/path") == ""
+    with pytest.raises(reg.Invalid):
+        reg.validate("PLEX_URL", "http://127.0.0.1:32400/?X-Plex-Token=abc")
+
+
+def test_rescan_interval_is_read_by_the_server_too():
+    assert set(reg.REGISTRY["RESCAN_INTERVAL"]["scope"]) == {"gen", "server"}

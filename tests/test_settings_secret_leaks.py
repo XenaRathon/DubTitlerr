@@ -92,9 +92,18 @@ def test_a_saved_token_appears_in_no_response_log_or_report(env, tmp_path, capsy
         {
             "name": "cloud",
             "kind": "openai",
-            "url": f"https://admin:{URL_PW}@api.example.test/v1/chat/completions",
+            "url": "https://api.example.test/v1/chat/completions",
             "model": "gpt-x",
             "extra_body": {"api_key": CONN_SECRET},
+            "timeout_connect": 10.0,
+            "timeout_read": 120.0,
+        },
+        {
+            "name": "tainted",
+            "kind": "openai",
+            "url": f"https://admin:{URL_PW}@api.example.test/v1/chat/completions",
+            "model": "gpt-x",
+            "extra_body": {},
             "timeout_connect": 10.0,
             "timeout_read": 120.0,
         }

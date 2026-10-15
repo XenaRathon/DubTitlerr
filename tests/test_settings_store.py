@@ -175,10 +175,10 @@ def test_connections_and_stages_round_trip_through_save_and_load(env):
     state = store.load(env)
     conn = {
         "name": "fast",
-        "kind": "llamacpp",
+        "kind": "openai",
         "url": "http://127.0.0.1:8090/v1",
         "model": "qwen",
-        "extra_body": "{}",
+        "extra_body": {},
         "timeout_connect": 10.0,
         "timeout_read": 120.0,
     }
@@ -296,3 +296,30 @@ def test_load_drops_bad_secret_value_and_connection_key_with_note(env, tmp_path,
     assert "PLEX_TOKEN" in notes_str
     assert "cloud" in notes_str
     assert bad_val not in notes_str
+
+
+def _write_store(tmp_path, connections, stages, conn_keys):
+    settings = {"version": 1, "rev": 1, "values": {}, "connections": connections, "stages": stages}
+    secrets = {"version": 1, "values": {}, "connections": {n: {"api_key": k} for n, k in conn_keys.items()}}
+    (tmp_path / "settings.json").write_text(json.dumps(settings))
+    (tmp_path / "secrets.json").write_text(json.dumps(secrets))
+    os.chmod(tmp_path / "secrets.json", 0o600)
+
+
+def test_load_drops_connections_stages_and_keys_that_a_save_would_refuse(env, tmp_path):
+    good = {"name": "ok", "kind": "openai", "url": "https://openrouter.ai/api/v1", "model": "qwen3-4b-instruct"}
+    meta = {"name": "meta", "kind": "openai", "url": "http://169.254.169.254/v1", "model": "qwen3-4b-instruct"}
+    plain = {"name": "lan", "kind": "ollama", "url": "http://127.0.0.1:11434"}
+    _write_store(
+        tmp_path,
+        [good, meta, plain],
+        {"repair": "meta", "verify": "ok", "restore": "nowhere"},
+        {"ok": "sk-good-key-12345", "lan": "sk-lan-key-12345"},
+    )
+    state = store.load(env)
+    assert [c["name"] for c in state.connections] == ["ok", "lan"]
+    assert state.stages == {"verify": "ok"}
+    assert state.conn_keys == {"ok": "sk-good-key-12345"}
+    joined = " ".join(state.notes)
+    assert "meta" in joined and "lan" in joined and "repair" in joined and "restore" in joined
+    assert not any(v in joined for v in ("sk-good", "sk-lan", "169.254.169.254"))

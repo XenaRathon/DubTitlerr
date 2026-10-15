@@ -373,16 +373,27 @@ def test_get_redacts_connection_url_and_reports_extra_body_as_set_bool(env):
             "kind": "openai",
             "url": "https://admin:pass123@api.example.test/v1/chat/completions?key=QLEAK",
             "model": "gpt-x",
+            "extra_body": {},
+            "timeout_connect": 10.0,
+            "timeout_read": 120.0,
+        },
+        {
+            "name": "bodyleak",
+            "kind": "openai",
+            "url": "https://api.example.test/v1/chat/completions",
+            "model": "gpt-x",
             "extra_body": {"api_key": "sk-BODYLEAK"},
             "timeout_connect": 10.0,
             "timeout_read": 120.0,
-        }
+        },
     ]
-    st.conn_keys = {"redactme": KEY}
+    st.conn_keys = {"bodyleak": KEY}
     store.save(st, env)
 
     got = api.handle("GET", "/api/settings", environ=env)[1]
-    conn = next(c for c in got["connections"] if c["name"] == "redactme")
+    # load refuses a stored URL with user info or a query, so it never reaches the page at all
+    assert [c["name"] for c in got["connections"]] == ["bodyleak"]
+    conn = got["connections"][0]
     assert conn["url"] == "https://api.example.test/v1/chat/completions"
     assert "admin" not in json.dumps(got)
     assert "pass123" not in json.dumps(got)

@@ -224,7 +224,7 @@ def test_reset_all_moves_both_unparseable_files_aside_inside_the_lock(env, tmp_p
 
 def seed_connections(tmp_path):
     state = store.load({"CONFIG_DIR": str(tmp_path)})
-    state.connections = [{"name": "local", "kind": "llamacpp", "url": "http://127.0.0.1:8090/v1"}]
+    state.connections = [{"name": "local", "kind": "openai", "url": "http://127.0.0.1:8090/v1"}]
     state.stages = {"repair": "local"}
     state.conn_keys = {"local": "conn-secret"}
     store.save(state, {"CONFIG_DIR": str(tmp_path)})

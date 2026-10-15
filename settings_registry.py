@@ -257,7 +257,7 @@ COMMANDCODE_API_KEY^connections^secret^^gen,merge^next_show^bootstrap^CommandCod
 LONGCATAI_API_KEY^connections^secret^^gen,merge^next_show^bootstrap^LongCat key^Key variable read by name from the container environment.
 IDLE_CHECK_INTERVAL^schedule^int^60^gen^next_sweep^-^Idle check interval (s)^How often the idle wait looks for requests.
 REQUEST_POLL_INTERVAL^schedule^int^60^gen^next_sweep^-^Request poll interval (s)^How often the idle wait looks for run requests.
-RESCAN_INTERVAL^schedule^int^21600^gen^next_sweep^-^Rescan interval (s)^Idle time after a full sweep before the next one.
+RESCAN_INTERVAL^schedule^int^21600^gen,server^next_sweep^-^Rescan interval (s)^Idle time after a full sweep before the next one.
 SCHEDULE_CHECK_INTERVAL^schedule^int^60^gen^next_sweep^-^Window check interval (s)^How often a closed window is re-checked.
 PLEX_PATH^connect^string^""^gen,merge^next_show^-^Plex path prefix^Path prefix Plex sees for the library.
 WATCH_QUEUE_TIMEOUT^connect^int^30^gen^next_sweep^-^Watch queue timeout (s)^Limit for one watch-history request.
@@ -328,6 +328,8 @@ def url_problem(url):
     parts = urllib.parse.urlsplit(url)
     if parts.username is not None or parts.password is not None or "@" in parts.netloc:
         return "must not contain a user name or password"
+    if parts.query or parts.fragment:
+        return "must not contain a query or fragment; tokens belong in a secret field"
     if not parts.hostname:
         return "needs a host"
     return ""
