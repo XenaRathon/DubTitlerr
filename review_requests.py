@@ -367,11 +367,10 @@ def list_shows(anime_root: str | None = None) -> list[str]:
 
 
 def derive_generate_only_re(show: str, season: int | None = None, episode_re: str | None = None) -> str:
-    r"""Derive GENERATE_ONLY_RE regex anchored on show name with season/episode branches."""
-    esc_show = re.escape(show)
+    r"""Derive GENERATE_ONLY_RE regex for filename matching with season/episode branches."""
     ep = normalize_episode_re(episode_re)
     if season is None and not ep:
-        return esc_show
+        return ""
 
     if season is not None and ep:
         if ep.endswith(r"(?!\d)"):
@@ -388,7 +387,8 @@ def derive_generate_only_re(show: str, season: int | None = None, episode_re: st
     if not (branch.startswith("(?:") and branch.endswith(")")):
         branch = f"(?:{branch})"
 
-    return f"{esc_show}.*{branch}"
+    return branch
+
 
 
 def create(

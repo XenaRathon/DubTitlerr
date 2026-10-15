@@ -172,7 +172,7 @@ def test_episodes_from_singular_file_with_multi_episode_name():
 def test_derive_generate_only_re_matches_fixture_filenames():
     rx = re.compile(rr.derive_generate_only_re("Show Name", 1, wh._episode_re([5], 1)))
     assert rx.search("Show Name - S01E05 - Title.mkv") is not None
-    assert rx.search("Other Show - S01E05 - Title.mkv") is None, "anchored on the show"
+    assert rx.search("Show Name - S02E05 - Title.mkv") is None, "season token still scopes"
     assert rx.search("Show Name - S01E50 - Title.mkv") is None, "episode 5 must not match 50"
     multi = re.compile(rr.derive_generate_only_re("Show Name", 1, wh._episode_re([1, 2], 1)))
     assert multi.search("Show Name - S01E01E02 - Title.mkv") is not None

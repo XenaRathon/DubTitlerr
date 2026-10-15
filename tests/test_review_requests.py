@@ -135,45 +135,62 @@ def test_validate_rejects_symlink_escaping_anime_root(tmp_path):
 
 
 def test_derive_generate_only_re():
-    # Show only
+    # Show only -> empty string keeps every file of the show
     re1 = derive_generate_only_re("One Pace", None, None)
-    assert re1 == r"One\ Pace"
+    assert re1 == ""
 
-    # Escaping special regex chars in show
+    # Escaping special regex chars in show -> still empty string with no season or ep
     re_special = derive_generate_only_re("Show [2024] + Test", None, None)
-    assert re_special == r"Show\ \[2024\]\ \+\ Test"
+    assert re_special == ""
 
-    # Show + season
+    # Show + season: show name is not in the regex, season branch is kept
     re2 = derive_generate_only_re("One Pace", 1, None)
-    assert r"One\ Pace" in re2
-    assert r"[Ss]0*1" in re2
+    assert r"One\ Pace" not in re2
+    assert re2 == r"(?:^|[\W_])[Ss]0*1(?=[Ee]|[\W_]|$)"
     assert not re2.endswith(r"(?!\d)")
 
-    # Show + season + episode_re
+    # Show + season + episode_re: show name is not in regex
     re3 = derive_generate_only_re("One Pace", 1, r"E01")
-    assert r"One\ Pace" in re3
+    assert r"One\ Pace" not in re3
     assert r"[Ss]0*1" in re3
     assert r"(?!\d)" in re3
 
     # Show + episode alternation with trailing (?!\d) guard
     re4 = derive_generate_only_re("One Pace", None, r"E01|E02")
+    assert r"One\ Pace" not in re4
     assert r"(?!\d)" in re4
 
-    # Matches 'Show - S01E05' and not 'Other - S01E05' and not S01E50 for episode 5
+    # Matches 'Show - S01E05' and not S01E50 for episode 5; show name not required in basename
     import re
     re5 = derive_generate_only_re("Show", 1, "E05")
     rx5 = re.compile(re5)
     assert rx5.search("Show - S01E05") is not None
-    assert rx5.search("Other - S01E05") is None
+    assert rx5.search("Other - S01E05") is not None
     assert rx5.search("Show - S01E50") is None
 
-    # Alternation with existing (?!\d) guard does not leak across shows
+    # Alternation with existing (?!\d) guard does not require show name in basename
     re6 = derive_generate_only_re("Show", None, r"E05|E06(?!\d)")
     rx6 = re.compile(re6)
     assert rx6.search("Show - S01E05") is not None
-    assert rx6.search("Other - S01E05") is None
-    assert rx6.search("Other - S01E06") is None
+    assert rx6.search("Other - S01E05") is not None
+    assert rx6.search("Other - S01E06") is not None
     assert rx6.search("Show - S01E50") is None
+
+
+def test_derive_generate_only_re_yugioh_regression():
+    import re
+    show = "Yu-Gi-Oh! Duel Monsters (2000) {tvdb-76894}"
+    s01e01 = "Yu-Gi-Oh! Duel Monsters (2000) - S01E01 - The Heart of the Cards [SDTV][10bit][Opus 2.0][x265].mkv"
+    s00e01 = (
+        "Yu-Gi-Oh! Duel Monsters (2000) - S00E01 - "
+        "Yu-Gi-Oh! The Movie Pyramid of Light [Bluray-1080p][10bit][Opus 5.1][AV1].mkv"
+    )
+
+    pattern = derive_generate_only_re(show, 1, None)
+    rx = re.compile(pattern)
+    assert rx.search(s01e01) is not None
+    assert rx.search(s00e01) is None
+
 
 
 def test_create_atomic_permissions_and_schema(tmp_path):
@@ -763,6 +780,8 @@ def test_m1_season_only_matches_real_filenames():
     re_s1 = derive_generate_only_re("Show A", 1)
     # Must NOT have trailing (?!\d)
     assert not re_s1.endswith(r"(?!\d)")
+    # Must not require show name
+    assert r"Show\ A" not in re_s1
 
     rx = re.compile(re_s1)
     # Must match real SxxEyy names
@@ -771,8 +790,10 @@ def test_m1_season_only_matches_real_filenames():
     assert rx.search("Show A.S01.E02.mkv") is not None
     assert rx.search("Show A - S01 - 02.mkv") is not None
 
-    # S10E01 must NOT match season 1
+    # S00, S10, S11 must NOT match season 1
+    assert rx.search("Show A - S00E01.mkv") is None
     assert rx.search("Show A - S10E01.mkv") is None
+    assert rx.search("Show A - S11E01.mkv") is None
 
 
 
