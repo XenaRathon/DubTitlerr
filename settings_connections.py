@@ -14,7 +14,6 @@ import re
 import socket
 import urllib.parse
 
-import decision_client
 import settings_registry as reg
 
 KINDS = ("llamacpp", "ollama", "openai")
@@ -32,21 +31,32 @@ NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 EXTRA_BODY_MAX = 2048
 TIMEOUT_DEFAULTS = {"timeout_connect": 10.0, "timeout_read": 120.0}
 LINK_LOCAL = (ipaddress.ip_network("169.254.0.0/16"), ipaddress.ip_network("fe80::/10"))
-NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
+NAT64_PREFIXES = (
+    ipaddress.ip_network("64:ff9b::/96"),
+    ipaddress.ip_network("64:ff9b:1::/48"),
+)
+NAT64_PREFIX = NAT64_PREFIXES[0]
 METADATA_ADDRESSES = {
     ipaddress.ip_address("100.100.100.200"),
     ipaddress.ip_address("fd00:ec2::254"),
 }
-FIELDS = ("name", "kind", "url", "model", "extra_body", "timeout_connect", "timeout_read")
-ALLOWED_DECISION_HOSTS = {urllib.parse.urlsplit(u).hostname.lower() for u, _ in decision_client.PROVIDERS.values()} | {
-    "127.0.0.1",
-    "localhost",
-    "::1",
-}
+FIELDS = ("name", "kind", "url", "model", "model_secondary", "extra_body", "timeout_connect", "timeout_read")
+
+
+def allowed_decision_hosts():
+    """The hosts decision_client.py will call. Imported on demand: decision_client pulls in the whole repair stage, which the
+    shell loops' exporter (it imports this module before every show) must not load."""
+    import decision_client
+
+    return {urllib.parse.urlsplit(u).hostname.lower() for u, _ in decision_client.PROVIDERS.values()} | {
+        "127.0.0.1",
+        "localhost",
+        "::1",
+    }
 
 
 def _unwrapped_addresses(addr):
-    """Yield addr plus any IPv4 address it wraps via ipv4_mapped, 6to4, or NAT64 (64:ff9b::/96)."""
+    """Yield addr plus any IPv4 address it wraps via ipv4_mapped, 6to4, or NAT64 (64:ff9b::/96, 64:ff9b:1::/48)."""
     yield addr
     mapped = getattr(addr, "ipv4_mapped", None)
     if mapped is not None:
@@ -54,8 +64,13 @@ def _unwrapped_addresses(addr):
     s24 = getattr(addr, "sixtofour", None)
     if s24 is not None:
         yield s24
-    if addr.version == 6 and addr in NAT64_PREFIX:
-        yield ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
+    if addr.version == 6:
+        for prefix in NAT64_PREFIXES:
+            if addr in prefix:
+                yield ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
+                if prefix.prefixlen == 48:
+                    b = addr.packed
+                    yield ipaddress.IPv4Address(b[6:8] + b[9:11])
 
 
 def _is_refused_address(addr):
@@ -148,16 +163,22 @@ def validate_connection(item):
     model = item.get("model", "")
     if not isinstance(model, str) or (model and not reg.MODEL_RE.fullmatch(model)):
         errors["model"] = "must look like qwen3-4b-instruct"
+    second = item.get("model_secondary", "")
+    if second is None:
+        second = ""
+    if not isinstance(second, str) or (second and not reg.MODEL_RE.fullmatch(second)):
+        errors["model_secondary"] = "must look like qwen3-8b-instruct"
     extra = item.get("extra_body", {})
     if extra in ("", None):
         extra = {}
+    is_sentinel = isinstance(extra, dict) and list(extra.keys()) == ["set"] and type(extra.get("set")) is bool
     try:
         encoded = json.dumps(extra, sort_keys=True, separators=(",", ":")) if isinstance(extra, dict) else None
     except (TypeError, ValueError):
         encoded = None
     if encoded is None or len(encoded) > EXTRA_BODY_MAX:
         errors["extra_body"] = f"must be a small JSON object (at most {EXTRA_BODY_MAX} characters)"
-    elif extra and kind != "openai":
+    elif extra and kind != "openai" and not (is_sentinel and extra == {"set": False}):
         errors["extra_body"] = "is used only by OpenAI-compatible connections"
     for field in ("timeout_connect", "timeout_read"):
         try:
@@ -166,6 +187,8 @@ def validate_connection(item):
             errors[field] = str(e)
     if not errors:
         clean.update(name=name, kind=kind, url=url.strip(), model=model, extra_body=extra)
+        if second:  # absent when unset, so a connection stored before this field existed never looks changed
+            clean["model_secondary"] = second
     return clean, errors
 
 
@@ -203,7 +226,7 @@ def validate_stages(stages, connections):
             errors[stage] = "needs a connection with a model (the hosted glossary stages have no default)"
         elif stage == "decision":
             d_host = (urllib.parse.urlsplit(by_name[name]["url"]).hostname or "").lower()
-            if d_host not in ALLOWED_DECISION_HOSTS:
+            if d_host not in allowed_decision_hosts():
                 errors[stage] = (
                     f"points at a host decision_client.py will not call ({d_host}); "
                     f"allowed hosts are openrouter.ai, api.commandcode.ai, or loopback"
@@ -247,6 +270,8 @@ def _stage_env(stage, conn, key, stages):
         env = [("REPAIR_BACKEND", kind), (url_var, conn["url"])]
         if conn["model"]:
             env.append(("REPAIR_MODEL", conn["model"]))
+        # Always set, empty when unused: repair reads an empty second model as "same as REPAIR_MODEL".
+        env.append(("REPAIR_MODEL_SECONDARY", conn.get("model_secondary", "")))
         # Always set, empty when unused: the previous provider's routing flags and key pointer must not carry over.
         env += [
             ("REPAIR_EXTRA_BODY", _body(conn) if kind == "openai" else ""),

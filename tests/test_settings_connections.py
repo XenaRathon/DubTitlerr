@@ -227,6 +227,7 @@ def test_models_url_for_openai_endpoints():
 def test_host_problem_and_check_test_target_refuse_6to4_nat64_and_metadata_addresses(monkeypatch):
     # NAT64 and 6to4 literals in host_problem
     assert "link-local" in conns.host_problem("http://[64:ff9b::a9fe:a9fe]:8080/v1")
+    assert "link-local" in conns.host_problem("http://[64:ff9b:1::a9fe:a9fe]:8080/v1")
     assert "link-local" in conns.host_problem("http://[2002:a9fe:a9fe::1]:8080/v1")
     # Metadata addresses in host_problem
     assert "link-local" in conns.host_problem("http://100.100.100.200:8080/v1")
@@ -235,6 +236,7 @@ def test_host_problem_and_check_test_target_refuse_6to4_nat64_and_metadata_addre
     # Resolved via DNS in check_test_target
     for bad_ip in (
         "64:ff9b::a9fe:a9fe",
+        "64:ff9b:1::a9fe:a9fe",
         "2002:a9fe:a9fe::1",
         "100.100.100.200",
         "fd00:ec2::254",

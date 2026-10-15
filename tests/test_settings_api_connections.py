@@ -403,3 +403,51 @@ def test_get_redacts_connection_url_and_reports_extra_body_as_set_bool(env):
     )
     assert status == 400
     assert "query or fragment" in payload["errors"]["connections.badurl.url"]
+
+
+def test_get_to_put_round_trip_preserves_extra_body(env):
+    conn_openai = {
+        "name": "cloud",
+        "kind": "openai",
+        "url": "https://api.example.test/v1/chat/completions",
+        "model": "gpt-x",
+        "extra_body": {"provider": {"order": ["x"]}},
+        "api_key": KEY,
+    }
+    put(env, connections=[conn_openai, LOCAL])
+    assert store.load(env).connections[0]["extra_body"] == {"provider": {"order": ["x"]}}
+
+    got = api.handle("GET", "/api/settings", environ=env)[1]
+    conns_from_get = got["connections"]
+    cloud_get = next(c for c in conns_from_get if c["name"] == "cloud")
+    local_get = next(c for c in conns_from_get if c["name"] == "local")
+    assert cloud_get["extra_body"] == {"set": True}
+    assert local_get["extra_body"] == {"set": False}
+
+    # Round trip: take GET's connection list, drop api_key, and PUT it back
+    body_conns = [{k: v for k, v in c.items() if k != "api_key"} for c in conns_from_get]
+    status, payload = put(env, connections=body_conns, revision=got["revision"])
+    assert status == 200
+    assert payload["changed"] == []
+
+    loaded = store.load(env)
+    assert loaded.connections[0]["extra_body"] == {"provider": {"order": ["x"]}}
+    assert loaded.connections[1]["extra_body"] == {}
+
+    # Changing model while sending {"set": True} keeps the prior extra_body
+    body_conns[0]["model"] = "gpt-y"
+    status, payload = put(env, connections=body_conns)
+    assert status == 200
+    assert payload["changed"] == ["connection:cloud"]
+    assert store.load(env).connections[0]["extra_body"] == {"provider": {"order": ["x"]}}
+
+    # Explicitly sending {} clears extra_body
+    body_conns[0]["extra_body"] = {}
+    status, payload = put(env, connections=body_conns)
+    assert status == 200
+    assert store.load(env).connections[0]["extra_body"] == {}
+
+    # {"set": True} on a non-openai connection is rejected
+    status, payload = put(env, connections=[{**LOCAL, "extra_body": {"set": True}}])
+    assert status == 400
+    assert "OpenAI-compatible" in payload["errors"]["connections.local.extra_body"]

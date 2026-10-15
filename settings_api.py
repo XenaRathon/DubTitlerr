@@ -311,6 +311,9 @@ def _apply_connections(state, clean, actions):
 
     for conn in clean:
         name, prior, action = conn["name"], old.get(conn["name"]), actions.get(conn["name"])
+        extra = conn.get("extra_body")
+        if isinstance(extra, dict) and list(extra.keys()) == ["set"] and type(extra.get("set")) is bool:
+            conn["extra_body"] = dict(prior.get("extra_body", {})) if prior else {}
         if prior != conn:
             touch(name)
         if prior is None or prior["url"] != conn["url"]:
