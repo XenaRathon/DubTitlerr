@@ -243,3 +243,137 @@ export function displayValue(row) {
   if (!text) return 'Not set';
   return text.length > 120 ? `${text.slice(0, 120)}…` : text;
 }
+
+// --- Connections (S-8) ------------------------------------------------------------------------------------------------------
+
+/** @param {{ timeout_defaults?: { timeout_connect?: number, timeout_read?: number } } | null | undefined} rules */
+export function blankConnection(rules) {
+  const t = rules?.timeout_defaults ?? {};
+  return {
+    name: '',
+    kind: 'llamacpp',
+    url: '',
+    model: '',
+    extra_body: {},
+    timeout_connect: t.timeout_connect ?? 10,
+    timeout_read: t.timeout_read ?? 120,
+    api_key: { set: false },
+  };
+}
+
+/**
+ * What a stage can pick: the connections of an accepted kind, plus "follow the decision stage" for verify.
+ * @param {{ stages?: Array<{ id: string, kinds: string[] }>, via_decision?: string } | null | undefined} rules
+ * @param {string} stage
+ * @param {Array<{ name: string, kind: string }>} connections
+ * @returns {Array<{ value: string, label: string }>}
+ */
+export function stageChoices(rules, stage, connections) {
+  const kinds = rules?.stages?.find((s) => s.id === stage)?.kinds ?? [];
+  const out = connections
+    .filter((c) => c.name && kinds.includes(c.kind))
+    .map((c) => ({ value: c.name, label: c.name }));
+  if (stage === 'verify' && rules?.via_decision)
+    out.push({ value: rules.via_decision, label: 'Follow the decision stage' });
+  return out;
+}
+
+/**
+ * The text of an "extra body" box as the JSON object the server stores. Empty is {}.
+ * @param {string} text
+ * @returns {{ value: Record<string, unknown> | null, error: string }}
+ */
+export function parseExtraBody(text) {
+  const trimmed = String(text ?? '').trim();
+  if (trimmed === '') return { value: {}, error: '' };
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { value: null, error: 'Must be a JSON object, like {"reasoning": {"effort": "low"}}.' };
+    }
+    return { value: parsed, error: '' };
+  } catch {
+    return { value: null, error: 'Not valid JSON.' };
+  }
+}
+
+const CONNECTION_FIELDS = [
+  'name',
+  'kind',
+  'url',
+  'model',
+  'model_secondary',
+  'extra_body',
+  'timeout_connect',
+  'timeout_read',
+];
+
+/**
+ * The PUT `connections` list from the working copies. Each carries its stored fields; `key` (typed text, CLEAR, or absent) becomes
+ * api_key only when the operator touched it, so an untouched connection keeps the key the server holds. The extra body is
+ * write-only too: GET reports it as {set: bool} and that marker goes back as it came, which tells the server to keep the stored
+ * body; a replaced body is the new object. Only OpenAI-compatible connections carry one.
+ * @param {Array<any>} working
+ */
+export function connectionsBody(working) {
+  return working.map((c) => {
+    /** @type {Record<string, unknown>} */
+    const item = Object.fromEntries(
+      CONNECTION_FIELDS.filter((f) => c[f] !== undefined).map((f) => [f, c[f]]),
+    );
+    if (c.kind !== 'openai') item.extra_body = {};
+    if (c.key === CLEAR) item.api_key = { clear: true };
+    else if (typeof c.key === 'string' && c.key !== '') item.api_key = c.key;
+    return item;
+  });
+}
+
+/**
+ * True when the working copies differ from the loaded connections, or any key was touched.
+ * @param {Array<any>} loaded
+ * @param {Array<any>} working
+ */
+export function connectionsChanged(loaded, working) {
+  if (working.some((c) => c.key === CLEAR || (typeof c.key === 'string' && c.key !== ''))) return true;
+  const strip = (/** @type {any[]} */ list) =>
+    JSON.stringify(list.map((c) => Object.fromEntries(CONNECTION_FIELDS.map((f) => [f, c[f]]))));
+  return strip(loaded) !== strip(working);
+}
+
+/**
+ * The stage picks that differ from the loaded ones, as the PUT `stages` object (null removes a pick), or null for no change.
+ * @param {Record<string, string> | undefined} loaded
+ * @param {Record<string, string> | undefined} picks
+ */
+export function stagesBody(loaded, picks) {
+  /** @type {Record<string, string | null>} */
+  const out = {};
+  for (const stage of new Set([...Object.keys(loaded ?? {}), ...Object.keys(picks ?? {})])) {
+    const before = loaded?.[stage] ?? '';
+    const after = picks?.[stage] ?? '';
+    if (before !== after) out[stage] = after === '' ? null : after;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * One plain sentence for a backend connectivity test. A carried HTTP status is mapped, never shown raw.
+ * @param {{ ok?: unknown, latency_ms?: unknown, error?: unknown, status?: unknown } | null | undefined} result
+ * @returns {string}
+ */
+export function describeTestResult(result) {
+  if (result?.ok === true) {
+    const ms = typeof result.latency_ms === 'number' ? result.latency_ms : 0;
+    return `Connection ok in ${ms} ms.`;
+  }
+  const err =
+    typeof result?.error === 'string' && result.error.trim() !== ''
+      ? result.error.trim()
+      : 'Connection failed.';
+  if (typeof result?.status === 'number') {
+    if (result.status === 429) return 'Too many checks. Wait a moment and retry.';
+    if (result.status >= 500) return `The test failed (HTTP ${result.status}): ${err}`;
+    return `${err} (HTTP ${result.status}).`;
+  }
+  return err;
+}

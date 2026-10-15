@@ -8,6 +8,8 @@
     RESTART_POLL_MS,
     buildValues,
     categoryRows,
+    connectionsBody,
+    connectionsChanged,
     describeRestartWait,
     describeRow,
     describeSaveError,
@@ -17,7 +19,9 @@
     restartStep,
     saveLabel,
     saveShowAdvanced,
+    stagesBody,
   } from '../lib/settingsModel.js';
+  import ConnectionsPanel from './settings/ConnectionsPanel.svelte';
   import RestartDialog from './settings/RestartDialog.svelte';
   import RestartOverlay from './settings/RestartOverlay.svelte';
   import { isAdmin } from '../lib/roles.js';
@@ -52,6 +56,9 @@
   // key -> what the operator typed or chose (RESET to drop the stored value); only differences from the loaded page are sent.
   let drafts = $state<Record<string, unknown>>({});
   let errors = $state<Record<string, string>>({});
+  // Connections: working copies of the saved list (a typed key rides on `key`), and the stage choices.
+  let connWork = $state<any[]>([]);
+  let picks = $state<Record<string, string>>({});
   let saving = $state(false);
   let saveError = $state('');
   let saveMessage = $state('');
@@ -82,8 +89,12 @@
   );
 
   const valuesBody = $derived(buildValues(entries, values, drafts));
+  const connectionsPayload = $derived(
+    loaded && connectionsChanged(loaded.connections ?? [], connWork) ? connectionsBody(connWork) : null,
+  );
+  const stagesPayload = $derived(loaded ? stagesBody(loaded.stages, picks) : null);
   $effect(() => {
-    dirty = isDirty(valuesBody, null, null);
+    dirty = isDirty(valuesBody, connectionsPayload, stagesPayload);
   });
   // A different category page starts clean: App has already asked before letting an edited page go.
   $effect(() => {
@@ -93,15 +104,21 @@
       errors = {};
       saveError = '';
       saveMessage = '';
+      seedConnections();
     });
   });
+
+  function seedConnections() {
+    connWork = (loaded?.connections ?? []).map((c: any) => ({ ...c }));
+    picks = { ...(loaded?.stages ?? {}) };
+  }
 
   function setDraft(key: string, value: unknown) {
     drafts = { ...drafts, [key]: value };
     if (errors[key]) errors = { ...errors, [key]: '' };
   }
 
-  async function load() {
+  async function load(keepEdits = false) {
     const seq = ++loadSeq;
     loading = true;
     loadError = '';
@@ -113,6 +130,7 @@
       if (seq !== loadSeq) return;
       schema = s;
       loaded = v;
+      if (!keepEdits) seedConnections();
       statusMsg = 'Settings loaded.';
     } catch (exc) {
       if (seq !== loadSeq) return;
@@ -125,6 +143,10 @@
   /** Save the edited rows in one all-or-nothing PUT. Also what Ctrl+S runs (App calls it through bind:this). */
   export async function save() {
     if (saving || !dirty) return;
+    if (connWork.some((c) => c.extra_error)) {
+      saveError = 'The extra request body of a connection is not valid JSON.';
+      return;
+    }
     saving = true;
     saveError = '';
     saveMessage = '';
@@ -132,7 +154,12 @@
     try {
       const result = await api('/api/settings', {
         method: 'PUT',
-        body: { values: valuesBody, revision: loaded?.revision },
+        body: {
+          values: valuesBody,
+          revision: loaded?.revision,
+          ...(connectionsPayload ? { connections: connectionsPayload } : {}),
+          ...(stagesPayload ? { stages: stagesPayload } : {}),
+        },
       });
       drafts = {};
       saveMessage = 'Saved.';
@@ -146,7 +173,7 @@
         saveError = Object.keys(errors).length
           ? ''
           : describeSaveError(exc.status, exc.payload as { error?: unknown });
-        if (exc.status === 409) await load(); // the page now shows the current values; the edits stay for review
+        if (exc.status === 409) await load(true); // the page now shows the current values; the edits stay for review
       } else {
         saveError = exc instanceof Error ? exc.message : 'Could not save settings.';
       }
@@ -288,6 +315,18 @@
       {/each}
     </ul>
   {:else}
+    {#if category === 'connections'}
+      <ConnectionsPanel
+        rules={schema.connections}
+        saved={loaded.connections ?? []}
+        bind:working={connWork}
+        bind:picks
+        {errors}
+        {secretsWritable}
+        {canEdit}
+        {api}
+      />
+    {/if}
     <div class="setting-rows">
       {#each rows as row (row.key)}
         <SettingRow

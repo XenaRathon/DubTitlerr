@@ -501,3 +501,174 @@ test('signing out of an edited settings page asks with the Unsaved changes dialo
     .click();
   await expect(page.getByRole('heading', { name: 'Open your review workspace' })).toBeVisible();
 });
+
+const LOCAL_URL = 'http://127.0.0.1:18842/healthz';
+const HOSTED_URL = 'http://127.0.0.1:18842/v1/chat/completions';
+
+async function addConnection(
+  page: Page,
+  fields: { name: string; kind?: string; url: string; model: string; key?: string },
+) {
+  await page.getByRole('button', { name: 'Add connection' }).click();
+  const card = page.locator('[data-connection]').last();
+  await card.getByLabel('Name', { exact: true }).fill(fields.name);
+  if (fields.kind) await card.getByLabel('Kind', { exact: true }).selectOption(fields.kind);
+  await card.getByLabel('URL', { exact: true }).fill(fields.url);
+  await card.getByLabel('Model', { exact: true }).fill(fields.model);
+  if (fields.key) await card.getByLabel('API key', { exact: true }).fill(fields.key);
+  return card;
+}
+
+test('a connection is created, picked for the repair stage, saved and tested with the Test button', async ({
+  page,
+}) => {
+  await openSignedIn(page, '#/settings/connections');
+  await addConnection(page, { name: 'fixture-local', url: LOCAL_URL, model: 'qwen3-4b-instruct' });
+  await page.getByLabel('Repair connection', { exact: true }).selectOption('fixture-local');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(page.getByLabel('Repair connection', { exact: true })).toHaveValue('fixture-local');
+  await page.getByRole('button', { name: 'Test connection fixture-local' }).click();
+  await expect(page.locator('#conn-0-result')).toContainText(/Connection ok in \d+ ms/);
+  await page.reload();
+  await expect(page.locator('[data-connection]')).toHaveCount(1);
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('fixture-local');
+});
+
+test('a key is write-only, and changing the URL says that the stored key will be cleared', async ({
+  page,
+}) => {
+  const key = 'sk-conn-key-0123456789abcdef';
+  await openSignedIn(page, '#/settings/connections');
+  const card = await addConnection(page, {
+    name: 'hosted',
+    kind: 'openai',
+    url: HOSTED_URL,
+    model: 'gpt-x',
+    key,
+  });
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(card.getByLabel('API key', { exact: true })).toHaveValue('');
+  await expect(card.getByLabel('API key', { exact: true })).toHaveAttribute('placeholder', /Set\./);
+  expect((await page.locator('body').innerText()) + (await page.content())).not.toContain(key);
+  await card.getByLabel('URL', { exact: true }).fill('http://127.0.0.1:18842/v2/chat/completions');
+  await expect(card.getByText('Changing the URL clears the stored key')).toBeVisible();
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(card.getByLabel('API key', { exact: true })).toHaveAttribute('placeholder', 'Not set');
+});
+
+test('a link-local URL is refused with red text under the URL field and nothing is saved', async ({
+  page,
+}) => {
+  await openSignedIn(page, '#/settings/connections');
+  const card = await addConnection(page, {
+    name: 'metadata',
+    url: 'http://169.254.169.254/latest',
+    model: 'm',
+  });
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(card.locator('.field-error')).toContainText('link-local');
+  await page.reload();
+  await expect(page.locator('[data-connection]')).toHaveCount(0);
+});
+
+test('a stage with no connection can still test the container environment settings', async ({ page }) => {
+  await openSignedIn(page, '#/settings/connections');
+  await page.getByRole('button', { name: 'Test repair environment settings' }).click();
+  await expect(page.locator('#env-result-repair')).toContainText(/Connection ok in \d+ ms/);
+  await expect(page.locator('#env-result-repair')).toHaveAttribute('role', 'status');
+  await page.getByRole('button', { name: 'Test verify environment settings' }).click();
+  await expect(page.locator('#env-result-verify')).toHaveAttribute('role', 'alert');
+});
+
+test('before login is enabled the connection key is read-only and says why', async ({ page }) => {
+  await page.route('**/api/settings', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        secrets_writable: false,
+        connections: [
+          {
+            name: 'hosted',
+            kind: 'openai',
+            url: HOSTED_URL,
+            model: 'gpt-x',
+            extra_body: { set: false },
+            timeout_connect: 10,
+            timeout_read: 120,
+            api_key: { set: true },
+          },
+        ],
+      },
+    });
+  });
+  await openSignedIn(page, '#/settings/connections');
+  const card = page.locator('[data-connection]').first();
+  await expect(card).toContainText('available after login is enabled');
+  await expect(card.locator('input[type="password"]')).toHaveCount(0);
+});
+
+test('the Connections page has no accessibility violations with a connection on it', async ({ page }) => {
+  await openSignedIn(page, '#/settings/connections');
+  await addConnection(page, { name: 'fixture-local', url: LOCAL_URL, model: 'm' });
+  await expectNoAxeViolations(page);
+});
+
+test('an extra body is write-only: shown as set, kept across saves, replaced only when a new one is typed', async ({
+  page,
+}) => {
+  await openSignedIn(page, '#/settings/connections');
+  const card = await addConnection(page, {
+    name: 'hosted',
+    kind: 'openai',
+    url: HOSTED_URL,
+    model: 'gpt-x',
+    key: 'sk-conn-key-0123456789abcdef',
+  });
+  await card.getByLabel('Replace body', { exact: true }).fill('{"tag": "zz-private-91"}');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(card.locator('.extra-state')).toHaveText('Extra request body: Set');
+  await expect(card.getByLabel('Replace body', { exact: true })).toHaveValue('');
+  expect(await page.content()).not.toContain('zz-private-91');
+  await card.getByLabel('Model', { exact: true }).fill('gpt-y');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  const kept = await (await page.request.get('/api/settings')).json();
+  expect(kept.connections[0]).toMatchObject({ model: 'gpt-y', extra_body: { set: true } });
+  await card.getByLabel('Replace body', { exact: true }).fill('{}');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(card.locator('.extra-state')).toHaveText('Extra request body: Not set');
+});
+
+test('the server refusals show under their own fields: a URL query, a short key, a decision host', async ({
+  page,
+}) => {
+  await openSignedIn(page, '#/settings/connections');
+  const card = await addConnection(page, {
+    name: 'hosted',
+    kind: 'openai',
+    url: 'http://127.0.0.1:18842/v1/chat/completions?token=x',
+    model: 'gpt-x',
+    key: 'short',
+  });
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(card.locator('.field-error').filter({ hasText: 'query or fragment' })).toBeVisible();
+  await card.getByLabel('URL', { exact: true }).fill(HOSTED_URL);
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(card.locator('.field-error').filter({ hasText: '8 to 512 characters' })).toBeVisible();
+  await card.getByLabel('API key', { exact: true }).fill('');
+  await card.getByLabel('URL', { exact: true }).fill('https://llm.example.net/v1/chat/completions');
+  await page.getByLabel('Decision model connection', { exact: true }).selectOption('hosted');
+  await page.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(page.locator('.stages .field-error')).toContainText(
+    'points at a host decision_client.py will not call (llm.example.net)',
+  );
+});
