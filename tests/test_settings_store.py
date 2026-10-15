@@ -270,3 +270,29 @@ def test_scrub_removes_every_stored_secret_from_text_that_came_from_outside():
     assert store.scrub(f"bad {SECRET} and sk-conn-key-12345678 and short", state) == "bad [redacted] and [redacted] and short"
     state.conn_keys = {"cloud": "short"}
     assert store.scrub("a short key stays", state) == "a short key stays", "too short to match safely"
+
+
+@pytest.mark.parametrize(
+    "bad_val",
+    [
+        "line1\nline2",
+        "line1\rline2",
+        "null\x00byte",
+        "x" * 513,
+        "   ",
+    ],
+)
+def test_load_drops_bad_secret_value_and_connection_key_with_note(env, tmp_path, bad_val):
+    bad_secret_file = {
+        "version": 1,
+        "values": {"PLEX_TOKEN": bad_val},
+        "connections": {"cloud": {"api_key": bad_val}},
+    }
+    (tmp_path / "secrets.json").write_text(json.dumps(bad_secret_file))
+    state = store.load(env)
+    assert "PLEX_TOKEN" not in state.secret_values
+    assert "cloud" not in state.conn_keys
+    notes_str = " ".join(state.notes)
+    assert "PLEX_TOKEN" in notes_str
+    assert "cloud" in notes_str
+    assert bad_val not in notes_str

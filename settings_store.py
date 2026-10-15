@@ -123,6 +123,17 @@ def ensure_secret_perms(path):
     return ""
 
 
+def _valid_secret(value):
+    return (
+        isinstance(value, str)
+        and "\n" not in value
+        and "\r" not in value
+        and "\x00" not in value
+        and len(value) <= 512
+        and bool(value.strip())
+    )
+
+
 def load(environ=None):
     """The current State. Never raises."""
     state = State()
@@ -161,12 +172,18 @@ def load(environ=None):
                 if not entry["editable"]:
                     state.notes.append(f"{k} is not editable in this release")
                     continue
-                if isinstance(v, str) and v:
+                if _valid_secret(v):
                     state.secret_values[k] = v
+                elif v is not None and v != "":
+                    state.notes.append(f"{k} ignored: must be one line of at most 512 characters")
             raw_conns = sdata.get("connections") if isinstance(sdata.get("connections"), dict) else {}
             for name, item in raw_conns.items():
-                if isinstance(item, dict) and isinstance(item.get("api_key"), str) and item["api_key"]:
-                    state.conn_keys[name] = item["api_key"]
+                if isinstance(item, dict) and "api_key" in item:
+                    k = item["api_key"]
+                    if _valid_secret(k):
+                        state.conn_keys[name] = k
+                    elif k is not None and k != "":
+                        state.notes.append(f"connection key {name} ignored: must be one line of at most 512 characters")
     return state
 
 
