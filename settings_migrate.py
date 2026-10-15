@@ -15,6 +15,7 @@ value it refused is skipped with a log note and never imported. After the migrat
 Idempotent: the marker is written last, and a rerun after a crash imports only what the store does not already hold."""
 
 import json
+import math
 import os
 import re
 
@@ -72,6 +73,16 @@ def _flag(text):
     return {"1": True, "0": False}.get(text)
 
 
+def _seed_timeout(environ, name, field):
+    """The container's own value for REPAIR_TIMEOUT_*, when it is a number from 1 to 600; else the default.
+    The Connection always emits its timeouts, so without this a raised REPAIR_TIMEOUT_READ would silently drop back to 120."""
+    try:
+        value = float((environ.get(name) or "").strip())
+    except ValueError:
+        return conns.TIMEOUT_DEFAULTS[field]
+    return value if math.isfinite(value) and 1 <= value <= 600 else conns.TIMEOUT_DEFAULTS[field]
+
+
 def import_profiles(environ, notes):
     """[(connection, key)] from REPAIR_PROFILES. Every profile or key that cannot be imported leaves a note; nothing raises."""
     raw = (environ.get("REPAIR_PROFILES") or "").strip()
@@ -96,6 +107,8 @@ def import_profiles(environ, notes):
             "url": entry.get("url"),
             "model": "",
             "extra_body": entry.get("extra_body") or {},
+            "timeout_connect": _seed_timeout(environ, "REPAIR_TIMEOUT_CONNECT", "timeout_connect"),
+            "timeout_read": _seed_timeout(environ, "REPAIR_TIMEOUT_READ", "timeout_read"),
         }
         if entry.get("model_secondary"):
             item["model_secondary"] = entry["model_secondary"]
@@ -153,16 +166,32 @@ def migrate(environ=None):
                         imported.append(key)
                     except reg.Invalid:
                         notes.append(f"runtime.env {key} skipped: not a valid value")
+            imported_keys = []
+            defer_profiles = False
             if not profiles_done:
                 names = {c["name"] for c in state.connections}
-                for conn, key in import_profiles(environ, notes):
+                profile_notes = []
+                profiles = import_profiles(environ, profile_notes)
+                if state.secrets_error and any(key for _, key in profiles):
+                    # save() leaves an unusable secrets.json alone, so a connection created now would lose its key for good: a
+                    # rerun skips connections that already exist. Defer the whole import (no connections, no marker) until fixed.
+                    defer_profiles = True
+                    profiles = []
+                    notes.append(
+                        f"profile import deferred: {state.secrets_error}; fix or reset secrets.json and the profiles "
+                        "(with their keys) are imported at the next start"
+                    )
+                else:
+                    notes.extend(profile_notes)
+                for conn, key in profiles:
                     if conn["name"] not in names:
                         state.connections.append(conn)
                         names.add(conn["name"])
                         imported.append(f"connection:{conn['name']}")
                         if key:
                             state.conn_keys[conn["name"]] = key
-                chosen = runtime.get("REPAIR_PROFILE")
+                            imported_keys.append(f"connection:{conn['name']}.api_key")
+                chosen = None if defer_profiles else runtime.get("REPAIR_PROFILE")
                 if chosen and chosen not in names:
                     notes.append(f"REPAIR_PROFILE {chosen!r} is not an imported profile; the repair stage is left unset")
                 elif chosen and "repair" not in state.stages:
@@ -170,13 +199,13 @@ def migrate(environ=None):
                     imported.append("stages")
             if imported:
                 store.save(state, environ)
-                store.audit("migration from runtime.env", imported, [f"connection:{n}.api_key" for n in state.conn_keys])
+                store.audit("migration from runtime.env", imported, imported_keys)
             if not runtime_done:
                 if os.path.exists(old):
                     os.replace(old, marker)
                 else:
                     store.atomic_write(marker, b"", 0o664)
-            if not profiles_done:
+            if not profiles_done and not defer_profiles:
                 store.atomic_write(profiles_marker, b"", 0o664)
     except OSError as e:
         notes.append(f"migration failed ({e.__class__.__name__}); retried at the next start")

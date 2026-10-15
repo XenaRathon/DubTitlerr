@@ -234,3 +234,68 @@ def test_a_chosen_profile_that_was_not_imported_leaves_a_note(env, tmp_path):
 def test_a_profile_list_that_is_not_json_is_one_note(env):
     env["REPAIR_PROFILES"] = "{nope"
     assert any("REPAIR_PROFILES" in n and "JSON" in n for n in mig.migrate(env))
+
+
+def test_migrated_connections_keep_the_containers_repair_timeouts(env):
+    """A raised REPAIR_TIMEOUT_READ (a slow hosted model) must survive the upgrade, not drop back to the default."""
+    env.update(REPAIR_PROFILES=json.dumps(PROFILES), REPAIR_TIMEOUT_CONNECT="20", REPAIR_TIMEOUT_READ="300")
+    mig.migrate(env)
+    for conn in store.load(env).connections:
+        assert (conn["timeout_connect"], conn["timeout_read"]) == (20.0, 300.0)
+
+
+@pytest.mark.parametrize("bad", ["", "abc", "0", "601", "-5", "nan", "inf", "1e9"])
+def test_an_unusable_container_timeout_falls_back_to_the_default(env, bad):
+    env.update(REPAIR_PROFILES=json.dumps({"local": PROFILES["local"]}), REPAIR_TIMEOUT_CONNECT=bad, REPAIR_TIMEOUT_READ=bad)
+    mig.migrate(env)
+    conn = store.load(env).connections[0]
+    assert (conn["timeout_connect"], conn["timeout_read"]) == (10.0, 120.0)
+
+
+def test_one_good_and_one_bad_timeout_are_judged_separately(env):
+    env.update(REPAIR_PROFILES=json.dumps({"local": PROFILES["local"]}), REPAIR_TIMEOUT_CONNECT="15", REPAIR_TIMEOUT_READ="9999")
+    mig.migrate(env)
+    conn = store.load(env).connections[0]
+    assert (conn["timeout_connect"], conn["timeout_read"]) == (15.0, 120.0)
+
+
+def test_a_corrupt_secrets_file_defers_the_whole_profile_import_when_a_profile_carries_a_key(env, tmp_path):
+    (tmp_path / "secrets.json").write_text("{nope")
+    env.update(REPAIR_PROFILES=json.dumps(PROFILES), CLOUD_API_KEY="sk-cloud-abcdefgh12345678")
+    (tmp_path / "runtime.env").write_text("REQUIRE_ENG=0\nREPAIR_PROFILE=cloud\n")
+    notes = mig.migrate(env)
+    assert any("deferred" in n and "secrets.json" in n for n in notes), notes
+    state = store.load(env)
+    assert state.connections == [] and state.stages == {}, "no connection without its key: a rerun would skip it, key included"
+    assert not (tmp_path / "profiles.migrated").exists()
+    assert state.values == {"REQUIRE_ENG": False} and (tmp_path / "runtime.env.migrated").exists(), "runtime values still import"
+    # after the operator repairs secrets.json, the next start imports everything, key included
+    (tmp_path / "secrets.json").unlink()
+    assert mig.migrate(env) == []
+    state = store.load(env)
+    assert [c["name"] for c in state.connections] == ["local", "cloud"] and state.conn_keys == {
+        "cloud": "sk-cloud-abcdefgh12345678"
+    }
+    assert state.stages == {"repair": "cloud"} and (tmp_path / "profiles.migrated").exists()
+
+
+def test_a_corrupt_secrets_file_does_not_defer_profiles_that_carry_no_key(env, tmp_path):
+    (tmp_path / "secrets.json").write_text("{nope")
+    env["REPAIR_PROFILES"] = json.dumps({"local": PROFILES["local"]})
+    assert mig.migrate(env) == []
+    assert [c["name"] for c in store.load(env).connections] == ["local"] and (tmp_path / "profiles.migrated").exists()
+    assert (tmp_path / "secrets.json").read_text() == "{nope"
+
+
+def test_the_audit_line_names_only_the_keys_this_run_imported(env, tmp_path, capsys):
+    state = store.load(env)
+    state.connections = [
+        dict(PROFILES["local"], name="old", kind="llamacpp", model="", extra_body={}, timeout_connect=10.0, timeout_read=120.0)
+    ]
+    state.conn_keys = {"old": "sk-already-there-0123456789"}
+    store.save(state, env)
+    capsys.readouterr()
+    env.update(REPAIR_PROFILES=json.dumps({"local": PROFILES["local"]}))
+    mig.migrate(env)
+    audit = [ln for ln in capsys.readouterr().out.splitlines() if "migration from runtime.env" in ln]
+    assert audit and "connection:old.api_key" not in audit[0] and "secrets=" not in audit[0]
