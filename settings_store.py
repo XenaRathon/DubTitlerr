@@ -229,7 +229,8 @@ def _dump(obj):
 
 
 def save(state, environ=None):
-    """Write secrets first, then settings (the caller holds the lock) and bump state.rev. Raises OSError."""
+    """Write secrets first, then settings (the caller holds the lock; the two files are not one atomic step) and bump state.rev.
+    Raises OSError."""
     new_rev = state.rev + 1
     plain = {
         "version": VERSION,
@@ -244,8 +245,9 @@ def save(state, environ=None):
         "connections": {n: {"api_key": k} for n, k in sorted(state.conn_keys.items())},
     }
     spath, ppath = settings_path(environ), secrets_path(environ)
-    _keep_prev(ppath, 0o600)
-    atomic_write(ppath, _dump(private), 0o600)
+    if not state.secrets_error:  # an unusable secrets.json is left as it is; only a reset-all moves it aside
+        _keep_prev(ppath, 0o600)
+        atomic_write(ppath, _dump(private), 0o600)
     _keep_prev(spath, 0o664)
     atomic_write(spath, _dump(plain), 0o664)
     state.rev = new_rev

@@ -4,6 +4,7 @@ the validated, all-or-nothing writes. Pure functions over an environ mapping and
 The role of the caller (user or admin) is enforced before these functions run, by the role table in review_auth.py: the routes
 are registered there from ROLE_ENTRIES. The one thing checked here is the secret gate, _secrets_writable()."""
 
+import errno
 import os
 
 import review_auth
@@ -19,6 +20,7 @@ ROLE_ENTRIES = {
     ("POST", "/api/settings/test"): "admin",
     ("POST", "/api/system/restart"): "admin",
 }
+SECRETS_NEED_LOGIN = "secrets can be changed only after login is enabled"
 RETIRED_ENV = ("REPAIR_PROFILES", "RUNTIME_VERIFY_BACKENDS", "RUNTIME_DECISION_MODELS")
 
 
@@ -131,6 +133,190 @@ def get_settings(environ=None):
     }
 
 
+# --- writing --------------------------------------------------------------------------------------------------------------
+
+
+def _write_failure(e):
+    if e.errno == errno.ENOSPC:
+        return 507, {"error": f"the config volume is full ({e.__class__.__name__})"}
+    return 503, {"error": f"the config volume is not writable ({e.__class__.__name__})"}
+
+
+def _validate_values(values):
+    """({KEY: ("set"|"reset"|"secret_set"|"secret_clear", canonical)}, {KEY: message}); a secret sent as "" means no change."""
+    plan, errors = {}, {}
+    for key, value in values.items():
+        entry = reg.REGISTRY.get(key) if isinstance(key, str) else None
+        if entry is None:
+            errors[str(key)] = "unknown setting"
+        elif not entry["editable"] and not (entry.get("legacy_override") and value is None):
+            errors[key] = "set through a Connection" if entry["managed_by"] == "connections" else "edit in a later release"
+        elif entry["secret"]:
+            if value == "":
+                continue
+            if value is None or (isinstance(value, dict) and value == {"clear": True}):
+                plan[key] = ("secret_clear", None)
+            elif isinstance(value, str) and "\n" not in value and "\r" not in value and "\x00" not in value and len(value) <= 512:
+                plan[key] = ("secret_set", value)
+            else:
+                errors[key] = 'must be one line of at most 512 characters, or {"clear": true}'
+        elif value is None:
+            plan[key] = ("reset", None)
+        else:
+            try:
+                plan[key] = ("set", reg.validate(key, value))
+            except reg.Invalid as e:
+                errors[key] = str(e)
+    return plan, errors
+
+
+def _apply(state, plan):
+    """Apply a validated plan to state; the keys that really changed, and the names of the secrets touched."""
+    changed, secret_keys = [], []
+    for key, (action, value) in plan.items():
+        if action == "set" and state.values.get(key, object()) != value:
+            state.values[key] = value
+            changed.append(key)
+        elif action == "reset" and key in state.values:
+            del state.values[key]
+            changed.append(key)
+        elif action == "secret_set" and state.secret_values.get(key) != value:
+            state.secret_values[key] = value
+            changed.append(key)
+            secret_keys.append(key)
+        elif action == "secret_clear" and key in state.secret_values:
+            del state.secret_values[key]
+            changed.append(key)
+            secret_keys.append(key)
+    return changed, secret_keys
+
+
+def _commit(environ, who, build, touches_secrets=False, prepare=None):
+    """Lock, run prepare() (file moves that must happen under the lock), load fresh, let build(state) -> (changed, secret_keys,
+    urls) or an (status, payload) refusal, save, audit. A corrupt settings.json refuses every save; a corrupt secrets.json
+    only the ones that touch secrets."""
+    try:
+        with store.locked(environ) as got:
+            if not got:
+                return 503, {"error": "settings are busy, try again"}
+            if prepare is not None:
+                prepare()
+            state = store.load(environ)
+            if state.error or (state.secrets_error and touches_secrets):
+                return 409, {
+                    "error": f"{state.error or state.secrets_error}; reset the settings before saving",
+                    "reset_required": True,
+                }
+            outcome = build(state)
+            if isinstance(outcome[0], int):
+                return outcome
+            changed, secret_keys, urls = outcome
+            if changed:
+                store.save(state, environ)
+                store.audit(who, changed, secret_keys, urls)
+            return 200, {
+                "ok": True,
+                "changed": sorted(changed),
+                "restart_required": sorted(k for k in changed if k in reg.REGISTRY and reg.REGISTRY[k]["applies"] == "restart"),
+                "revision": state.rev,
+            }
+    except OSError as e:
+        return _write_failure(e)
+
+
+def put_settings(body, environ=None, who="admin"):
+    environ = _env(environ)
+    if not isinstance(body, dict) or not isinstance(body.get("values", {}), dict):
+        return 400, {"errors": {"body": 'send {"values": {KEY: value}, "revision": N}'}}
+    extra = sorted(set(body) - {"values", "revision"})
+    if extra:
+        return 400, {"errors": {"body": f"unknown field: {extra[0]}"}}
+    if type(body.get("revision")) is not int:
+        return 400, {"errors": {"revision": "send the revision you loaded, as an integer"}}
+    plan, errors = _validate_values(body.get("values", {}))
+    touches_secrets = any(action.startswith("secret") for action, _ in plan.values())
+    if touches_secrets and not _secrets_writable():
+        return 403, {"error": SECRETS_NEED_LOGIN}
+    if errors:
+        return 400, {"errors": errors}
+
+    def build(state):
+        if body["revision"] != state.rev:
+            status, current = get_settings(environ)
+            return 409, {"error": "settings changed since you loaded them", "current": current}
+        changed, secret_keys = _apply(state, plan)
+        urls = {k: state.values[k] for k in changed if k in state.values and reg.REGISTRY[k]["type"] == "url" and state.values[k]}
+        return changed, secret_keys, urls
+
+    return _commit(environ, who, build, touches_secrets)
+
+
+def _move_aside(path):
+    os.replace(path, path + ".corrupt")
+
+
+def reset_settings(body, environ=None, who="admin"):
+    environ = _env(environ)
+    shape = 'send {"keys": [...]}, {"category": id} or {"all": true}'
+    if not isinstance(body, dict):
+        return 400, {"errors": {"body": shape}}
+    writable = _secrets_writable()
+    everything = body.get("all") is True
+    if isinstance(body.get("keys"), list):
+        keys = [k for k in body["keys"] if isinstance(k, str)]
+        bad = {k: "unknown setting" for k in keys if k not in reg.REGISTRY}
+        if bad:
+            return 400, {"errors": bad}
+        if any(reg.REGISTRY[k]["secret"] for k in keys) and not writable:
+            return 403, {"error": SECRETS_NEED_LOGIN}
+    elif isinstance(body.get("category"), str):
+        if body["category"] not in reg.CATEGORY_IDS:
+            return 400, {"errors": {"category": "unknown category"}}
+        keys = [k for k, e in reg.REGISTRY.items() if e["category"] == body["category"]]
+    elif everything:
+        keys = list(reg.REGISTRY)
+    else:
+        return 400, {"errors": {"body": shape}}
+    keys = [
+        k
+        for k in keys
+        if (reg.REGISTRY[k]["editable"] or reg.REGISTRY[k].get("legacy_override")) and (writable or not reg.REGISTRY[k]["secret"])
+    ]
+    clears_connections = everything or body.get("category") == "connections"
+    touches_secrets = any(reg.REGISTRY[k]["secret"] for k in keys) or (clears_connections and writable)
+
+    def prepare():
+        if not everything:
+            return
+        for path, unusable in (
+            (store.settings_path(environ), bool(store.load(environ).error)),
+            (store.secrets_path(environ), bool(store._read_json(store.secrets_path(environ))[1])),
+        ):
+            if unusable and os.path.exists(path):
+                _move_aside(path)
+
+    def build(state):
+        plan = {k: ("secret_clear" if reg.REGISTRY[k]["secret"] else "reset", None) for k in keys}
+        changed, secret_keys = _apply(state, plan)
+        if clears_connections:
+            if state.connections:
+                state.connections = []
+                changed.append("connections")
+            if state.stages:
+                state.stages = {}
+                changed.append("stages")
+            if writable and state.conn_keys:
+                state.conn_keys = {}
+                changed.append("connection keys")
+                secret_keys.append("connection keys")
+        return changed, secret_keys, {}
+
+    status, payload = _commit(environ, who, build, touches_secrets, prepare if everything else None)
+    if status == 200:
+        payload = {**payload, "reset": payload.pop("changed")}
+    return status, payload
+
+
 # --- dispatch -------------------------------------------------------------------------------------------------------------
 
 
@@ -140,6 +326,10 @@ def handle(method, path, body=None, environ=None, who="admin", opener=None):
         return 200, reg.schema()
     if method == "GET" and route == "/api/settings":
         return get_settings(environ)
+    if method == "PUT" and route == "/api/settings":
+        return put_settings(body, environ, who)
+    if method == "POST" and route == "/api/settings/reset":
+        return reset_settings(body, environ, who)
     if method == "POST" and route == "/api/settings/test":
         return review_settings.handle(method, route, body, environ=environ, opener=opener)
     return 404, {"error": "no such route"}

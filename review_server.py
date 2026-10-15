@@ -65,7 +65,6 @@ import review_apply
 import review_auth
 import review_glossary
 import review_requests
-import review_settings_write
 import review_status
 import review_webhooks
 import settings_api
@@ -274,6 +273,7 @@ _JSON_REQUIRED = frozenset(
         ("PUT", "/api/schedule"),
         ("PUT", "/api/settings"),
         ("POST", "/api/settings/test"),
+        ("POST", "/api/settings/reset"),
         ("POST", "/api/glossary"),
         ("POST", "/api/users"),
         ("PUT", "/api/me/password"),
@@ -293,8 +293,6 @@ def _anime_root():
 ADMIN_ROUTES[("POST", "/api/requests")] = lambda body: review_requests.handle(
     "POST", "/api/requests", body, anime_root=_anime_root()
 )
-ADMIN_ROUTES[("PUT", "/api/settings")] = lambda body: review_settings_write.put_settings(body)
-ADMIN_ROUTES[("POST", "/api/settings/reset")] = lambda body: review_settings_write.reset_settings()
 ADMIN_ROUTES[("PUT", "/api/schedule")] = lambda body: review_requests.handle(
     "PUT", "/api/schedule", body, anime_root=_anime_root()
 )
@@ -1127,8 +1125,9 @@ def _route(method: str, path: str, bare: str, body: dict, decision, client: str,
         return 200, handle_apply(str(body.get("stem", "")))
     if method == "GET" and bare in ("/api/requests", "/api/schedule"):
         return review_requests.handle("GET", bare, body, anime_root=_anime_root())
-    if bare in ("/api/settings", "/api/settings/schema", "/api/settings/test"):
-        return settings_api.handle(method, bare, body)
+    if bare in ("/api/settings", "/api/settings/schema", "/api/settings/reset", "/api/settings/test"):
+        p = decision.principal
+        return settings_api.handle(method, bare, body, who=f"{p.kind}:{p.name}" if p and p.name else "admin")
     if path == "/api/status" and method == "GET":
         # ONE read of the cache global: list and fill time always come from the same fill.
         snapshot = _STEMS_CACHE

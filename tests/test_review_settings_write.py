@@ -486,28 +486,7 @@ def test_the_exporter_swallows_its_own_errors_so_a_loop_never_dies(cfg):
 # --- routes ---------------------------------------------------------------------------------------------------------
 
 
-def test_put_route_auth_matrix(cfg):
-    body = {"repair_model": "a-model"}
-    assert rs.route("PUT", "/api/settings", body, None)[0] == 401
-    assert rs.route("PUT", "/api/settings", body, "wrong")[0] == 401
-    assert not runtime(cfg).exists()
-    status, payload = rs.route("PUT", "/api/settings", body, TOKEN)
-    assert (status, payload["ok"]) == (200, True) and runtime(cfg).exists()
 
-
-def test_reset_route_auth_matrix(cfg):
-    w.put_settings({"repair_model": "a-model"})
-    assert rs.route("POST", "/api/settings/reset", {}, None)[0] == 401
-    assert rs.route("POST", "/api/settings/reset", {}, "wrong")[0] == 401
-    assert runtime(cfg).exists()
-    assert rs.route("POST", "/api/settings/reset", {}, TOKEN)[0] == 200
-    assert not runtime(cfg).exists()
-
-
-def test_put_route_surfaces_validation_errors(cfg):
-    kw = dict(admin_token=ADMIN)
-    assert rs.route("PUT", "/api/settings", {"nope": 1}, TOKEN, **kw) == (400, {"error": "unknown key: nope"})
-    assert rs.route("PUT", "/api/settings", {"repair_model": "a b"}, TOKEN, **kw) == (400, {"error": "invalid model format"})
 
 
 def test_get_route_serves_the_registry_payload(cfg):
@@ -540,15 +519,6 @@ def send(srv, method, path, raw, headers=None):
     conn.close()
     return r.status, (json.loads(body) if body else {})
 
-
-def test_http_put_with_both_tokens_and_garbage_json(server, cfg):
-    auth = {rs.TOKEN_HEADER: TOKEN}
-    assert send(server, "PUT", "/api/settings", b'{"repair_model": "http-model"}', auth)[0] == 200
-    assert "REPAIR_MODEL=http-model" in lines(cfg)
-    assert send(server, "PUT", "/api/settings", b"{not json", auth) == (400, {"error": "invalid JSON"})
-    assert send(server, "PUT", "/api/settings", b"{not json", {rs.TOKEN_HEADER: TOKEN}) == (400, {"error": "invalid JSON"})
-    assert send(server, "POST", "/api/settings/reset", b"", auth)[0] == 200
-    assert not runtime(cfg).exists()
 
 
 def test_the_verify_backend_list_matches_the_pipeline_exactly():
@@ -945,11 +915,6 @@ def test_get_lists_acquire_apply_in_overrides_and_pending_as_a_bool(cfg):
     (cfg / "effective.env").write_text("ACQUIRE_APPLY=0\n")
     assert w.augment_get(*review_settings.handle("GET", "/api/settings"))[1]["pending"] == {}
 
-
-def test_acquire_apply_put_is_an_admin_route(cfg):
-    body = {"acquire_apply": False}
-    assert rs.route("PUT", "/api/settings", body, None)[0] == 401
-    assert rs.route("PUT", "/api/settings", body, TOKEN)[0] == 200
 
 
 def pending_of(cfg):
