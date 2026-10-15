@@ -65,13 +65,15 @@ import review_apply
 import review_auth
 import review_glossary
 import review_requests
-import review_settings
 import review_settings_write
 import review_status
 import review_webhooks
+import settings_api
 import unresolved
 from common import log
 from decisions import show_for
+
+review_auth.register_routes(settings_api.ROLE_ENTRIES)
 
 REVIEW_PORT = int(os.environ.get("REVIEW_PORT", "8842"))
 UI_DIST = Path(__file__).resolve().parent / "web" / "dist"
@@ -1125,11 +1127,8 @@ def _route(method: str, path: str, bare: str, body: dict, decision, client: str,
         return 200, handle_apply(str(body.get("stem", "")))
     if method == "GET" and bare in ("/api/requests", "/api/schedule"):
         return review_requests.handle("GET", bare, body, anime_root=_anime_root())
-    if (method, bare) in (("GET", "/api/settings"), ("POST", "/api/settings/test")):
-        # The connection test is a read-only probe, so it needs a signed-in caller only.
-        result = review_settings.handle(method, bare, body)
-        # GET gains the profile names, pending overrides and whether writes are possible (review_settings_write.py).
-        return review_settings_write.augment_get(*result) if method == "GET" else result
+    if bare in ("/api/settings", "/api/settings/schema", "/api/settings/test"):
+        return settings_api.handle(method, bare, body)
     if path == "/api/status" and method == "GET":
         # ONE read of the cache global: list and fill time always come from the same fill.
         snapshot = _STEMS_CACHE

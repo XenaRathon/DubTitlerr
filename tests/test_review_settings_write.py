@@ -510,11 +510,10 @@ def test_put_route_surfaces_validation_errors(cfg):
     assert rs.route("PUT", "/api/settings", {"repair_model": "a b"}, TOKEN, **kw) == (400, {"error": "invalid model format"})
 
 
-def test_get_route_returns_the_merged_payload(cfg):
+def test_get_route_serves_the_registry_payload(cfg):
     status, payload = rs.route("GET", "/api/settings", {}, TOKEN)
     assert status == 200
-    assert {"settings", "secrets", "source", "profiles", "pending", "writable"} <= set(payload)
-    assert payload["profiles"] == ["cloud", "local"]
+    assert {"values", "revision", "restart_pending", "secrets_writable"} <= set(payload)
     assert rs.route("GET", "/api/settings", {}, None)[0] == 401
 
 

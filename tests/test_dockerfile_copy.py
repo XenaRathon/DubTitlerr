@@ -177,3 +177,20 @@ def test_healthcheck_targets_healthz():
         body = f.read()
     assert re.search(r"^HEALTHCHECK\b.*CMD\b", body, re.M), "no HEALTHCHECK instruction found"
     assert "/healthz" in body, "the HEALTHCHECK must target /healthz"
+
+
+def test_every_module_reachable_from_an_entrypoint_is_copied_into_the_image():
+    """One hop deeper than the check above: a helper that a helper imports is just as absent from the image."""
+    copied = _copied()
+    seen, queue, missing = set(), [ep for ep in ENTRYPOINTS if os.path.exists(os.path.join(ROOT, ep))], {}
+    while queue:
+        module = queue.pop()
+        if module in seen:
+            continue
+        seen.add(module)
+        for imported in _local_imports(os.path.join(ROOT, module)):
+            name = imported + ".py"
+            if name not in copied:
+                missing.setdefault(name, []).append(module)
+            queue.append(name)
+    assert not missing, f"not COPY'd into the image but reachable from an entrypoint: {missing}"
