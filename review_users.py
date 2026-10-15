@@ -34,17 +34,23 @@ def _set_password(name: str, new: str) -> int:
 
 
 def reset_admin(name: str) -> int:
+    problem = review_auth.validate_username(name)
+    if problem:
+        raise review_auth.Invalid(problem)
     try:
         users = review_auth.read_users()
     except review_auth.Unreadable:
         path = review_auth.users_path()
         aside = f"{path}.corrupt-{int(time.time())}"
-        os.replace(path, aside)
+        with review_auth._locked(path):
+            if os.path.exists(path):
+                os.replace(path, aside)
         print(f"users.json was unreadable and is set aside as {aside}")
         users = []
     password = secrets.token_urlsafe(12)
     if not users:
         review_auth.create_user(name, "admin", password)
+        review_auth.sessions().revoke_user(name)
     else:
         row = review_auth.find_user(users, name)
         if row is None:
