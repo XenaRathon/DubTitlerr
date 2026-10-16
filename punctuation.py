@@ -39,7 +39,7 @@ import string
 
 import reflow
 import unresolved
-from common import llm_chat
+from common import LEGACY_BACKENDS, inherit_repair_backend, llm_chat
 
 # The detector must ask the SAME question reflow asks when it splits, or it would "fix"
 # segments reflow can already split and skip ones it cannot.
@@ -55,7 +55,24 @@ PUNCT = string.punctuation + "".join(chr(c) for c in (0x2013, 0x2014, 0x2026, 0x
 
 RESTORE_PUNCTUATION = os.environ.get("RESTORE_PUNCTUATION", "1")
 RESTORE_MIN_RUN = int(os.environ.get("RESTORE_MIN_RUN", "2"))
-RESTORE_BACKEND = os.environ.get("RESTORE_BACKEND", os.environ.get("REPAIR_BACKEND", "ollama"))
+
+
+def resolve_restore_backend(env=None):
+    """(backend, problem) for the restoration pass. RESTORE_BACKEND, when set and non-empty, must be llamacpp or ollama (the
+    only request shapes this pass speaks). Unset, it follows REPAIR_BACKEND by the glossary stages' rule
+    (common.inherit_repair_backend): a repair `openai` or any other value is refused instead of being handed on."""
+    env = os.environ if env is None else env
+    explicit = (env.get("RESTORE_BACKEND") or "").strip()
+    fix = "set RESTORE_BACKEND to llamacpp or ollama"
+    if explicit:
+        if explicit in LEGACY_BACKENDS:
+            return explicit, ""
+        return "", f"RESTORE_BACKEND={explicit!r} is not llamacpp or ollama: {fix}"
+    return inherit_repair_backend(env.get("REPAIR_BACKEND"), "punctuation restoration", fix)
+
+
+RESTORE_BACKEND, RESTORE_PROBLEM = resolve_restore_backend()
+_refusal_logged = False
 RESTORE_MODEL = os.environ.get("RESTORE_MODEL", os.environ.get("REPAIR_MODEL", "qwen3:8b"))
 OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 RESTORE_LLAMACPP_URL = os.environ.get(
@@ -258,6 +275,12 @@ def restore(words: list[dict], segments: list[dict], rec=None, stem=None) -> Non
 
     if RESTORE_PUNCTUATION == "0" or not words or not segments:
         return
+    if RESTORE_PROBLEM:
+        global _refusal_logged
+        if not _refusal_logged:
+            _refusal_logged = True
+            print(f"punctuation restoration is off: {RESTORE_PROBLEM}", flush=True)
+        return  # the episode generates exactly as it did before this pass existed
     texts = segment_texts(words, len(segments))
     sent = find_runs(texts, RESTORE_MIN_RUN)
     count("restore_runs_seen", len(find_runs(texts, 2)))  # every run; sent may be fewer
@@ -295,6 +318,7 @@ def restore(words: list[dict], segments: list[dict], rec=None, stem=None) -> Non
                     proposed_text=new[:300],
                     segments=[a, b],
                     words=n_words,
+                    **unresolved.dismissal(orig, new),
                 )
             if rec is not None and rejected_events < MAX_REJECT_EVENTS:
                 rejected_events += 1

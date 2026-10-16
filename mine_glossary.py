@@ -12,6 +12,7 @@ Built with help of Claude (Anthropic).
 """
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -27,6 +28,15 @@ EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_ext
 
 GLOSS_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
 MIN_COUNT = int(os.environ.get("MINE_MIN_COUNT", "3"))
+# Lowercase-share gate (see admit): ordinary words show up lowercase in the same text.
+# Measured over five shows: real names sit at 0.0, the highest real word-name is Merry at 0.10;
+# plain junk runs 0.62 (School) to 0.95 (Life). 0.6 does NOT clear every ordinary word: Triple .55,
+# Door .56, Mayor .54, Editor .52, Pirates .51, Knight/Giant/Dose/Quick .50 stay admitted on purpose
+# (Door is half of "Heaven's Door", Mayor may be a name). Series terms Stand/Fruit/Straw/Sword are
+# dropped by design. Guard: at least 3 lowercase sightings.
+MAX_LOWER_SHARE = 0.6
+MIN_LOWER_EVIDENCE = 3
+MIN_SHARE_FLOOR = 0.3  # a lower MINE_MAX_LOWER_SHARE would drop real names (Heaven .25): ignored
 SKIP_FILE_RE = re.compile(r"\bNC(ED|OP|BD)\b|-\s*scene\b|creditless", re.I)
 # words that are capitalized for position/grammar, not proper nouns — never mine these.
 # V2 C8: sourced from data/common_proper_noun_deny.txt (one word per line, # comments
@@ -183,7 +193,28 @@ def _fold(w):
     return _POSS_RE.sub("", w)
 
 
-def mine_text(text, bare, poss, midsentence, forms=None):
+_announced = set()  # overrides already printed this process: one line each, never per word
+
+
+def _env_num(name, default, cast, low, high):
+    """Read at CALL time so the env var can be set for one run without a restart. A value that
+    does not parse, is not finite, or falls outside [low, high] gives the default. The first
+    time a non-default value is in effect, one line says so (a typo'd override that silently
+    changes what is admitted is otherwise invisible in the logs)."""
+    try:
+        v = cast(os.environ.get(name, default))
+        ok = math.isfinite(v) and low <= v <= high
+    except (ValueError, TypeError, ArithmeticError):  # ArithmeticError: OverflowError on a huge int
+        return default
+    if not ok:
+        return default
+    if v != default and (name, v) not in _announced:
+        _announced.add((name, v))
+        print(f"mine: {name}={v} (default {default})")
+    return v
+
+
+def mine_text(text, bare, poss, midsentence, forms=None, lower=None):
     """Count capitalized proper-noun candidates into TWO lanes and track which appear
     MID-sentence (not just sentence-initial, where any word is capitalized).
 
@@ -201,13 +232,20 @@ def mine_text(text, bare, poss, midsentence, forms=None):
     {folded: {surface: count}} -- so a consumer can show a reviewer the evidence a term
     was escalated on rather than a bare number. Purely observational: no admission rule
     reads it, and it exists here rather than in the caller so there is exactly one
-    tokeniser and one fold in the repo (D3a needs the forms; task 13)."""
+    tokeniser and one fold in the repo (D3a needs the forms; task 13).
+
+    `lower` (optional) counts the all-lowercase tokens the candidate regex would accept in
+    capitalised form ({"like": n}) -- the evidence admit() uses to tell an ordinary word
+    ("Like") from a name ("Zoro", which the text never writes lowercase). Observational
+    only, and off by default."""
     for sent in re.split(r"[.!?…]+|\n", text):
         words = re.findall(r"[A-Za-z][A-Za-z'’\-]{2,}", sent)
         for i, w in enumerate(words):
             core = w.strip("'’-")
             folded = _fold(core)
             if not re.match(r"^[A-Z][a-z]{3,}$", folded):
+                if lower is not None and re.match(r"^[a-z]{4,}$", folded):  # "school's" counts for "school"
+                    lower[folded] = lower.get(folded, 0) + 1
                 continue
             if forms is not None:
                 seen = forms.setdefault(folded, {})
@@ -220,7 +258,9 @@ def mine_text(text, bare, poss, midsentence, forms=None):
                 midsentence.add(core)
 
 
-def admit(bare, poss, midsentence, min_count=None, common=None, existing: Collection = frozenset()):
+def admit(
+    bare, poss, midsentence, min_count=None, common=None, existing: Collection = frozenset(), lower=None, dropped=None
+):
     """Two-lane admission -> (new_names, review_queue).
 
         bare >= min_count                              -> auto-append (unchanged behaviour)
@@ -233,17 +273,32 @@ def admit(bare, poss, midsentence, min_count=None, common=None, existing: Collec
     for a systematic false negative on the names that matter most.
 
     The mid-sentence requirement gates BOTH lanes, as it always has: without it every
-    sentence-initial word would queue for review."""
+    sentence-initial word would queue for review.
+
+    `lower` (from mine_text) adds the lowercase-share gate on BOTH lanes: a candidate whose
+    lowercase form is lower / (lower + bare + possessive) >= MINE_MAX_LOWER_SHARE, with at least
+    MINE_MIN_LOWER_EVIDENCE lowercase sightings, is an ordinary word and is skipped (and
+    appended to `dropped` when given). This is evidence from the text, not a dictionary:
+    Brook is kept as long as the text only ever writes it capitalised."""
     min_count = MIN_COUNT if min_count is None else min_count
     common = COMMON if common is None else common
     new, queue = [], {}
+    max_share = _env_num("MINE_MAX_LOWER_SHARE", MAX_LOWER_SHARE, float, MIN_SHARE_FLOOR, 1)
+    min_evidence = _env_num("MINE_MIN_LOWER_EVIDENCE", MIN_LOWER_EVIDENCE, int, 1, math.inf)
     for t in sorted(midsentence):
         if t.lower() in common or t.lower() in existing:
             continue
         b, p = bare.get(t, 0), poss.get(t, 0)
+        if b + p < min_count:
+            continue
+        lo = lower.get(t.lower(), 0) if lower else 0
+        if lo >= min_evidence and lo / (lo + b + p) >= max_share:
+            if dropped is not None:
+                dropped.append(t)
+            continue
         if b >= min_count:
             new.append(t)
-        elif b + p >= min_count:
+        else:
             queue[t] = {"reason": REVIEW_REASON, "bare": b, "possessive": p}
     return new, queue
 
@@ -251,8 +306,9 @@ def admit(bare, poss, midsentence, min_count=None, common=None, existing: Collec
 def mine(text, min_count=None, common=None, existing: Collection = frozenset()):
     """mine_text + admit over one block of text -> (new_names, review_queue)."""
     bare, poss, mid = {}, {}, set()
-    mine_text(text, bare, poss, mid)
-    return admit(bare, poss, mid, min_count, common, existing)
+    lower = {}
+    mine_text(text, bare, poss, mid, lower=lower)
+    return admit(bare, poss, mid, min_count, common, existing, lower)
 
 
 def queue_for_review(cfg, queue):
@@ -285,6 +341,14 @@ def main():
     show_dir = sys.argv[1].rstrip("/")
     show = os.path.basename(show_dir)
     gpath = os.path.join(GLOSS_DIR, show + ".json")
+    import glossary_lock
+
+    with glossary_lock.locked(gpath, "mine") as ok:  # the whole read-count-write: a busy glossary skips this sweep's mining
+        if ok:
+            _mine(show_dir, show, gpath)
+
+
+def _mine(show_dir, show, gpath):
     cfg = {"show": show, "initial_prompt": "", "names": [], "hard_fixes": {}}
     if os.path.exists(gpath):
         try:
@@ -293,7 +357,7 @@ def main():
             print("mine: bad glossary, starting fresh:", e)
     existing = {n.lower() for n in cfg.get("names", [])}
 
-    counter, poss, mid = {}, {}, set()
+    counter, poss, mid, lower = {}, {}, set(), {}
     mined_eps = 0
     read_eps = 0
     for dp, dns, fs in os.walk(show_dir):
@@ -315,10 +379,13 @@ def main():
             read_eps += 1
             txt = eng_sub_text(os.path.join(dp, fn))
             if txt:
-                mine_text(txt, counter, poss, mid)
+                mine_text(txt, counter, poss, mid, lower=lower)
                 mined_eps += 1
 
-    new, queue = admit(counter, poss, mid, MIN_COUNT, COMMON, existing)
+    dropped = []
+    new, queue = admit(counter, poss, mid, MIN_COUNT, COMMON, existing, lower, dropped)
+    if dropped:
+        print(f"mine[{show}]: lowercase gate dropped {len(dropped)} ordinary word(s) -> {dropped[:15]}")
     queued = queue_for_review(cfg, queue)  # D5: the crossing lane goes to a human, never auto-appended
     if not new and not queued:
         print(f"mine[{show}]: {mined_eps} new ep(s), no new terms (dict has {len(existing)})")

@@ -20,6 +20,24 @@ export APP_DIR
 : "${STOP_FLAG:=/tmp/dubtitlerr.stop}"
 export STOP_FLAG
 rm -f "$STOP_FLAG" # a stale flag from an earlier `docker stop` + `docker start` must not stop a fresh run
+# >>> stored settings
+# First the one-time import of an old runtime.env (idempotent). Then the container- and server-scope settings from settings.json /
+# secrets.json, exported BEFORE the defaults below and before any child
+# starts, so MERGE_INTERVAL, MERGE_WINDOW, REVIEW_PORT and the other restart-applied keys take the stored value. --boot also
+# exports DT_BOOT_<KEY>, the value the container held, so the page can still say what a stored value overrides. --boot never
+# prints a secret; the review server's own secrets are exported in run_review_server below. A missing or failing exporter
+# changes nothing: the container environment stands.
+if [ -f "$APP_DIR/review_settings_write.py" ]; then
+	python3 "$APP_DIR/review_settings_write.py" migrate || echo "settings migration failed (continuing)"
+	eval "$(python3 "$APP_DIR/review_settings_write.py" export --boot --scope container)" || true
+	eval "$(python3 "$APP_DIR/review_settings_write.py" export --boot --scope server)" || true
+fi
+# <<< stored settings
+# One id per container start. /api/status reports it, so a page that asked for a restart can tell the new server from the old one
+# that is still answering while the builder finishes its episode. A crash-restarted review server keeps the id. (Not DT_BOOT_*:
+# that prefix belongs to the exporter's per-key copies.)
+DT_CONTAINER_BOOT_ID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s)
+export DT_CONTAINER_BOOT_ID
 : "${MERGE_INTERVAL:=600}"    # seconds between merge sweeps
 : "${RESCAN_INTERVAL:=21600}" # seconds to idle after a full generate sweep (default 6h)
 : "${REVIEW_RESTART:=15}"     # seconds before restarting the review server after an exit
@@ -61,10 +79,23 @@ merge_pid=$!
 # The generate loop below is what keeps the container alive. The review server is stateless,
 # so unlike the other loops it IS killed on SIGTERM (the subshell's TERM trap does it) and is
 # not restarted once the stop flag exists.
+# >>> stored server secrets
+# The stored server-scope secrets (WEBHOOK_TOKEN, REVIEW_TOKEN, ...) are restart-applied, but --boot above never prints a secret,
+# so they are exported here, inside the server's own background subshell, which then becomes the server (exec). The container's
+# other processes (merge and generate loops, their children) never see them, and no DT_BOOT_ copy of a container secret is made:
+# --secrets-only prints only a 1/empty flag saying whether the container held a value of its own. Read again on every restart of
+# the server, so a restart picks up a changed secret. A missing or failing exporter leaves the container environment.
+run_review_server() {
+	if [ -f "$APP_DIR/review_settings_write.py" ]; then
+		eval "$(python3 "$APP_DIR/review_settings_write.py" export --scope server --secrets-only 2>/dev/null)" || true
+	fi
+	exec python3 "$APP_DIR/review_server.py"
+}
+# <<< stored server secrets
 (
 	while :; do
 		if stop_requested; then break; fi
-		python3 "$APP_DIR/review_server.py" &
+		run_review_server &
 		c=$!
 		trap 'kill $c 2>/dev/null; exit 0' TERM
 		wait "$c" || echo "review_server exited (restarting in ${REVIEW_RESTART}s)"

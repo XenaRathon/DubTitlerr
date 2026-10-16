@@ -28,6 +28,7 @@ import json
 import os
 import tempfile
 import time
+import unicodedata
 
 # The four outcomes a reviewer can reach. `force` admits a repair accept_repair refused;
 # it overrides the judgement gates but never fits_card, because card timing is immutable.
@@ -61,6 +62,13 @@ def key(text: str) -> str:
     return " ".join((text or "").replace(chr(0x2019), chr(0x27)).lower().split())
 
 
+def is_blank(text) -> bool:
+    """Whether ``text`` shows nothing on a card: empty, whitespace, or only invisible characters. Zero-width and other format
+    characters (Unicode category Cf: U+200B-D, U+2060, U+FEFF, soft hyphen, direction marks), spaces (Z*) and controls (Cc)
+    all count, so a "correction" made of them is no correction. Punctuation does not: "?!" is a card."""
+    return not any(unicodedata.category(ch)[0] not in ("C", "Z") for ch in (text or ""))
+
+
 def record(store: dict, orig: str, proposed: str, verdict: str, text: str = "", note: str = "", promoted=None) -> dict:
     """Append one human verdict. Returns the SAME store, mutated -- callers hold it and
     hand it to save().
@@ -86,7 +94,7 @@ def record(store: dict, orig: str, proposed: str, verdict: str, text: str = "", 
         return store
     if verdict == "correct" and key(text) == o:
         verdict, text = "reject", ""
-    if verdict == "correct" and not (text or "").strip():
+    if verdict == "correct" and is_blank(text):
         return store
     if verdict not in VERDICTS:
         return store

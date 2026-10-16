@@ -6,6 +6,8 @@ import os
 import shutil
 import time
 
+import pytest
+
 import mux
 
 
@@ -391,7 +393,7 @@ def test_mkv_stamp_write_failure_never_deletes_the_only_copy(tmp_path, monkeypat
     assert mux.process(str(v), apply=True) == "stamp-write-failed"
     assert v.exists() and v.read_bytes() == b"original-bytes"
     assert common.read_stages(stem)["mux"]["outcome"] == "unwritable"
-    assert not (tmp_path / "ep.muxtmp.mkv").exists()
+    assert not list(tmp_path.glob("ep*.muxtmp.mkv"))
 
 
 def test_mp4_stamp_write_failure_leaves_orig_and_no_mkv(tmp_path, monkeypatch):
@@ -404,7 +406,7 @@ def test_mp4_stamp_write_failure_leaves_orig_and_no_mkv(tmp_path, monkeypatch):
     assert v.exists() and v.read_bytes() == b"original-bytes"
     assert not (tmp_path / "ep.mkv").exists()
     assert common.read_stages(stem)["mux"]["outcome"] == "unwritable"
-    assert not (tmp_path / "ep.muxtmp.mkv").exists()
+    assert not list(tmp_path.glob("ep*.muxtmp.mkv"))
 
 
 def test_stamp_written_from_the_temp_file_matches_the_final_file(tmp_path, monkeypatch):
@@ -471,8 +473,10 @@ def test_failed_cross_device_copy_keeps_temp_output_and_drops_stamp(tmp_path, mo
 
     assert mux.process(str(v), apply=True) == "error"
     # moved aside so a later sweep (rebuild or orphan cleanup) cannot destroy it
-    assert not (tmp_path / "ep.muxtmp.mkv").exists()
-    recovered = tmp_path / "ep.muxtmp.mkv.recovered"
+    assert not list(tmp_path.glob("ep*.muxtmp.mkv"))
+    recovered_files = list(tmp_path.glob("ep*.muxtmp.mkv.recovered"))
+    assert len(recovered_files) == 1
+    recovered = recovered_files[0]
     assert recovered.exists() and recovered.read_bytes() == b"muxed-complete-payload"
     assert not (tmp_path / ("ep" + mux.STAMP_SUFFIX)).exists()
     assert common.read_stages(stem)["mux"]["outcome"] == "crashed"
@@ -559,12 +563,14 @@ def test_failed_finalize_rename_fails_marker_blocks_next_sweep(tmp_path, monkeyp
     assert mux.process(str(v), apply=True) == "error"
     marker = tmp_path / ("ep" + mux.RECOVERY_SUFFIX)
     doc = json.loads(marker.read_text())
-    assert doc["fallback"] == str(tmp_path / "ep.muxtmp.mkv")
-    assert doc["kept"] == str(tmp_path / "ep.muxtmp.mkv.recovered")
+    assert doc["fallback"].startswith(str(tmp_path / "ep.")) and doc["fallback"].endswith(".muxtmp.mkv")
+    assert doc["kept"].startswith(str(tmp_path / "ep.")) and doc["kept"].endswith(".muxtmp.mkv.recovered")
 
     _heal_and_remux_differently(monkeypatch)
     assert mux.process(str(v), apply=True) == "recovery-pending"
-    assert (tmp_path / "ep.muxtmp.mkv").read_bytes() == b"muxed-complete-payload"
+    fallback_files = list(tmp_path.glob("ep*.muxtmp.mkv"))
+    assert len(fallback_files) == 1
+    assert fallback_files[0].read_bytes() == b"muxed-complete-payload"
     assert not (tmp_path / ("ep" + mux.STAMP_SUFFIX)).exists()
     rec = common.read_stages(stem)["mux"]
     assert rec["outcome"] == "crashed" and rec["detail"] == "recovery-pending"
@@ -580,8 +586,10 @@ def test_failed_finalize_rename_succeeds_marker_blocks_next_sweep(tmp_path, monk
 
     _heal_and_remux_differently(monkeypatch)
     assert mux.process(str(v), apply=True) == "recovery-pending"
-    assert (tmp_path / "ep.muxtmp.mkv.recovered").read_bytes() == b"muxed-complete-payload"
-    assert not (tmp_path / "ep.muxtmp.mkv").exists()
+    recovered_files = list(tmp_path.glob("ep*.muxtmp.mkv.recovered"))
+    assert len(recovered_files) == 1
+    assert recovered_files[0].read_bytes() == b"muxed-complete-payload"
+    assert not list(tmp_path.glob("ep*.muxtmp.mkv"))
     assert not (tmp_path / ("ep" + mux.STAMP_SUFFIX)).exists()
     assert common.read_stages(stem)["mux"]["detail"] == "recovery-pending"
 
@@ -622,8 +630,8 @@ def test_plain_rename_failure_takes_no_recovery_path_and_retries(tmp_path, monke
     monkeypatch.setattr(mux.os, "replace", eacces)
     assert mux.process(str(v), apply=True) == "error"
     assert not (tmp_path / ("ep" + mux.RECOVERY_SUFFIX)).exists()
-    assert not (tmp_path / "ep.muxtmp.mkv.recovered").exists()
-    assert not (tmp_path / "ep.muxtmp.mkv").exists()
+    assert not list(tmp_path.glob("ep*.muxtmp.mkv.recovered"))
+    assert not list(tmp_path.glob("ep*.muxtmp.mkv"))
     assert not (tmp_path / ("ep" + mux.STAMP_SUFFIX)).exists()
     assert v.read_bytes() == b"original-bytes"
     assert common.read_stages(stem)["mux"]["outcome"] == "crashed"
@@ -1345,3 +1353,253 @@ def test_process_post_stamp_cleanup_removes_a_stale_ass_part(tmp_path, monkeypat
     assert mux.process(str(v), apply=True) == "muxed"
     assert not ass.exists()
     assert not part.exists()
+
+
+# --- phase 28 F2: an unmeasurable duration must refuse, never pass -----------------------------------------------------
+
+
+@pytest.mark.parametrize("orig_s,out_s", [(0.0, 0.0), (5.0, 0.0), (0.0, 5.0), (float("nan"), 5.0), (5.0, float("inf"))])
+def test_verify_refuses_when_either_duration_cannot_be_measured(monkeypatch, orig_s, out_s):
+    """ffprobe missing or failing makes video_duration() 0.0 for BOTH files; abs(0 - 0) <= DUR_TOL used to pass and a truncated
+    remux replaced the full episode. Finite, positive measurements of both videos are required."""
+    monkeypatch.setattr(mux, "identify", lambda p: _ok_info())
+    monkeypatch.setattr(mux, "video_duration", lambda p: orig_s if p == "orig.mkv" else out_s)
+    assert mux.verify("orig.mkv", "out.mkv") == "duration-unmeasurable"
+
+
+def test_verify_refuses_a_truncated_output_when_every_ffprobe_call_fails(monkeypatch):
+    monkeypatch.setattr(mux, "identify", lambda p: _ok_info())
+    monkeypatch.setattr(mux.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no ffprobe")))
+    assert mux.verify("full.mkv", "truncated.mkv") == "duration-unmeasurable"
+
+
+def test_two_concurrent_mux_calls_never_write_same_temp_path(tmp_path):
+    import subprocess
+
+    stem = str(tmp_path / "ep")
+    cmd = ["python3", "-c", "import mux, sys; print(mux.temp_path(sys.argv[1]))", stem]
+    p1 = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+    p2 = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+    out1, _ = p1.communicate()
+    out2, _ = p2.communicate()
+    assert p1.returncode == 0
+    assert p2.returncode == 0
+    path1 = out1.strip()
+    path2 = out2.strip()
+    assert path1 != path2
+    assert path1.endswith(".muxtmp.mkv")
+    assert path2.endswith(".muxtmp.mkv")
+    assert path1.startswith(stem + ".")
+    assert path2.startswith(stem + ".")
+
+
+def test_source_changed_mid_mux_is_not_overwritten(tmp_path, monkeypatch, capsys):
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    initial_bytes = b"original-bytes-at-start"
+    v.write_bytes(initial_bytes)
+    modified_bytes = b"modified-video-bytes-by-another-process"
+
+    def mutate_during_mkvmerge(cmd, **kw):
+        out_path = cmd[cmd.index("-o") + 1]
+        with open(out_path, "wb") as f:
+            f.write(b"muxed-complete-payload")
+        v.write_bytes(modified_bytes)
+
+    monkeypatch.setattr(mux.subprocess, "run", mutate_during_mkvmerge)
+
+    assert mux.process(str(v), apply=True) == "refused"
+    assert v.read_bytes() == modified_bytes
+    assert not list(tmp_path.glob("*.muxtmp.mkv"))
+    assert not (tmp_path / ("ep" + mux.STAMP_SUFFIX)).exists()
+    out = capsys.readouterr().out
+    assert "changed during mux" in out or "changed" in out
+
+
+def test_two_concurrent_mux_runs_loser_returns_already_muxed(tmp_path, monkeypatch):
+    import common
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+
+    first_call = True
+
+    def simulate_concurrent_winner(cmd, **kw):
+        nonlocal first_call
+        out_path = cmd[cmd.index("-o") + 1]
+        with open(out_path, "wb") as f:
+            f.write(b"muxed-complete-payload")
+        if first_call:
+            first_call = False
+            # Simulate a concurrent winner completing during this run's mkvmerge
+            v.write_bytes(b"winner-muxed-payload")
+            stamp_path = stem + mux.STAMP_SUFFIX
+            mux.write_stamp(stamp_path, str(v))
+            common.write_stage(stem, "mux", "ok")
+
+    monkeypatch.setattr(mux.subprocess, "run", simulate_concurrent_winner)
+
+    outcome = mux.process(str(v), apply=True)
+    assert outcome == "already-muxed"
+    assert common.read_stages(stem)["mux"]["outcome"] == "ok"
+    assert mux.stamp_valid(mux.read_stamp(stem + mux.STAMP_SUFFIX), str(v))
+
+
+def test_two_concurrent_mux_runs_both_outcomes_muxed_and_already_muxed(tmp_path, monkeypatch):
+    import concurrent.futures
+    import threading
+    import time
+
+    import common
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    lock = threading.Lock()
+    order = []
+    second_started = threading.Event()
+
+    def slow_mkvmerge(cmd, **kw):
+        out_path = cmd[cmd.index("-o") + 1]
+        with open(out_path, "wb") as f:
+            f.write(b"muxed-complete-payload")
+        with lock:
+            order.append(out_path)
+            is_first = len(order) == 1
+        if is_first:
+            second_started.wait(timeout=2.0)
+            time.sleep(0.05)
+        else:
+            second_started.set()
+
+    monkeypatch.setattr(mux.subprocess, "run", slow_mkvmerge)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        f1 = ex.submit(mux.process, str(v), True)
+        f2 = ex.submit(mux.process, str(v), True)
+        outs = {f1.result(), f2.result()}
+
+    assert outs == {"muxed", "already-muxed"}
+    assert common.read_stages(stem)["mux"]["outcome"] == "ok"
+    assert mux.stamp_valid(mux.read_stamp(stem + mux.STAMP_SUFFIX), str(v))
+
+
+def test_race_interleaving_second_check_keeps_winner_stamp(tmp_path, monkeypatch):
+    import common
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    real_write_stamp = mux.write_stamp
+    calls = {"count": 0}
+
+    def hooked_write_stamp(stamp_path, out_path, **kw):
+        calls["count"] += 1
+        res = real_write_stamp(stamp_path, out_path, **kw)
+        if calls["count"] == 1:
+            mux._IDENTIFY_CACHE.clear()
+            # Run A to completion while B is inside write_stamp
+            outcome_a = mux.process(str(v), apply=True)
+            assert outcome_a == "muxed"
+        return res
+
+    monkeypatch.setattr(mux, "write_stamp", hooked_write_stamp)
+
+    outcome_b = mux.process(str(v), apply=True)
+    assert outcome_b == "already-muxed"
+    stamp_path = stem + mux.STAMP_SUFFIX
+    assert os.path.exists(stamp_path)
+    assert mux.stamp_valid(mux.read_stamp(stamp_path), str(v))
+    assert common.read_stages(stem)["mux"]["outcome"] == "ok"
+
+
+def test_process_cleans_up_old_unique_temps_for_stem(tmp_path, monkeypatch):
+    import time
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    now = time.time()
+    seven_hours_ago = now - 7 * 3600
+    one_hour_ago = now - 1 * 3600
+
+    old_temp = tmp_path / "ep.1234.abcdef12.muxtmp.mkv"
+    old_temp.write_bytes(b"old-partial")
+    os.utime(old_temp, (seven_hours_ago, seven_hours_ago))
+
+    fresh_temp = tmp_path / "ep.5678.12345678.muxtmp.mkv"
+    fresh_temp.write_bytes(b"fresh-in-progress")
+    os.utime(fresh_temp, (one_hour_ago, one_hour_ago))
+
+    other_temp = tmp_path / "other_ep.9999.deadbeef.muxtmp.mkv"
+    other_temp.write_bytes(b"other-old")
+    os.utime(other_temp, (seven_hours_ago, seven_hours_ago))
+
+    unrelated = tmp_path / "notes.txt"
+    unrelated.write_text("hello")
+
+    mux.process(str(v), apply=True)
+
+    assert not old_temp.exists(), "old temp of same stem must be removed"
+    assert fresh_temp.exists(), "fresh temp of same stem must be kept"
+    assert other_temp.exists(), "temp of another stem must be kept"
+    assert unrelated.exists(), "unrelated file must be kept"
+
+
+def test_process_keeps_old_unique_temp_when_recovery_marker_exists(tmp_path, monkeypatch):
+    import time
+
+    v, stem = _real_stamp_setup(tmp_path, monkeypatch)
+    seven_hours_ago = time.time() - 7 * 3600
+
+    rec_temp = tmp_path / "ep.1234.abcdef12.muxtmp.mkv"
+    rec_temp.write_bytes(b"recovered-bytes")
+    os.utime(rec_temp, (seven_hours_ago, seven_hours_ago))
+
+    marker = tmp_path / ("ep" + mux.RECOVERY_SUFFIX)
+    marker.write_text("{}")
+
+    mux.process(str(v), apply=True)
+
+    assert rec_temp.exists(), "temp with recovery marker must be kept"
+
+
+def test_source_unchanged_boundary_and_tolerance(tmp_path):
+    f = tmp_path / "video.mkv"
+    f.write_bytes(b"initial-payload-123")
+    st0 = os.stat(f)
+
+    # 1. Exact match => unchanged
+    assert mux._source_unchanged(str(f), st0) is True
+
+    # 2. mtime jitter of 0.4 s => unchanged
+    os.utime(f, (st0.st_atime, st0.st_mtime + 0.4))
+    assert mux._source_unchanged(str(f), st0) is True
+
+    # 3. touched file (mtime +5 s) => changed
+    os.utime(f, (st0.st_atime, st0.st_mtime + 5.0))
+    assert mux._source_unchanged(str(f), st0) is False
+
+    # Reset mtime
+    os.utime(f, (st0.st_atime, st0.st_mtime))
+
+    # 4. size change => changed
+    f.write_bytes(b"longer-initial-payload-123456")
+    os.utime(f, (st0.st_atime, st0.st_mtime))
+    assert mux._source_unchanged(str(f), st0) is False
+
+
+def test_source_unchanged_same_size_same_mtime_replacement_is_accepted_blind_spot(tmp_path):
+    f = tmp_path / "video.mkv"
+    f.write_bytes(b"initial-payload-123")
+    st0 = os.stat(f)
+
+    # Replaced with different inode, same size and same mtime
+    replacement = tmp_path / "replacement.mkv"
+    replacement.write_bytes(b"initial-payload-123")
+    os.utime(replacement, (st0.st_atime, st0.st_mtime))
+    os.replace(replacement, f)
+
+    st1 = os.stat(f)
+    assert st1.st_ino != st0.st_ino  # inode changed
+
+    # Inode/device are dropped, so this is an accepted blind spot (considered unchanged)
+    assert mux._source_unchanged(str(f), st0) is True
+
+
+
+
+
+

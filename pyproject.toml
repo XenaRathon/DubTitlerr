@@ -1,6 +1,6 @@
 [project]
 name = "dubtitlerr"
-version = "0.2.2"
+version = "0.3.0"
 requires-python = ">=3.11"
 dependencies = ["pysubs2>=1.7", "faster-whisper>=1.2", "jellyfish>=1.0"]
 [project.optional-dependencies]
@@ -23,6 +23,7 @@ py-modules = []
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["real_accounts: exercises the real review_auth account functions (first-run, 401 vs 409); every other suite gets accounts stubbed as installed by conftest.py"]
 
 [tool.ruff]
 line-length = 130

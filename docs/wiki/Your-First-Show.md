@@ -48,7 +48,7 @@ llama-server \
 ```
 
 `Q6_K` is what this project runs. There is no `--chat-template-kwargs
-'{"enable_thinking":false}'` here: that flag exists to stop a *thinking* model emitting
+'{"enable_thinking":false}'` here: that flag exists to stop a _thinking_ model emitting
 `<think>` blocks, and `qwen3-4b-instruct` has no thinking mode to disable. Verified
 2026-09-02 — the instruct model returns clean completions without it. If you swap in
 `qwen3-4b` or `qwen3.5-*`, which do think, add the flag back.
@@ -171,35 +171,24 @@ scene with dialogue.
 
 ---
 
-## Step 5 — Look at what the repair stage was unsure about
+## Step 5: Look at what the repair stage was unsure about
 
 Open **http://localhost:8842**.
 
-The first thing the log printed on startup was an access token:
+On your first visit, the server opens the setup wizard at `/review/setup`. Create your administrator username and password here. You only need to do this once.
 
-```
-review server: generated an access token, stored /config/review_token (0600)
-review server: token = ...
-```
+If you provided `REVIEW_USERNAME` and `REVIEW_PASSWORD` in your Compose environment, the setup page is skipped and you can sign in directly.
 
-You can also read it back at any time:
-
-```sh
-docker exec <container> cat /config/review_token
-```
-
-The page shows a tree of shows, seasons and episodes. Open your episode. You are looking at
-**only the lines the pipeline was unsure about** — not the whole episode. Each row shows what
-was transcribed, what the repair model proposed, and the lines either side for context.
+After signing in, open your episode in the review workspace. You are looking at only the lines the pipeline was unsure about, not the whole episode. Each row shows what was transcribed, what the repair model proposed, and the lines either side for context.
 
 For each one, choose:
 
-- **accept** — the proposal is right
-- **reject** — keep the original
-- **correct** — neither is right; type what the dub actually says
-- **force** — admit a repair the mechanical gate refused
+- **accept**: the proposal is right
+- **reject**: keep the original
+- **correct**: neither is right; type what the dub actually says
+- **force**: admit a repair the mechanical gate refused
 
-Then press **Save verdicts**.
+Then press **Save**.
 
 ---
 

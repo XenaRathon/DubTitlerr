@@ -27,8 +27,40 @@ Env:
   OLLAMA_URL           default http://127.0.0.1:11434/api/generate
   REPAIR_MODEL         default qwen3-4b-instruct   (see the note at MODEL: a live
                          2026-09-01 anchored bake-off against real production data)
-  REPAIR_BACKEND         ollama | llamacpp  (default llamacpp; see the note at
+  REPAIR_BACKEND         ollama | llamacpp | openai  (default llamacpp; see the note at
                          REPAIR_BACKEND — V2 A1 added the dispatch, the default moved later)
+  openai backend (REPAIR_BACKEND=openai; any OpenAI-compatible chat API):
+  REPAIR_OPENAI_URL      full chat/completions URL
+  REPAIR_OPENAI_KEY_ENV  the NAME of the env var holding the API key (read at call time; trailing
+                         CR/LF is stripped; the value is never logged)
+  REPAIR_MAX_TOKENS      max_tokens, default 1024, minimum 1 (a bad value warns and uses the default)
+  REPAIR_EXTRA_BODY      optional JSON object merged into the request body, e.g.
+                         {"enable_thinking": false} (cannot replace model/messages; checked per call)
+  REPAIR_OPENAI_RETRIES  retries after HTTP 429 / 5xx, default 2, clamped to 0..5 (so up to 3 attempts); waits a finite
+                         Retry-After capped at 30 s, else 2 s then 4 s. HTTP 400/404/409/413/422 (on every
+                         backend, llamacpp and ollama too) mean "this request was rejected": the line
+                         gets no repair, no retry; if EVERY request that reached the model is rejected
+                         the episode is refused (wrong model id or URL). 401/403/408/429/5xx and
+                         transport errors count as the backend being unreachable.
+  Failure handling (all backends, including the default llamacpp/ollama):
+  REPAIR_UNREACHABLE_REFUSE_PCT  default 10 (1..100): refuse the episode (keep the shipped srt, stage
+                         backend-unreachable) when the backend failed this percent or more of the
+                         targets; the loop stops as soon as that is certain
+  REPAIR_MAX_CONSECUTIVE_UNREACHABLE  default 5, minimum 1: that many failures in a row = outage, stop
+                         and refuse
+  REPAIR_RETRY_SLEEP_BUDGET  default 600 s, minimum 0: total retry sleep per episode; once spent (0 =
+                         from the start) each remaining target gets a single attempt, except that a
+                         Retry-After of 0 s still retries
+  REPAIR_REQUEST_DEADLINE  default 300 s (min 10): total wall time of the response to ONE HTTP request,
+                         counted from after the connection is made (connecting is bounded by
+                         REPAIR_TIMEOUT_CONNECT); REPAIR_TIMEOUT_READ alone is per socket read and a
+                         trickling server defeats it
+  REPAIR_EPISODE_DEADLINE  default 3600 s (0 or less = off): wall time per episode, checked between targets,
+                         before each retry sleep and before the secondary-model call; exceeded = refuse
+                         like an outage, logging the elapsed time and how far it got
+  STOP_FLAG              soft stop (set by container_run.sh): checked between targets and before any
+                         retry; repair stops without rewriting the srt and records the failed stage
+                         `stopped`, so the next pass re-runs it
   REPAIR_LLAMACPP_URL    default http://127.0.0.1:8090/v1/chat/completions
                          (chat endpoint: the raw /completion path applies no chat
                          template and yields empty output from instruct models)
@@ -67,9 +99,12 @@ Requires ffmpeg/ffprobe + pysubs2.  Built with help of Claude (Anthropic).
 import csv
 import http.client
 import json
+import math
 import os
 import re
+import socket
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -81,7 +116,42 @@ import ordering
 import qc
 import reflow
 import unresolved
-from common import MEDIA_GID, MEDIA_UID, atomic_write, dialogue_intervals, find_video, out_for, read_words, ts_srt, write_stage
+from common import (
+    MEDIA_GID,
+    MEDIA_UID,
+    atomic_write,
+    dialogue_intervals,
+    find_video,
+    out_for,
+    read_words,
+    stop_requested,
+    ts_srt,
+    write_stage,
+)
+
+_LOGGED_ONCE = set()
+
+
+def env_int(name, default, lo=None, hi=None):
+    """An integer env var, read safely: unset -> ``default``; not an integer -> ``default`` plus one
+    warning that names the variable (never its content); otherwise clamped to lo..hi. A typo in one
+    of these must not take down ``import repair`` for every backend."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        if name not in _LOGGED_ONCE:
+            _LOGGED_ONCE.add(name)
+            print(f"  WARNING {name} is not a whole number; using {default}", flush=True)
+        return default
+    if lo is not None:
+        value = max(value, lo)
+    if hi is not None:
+        value = min(value, hi)
+    return value
+
 
 OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 # qwen3-4b-instruct, not nanbeige4.2-3b -- flipped 2026-09-01 on a live anchored bake-off
@@ -108,7 +178,11 @@ REPAIR_BACKEND = os.environ.get("REPAIR_BACKEND", "llamacpp")
 # documented default could not have worked for anybody -- including the maintainer, who was
 # passing this explicitly and had no reason to notice.
 LLAMACPP_URL = os.environ.get("REPAIR_LLAMACPP_URL", "http://127.0.0.1:8090/v1/chat/completions")
-MODEL_SECONDARY = os.environ.get("REPAIR_MODEL_SECONDARY", MODEL)
+# Empty means unset: the settings exporter writes REPAIR_MODEL_SECONDARY= when no Connection names a second model.
+MODEL_SECONDARY = os.environ.get("REPAIR_MODEL_SECONDARY") or MODEL
+OPENAI_URL = os.environ.get("REPAIR_OPENAI_URL", "")
+OPENAI_KEY_ENV = os.environ.get("REPAIR_OPENAI_KEY_ENV", "")
+OPENAI_MAX_TOKENS = env_int("REPAIR_MAX_TOKENS", 1024, lo=1)
 TIMEOUT_CONNECT = float(os.environ.get("REPAIR_TIMEOUT_CONNECT", "10"))
 TIMEOUT_READ = float(os.environ.get("REPAIR_TIMEOUT_READ", "120"))
 LOGPROB_MIN = float(os.environ.get("LOGPROB_MIN", "-0.4"))  # mid-confidence-and-lower (C1)
@@ -121,6 +195,102 @@ SRT_SUFFIX = ".eng.dubtitles.srt"
 
 def log(*a):
     print(*a, flush=True)
+
+
+_sleep = time.sleep  # indirection so tests can run the retry loop without sleeping
+
+
+def _openai_retries():
+    """REPAIR_OPENAI_RETRIES (default 2, clamped to 0..5; garbage -> 2 with one warning), read per call."""
+    return env_int("REPAIR_OPENAI_RETRIES", 2, lo=0, hi=5)
+
+
+# HTTP statuses that are about THIS request (bad payload, unknown model, too large, a content filter),
+# not about the backend: the line gets no repair and the episode carries on. Everything else that fails
+# (401/403 bad key, 408, 429, 5xx, transport) is outage-like: it must never silently ship zero repairs.
+_REJECTED_STATUSES = frozenset({400, 404, 409, 413, 422})
+_last_reject = None  # status of the last request-scoped rejection from llm_openai; read via _take_reject()
+
+
+def _deadline_passed():
+    return _episode_deadline_at is not None and time.monotonic() >= _episode_deadline_at
+
+
+def _client_rejection(e):
+    """True (after recording it) when ``e`` is an HTTP error about this one request: the caller returns ""
+    for the line instead of reporting the backend unreachable. Shared by every backend."""
+    global _last_reject
+    if isinstance(e, _HttpError) and e.status in _REJECTED_STATUSES:
+        log(f"  llm fail: HTTP {e.status} (the request was rejected; no repair for this line)")
+        _last_reject = e.status
+        return True
+    return False
+
+
+def _take_reject():
+    global _last_reject
+    status, _last_reject = _last_reject, None
+    return status
+
+
+_episode_started_at = None
+_episode_limit_s = 0
+_episode_deadline_at = None  # time.monotonic() value after which this episode is out of time; None = no limit
+_retry_budget_left = None  # seconds of retry sleep this episode may still spend; None = unlimited (no episode)
+_retry_slept = 0.0  # total seconds spent in retry sleeps; lets callers time the attempts alone
+
+
+def _retry_sleep(seconds):
+    global _retry_slept, _retry_budget_left
+    _sleep(seconds)
+    _retry_slept += seconds
+    if _retry_budget_left is not None:
+        _retry_budget_left -= seconds
+
+
+def _retry_wait(retry_after, attempt):
+    """Seconds to wait before retry number ``attempt`` (0-based): a finite Retry-After of
+    0 or more, capped at 30 s; anything else (absent, nan, inf, negative, an HTTP-date) backs
+    off 2 s then 4 s."""
+    try:
+        wait = float(retry_after)
+        if math.isfinite(wait) and wait >= 0:
+            return min(wait, 30.0)
+    except (TypeError, ValueError):
+        pass
+    return 2.0 * 2**attempt
+
+
+def _log_once(tag, *a):
+    """Log a config problem on the first call only (it repeats identically for every card)."""
+    if tag not in _LOGGED_ONCE:
+        _LOGGED_ONCE.add(tag)
+        log(*a)
+
+
+def clean_api_key(raw):
+    """The key from an env value, or None when it is unusable. Strips surrounding whitespace
+    (a CRLF .env leaves a trailing \\r); anything left that is not printable, space-free ASCII
+    is a config error -- http.client would refuse it with an error text that quotes the key."""
+    key = (raw or "").strip()
+    if not key or any(not 33 <= ord(ch) <= 126 for ch in key):
+        return None
+    return key
+
+
+def _parse_extra_body(raw):
+    """REPAIR_EXTRA_BODY -> dict, ValueError on bad JSON. Parsed per call by llm_openai, not
+    at import: a typo must not take down every importer, and must not silently send requests
+    without the provider flag the operator meant."""
+    if not raw.strip():
+        return {}
+    try:
+        extra = json.loads(raw)
+    except ValueError as e:
+        raise ValueError(f"REPAIR_EXTRA_BODY is not valid JSON: {e}") from e
+    if not isinstance(extra, dict):
+        raise ValueError("REPAIR_EXTRA_BODY must be a JSON object")
+    return extra
 
 
 def glossary_for(path, gloss_dir=GLOSSARY_DIR):
@@ -274,6 +444,15 @@ def build_prompt(asr, sub, gloss, prev_text="", next_text="", arc=None, episode=
     names = _glossary_terms(gloss, arc, episode)
     head = "You fix speech-recognition errors in one English-dub subtitle line.\n"
     name_line = (f"Reference spellings (VERIFICATION ONLY - this is NOT a list of names to insert): {names}.\n") if names else ""
+    # Only with reference spellings to refer to AND the name-part check on (REPAIR_KEEP_NAME_PARTS, default on): the rule and the
+    # check switch on together, so REPAIR_KEEP_NAME_PARTS=0 costs no prompt change (and no stale human verdicts).
+    parts_rule = (
+        "- Write each name exactly as the line says it: a given name or surname said alone stays alone, and a full "
+        "name stays full. The reference spellings list long forms only for spelling - never add or remove a name part "
+        "because of them.\n"
+        if names and _keep_name_parts()
+        else ""
+    )
     ref_intro = (
         (
             "A DIFFERENT translation of this moment is quoted below; use it only to "
@@ -289,6 +468,7 @@ def build_prompt(asr, sub, gloss, prev_text="", next_text="", arc=None, episode=
         "- You MUST NOT change any proper noun unless it is an obvious phonetic "
         "misspelling of a reference spelling above.\n"
         "- Never insert a name that is not already in the line.\n"
+        f"{parts_rule}"
         "- Do NOT turn ordinary words into names. Keep the wording and length almost identical.\n\n"
         "Example -> ASR line: it worked Now we run\n"
         "Corrected line: It worked. Now we run.\n"
@@ -309,28 +489,72 @@ def overlap_ref(ivals, a, b):
     return " ".join(hits)[:300]
 
 
-def _post_json(url, body):
+def _request_deadline():
+    """REPAIR_REQUEST_DEADLINE: wall-clock seconds one HTTP request may take in total (default 300, min 10).
+    REPAIR_TIMEOUT_READ is per socket read, so a server that trickles a byte every few seconds never trips it."""
+    return env_int("REPAIR_REQUEST_DEADLINE", 300, lo=10)
+
+
+class _HttpError(RuntimeError):
+    """HTTP >= 400 from _post_json. Same text as before; ``status`` lets a caller log the code
+    alone and ``retry_after`` is the raw Retry-After header (or None) for a caller that retries."""
+
+    def __init__(self, status, message, retry_after=None):
+        super().__init__(message)
+        self.status = status
+        self.retry_after = retry_after
+
+
+def _post_json(url, body, headers=None):
     """POST body (dict) as JSON to url with separate connect (TIMEOUT_CONNECT) and read
     (TIMEOUT_READ) timeouts (V2 A2). stdlib's urllib.request.urlopen only exposes a single
     timeout for the whole call (connect + every read), so we go one layer lower via
     http.client: the connect timeout is set on the connection itself (used for connect()),
-    then the read timeout is set on the underlying socket right after connecting."""
+    then the read timeout is set on the underlying socket right after connecting.
+    ``headers`` are added to the default Content-Type (used by the openai backend)."""
     parsed = urllib.parse.urlsplit(url)
     conn_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
     conn = conn_cls(parsed.hostname, parsed.port, timeout=TIMEOUT_CONNECT)
+    deadline = _request_deadline()
+    expired = threading.Event()
+    sock = []  # the connected socket; conn.sock is reset to None as soon as a will-close response arrives
+
+    def _expire():  # shuts the socket down under whatever read is blocked on it
+        expired.set()
+        try:
+            sock[0].shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+
+    watchdog = threading.Timer(deadline, _expire)
+    watchdog.daemon = True
+    request_out = False  # set BEFORE conn.request() starts sending: from then on the server may have the request (and bill it)
     try:
         conn.connect()
         conn.sock.settimeout(TIMEOUT_READ)
+        sock.append(conn.sock)
+        watchdog.start()
         path = parsed.path or "/"
         if parsed.query:
             path += "?" + parsed.query
-        conn.request("POST", path, body=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        hdrs = {"Content-Type": "application/json", **(headers or {})}
+        payload = json.dumps(body).encode()  # serialised first: a body that cannot be encoded fails before any byte is sent
+        request_out = True
+        conn.request("POST", path, body=payload, headers=hdrs)
         resp = conn.getresponse()
         data = resp.read()
-        if resp.status >= 400:
-            raise RuntimeError(f"HTTP {resp.status}: {data[:200]!r}")
+        if resp.status >= 300:  # http.client never follows redirects; a 3xx body is not a JSON answer
+            getheader = getattr(resp, "getheader", None)
+            retry_after = getheader("Retry-After") if getheader else None
+            raise _HttpError(resp.status, f"HTTP {resp.status}: {data[:200]!r}", retry_after)
         return json.loads(data)
+    except Exception as e:
+        if expired.is_set():
+            raise TimeoutError(f"request deadline of {deadline}s exceeded") from None
+        e.not_sent = not request_out  # read by _is_transport_error: only a failure before transmission started may be re-sent
+        raise
     finally:
+        watchdog.cancel()
         conn.close()
 
 
@@ -468,7 +692,25 @@ def invents_name(orig, new, gloss):
     proper_cores = _proper_cores
     orig_all = {m.group(2).lower() for m in (glossary._TOKEN_RE.match(t) for t in (orig or "").split()) if m}
     known = {n.lower() for n in gloss["names"]} | {v.lower() for v in gloss["token_fixes"].values()}
+    known |= _phrase_tokens_in(new, gloss.get("phrases") or [])
     return any(c.lower() not in orig_all and c.lower() not in known for c in proper_cores(new))
+
+
+def _core_tokens(text):
+    """The lower-cased bare cores (glossary._TOKEN_RE strips surrounding punctuation) of ``text``'s whitespace tokens."""
+    return [m.group(2).lower() for m in (glossary._TOKEN_RE.match(t) for t in (text or "").split()) if m]
+
+
+def _phrase_tokens_in(text, phrases):
+    """The component tokens of every listed multi-word phrase that appears WHOLE (contiguous, case-insensitive) in ``text``.
+    A listed phrase vouches for its own words only where it is present as a phrase: 'Decken' alone, or 'Van Decken', is not
+    vouched by 'Van der Decken'. This is how a long form that verify wrote into `phrases` (not `names`) is recognised."""
+    toks, out = _core_tokens(text), set()
+    for phrase in phrases:
+        p = _core_tokens(phrase)
+        if len(p) > 1 and any(toks[i : i + len(p)] == p for i in range(len(toks) - len(p) + 1)):
+            out.update(p)
+    return out
 
 
 def substitutes_a_vouched_name(orig, new, gloss):
@@ -515,7 +757,82 @@ def substitutes_a_vouched_name(orig, new, gloss):
     return False
 
 
-def accept_repair(orig, new, ref, dur, gloss):
+# ON by default (the maintainer's decision, 2026-10-09); REPAIR_KEEP_NAME_PARTS=0 turns the check and its prompt rule off.
+# There is still no live measurement of it: the replay over the 728 Wano cues had no long forms in its cue context, so it
+# measured nothing either way, and the live glossary has no multi-word NAMES at all (verify writes long forms into phrases),
+# so the check also judges mined phrases like 'Grand Line' and 'Devil Fruit'. To measure: repair the Wano episodes with the
+# rebuilt glossary once on, once off, and judge the rejected_name_part cues.
+KEEP_NAME_PARTS_DEFAULT = "1"
+
+
+def _keep_name_parts():
+    """REPAIR_KEEP_NAME_PARTS=0 turns the name-part check off; unset: on (KEEP_NAME_PARTS_DEFAULT). Read per call."""
+    return os.environ.get("REPAIR_KEEP_NAME_PARTS", KEEP_NAME_PARTS_DEFAULT) != "0"
+
+
+def _name_tokens(text):
+    """Lower-cased bare cores of the tokens of ``text`` (punctuation stripped, as the name guards compare them)."""
+    cores = [m.group(2).lower() for m in (glossary._TOKEN_RE.match(t) for t in (text or "").split()) if m]
+    # a possessive is the same name: "Momonosuke's" -> "momonosuke"
+    return [re.sub(r"(?:['\u2019]s|['\u2019])$", "", c) or c for c in cores]
+
+
+def changes_name_parts(orig, new, gloss):
+    """True if ``new`` ADDS or REMOVES a part of a multi-word glossary name next to a name token ``orig`` already had.
+
+    A dub often says one name alone ('Momonosuke'), and the glossary now also lists the long form ('Kouzuki Momonosuke') as a
+    spelling reference. The line is the evidence of what was said: a given name or surname said alone stays alone, a full name
+    stays full. So an INSERT that completes a glossary full name around a token the line already had ('Momonosuke' ->
+    'Kouzuki Momonosuke'), or a DELETE that breaks one ('Kouzuki Momonosuke' -> 'Momonosuke'), is refused.
+
+    A same-length REPLACE is never judged, which is what keeps a misheard token fixable: 'Kojuki Momonosuke' -> 'Kouzuki
+    Momonosuke', 'Odin' -> 'Oden'. A replace that GROWS ('Zorro' -> 'Roronoa Zoro') is judged like an insert of its extra
+    tokens, unless the new tokens only re-space the old ('Grandline' -> 'Grand Line'). A name invented from nothing, with no
+    kept part ('I'm here.' -> 'Nico Robin, I'm here.'), is invents_name's business. Possessives count as the name.
+    Tokens are aligned with difflib on the lower-cased bare cores. A fansub reference does not rescue a refusal: the dub line is
+    the evidence of what was said, and this runs before any reference logic. Glossary PHRASES count as names here (verify writes
+    long forms there), so a mined phrase like 'Grand Line' is judged too -- one reason the check is opt-in."""
+    import difflib
+
+    full = set()
+    terms = (
+        list(gloss["names"]) + list(gloss["phrases"]) + list(gloss["token_fixes"].values()) + list(gloss["phrase_fixes"].values())
+    )
+    for t in terms:
+        toks = tuple(_name_tokens(t))
+        if len(toks) >= 2:
+            full.add(toks)
+    if not full:
+        return False
+    o, n = _name_tokens(orig), _name_tokens(new)
+    inserted, deleted, kept_new, kept_old = set(), set(), set(), set()
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, o, n, autojunk=False).get_opcodes():
+        if tag == "replace" and (j2 - j1) > (i2 - i1) and "".join(n[j1:j2]) != "".join(o[i1:i2]):
+            # A fixed token that also GREW ('Zorro' -> 'Roronoa Zoro', 'Kojuki' -> 'Kouzuki Momonosuke'): the extra tokens are
+            # an insert, the aligned ones count as kept. A pure re-spacing ('Grandline' -> 'Grand Line') adds no name part.
+            kept_new.update(range(j1, j2))
+            inserted.update(range(j1 + (i2 - i1), j2))
+        elif tag == "insert":
+            inserted.update(range(j1, j2))
+        elif tag == "delete":
+            deleted.update(range(i1, i2))
+        elif tag == "equal":
+            kept_old.update(range(i1, i2))
+            kept_new.update(range(j1, j2))
+
+    def broken(tokens, changed, kept):
+        for f in full:
+            for p in range(len(tokens) - len(f) + 1):
+                if tuple(tokens[p : p + len(f)]) == f:
+                    idx = set(range(p, p + len(f)))
+                    if idx & changed and idx & kept:
+                        return True
+        return False
+
+    return broken(n, inserted, kept_new) or broken(o, deleted, kept_old)
+
+
+def accept_repair(orig, new, ref, dur, gloss, prev_text=None):
     """Whether to write ``new`` over ``orig`` on a card lasting ``dur`` seconds.
 
     A dubtitle must carry what the DUB AUDIO says. The reference is a different translation
@@ -553,20 +870,199 @@ def accept_repair(orig, new, ref, dur, gloss):
     (``invents_name``, below) needs to know what the show's names ARE to tell a real
     correction from a fabricated one, so a caller that cannot say what those names are
     must not be allowed to silently skip the check by omitting the argument."""
-    if not new:
+    return rejecting_guard(orig, new, ref, dur, gloss, prev_text=prev_text) is None
+
+
+def _accept_punct_case_only() -> bool:
+    """REPAIR_ACCEPT_PUNCT_CASE_ONLY=1 (default off): see rejecting_guard. Read per call."""
+    return os.environ.get("REPAIR_ACCEPT_PUNCT_CASE_ONLY") == "1"
+
+
+_SENTENCE_END = re.compile(r"[.!?]")
+_ELLIPSIS = re.compile(r"\.{2,}|\u2026")
+_CLOSERS = "\"')]}\u201d\u2019"
+
+
+def _ends_sentence(text):
+    """Whether ``text`` (the end of a card, or the gap between two words) finishes a sentence: it holds a '.', '!' or '?' that is
+    not part of an ellipsis ('...', '\u2026'). Closing quotes and brackets after the mark do not matter."""
+    return bool(_SENTENCE_END.search(_ELLIPSIS.sub("", (text or "").rstrip(_CLOSERS + " \n"))))
+
+
+def _card_starts_sentence(prev_text):
+    """The card's first word starts a sentence only when the previous card finished one (or there is no previous card, ``""``).
+    ``None`` is 'no information': a lower-case start usually CONTINUES the previous card, so there is no card-initial leniency."""
+    if prev_text is None:
         return False
-    if new.lower() == (orig or "").lower():
-        return False  # nothing changed
+    end = prev_text.rstrip(_CLOSERS + " \n")
+    if not end:
+        return True
+    return end[-1] in ".!?" and not end.endswith(("..", "\u2026"))
+
+
+def _gap_signature(gap):
+    return (sorted(len(m) for m in re.findall(r"\.{2,}", gap)), gap.count("\u2026"))
+
+
+def _punct_only_added(old_gap, new_gap):
+    """``new_gap`` (the non-word, non-space characters between two words) is ``old_gap`` plus added '.' and ',' only: the old
+    characters survive in order, every extra is '.' or ',', and no ellipsis appears or grows."""
+    if old_gap == new_gap:
+        return True
+    i = 0
+    for ch in new_gap:
+        if i < len(old_gap) and ch == old_gap[i]:
+            i += 1
+        elif ch not in ".,":
+            return False
+    return i == len(old_gap) and _gap_signature(old_gap) == _gap_signature(new_gap)
+
+
+def _lenient_case_change(old, new, sentence_start, single_names, entry_covered):
+    """Whether turning the word ``old`` into ``new`` (equal ignoring case) is a case edit that cannot change meaning: the first
+    letter of a sentence, the pronoun i -> I, ok -> OK, a single-word glossary entry that is not an ordinary word (luffy -> Luffy,
+    not law -> Law), or a word that completes a whole multi-word glossary entry in sequence (devil fruit -> Devil Fruit, not a
+    lone line -> Line). Anything else (us -> US, march -> March, turkey -> Turkey) can turn a common word into a name or a
+    country, so it counts as a word change."""
+    if old == new:
+        return True
+    if sentence_start and old[:1].islower() and new == old[:1].upper() + old[1:]:
+        return True
+    if old == "i" and new == "I":
+        return True
+    if old.lower() == "ok" and new == "OK":
+        return True
+    if entry_covered:
+        return True
+    # Fails closed without a word list: the bundled fallback is 228 words, so 'rain' would look like a name.
+    return new in single_names and glossary.wordlist_status() != "missing" and not glossary.is_ordinary_word(new)
+
+
+def _guard_terminal_punct() -> bool:
+    """REPAIR_GUARD_TERMINAL_PUNCT=1 (default off): see terminal_punct_changed. Read per call."""
+    return os.environ.get("REPAIR_GUARD_TERMINAL_PUNCT") == "1"
+
+
+def _terminal_run(text):
+    """The run of '.', '!', '?' and the ellipsis character that ends ``text`` (closing quotes, brackets and spaces ignored)."""
+    t = (text or "").rstrip(_CLOSERS + " \n\t")
+    end = len(t)
+    while end and t[end - 1] in ".!?\u2026":
+        end -= 1
+    return t[end:]
+
+
+def terminal_punct_changed(orig, new) -> bool:
+    """True when ``new`` changes the KIND of a line's terminal punctuation in a way that changes tone or meaning: it
+    adds or removes a terminal '?' (question <-> statement, '!' <-> '?' included), or turns a trailing ellipsis ('...',
+    '\u2026') into '.' or '!' or the reverse ('Damn...' -> 'Damn!'). Comma <-> period, '.' <-> '!' and '?!' -> '?' are
+    style and pass. Only the END of the line counts. Measured on real accepted repairs this class is about 5 of the 7
+    harmful punctuation changes in a hand-judged 40."""
+    a, b = _terminal_run(orig), _terminal_run(new)
+    if ("?" in a) != ("?" in b):
+        return True
+    ell = lambda r: ".." in r or "\u2026" in r  # noqa: E731
+    return ell(a) != ell(b) and bool(a) and bool(b)
+
+
+def is_punct_case_only(orig, new, gloss=None, prev_text=None) -> bool:
+    """``new`` differs from ``orig`` (exactly) but changes no word and only ADDS punctuation: the words are the same SEQUENCE
+    (a reorder is a change), the punctuation between them differs only by added '.' and ',' (nothing removed, replaced or
+    reordered: hyphens, apostrophes outside a word, brackets, quotes, '?', '!', musical notes and ellipses all count; an added
+    ellipsis is not allowed), and each case change is on the lenient list (see _lenient_case_change; ``gloss`` supplies the
+    glossary entries, ``prev_text`` the previous card for the card-initial capital). Anything else is not punctuation-only and
+    meets the ordinary guards. unresolved.word_changes stays a multiset count for the dismissal rule."""
+    if not new or new == (orig or ""):
+        return False
+    fold = lambda t: (t or "").replace("\u2019", "'")  # noqa: E731
+    old_text, new_text = fold(orig), fold(new)
+    old_words = list(unresolved._WORD.finditer(old_text))
+    new_words = list(unresolved._WORD.finditer(new_text))
+    if len(old_words) != len(new_words) or [m.group().lower() for m in old_words] != [m.group().lower() for m in new_words]:
+        return False
+
+    def gaps(text, words):
+        edges = [0, *[x for m in words for x in (m.start(), m.end())], len(text)]
+        return ["".join(text[edges[k] : edges[k + 1]].split()) for k in range(0, len(edges), 2)]
+
+    if not all(_punct_only_added(o, n) for o, n in zip(gaps(old_text, old_words), gaps(new_text, new_words))):
+        return False
+    entries = [str(e) for e in list((gloss or {}).get("names") or []) + list((gloss or {}).get("phrases") or [])]
+    single_names = {t[0] for e in entries if len(t := unresolved._WORD.findall(fold(e))) == 1}
+    tokens = [m.group() for m in new_words]
+    covered = set()
+    for e in entries:
+        parts = unresolved._WORD.findall(fold(e))
+        for at in range(len(tokens) - len(parts) + 1):
+            if len(parts) > 1 and tokens[at : at + len(parts)] == parts:
+                covered.update(range(at, at + len(parts)))
+    prev_end = None
+    for k, (old, m) in enumerate(zip(old_words, new_words)):
+        start = _card_starts_sentence(prev_text) if prev_end is None else _ends_sentence(new_text[prev_end : m.start()])
+        if not _lenient_case_change(old.group(), m.group(), start, single_names, k in covered):
+            return False
+        prev_end = m.end()
+    return True
+
+
+LAYOUT_SLACK_CHARS = 2  # what an edit that only adds punctuation may add to a card that already breaks the profile
+
+
+def _no_new_layout_fault(new, dur, orig):
+    """``new`` can be shown wherever it breaks no profile rule, or, on a card ``orig`` already broke, breaks no kind of rule that
+    ``orig`` did not and grows no dimension (lines, longest line, characters, cps) by more than LAYOUT_SLACK_CHARS characters (and
+    the matching cps). fits_card's per-dimension comparison with a small allowance for added punctuation, so an already-bad card
+    cannot get much worse."""
+    wrapped = reflow.wrap_balance((new or "").replace("\n", " "))
+    after_faults = set(reflow.layout_faults(wrapped, dur))
+    if not after_faults:
+        return True
+    original = reflow.wrap_balance((orig or "").replace("\n", " "))
+    if not after_faults <= set(reflow.layout_faults(original, dur)):
+        return False
+    before, after = reflow.layout_metrics(original, dur), reflow.layout_metrics(wrapped, dur)
+    slack = (0, LAYOUT_SLACK_CHARS, LAYOUT_SLACK_CHARS, LAYOUT_SLACK_CHARS / max(dur, reflow.EPS))
+    return all(a <= b + s + reflow.EPS for a, b, s in zip(after, before, slack))
+
+
+def rejecting_guard(orig, new, ref, dur, gloss, punct_case_ok=None, prev_text=None):
+    """The name of the FIRST guard that refuses ``new`` for ``orig``, or None when accept_repair admits it. accept_repair is
+    exactly ``rejecting_guard(...) is None``; the name is what the review queue records (key 'guard') so a human, and later
+    measurements, can tell why a proposal was refused:
+
+        empty, unchanged, terminal_punct, invents_name, name_part, vouched_name, length_ratio, fits_card, ref_borrow
+
+    ``punct_case_ok`` (default: REPAIR_ACCEPT_PUNCT_CASE_ONLY=1) gives a proposal that changes only case and punctuation two
+    allowances: it is not "unchanged" when the case differs (only for case changes that cannot change meaning: a sentence start,
+    i -> I, ok -> OK, a glossary spelling), and fits_card is replaced by "no NEW kind of layout fault and at most +2 characters".
+    The relaxed path is for punctuation ADDITIONS only ('.' and ',' added, see is_punct_case_only). NOTE the ordinary gate never
+    judges punctuation for MEANING: 'Let's eat, Grandma' -> 'Let's eat Grandma', a moved comma or '?' -> '.'
+    all pass, with the flag off as well as on; that is why the flag stays off unless a human audits a sample. Measured
+    on a real queue, 7 of 100 rejected proposals changed no word, and fits_card refuses an edit that makes an already over-cps
+    card worse in ANY dimension, so one added period on a dense card was refused. Every other guard still applies."""
+    if not new:
+        return "empty"
+    if punct_case_ok is None:
+        punct_case_ok = _accept_punct_case_only()
+    special = punct_case_ok and is_punct_case_only(orig, new, gloss, prev_text)
+    if new.lower() == (orig or "").lower() and not special:
+        return "unchanged"  # nothing changed
+    if _guard_terminal_punct() and terminal_punct_changed(orig, new):
+        return "terminal_punct"  # a question became a statement (or the reverse), or an ellipsis became '.'/'!'
     if invents_name(orig, new, gloss):
-        return False  # phonetic-name-guard: fabricated proper noun, not a real correction
+        return "invents_name"  # phonetic-name-guard: fabricated proper noun, not a real correction
+    if _keep_name_parts() and changes_name_parts(orig, new, gloss):
+        return "name_part"  # a name said alone stays alone, a full name stays full
     if not ref and substitutes_a_vouched_name(orig, new, gloss):
-        return False  # S-14: no reference, so no standing to overrule a vouched name
+        return "vouched_name"  # S-14: no reference, so no standing to overrule a vouched name
     ratio = len(new) / max(1, len(orig))
     if not (LEN_RATIO_MIN <= ratio <= LEN_RATIO_MAX):
-        return False  # added or dropped a clause
-    if not fits_card(new, dur, orig):
-        return False  # unreadable/undisplayable on THIS card
-    return len(borrowed_from_ref(orig, new, ref)) < MAX_REF_BORROW
+        return "length_ratio"  # added or dropped a clause
+    if not (_no_new_layout_fault(new, dur, orig) if special else fits_card(new, dur, orig)):
+        return "fits_card"  # unreadable/undisplayable on THIS card
+    if len(borrowed_from_ref(orig, new, ref)) >= MAX_REF_BORROW:
+        return "ref_borrow"
+    return None
 
 
 def llm_ollama(prompt, model=None):
@@ -578,6 +1074,8 @@ def llm_ollama(prompt, model=None):
         out = _post_json(OLLAMA, body).get("response", "").strip()
         return out.splitlines()[0].strip().strip('"').strip() if out else ""
     except Exception as e:
+        if _client_rejection(e):
+            return ""
         log("  llm fail:", e)
         return LLM_UNREACHABLE
 
@@ -619,16 +1117,156 @@ def llm_llamacpp(prompt, model):
         out = (msg.get("content") or "").strip()
         return out.splitlines()[0].strip().strip('"').strip() if out else ""
     except Exception as e:
+        if _client_rejection(e):
+            return ""
         log("  llm fail:", e)
         return LLM_UNREACHABLE
 
 
+_TRANSPORT_RETRIES_TOTAL = 0  # retries made by _post_with_transport_retries over the life of the process
+
+
+def transport_retries_total():
+    return _TRANSPORT_RETRIES_TOTAL
+
+
+def _transport_retries():
+    """REPAIR_TRANSPORT_RETRIES (default 2, clamped 0..5; garbage -> 2; 0 = the legacy single attempt), read per call.
+    One transient OSError cost a Wano episode a line."""
+    return env_int("REPAIR_TRANSPORT_RETRIES", 2, lo=0, hi=5)
+
+
+def _is_transport_error(e):
+    """A failure known to happen BEFORE transmission started: connection refused, DNS, a connect timeout, a reset while
+    connecting (``_post_json`` sets ``e.not_sent``). A failure once sending has begun is ambiguous (the server may hold the
+    body), and so are a read timeout, RemoteDisconnected and IncompleteRead: a provider is usually still generating (and
+    billing) the request, so re-sending would pay twice. Not an HTTP answer (_HttpError), not the request-deadline watchdog,
+    not a body that parsed badly."""
+    if isinstance(e, _HttpError) or not getattr(e, "not_sent", False):
+        return False
+    if isinstance(e, TimeoutError) and str(e).startswith("request deadline"):
+        return False
+    return isinstance(e, (OSError, http.client.HTTPException))
+
+
+def _post_with_transport_retries(url, body, headers, posts_left=None):
+    """_post_json, retried on a transport error (see _is_transport_error) up to REPAIR_TRANSPORT_RETRIES times with a short
+    backoff (0.5 s, 1 s, ...), the backoff spent from REPAIR_RETRY_SLEEP_BUDGET like the status retries. ``posts_left`` caps the
+    POSTs of this call (llm_openai passes what its REPAIR_OPENAI_RETRIES allowance has left, so the two layers never multiply).
+    An HTTP answer (4xx/5xx, including 429) is raised at once: llm_openai's own status retry owns those. The POSTs made are
+    left in ``_last_posts`` (also when it raises)."""
+    global _TRANSPORT_RETRIES_TOTAL, _last_posts
+    tries = _transport_retries()
+    if posts_left is not None:
+        tries = min(tries, max(0, posts_left - 1))
+    _last_posts = 0
+    for k in range(tries + 1):
+        _last_posts += 1
+        try:
+            return _post_json(url, body, headers=headers)
+        except Exception as e:  # noqa: BLE001 -- classified below, re-raised unchanged when not ours
+            wait = 0.5 * 2**k
+            if (
+                k < tries
+                and _is_transport_error(e)
+                and not stop_requested()
+                and not _deadline_passed()
+                and (_retry_budget_left is None or wait <= _retry_budget_left)
+            ):
+                _TRANSPORT_RETRIES_TOTAL += 1
+                log(f"  llm retry {k + 1}/{tries} after {type(e).__name__} (request not sent)")
+                _retry_sleep(wait)
+                continue
+            raise
+
+
+_last_posts = 0  # POSTs made by the last _post_with_transport_retries call
+
+
+def llm_openai(prompt, model):
+    """Any OpenAI-compatible chat API (OpenRouter, Kilo, CommandCode, NVIDIA, Cerebras, ...).
+
+    Only choices[0].message.content is read; reasoning_content is ignored on purpose (some
+    models put their monologue there and the answer in content). Empty content means "no
+    repair". The key is looked up by NAME at call time and only the name is ever logged.
+    The explicit User-Agent matters: CommandCode's Cloudflare 403s Python's default one.
+    No chat_template_kwargs -- that is llama.cpp-only; use REPAIR_EXTRA_BODY for provider flags."""
+    global _last_reject
+    _last_reject = None
+    raw_key = os.environ.get(OPENAI_KEY_ENV, "") if OPENAI_KEY_ENV else ""
+    key_name = OPENAI_KEY_ENV or "REPAIR_OPENAI_KEY_ENV"
+    if not OPENAI_URL or not raw_key.strip():
+        log(f"  llm fail: REPAIR_OPENAI_URL or the key env var {key_name} is not set")
+        return LLM_UNREACHABLE
+    key = clean_api_key(raw_key)
+    if key is None:
+        log(f"  llm fail: the key in env var {key_name} contains spaces or control characters (CRLF .env?)")
+        return LLM_UNREACHABLE
+    try:
+        extra = _parse_extra_body(os.environ.get("REPAIR_EXTRA_BODY", ""))
+    except ValueError:
+        _log_once("extra-body", "  llm fail: REPAIR_EXTRA_BODY is not a valid JSON object")  # name only, never the content
+        return LLM_UNREACHABLE
+    body = {
+        "temperature": 0,
+        "max_tokens": OPENAI_MAX_TOKENS,
+        **extra,
+        "model": model or MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    headers = {"Authorization": f"Bearer {key}", "User-Agent": "DubTitlerr/repair"}
+    retries = _openai_retries()
+    posts = 0  # POSTs sent for this line, transport retries included: never more than retries + 1
+    for attempt in range(retries + 1):
+        if attempt and stop_requested():
+            return LLM_UNREACHABLE  # soft stop during the backoff: the between-target check ends the episode
+        try:
+            try:
+                answer = _post_with_transport_retries(OPENAI_URL, body, headers, retries + 1 - posts)
+            finally:
+                posts += _last_posts
+            choice = answer["choices"][0]
+            out = (choice["message"].get("content") or "").strip()
+            if not out and choice.get("finish_reason") == "length":
+                log(
+                    "  llm fail: truncated (finish_reason=length): raise REPAIR_MAX_TOKENS"
+                    " or disable reasoning via REPAIR_EXTRA_BODY"
+                )
+                return LLM_UNREACHABLE
+            return out.splitlines()[0].strip().strip('"').strip() if out else ""
+        except _HttpError as e:
+            if _client_rejection(e):
+                return ""
+            # Rate limits and server errors are worth another try; other 4xx (bad key, bad model) are not.
+            if (e.status == 429 or e.status >= 500) and attempt < retries and posts < retries + 1:
+                if stop_requested() or _deadline_passed():
+                    log(f"  llm fail: HTTP {e.status} (retry skipped: soft stop or episode deadline)")
+                    return LLM_UNREACHABLE
+                wait = _retry_wait(e.retry_after, attempt)
+                if _retry_budget_left is None or wait <= _retry_budget_left:
+                    log(f"  llm retry {attempt + 1}/{retries} after HTTP {e.status}")
+                    _retry_sleep(wait)
+                    continue
+                # The episode's retry-sleep budget is spent: this target keeps its first attempt only.
+                _log_once("retry-budget", "  llm: retry sleep budget spent for this episode (REPAIR_RETRY_SLEEP_BUDGET)")
+            # Never log str(e): it carries the response body, and a provider may echo the key there.
+            log(f"  llm fail: HTTP {e.status}")
+            return LLM_UNREACHABLE
+        except Exception as e:
+            # Nor here: http.client quotes the header value (the key) in its ValueError. Class name only.
+            log(f"  llm fail: {type(e).__name__}")
+            return LLM_UNREACHABLE
+    return LLM_UNREACHABLE  # unreachable: the last attempt always returns above
+
+
 def llm(prompt, model=None):
-    """Dispatch to the backend configured by REPAIR_BACKEND (ollama|llamacpp, default
-    ollama — matches pre-A1 behavior exactly). model=None uses the backend's default
+    """Dispatch to the backend configured by REPAIR_BACKEND (ollama|llamacpp|openai, default
+    llamacpp). model=None uses the backend's default
     (REPAIR_MODEL); pass it explicitly for the two-pass secondary-model re-check (A3)."""
     if REPAIR_BACKEND == "llamacpp":
         return llm_llamacpp(prompt, model or MODEL)
+    if REPAIR_BACKEND == "openai":
+        return llm_openai(prompt, model)
     return llm_ollama(prompt, model)
 
 
@@ -711,6 +1349,61 @@ def prior_repairs(stem):
 
 
 def process(conf_path):
+    """Repair one episode. Wraps the work so the per-episode retry-sleep budget (REPAIR_RETRY_SLEEP_BUDGET
+    seconds, default 600) starts full for this episode and is lifted again afterwards."""
+    global _retry_budget_left, _episode_deadline_at, _episode_started_at, _episode_limit_s
+    _retry_budget_left = float(env_int("REPAIR_RETRY_SLEEP_BUDGET", 600, lo=0))
+    limit = env_int("REPAIR_EPISODE_DEADLINE", 3600, lo=0)  # 0 disables
+    _episode_started_at, _episode_limit_s = time.monotonic(), limit
+    _episode_deadline_at = _episode_started_at + limit if limit else None
+    try:
+        return _process_episode(conf_path)
+    finally:
+        _retry_budget_left = None
+        _episode_deadline_at = None
+
+
+SUPERSEDED_NOTE = "superseded by a newer proposal"
+
+
+def queue_proposal(stem, queued, original, proposed, **fields):
+    """Make (original -> proposed) the ONE open review question for this line. ``queued`` is this run's snapshot of the episode's
+    entries at the start of the run. It is NOT trusted: other records (rejected_guard, llm_empty, verdict_*) are appended to the
+    file during a run, so the snapshot's indices drift behind the file and ``unresolved.resolve(stem, i)`` would retire the wrong
+    entry. The file is re-read here (one read per accepted card), and the argument is only refreshed in place for the caller.
+
+    * the pair is already PENDING, or a human resolved it (not merely superseded it): nothing to ask, nothing new;
+    * any other open proposal for the same original is retired (marked resolved with a note, never deleted: the queue is the
+      audit trail), because a card ships one answer and a verdict on the stale one must not release a gated episode;
+    * the pair was superseded earlier (A -> B -> A): that entry is REOPENED rather than duplicated or left resolved, so the
+      proposal that is in the SRT is the question the reviewer sees.
+    Returns "settled", "open", "reopened" or "queued"."""
+    pair = (decisions.key(original), decisions.key(proposed))
+    queued[:] = unresolved.items(stem)  # the file is the truth: indices must be the ones resolve()/reopen() will use
+
+    def pair_of(e):
+        return (decisions.key(e.get("original_text", "")), decisions.key(e.get("proposed_text", "")))
+
+    mine = [i for i, e in enumerate(queued) if e.get("stage") == "repair_applied" and pair_of(e) == pair]
+    superseded = [i for i in mine if queued[i].get("resolved") and str(queued[i].get("note", "")).startswith(SUPERSEDED_NOTE)]
+    if any(queued[i].get("resolved") and i not in superseded for i in mine):
+        return "settled"
+    for i, e in enumerate(queued):
+        if e.get("stage") == "repair_applied" and not e.get("resolved") and pair_of(e)[0] == pair[0] and pair_of(e)[1] != pair[1]:
+            unresolved.resolve(stem, i, accept=False, note=f"{SUPERSEDED_NOTE}: {proposed}")
+            e["resolved"], e["note"] = True, f"{SUPERSEDED_NOTE}: {proposed}"
+    if any(not queued[i].get("resolved") for i in mine):
+        return "open"
+    if superseded:
+        unresolved.reopen(stem, superseded[-1])
+        queued[superseded[-1]]["resolved"] = False
+        return "reopened"
+    queued.append({"stage": "repair_applied", "original_text": original, "proposed_text": proposed, "resolved": False})
+    unresolved.record(stem, "repair_applied", "accepted", original_text=original, proposed_text=proposed, **fields)
+    return "queued"
+
+
+def _process_episode(conf_path):
     stem = conf_path[: -len(CONF_SUFFIX)]
     srt = stem + SRT_SUFFIX
     video = find_video(stem)
@@ -762,23 +1455,8 @@ def process(conf_path):
     # the moment a human resolved one through the --review CLI, which is the same deadlock
     # inverted.
     _queued = unresolved.items(stem)
-    queued_pairs = {
-        (decisions.key(e.get("original_text", "")), decisions.key(e.get("proposed_text", "")))
-        for e in _queued
-        if e.get("stage") == "repair_applied"
-    }
-    # [F-2] Pending entries by ORIGINAL line, so a changed proposal can supersede the one it
-    # replaces instead of queueing beside it. The pair is right as the DECISION key -- keying
-    # a verdict on `orig` alone would let one rejection suppress the proposal that fixes the
-    # line -- but the reviewer's PENDING set is a different question: two live proposals for
-    # one card are two questions about a card that will only ever ship one answer, and a
-    # verdict on either leaves a gated episode held on the other.
-    pending_by_orig: dict = {}
-    for i, e in enumerate(_queued):
-        if e.get("stage") == "repair_applied" and not e.get("resolved"):
-            pending_by_orig.setdefault(decisions.key(e.get("original_text", "")), []).append(
-                (i, decisions.key(e.get("proposed_text", "")))
-            )
+    # [F-2, F8] The queue's history is consulted by STATE, not by presence (see queue_proposal): a pair settles a line only when a
+    # human resolved it or it is still pending. A pair the queue merely superseded is reopened if the model proposes it again.
     targets = [(i, c) for i, c in enumerate(conf) if is_target(c, gloss)]
     if not targets:
         return "clean"  # nothing to repair (e.g. S15E01)
@@ -787,7 +1465,21 @@ def process(conf_path):
     rec = qc.Recorder()  # S-6 liveness counters, merged into the summary below
     llm_empty = 0
     unreachable = 0
+    llm_calls = 0  # targets that actually reached llm(): the denominator of the unreachable guard
+    refuse_pct = env_int("REPAIR_UNREACHABLE_REFUSE_PCT", 10, lo=1, hi=100)
+    max_streak = env_int("REPAIR_MAX_CONSECUTIVE_UNREACHABLE", 5, lo=1)
+    streak = 0  # unreachable targets in a row; any answer (even an empty one) resets it
+    deadline_hit = False
+    deadline_note = ""
+    refuse_why = None  # set when the episode must be refused: what to say in the log
+    rejected_4xx = 0  # request-scoped client errors (llm_openai): no repair for that line, not an outage
     rejected_secondary = 0  # C5: second-pass output refused by the gate
+    rejected_name_part = 0  # subset of rejected: the repair added or removed a part of a name
+    transport_retries_at_start = transport_retries_total()
+    dismissed_large_change = 0  # subset of rejected: recorded but kept out of the queue (REPAIR_AUTO_DISMISS_WORDS)
+    accepted_punct_case_only = 0  # repairs admitted only by REPAIR_ACCEPT_PUNCT_CASE_ONLY
+    rejected_terminal_punct = 0  # subset of rejected: REPAIR_GUARD_TERMINAL_PUNCT refused them
+    unreachable_secondary = 0  # the second-pass backend call itself failed (first pass stands)
     # The model returned the line verbatim -- the single most common outcome of this stage
     # (568 of 836 targets on the SAO pass). accept_repair refuses it and the `not admitted`
     # inner guard is false by construction, so before this counter it incremented nothing
@@ -801,7 +1493,21 @@ def process(conf_path):
     verdict_unfittable = 0  # an applying verdict refused by fits_card (C1)
     verdict_stale = 0  # the human approved OTHER wording for this line; the model moved on
     repaired_lines = []  # A10: per-line detail for the summary
-    for i, c in targets:
+    for pos, (i, c) in enumerate(targets):
+        if _deadline_passed():
+            deadline_hit = True
+            deadline_note = (
+                f"{time.monotonic() - _episode_started_at:.0f}s elapsed (limit {_episode_limit_s}s)"
+                f" after {pos} of {len(targets)} targets; raise REPAIR_EPISODE_DEADLINE if the backend is healthy but slow"
+            )
+            break
+        if stop_requested():
+            # Soft stop (container_run.sh got SIGTERM): checked between targets, never inside one. The srt
+            # is NOT rebuilt -- a half-repaired rebuild would ship raw ASR over shipped repairs -- and the
+            # failed `stopped` record makes merge_pass.sh hold the episode back and re-run repair next pass.
+            log("  soft stop requested: repair stopped before the srt rewrite, the episode is retried on the next pass")
+            write_stage(stem, "repair", "stopped")
+            return "stopped"
         # C6: select the reference on the SOURCE window -- where the audio actually was --
         # not the display window, which the timing layer may have stolen forward onto the
         # NEIGHBOUR's cue. The .get fallback keeps every pre-C6 sidecar working unchanged.
@@ -845,9 +1551,12 @@ def process(conf_path):
         prev_text = conf[i - 1]["text"] if i > 0 else ""
         next_text = conf[i + 1]["text"] if i + 1 < len(conf) else ""
         prompt = build_prompt(c["text"], ref, gloss, prev_text, next_text, arc, episode)
-        t0 = time.monotonic()  # V2 A2: per-call latency
+        t0, slept0 = time.monotonic(), _retry_slept  # V2 A2: per-call latency
+        llm_calls += 1
+        _take_reject()
         new = llm(prompt)
-        latency_ms = round((time.monotonic() - t0) * 1000)
+        was_rejected = _take_reject() is not None
+        latency_ms = round((time.monotonic() - t0 - (_retry_slept - slept0)) * 1000)  # backoff is not model time
         if new:
             new = glossary.correct(new, gloss)[0]  # enforce canonical spelling on output
         # C2: the card's DISPLAY duration -- how long the viewer actually has to read it.
@@ -860,6 +1569,7 @@ def process(conf_path):
             # own docstring says llm_empty carries no proposal and was never a decision --
             # so nothing is queued. The episode-level guard below refuses the rewrite.
             unreachable += 1
+            streak += 1
             new = ""
             bucket = apply_human_text(c, store, stem, words_doc)
             if bucket == "rescued":
@@ -868,7 +1578,19 @@ def process(conf_path):
                 verdict_unfittable += 1
             elif bucket == "owed":
                 verdict_owed += 1
+            if streak >= max_streak:
+                # A run of consecutive failures is an outage, not a poison pill: stop sending
+                # the rest of the episode to a dead backend (and sleeping through retries).
+                refuse_why = f"{streak} targets in a row"
+                break
+            if unreachable * 100 >= refuse_pct * len(targets):
+                # llm_calls can never exceed len(targets), so the rate rule below is already decided.
+                refuse_why = f"{unreachable} of {len(targets)} targets (threshold {refuse_pct}%)"
+                break
             continue
+        streak = 0
+        if was_rejected:
+            rejected_4xx += 1
         if not new:
             bucket = apply_human_text(c, store, stem, words_doc)
             if bucket == "rescued":
@@ -963,13 +1685,31 @@ def process(conf_path):
         # Every applying verdict is admitted here, so `not admitted` below can only be
         # reached with no ruling at all -- which is why that branch needs no ruling guard of
         # its own to avoid re-queueing a settled line.
-        admitted = ruling in APPLYING or accept_repair(c["text"], new, ref, dur, gloss)
+        admitted = ruling in APPLYING or accept_repair(c["text"], new, ref, dur, gloss, prev_text)
+        if (
+            admitted
+            and ruling not in APPLYING
+            and _accept_punct_case_only()
+            and is_punct_case_only(c["text"], new, gloss, prev_text)
+            and rejecting_guard(c["text"], new, ref, dur, gloss, punct_case_ok=False) is not None
+        ):
+            accepted_punct_case_only += 1  # admitted only because of REPAIR_ACCEPT_PUNCT_CASE_ONLY
         if not admitted:
             if new and new.lower() != c["text"].lower():
                 rejected += 1  # surfaced in the summary so the guard stays visible
                 # ...but the PROPOSAL was discarded, and it is the whole evidence a human
                 # needs to judge whether the guard was right or overzealous.
-                reason = "rejected_name_invented" if invents_name(c["text"], new, gloss) else "rejected_guard"
+                if invents_name(c["text"], new, gloss):
+                    reason = "rejected_name_invented"
+                elif _keep_name_parts() and changes_name_parts(c["text"], new, gloss):
+                    reason = "rejected_name_part"
+                    rejected_name_part += 1
+                else:
+                    reason = "rejected_guard"
+                dismissed_fields = unresolved.dismissal(c["text"], new, phrases=gloss.get("phrases") or [])
+                dismissed_large_change += bool(dismissed_fields)
+                guard_name = rejecting_guard(c["text"], new, ref, dur, gloss, prev_text=prev_text)
+                rejected_terminal_punct += guard_name == "terminal_punct"
                 unresolved.record(
                     stem,
                     "repair",
@@ -978,6 +1718,8 @@ def process(conf_path):
                     proposed_text=new,
                     reference=ref[:120],
                     avg_logprob=c.get("avg_logprob"),
+                    guard=guard_name,
+                    **dismissed_fields,
                 )
             else:
                 # `new` is non-empty (the `if not new` above returned), so this is exactly
@@ -994,17 +1736,24 @@ def process(conf_path):
             # admitted and then quietly replaced by the second model's wording -- and the
             # suppression below would write no queue entry, because the line counts as
             # settled. The substitution would reach the viewer with nothing recording it.
-            if not ruling and MODEL_SECONDARY != MODEL and _needs_secondary_check(c["text"], new, gloss):
-                t1 = time.monotonic()
+            # (not once the episode deadline has passed: that bounds the overrun to one request)
+            wants_second = MODEL_SECONDARY != MODEL and not _deadline_passed()
+            if not ruling and wants_second and _needs_secondary_check(c["text"], new, gloss):
+                t1, slept1 = time.monotonic(), _retry_slept
                 new2 = llm(prompt, model=MODEL_SECONDARY)
-                latency_ms += round((time.monotonic() - t1) * 1000)
+                latency_ms += round((time.monotonic() - t1 - (_retry_slept - slept1)) * 1000)
+                if new2 == LLM_UNREACHABLE:
+                    # The marker is truthy text, not an answer: never gate it. The first-pass
+                    # repair stands, as for any second pass that does not verify.
+                    unreachable_secondary += 1
+                    new2 = ""
                 if new2:
                     new2 = glossary.correct(new2, gloss)[0]
                     # C5: a stronger model is still a model. Its output went straight over
                     # the first pass with no validation at all -- same gate, same card. When
                     # it fails, the already-accepted first-pass repair stands rather than the
                     # card being left garbled.
-                    if new2 and accept_repair(c["text"], new2, ref, dur, gloss):
+                    if new2 and accept_repair(c["text"], new2, ref, dur, gloss, prev_text):
                         new = new2
                     elif new2 and new2.lower() != new.lower():
                         rejected_secondary += 1
@@ -1027,26 +1776,12 @@ def process(conf_path):
             # amplification the spec records under Edge cases, and the pair being the
             # store's key is what lets it be suppressed here rather than deduplicated in
             # unresolved.record(), whose O(1) append is deliberate.
-            pair = (decisions.key(c["text"]), decisions.key(new))
-            if not ruling and pair not in queued_pairs:
-                # Retire any live entry for this same line whose proposal has changed. Marked
-                # RESOLVED, never deleted: the queue is the audit trail, and what the model
-                # proposed before is the evidence for whether the gate is drifting.
-                # No "is it different?" check: an IDENTICAL pair never reaches here, because
-                # `pair not in queued_pairs` above already skipped it, and queued_pairs is
-                # built from every entry including the pending ones. Any live entry for this
-                # original therefore carries a different proposal by construction.
-                for idx_old, _ in pending_by_orig.get(pair[0], []):
-                    unresolved.resolve(stem, idx_old, accept=False, note=f"superseded by a newer proposal: {new}")
-                pending_by_orig[pair[0]] = [(len(_queued), pair[1])]
-                _queued.append({})  # keep index accounting honest for a second supersession
-                queued_pairs.add(pair)
-                unresolved.record(
+            if not ruling:
+                queue_proposal(
                     stem,
-                    "repair_applied",
-                    "accepted",
-                    original_text=c["text"],
-                    proposed_text=new,
+                    _queued,
+                    c["text"],
+                    new,
                     reference=ref[:120] or None,
                     avg_logprob=c.get("avg_logprob"),
                 )
@@ -1061,10 +1796,28 @@ def process(conf_path):
     # Refusing is deliberately narrow: it fires only when EVERY target was skipped for want of
     # a reference AND the last run shipped repairs. An episode that genuinely has nothing to
     # fix still rewrites normally, and the first run of a new episode has no prior summary.
-    if targets and unreachable == len(targets):
+    # Refuse when the backend was down for REPAIR_UNREACHABLE_REFUSE_PCT percent or more of the targets
+    # that actually reached llm() (cards skipped for want of a fansub line never asked it anything), or
+    # when it failed REPAIR_MAX_CONSECUTIVE_UNREACHABLE targets in a row. Repairs live only in the srt,
+    # so a rebuild after a partial outage would overwrite shipped repairs with raw ASR. A single
+    # poison-pill line (a few percent) still ships.
+    if refuse_why is None and not deadline_hit and llm_calls and unreachable * 100 >= refuse_pct * llm_calls:
+        refuse_why = f"{unreachable} of {llm_calls} targets that reached it (threshold {refuse_pct}%)"
+    if deadline_hit:
+        problem = f"episode deadline exceeded: {deadline_note}"
+    elif refuse_why is not None:
+        problem = f"the repair backend was unreachable for {refuse_why}"
+    elif llm_calls >= 1 and rejected_4xx == llm_calls:
+        # Every request that reached the model came back a client error: that is a wrong model id or URL,
+        # at any episode size (a tiny episode would otherwise be rebuilt as raw ASR over shipped repairs).
+        # One bad line among several answered ones is not this: it ships.
+        problem = "every request was rejected with a client error: check the model id and URL"
+    else:
+        problem = None
+    if problem:
         log(
-            f"  REFUSED {os.path.basename(stem)}: the repair backend was unreachable for all"
-            f" {len(targets)} targets. Rebuilding the srt would overwrite the shipped text with"
+            f"  REFUSED {os.path.basename(stem)}: {problem}."
+            " Rebuilding the srt would overwrite the shipped text with"
             " raw ASR, and a dead endpoint is not a review item, so nothing was queued."
             " Check REPAIR_LLAMACPP_URL / REPAIR_BACKEND and re-run."
         )
@@ -1085,6 +1838,7 @@ def process(conf_path):
     # the library did until this fix.
     srt_out = out_for(srt)
     rep_out = out_for(stem + ".dubtitles.repair.csv")
+
     def _render_srt(f):
         i = 0
         for c in conf:
@@ -1113,7 +1867,18 @@ def process(conf_path):
         "skipped_no_ref": skipped_no_ref,
         "llm_empty": llm_empty,
         "unreachable": unreachable,
+        "rejected_4xx": rejected_4xx,  # subset of llm_empty: the provider rejected that one request
         "rejected_guard": rejected,  # model proposed an edit, accept_repair() refused it
+        "rejected_name_part": rejected_name_part,  # subset of rejected_guard: it added/removed a name part
+        **({"dismissed_large_change": dismissed_large_change} if unresolved.auto_dismiss_threshold() is not None else {}),
+        **({"accepted_punct_case_only": accepted_punct_case_only} if _accept_punct_case_only() else {}),
+        **({"rejected_terminal_punct": rejected_terminal_punct} if _guard_terminal_punct() else {}),
+        **(
+            {"transport_retries": transport_retries_total() - transport_retries_at_start}
+            if REPAIR_BACKEND == "openai" and _transport_retries()
+            else {}
+        ),
+        "unreachable_secondary": unreachable_secondary,
         "rejected_secondary": rejected_secondary,  # C5: second pass refused, first pass kept
         "unchanged": unchanged,  # model echoed the line back; nothing proposed, nothing shipped
         # [S-4]. targets == repaired + skipped_no_ref + llm_empty + rejected_guard +
@@ -1180,6 +1945,8 @@ def main():
         res = process(cp)
         counts[res] = counts.get(res, 0) + 1
         log(f"{res}: {os.path.basename(cp)}")
+        if res == "stopped":
+            break  # soft stop: start no further episode
     log("SUMMARY", counts)
 
 

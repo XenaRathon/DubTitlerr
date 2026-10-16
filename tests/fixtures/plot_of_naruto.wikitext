@@ -1,0 +1,1665 @@
+[[File:Chapter 597.png|thumb|300px|The main character, Naruto Uzumaki, as he grows through the first two parts of the series.]]
+The plot of the ''Naruto'' series is told across several different time periods, known as '''Part I''', '''Part II''', the '''Blank Period''', '''New Era: Part I''', and '''New Era: Part II'''. These time periods are themselves broken into several story arcs comprised of manga chapters, anime episodes, and/or other media types. This article attempts to present these sections of the story in order, though the chronology sometimes differs between different adaptations of the same material.
+
+== Part I ==
+:''Note: Chapter numbers refer to the original ''Naruto'' manga and episode numbers refer to the original ''Naruto'' anime.''
+{| class="wikitable sortable"
+|-
+! Arc Name
+! Chapters
+! Episodes
+! Summary
+|-
+| [[Prologue — Land of Waves]]
+| 1-33
+| 1-19
+| [[Naruto Uzumaki]] joins [[Team Kakashi|Team 7]], which is sent on a mission to the [[Land of Waves]].
+|-
+| [[Chūnin Exams (Arc)|Chūnin Exams]]
+| 34-115
+| 20-67
+| Team 7 participates in the [[Chūnin Exams]], where they compete against former classmates and new rivals.
+|-
+| [[Konoha Crush (Arc)|Konoha Crush]]
+| 116-138
+| 68-80
+| The village of [[Konohagakure]] is invaded by [[Orochimaru]] and his allies.
+|-
+| [[Search for Tsunade]]
+| 139-171
+| 81-100
+| Naruto helps [[Jiraiya]] track down [[Tsunade]] to ask her to become Konoha's new [[Hokage]].
+|-
+| [[Land of Tea Escort Mission]]
+| —
+| 102-106
+| Team 7 goes to the [[Land of Tea]] to help [[Idate Morino]] win a race.
+|-
+| [[Sasuke Recovery Mission]]
+| 172-238
+| 107-135
+| Naruto tries to stop his friend, [[Sasuke Uchiha]], from defecting to Orochimaru.
+|-
+| [[Land of Rice Fields Investigation Mission]]
+| —
+| 136-141
+| [[Jiraiya]] takes Naruto and [[Sakura]] to investigate Orochimaru's whereabouts in the [[Land of Rice Fields]].
+|-
+| [[Mizuki Tracking Mission]]
+| —
+| 142-147
+| Naruto helps capture the escaped convict, [[Mizuki]].
+|-
+| [[Bikōchū Search Mission]]
+| —
+| 148-151
+| Naruto and [[Team 8]] look for the [[bikōchū]] beetle in the hopes that it can be used to find Sasuke.
+|-
+| [[Kurosuki Family Removal Mission]]
+| —
+| 152-157
+| Naruto and [[Team Guy]] deal with [[Raiga Kurosuki]] and his [[Kurosuki family]].
+|-
+| [[Gosunkugi Capture Mission]]
+| —
+| 159-160
+| Naruto, [[Kiba]], and [[Hinata]] help [[Sazanami]] clear his name.
+|-
+| [[Cursed Warrior Extermination Mission]]
+| —
+| 162-167
+| Naruto, [[Neji]], and [[Tenten]] go to the [[Land of Birds]] to deal with a mysterious ghost.
+|-
+| [[Kaima Capture Mission]]
+| —
+| 169-173
+| [[Anko Mitarashi]] takes Naruto, [[Ino]], and [[Shino]] to the [[Land of the Sea]] to find information on Orochimaru.
+|-
+| [[Buried Gold Excavation Mission]]
+| —
+| 175-176
+| Naruto is again paired up with Kiba and Hinata in order to improve their teamwork.
+|-
+| [[Star Guard Mission]]
+| —
+| 178-183
+| Naruto and Team Guy go to [[Hoshigakure]] to help the villagers protect their sacred star.
+|-
+| [[Peddlers Escort Mission]]
+| —
+| 187-191
+| Naruto, Hinata, and [[Chōji]] go to the [[Land of Vegetables]] to protect some peddlers from the [[Janin]].
+|-
+| [[Third Great Beast Arc]]
+| —
+| 195-196
+| [[Guy]] is forced to deal with [[Yagura (anime)|Yagura]]'s apparent attempts at revenge.
+|-
+| [[Konoha Plans Recapture Mission]]
+| —
+| 197-201
+| Naruto and his friends stop [[Gennō]] from destroying Konoha.
+|-
+| [[Yakumo Kurama Rescue Mission]]
+| —
+| 203-207
+| [[Kurenai]] temporarily leaves Team 8 to take care of some old business with [[Yakumo Kurama]].
+|-
+| [[Gantetsu Escort Mission]]
+| —
+| 209-212
+| Naruto, Sakura, and [[Lee]] help transfer a member of the [[Shinobazu]] to prison.
+|-
+| [[Menma Memory Search Mission]]
+| —
+| 213-215
+| Naruto helps [[Menma (anime)|Menma]] regain his memory.
+|-
+| [[Sunagakure Support Mission]]
+| —
+| 216-220
+| Konoha sends a team to [[Sunagakure]] to help rescue [[Matsuri]] from the [[Four Celestial Symbols Men]].
+|-
+|}
+
+=== Standalone Episodes ===
+{{#ask: [[Concept:Episodes]] [[Anime::Naruto: Original]] [[Uncollected::Yes]]|?Episode number=#|?=Episode Title|sort=Episode number|headers=plain}}
+
+=== Manga Omake ===
+* "[[At the Ichiraku…]]"
+* "[[The New Erotic Ninjutsu Completed!!]]"
+* "[[The Real True Face…!!]]"
+* "[[Naruto Gaiden: Whirlwind in the Vortex]]"
+
+=== Deaths ===
+{| class="box table coloured bordered innerbordered style-basic center-block cell-align-center"
+|-
+!|Character Name
+!|Arc in Which Death Occurred
+!|Place of Death
+!|Killer(s)
+!|Cause of Death
+|-
+|[[Haku]]
+|[[Prologue — Land of Waves]]
+|[[Great Naruto Bridge]]
+|[[Kakashi Hatake]]
+|[[Lightning Cutter]]
+|-
+|[[Gatō]]
+|[[Prologue — Land of Waves]]
+|[[Great Naruto Bridge]]
+|[[Zabuza Momochi]]
+|[[Kunai]]
+|-
+|[[Zabuza Momochi]]
+|[[Prologue — Land of Waves]]
+|[[Great Naruto Bridge]]
+|Gatō's henchmen
+|Various weapons
+|-
+|[[Rasa]]
+|Prior to the [[Chūnin Exams (Arc)|Chūnin Exams]]
+|[[Sunagakure]]
+|[[Orochimaru]]
+|[[Sword of Kusanagi: Longsword of the Sky]]
+|-
+|[[Shiore]]
+|[[Chūnin Exams (Arc)|Chūnin Exams]]
+|[[Konohagakure]]
+|[[Orochimaru]]
+|Unknown
+|-
+|[[Shigure]]
+|[[Chūnin Exams (Arc)|Chūnin Exams]]
+|[[Forty-Fourth Training Ground]]
+|[[Gaara]]
+|[[Sand Waterfall Funeral]]
+|-
+|[[Midare]]
+|[[Chūnin Exams (Arc)|Chūnin Exams]]
+|[[Forty-Fourth Training Ground]]
+|[[Gaara]]
+|[[Sand Waterfall Funeral]]
+|-
+|[[Baiu]]
+|[[Chūnin Exams (Arc)|Chūnin Exams]]
+|[[Forty-Fourth Training Ground]]
+|[[Gaara]]
+|[[Sand Waterfall Funeral]]
+|-
+|[[Dosu Kinuta]]
+|[[Chūnin Exams (Arc)|Chūnin Exams]]
+|[[Kikyō Castle]]
+|[[Gaara]]
+|Sand arm
+|-
+|[[Hayate Gekkō]]
+|[[Chūnin Exams (Arc)|Chūnin Exams]]
+|[[Konohagakure]]
+|[[Baki]]
+|[[Blade of Wind]]
+|-
+|[[Zaku Abumi]]
+|[[Chūnin Exams (Arc)|Chūnin Exams]]
+|[[Konohagakure]]
+|[[Orochimaru]]
+|Sacrifice for [[Summoning: Impure World Reincarnation]]
+|-
+|[[Kin Tsuchi]]
+|[[Chūnin Exams (Arc)|Chūnin Exams]]
+|[[Konohagakure]]
+|[[Orochimaru]]
+|Sacrifice for [[Summoning: Impure World Reincarnation]]
+|-
+|[[Shiba (Kusagakure)|Shiba]]
+|[[Chūnin Exams (Arc)|Chūnin Exams]]
+|Chūnin Exam Stadium
+|[[Gaara]]
+|[[Sand Waterfall Funeral]]
+|-
+|[[Midori]]
+|[[Chūnin Exams (Arc)|Chūnin Exams]]
+|Chūnin Exam Stadium
+|[[Gaara]]
+|[[Sand Waterfall Funeral]]
+|-
+|[[Sajin]]
+|[[Konoha Crush (Arc)]]
+|[[Konohagakure]]
+|[[Shikaku Nara]]
+|[[Shadow–Neck Binding Technique]]
+|-
+|[[Hiruzen Sarutobi]]
+|[[Konoha Crush (Arc)]]
+|Chūnin Exam Stadium
+|Himself
+|[[Dead Demon Consuming Seal]]
+|-
+|[[Aoi Rokushō]] (Anime Only)
+|[[Land of Tea Escort Mission]]
+|[[Land of Tea]]
+|[[Naruto Uzumaki]]
+|[[Rasengan]]
+|-
+|[[Jirōbō]]
+|[[Sasuke Recovery Mission]]
+|[[Land of Fire]]
+|[[Chōji Akimichi]]
+|[[Butterfly Bullet Bombing]]
+|-
+|[[Kidōmaru]]
+|[[Sasuke Recovery Mission]]
+|[[Land of Fire]]
+|[[Neji Hyūga]]
+|[[Gentle Fist]]
+|-
+|[[Sakon and Ukon]]
+|[[Sasuke Recovery Mission]]
+|[[Land of Fire]]
+|[[Kankurō]]
+|[[Black Secret Technique Machine One Shot]]
+|-
+|[[Tayuya]]
+|[[Sasuke Recovery Mission]]
+|[[Land of Fire]]
+|[[Temari]]
+|[[Summoning: Quick Beheading Dance]]
+|-
+|[[Kimimaro]]
+|[[Sasuke Recovery Mission]]
+|[[Land of Fire]]
+|None
+|Unknown illness
+|-
+|[[Jigumo]] (Anime Only)
+|[[Land of Rice Fields Investigation Mission]]
+|[[Land of Sound]]
+|[[Arashi]]
+|[[Casualty Puppet]]
+|-
+|[[Kamikiri]] (Anime Only)
+|[[Land of Rice Fields Investigation Mission]]
+|[[Land of Sound]]
+|[[Arashi]]
+|[[Casualty Puppet]]
+|-
+|[[Kagerō]] (Anime Only)
+|[[Land of Rice Fields Investigation Mission]]
+|[[Land of Sound]]
+|Herself
+|Stopping her heart
+|-
+|[[Arashi]] (Anime Only)
+|[[Land of Rice Fields Investigation Mission]]
+|[[Land of Sound]]
+|None
+|Cave collapse
+|-
+|[[Raiga Kurosuki]]
+|[[Kurosuki Family Removal Mission]]
+|[[Land of Rivers]]
+|Himself
+|Lightning
+|-
+|[[Natsuhi]] (Anime Only)
+|[[Star Guard Mission]]
+|Hoshigakure Training Dōjō
+|[[Akahoshi]], [[Shisō]] and [[Yotaka]]
+|[[Kunai]]
+|-
+|[[Kikunojō]] (Anime only)
+|[[Peddlers Escort Mission]]
+|[[Land of Vegetables]]
+|[[Ruiga]]
+|[[Summon]]ned piranhas
+|-
+|[[Ruiga]] (Anime Only)
+|[[Peddlers Escort Mission]]
+|[[Land of Vegetables]]
+|[[Jiga]]
+|[[Magnet Ninja Art: Infinite Meteors]]
+|-
+|[[Jiga]] (Anime Only)
+|[[Peddlers Escort Mission]]
+|[[Land of Vegetables]]
+|[[Hinata Hyūga]]
+|[[Gentle Fist]]
+|-
+|[[Gennō]] (Anime Only)
+|[[Konoha Plans Recapture Mission]]
+|[[Konohagakure]]
+|None
+|Old injuries
+|-
+|[[Shura]] (Anime Only)
+|[[Gantetsu Escort Mission]]
+|[[Forest of Bewilderment]]
+|[[Naruto Uzumaki]]
+|[[Rasengan]]
+|-
+|[[Toki (Shinobazu)|Toki]] (Anime Only)
+|[[Gantetsu Escort Mission]]
+|[[Forest of Bewilderment]]
+|[[Naruto Uzumaki]]
+|[[Rasengan]]
+|-
+|[[Monju]] (Anime Only)
+|[[Gantetsu Escort Mission]]
+|[[Forest of Bewilderment]]
+|[[Rock Lee]]
+|[[Leaf Whirlwind]]
+|-
+|[[Menma (anime)|Menma]] (Anime Only)
+|[[Menma Memory Search Mission]]
+|[[Land of Sound]]
+|Himself
+|Avalanche from [[explosive tag]]s
+|-
+|[[Kujaku]] (Anime Only)
+|[[Sunagakure Support Mission]]
+|Someplace between the [[Takumi Village]] and [[Sunagakure]]
+|[[Temari]]
+|[[Summoning: Quick Beheading Dance]]
+|-
+|[[Ryūgan]] (Anime Only)
+|[[Sunagakure Support Mission]]
+|Someplace between the [[Takumi Village]] and [[Sunagakure]]
+|[[Kankurō]]
+|[[Black Secret Technique Machine One Shot]]
+|-
+|[[Suiko]] (Anime Only)
+|[[Sunagakure Support Mission]]
+|Someplace between the [[Takumi Village]] and [[Sunagakure]]
+|[[Gaara]]
+|[[Ultimately Hard Absolute Attack: Spear of Shukaku]]
+|-
+|[[Hōki (Takumi)|Hōki]] (Anime Only)
+|[[Sunagakure Support Mission]]
+|Someplace between the [[Takumi Village]] and [[Sunagakure]]
+|Himself
+|Sacrificed his own body and life force to revive [[Seimei]]
+|-
+|[[Seimei]] (Anime Only)
+|[[Sunagakure Support Mission]]
+|Someplace between the [[Takumi Village]] and [[Sunagakure]]
+|[[Gaara]]
+|[[Sand Waterfall Imperial Funeral]]
+|}
+
+== Kakashi Gaiden ==
+{{main with-include|Kakashi Gaiden}}
+
+=== Deaths ===
+{| class="box table coloured bordered innerbordered style-basic center-block cell-align-center"
+|-
+!|Character Name
+!|Place of Death
+!|Killer(s)
+!|Cause of Death
+|-
+|[[Mahiru]]
+|[[Kusagakure]]
+|[[Minato Namikaze]]
+|[[Kunai]]
+|-
+|[[Taiseki]]
+|[[Kusagakure]]
+|[[Obito Uchiha]]
+|[[Kunai]]
+|-
+|[[Kakkō]]
+|[[Kusagakure]]
+|[[Kakashi Hatake]]
+|[[Chidori]]
+|}
+
+== Part II ==
+:''Note: Chapter numbers refer to the original ''Naruto'' manga and episode numbers refer to the ''Naruto: Shippūden'' anime.''
+{| class="wikitable sortable"
+|-
+! Arc Name
+! Chapters
+! Episodes
+! Summary
+|-
+| [[Kazekage Rescue Mission]]
+| 245-281
+| 1-32
+| Naruto returns to Konoha after two-and-a-half years of training, just in time to help rescue the [[Fifth Kazekage]] from [[Akatsuki]].
+|-
+| [[Tenchi Bridge Reconnaissance Mission]]
+| 282-310
+| 33-53
+| Naruto and a new version of Team 7 use information gained from Akatsuki to try to find Sasuke.
+|-
+| [[Twelve Guardian Ninja (Arc)|Twelve Guardian Ninja]]
+| —
+| 54-71
+| Naruto meets [[Sora]], both of whom become entangled in a plot to destroy Konoha.
+|-
+| [[Akatsuki Suppression Mission]]
+| 311-342
+| 72-88
+| To counter the growing threat of Akatsuki, Konoha tracks down two of its members who are prowling the [[Land of Fire]].
+|-
+| [[Three-Tails' Appearance]]
+| —
+| 89-112
+| Konoha attempts to stop the [[Three-Tails]] from being acquired by Orochimaru or Akatsuki.
+|-
+| [[Itachi Pursuit Mission]]
+| 343-367
+| 113-118, 121-126
+| Sasuke and Naruto each assemble teams to make separate attempts to locate Sasuke's brother, [[Itachi Uchiha]].
+|-
+| [[Tale of Jiraiya the Gallant]]
+| 368-383
+| 127-133
+| Jiraiya infiltrates [[Amegakure]] in order to learn more about the leader of Akatsuki, [[Pain]].
+|-
+| [[Fated Battle Between Brothers]]
+| 384-412
+| 134-143
+| Sasuke initiates a fight to the death with his brother, Itachi, hoping that doing so will avenge the deaths of their [[Uchiha|clan]].
+|-
+| ''[[Naruto Jinraiden: The Day the Wolf Howled]]''
+| —
+| —
+| Sasuke seeks a new direction in his life now that his mission to kill Itachi is completed.
+|-
+| [[Six-Tails Unleashed]]
+| —
+| 144-151
+| On their way home from their failed mission to find Itachi, Naruto and his team are diverted in order to fulfil Konoha's obligations to the [[Tsuchigumo clan]].
+|-
+| [[Pain's Assault (Arc)|Pain's Assault]]
+| 413-453
+| 152-175
+| Pain attacks Konoha in order to capture Naruto.
+|-
+| [[Past Arc: The Locus of Konoha]]
+| —
+| 176-196
+| As Konoha starts to rebuild, its villagers reminisce about their memories of the past.
+|-
+| [[Five Kage Summit (Arc)|Five Kage Summit]]
+| 454-483
+| 197-214
+| With Akatsuki in possession of nearly all nine [[tailed beasts]], the [[Kage]] of the ninja villages gather to decide how to respond.
+|-
+| [[Fourth Shinobi World War: Countdown]]
+| 484-515
+| 215-222, 243-256
+| With the [[Fourth Shinobi World War]] declared, the Allied ninja and Akatsuki make opposing preparations for the approaching conflict.
+|-
+| [[Paradise Life on a Boat]]
+| —
+| 223-242
+| The Allied ninja send Naruto on a journey across the sea, hoping it will keep him safe from Akatsuki.
+|-
+| [[Fourth Shinobi World War: Confrontation]]
+| 516-559
+| 261-289, 296-321
+| The Allied ninja struggle against Akatsuki's [[White Zetsu Army]] and the historic figures revived by the [[Impure World Reincarnation]].
+|-
+| [[Power (Arc)|Power]]
+| —
+| 290-295
+| Set shortly after the events of the Five Kage Summit, Naruto assists an investigation into the massacre of [[Tonika Village]].
+|-
+| [[Fourth Shinobi World War: Climax]]
+| 560-639
+| 322-348, 362-375
+| After defeating the Impure World Reincarnation, the Allied ninja are left to deal with the combined forces of [[Madara]] and [[Obito Uchiha]].
+|-
+| [[Kakashi's Anbu Arc: The Shinobi That Lives in the Darkness]]
+| —
+| 349-361
+| [[Kakashi Hatake]]'s past is explored, connecting the end of Kakashi Gaiden to the start of Prologue — Land of Waves.
+|-
+| [[Birth of the Ten-Tails' Jinchūriki]]
+| 640-677
+| 378-393, 414-431
+| Using the nine tailed beasts captured by Akatsuki, Obito and Madara try to use the power of the resulting [[Ten-Tails]] to perform the [[Infinite Tsukuyomi]].
+|-
+| [[In Naruto's Footsteps: The Friends' Paths]]
+| —
+| 394-413
+| Set during Naruto's two-and-a-half years away from Konoha, his friends participate in another [[Chūnin Exam]] without him.
+|-
+| [[Jiraiya Shinobi Handbook: The Tale of Naruto the Hero]]
+| —
+| 432-450
+| Trapped by the Infinite Tsukuyomi, Tsunade dreams about a book that Jiraiya could have written.
+|-
+| [[Itachi Shinden Book: Light and Darkness]]
+| —
+| 451-458
+| While the world falls victim to the Infinite Tsukuyomi, Sasuke reflects on the life of his brother, Itachi.
+|-
+| [[Kaguya Ōtsutsuki Strikes]]
+| 678-699
+| 458-479
+| The Infinite Tsukuyomi introduces a new threat, [[Kaguya Ōtsutsuki]], as well as an opportunity for Naruto and Sasuke to finally resolve their years of conflict.
+|-
+| [[Childhood]]
+| —
+| 480-483
+| Before they were heroes of the Fourth Shinobi World War, they were only children...
+|-
+|}
+
+=== Standalone Episodes ===
+{{#ask: [[Concept:Episodes]] [[Anime::Naruto: Shippuden]] [[Uncollected::Yes]]|?Episode number=#|?=Episode Title|sort=Episode number|headers=plain}}
+
+=== Manga Omake ===
+* "[[The Revelation of Kakashi's True Face]]"
+* "[[Road to Naruto the Movie]]"
+
+=== Deaths ===
+{| class="box table coloured bordered innerbordered style-basic center-block cell-align-center"
+|-
+!|Character Name
+!|Arc in Which Death Occurred
+!|Place of Death
+!|Killer(s)
+!|Cause of Death
+|-
+|[[Moguranmaru]] (Anime only)
+|[[In Naruto's Footsteps: The Friends' Paths]]
+|[[Demon Desert]]
+|[[Shino Aburame]]
+|[[Parasitic Giant Insect — Bug Bite]]
+|-
+|[[Fugi]] (Anime only)
+|[[In Naruto's Footsteps: The Friends' Paths]]
+|[[Demon Desert]]
+|Himself
+|[[Wikipedia:Seppuku|Seppuku]]
+|-
+|[[Ajisai]]
+|[[In Naruto's Footsteps: The Friends' Paths]]
+|Unknown
+|Unknown
+|Injuries sustained during an S-ranked mission
+|-
+|[[Fū]]
+|[[In Naruto's Footsteps: The Friends' Paths]]
+|Akatsuki Hideout
+|[[Nagato]]
+|[[Sealing Technique: Phantom Dragons Nine Consuming Seals]]
+|-
+|[[Tsubusa]]
+|[[Kazekage Rescue Mission]]
+|[[Sunagakure]]
+|[[Yūra]]
+|Unknown
+|-
+|[[Suname]]
+|[[Kazekage Rescue Mission]]
+|[[Sunagakure]]
+|[[Deidara]]
+|[[C1]]
+|-
+|[[Mukade]]
+|[[Kazekage Rescue Mission]]
+|Unknown
+|[[Might Guy]]
+|[[Morning Peacock]]
+|-
+|[[Yūra]]
+|[[Kazekage Rescue Mission]]
+|Unknown
+|[[Naruto Uzumaki]]
+|[[Big Ball Rasengan]]
+|-
+|[[Sasori]]
+|[[Kazekage Rescue Mission]]
+|[[Land of Rivers]]
+|[[Chiyo]] (possibly suicide)
+|[[Mother and Father]]
+|-
+|[[Chiyo]]
+|[[Kazekage Rescue Mission]]
+|[[Land of Rivers]]
+|Herself
+|[[One's Own Life Reincarnation]]
+|-
+|[[Fuen]] (Anime Only)
+|[[Twelve Guardian Ninja (Arc)|Twelve Guardian Ninja]]
+|[[Konohagakure]]
+|[[Sakura Haruno]]
+|[[Cherry Blossom Impact]]
+|-
+|[[Fudō]] (Anime Only)
+|[[Twelve Guardian Ninja (Arc)|Twelve Guardian Ninja]]
+|[[Konohagakure]]
+|[[Yamato]]
+|[[Wood Release: Tree Bind Flourishing Burial]]
+|-
+|[[Fūka]] (Anime Only)
+|[[Twelve Guardian Ninja (Arc)|Twelve Guardian Ninja]]
+|[[Konohagakure]]
+|[[Naruto Uzumaki]]
+|[[Rasengan]]
+|-
+|[[Kazuma]] (Anime Only)
+|[[Twelve Guardian Ninja (Arc)|Twelve Guardian Ninja]]
+|[[Konohagakure]]
+|[[Asuma Sarutobi]]
+|[[Flying Swallow]]
+|-
+|[[Chiriku]]
+|[[Akatsuki Suppression Mission]]
+|[[Fire Temple]]
+|[[Hidan]] and/or [[Kakuzu]]
+|Unknown
+|-
+|[[Asuma Sarutobi]]
+|[[Akatsuki Suppression Mission]]
+|[[Land of Fire Bounty Station]]
+|[[Hidan]]
+|[[Curse Technique: Death Controlling Possessed Blood]]
+|-
+|[[Yugito Nii]]
+|[[Akatsuki Suppression Mission]]
+|Akatsuki Hideout
+|[[Nagato]]
+|[[Sealing Technique: Phantom Dragons Nine Consuming Seals]]
+|-
+|[[Kakuzu]]
+||[[Akatsuki Suppression Mission]]
+|[[Land of Fire]]
+|[[Kakashi Hatake]] (x2), [[Naruto Uzumaki]] (x2), [[Hidan]] (x1)
+|[[Lightning Cutter]] (x2), [[Wind Release: Rasenshuriken]] (x2), [[Curse Technique: Death Controlling Possessed Blood]] (x1)
+|-
+|[[Rinji]] (Anime Only)
+|[[Three-Tails' Appearance]]
+|Unnamed Three-Tails Lake
+|[[Kabuto Yakushi]]
+|[[Chakra Scalpel]]
+|-
+|[[Kigiri]] (Anime Only)
+|[[Three-Tails' Appearance]]
+|Unnamed Three-Tails Lake
+|[[Kakashi Hatake]]
+|[[Lightning Cutter]]
+|-
+|[[Kihō]] (Anime Only)
+|[[Three-Tails' Appearance]]
+|Unnamed Three-Tails Lake
+|[[Yamato]]
+|[[Wood Release]]
+|-
+|[[Nurari]] (Anime Only)
+|[[Three-Tails' Appearance]]
+|Unnamed Three-Tails Lake
+|[[Isobu]]
+|Body slam
+|-
+|[[Gen'yumaru]]
+|[[Itachi Pursuit Mission]]
+|One of Orochimaru's hidden bases
+|None
+|Body expired, unable to sustain Orochimaru any longer
+|-
+|[[Takishi]]
+|[[Itachi Pursuit Mission]]
+|Northern Hideout
+|[[Suigetsu Hōzuki]]
+|[[Kubikiribōchō]]
+|-
+|[[Rōshi]]
+|[[Itachi Pursuit Mission]]
+|Akatsuki Hideout
+|[[Nagato]]
+|[[Sealing Technique: Phantom Dragons Nine Consuming Seals]]
+|-
+|[[Deidara]]
+|[[Itachi Pursuit Mission]]
+|Unknown
+|Himself
+|[[C0]]
+|-
+|[[Manda]]
+|[[Itachi Pursuit Mission]]
+|Unknown
+|[[Deidara]]
+|[[C0]]
+|-
+|[[Jiraiya]]
+|[[Tale of Jiraiya the Gallant]]
+|[[Amegakure]]
+|[[Nagato]]<!-- Six paths of pain excluding Animal path (former) -->
+|[[Chakra Disruption Blades]]
+|-
+|[[Itachi Uchiha]]
+|[[Fated Battle Between Brothers]]
+|[[Uchiha Hideout]]
+|None
+|Unknown illness
+|-
+|[[Tsurugi]] (Anime only)
+|[[Six-Tails Unleashed]]
+|Unnamed Forest Near Tsuchigumo Village
+|[[Nagato]]
+|[[Giant Multi-Headed Dog]]
+|-
+|[[Utakata]]
+|[[Pain's Assault (Arc)]]
+|Akatsuki Hideout
+|[[Nagato]]
+|[[Sealing Technique: Phantom Dragons Nine Consuming Seals]]
+|-
+|[[Messenger Lizard]]
+|[[Pain's Assault (Arc)]]
+|[[Land of Lightning]]
+|[[Sasuke Uchiha]]
+|Stabbed with [[Sword of Kusanagi (Sasuke Uchiha)|Sword of Kusanagi]]
+|-
+|[[Kōsuke]]
+|[[Pain's Assault (Arc)]]
+|[[Konohagakure]]
+|[[Danzō Shimura]]
+|[[Katana]]
+|-
+|[[Nagato]]
+|[[Pain's Assault (Arc)]]
+|[[Konohagakure]]
+|Himself
+|[[Outer Path: Samsara of Heavenly Life Technique]]
+|-
+|[[Kurozuka]]
+|[[Five Kage Summit Arc]]
+|[[Land of Fire]]
+|[[Danzō Shimura]]
+|Stabbed with a [[sword]]
+|-
+|[[Danzō Shimura]]
+|[[Five Kage Summit Arc]]
+|[[Samurai Bridge]]
+|[[Sasuke Uchiha]]
+|[[Chidori Sharp Spear]]
+|-
+|[[Tonika Village Head]] (Anime only)
+|[[Power (Arc)|Power]]
+|[[Tonika Village]]
+|One of [[Kabuto]]'s [[Summoning: Impure World Reincarnation|reincarnated]] shinobi
+|Stabbed with a [[sword]]
+|-
+|[[Nine-Tailed Naruto Clone]] (Anime only)
+|[[Power (Arc)|Power]]
+|[[The Hole]]
+|[[Naruto Uzumaki]]
+|[[Tailed Beast Rasengan]]
+|-
+|[[Disonasu]] (Anime only)
+|[[Power (Arc)|Power]]
+|Outskirts of [[The Hole]]
+|[[Tonika Village Head]]
+|Stabbed with a [[sword]]
+|-
+|[[Ultimate Summoning Beast]] (Anime only)
+|[[Paradise Life on a Boat]]
+|[[Summoning Island]]
+|[[Naruto Uzumaki]]
+|[[Wind Release: Rasenshuriken]] and a fall into lava
+|-
+|[[Agara]]
+|[[Fourth Shinobi World War: Countdown]]
+|The land [[Takigakure]] is located at
+|[[Kabuto Yakushi]]
+|[[Many Hidden Shadow Snake Hands]]
+|-
+|[[Kisame Hoshigaki]]
+|[[Fourth Shinobi World War: Countdown]]
+|[[Island Turtle]]
+|Himself
+|Suicide-[[Water Prison Technique]]; [[Summoning Technique]] (Sharks)
+|-
+|[[Giant Squid]]
+|[[Fourth Shinobi World War: Countdown]]
+|[[Land of Lightning]]
+|[[Manda II]]
+|Bitten
+|-
+|[[Konan]]
+|[[Fourth Shinobi World War: Countdown]]
+|[[Amegakure]]
+|[[Obito Uchiha]]
+|Stabbed with a metal pipe
+|-
+|[[Muta Aburame]]
+|[[Fourth Shinobi World War: Confrontation]]
+|Unknown
+|[[Deidara]]
+|[[Explosive Clay]]
+|-
+|[[Torune Aburame]]
+|[[Fourth Shinobi World War: Confrontation]]
+|[[Mountains' Graveyard]]
+|[[Obito Uchiha]]
+|Broken neck
+|-
+|[[Fū Yamanaka]]
+|[[Fourth Shinobi World War: Confrontation]]
+|[[Mountains' Graveyard]]
+|[[Kabuto Yakushi]]
+|Sacrifice for [[Summoning: Impure World Reincarnation]]
+|-
+|[[Tajiki]]
+|[[Fourth Shinobi World War: Confrontation]]
+|[[Land of Hot Water]]
+|[[Gari]]
+|[[Explosion Release: Landmine Fist]]
+|-
+|40,000 [[Allied Shinobi Forces]] Members
+|[[Fourth Shinobi World War: Confrontation]]
+|[[Land of Hot Water]], [[Land of Lightning]]
+|[[Akatsuki]]
+|Casualties of war
+|-
+|50,000 [[White Zetsu Army|White Zetsu Clones]]
+|[[Fourth Shinobi World War: Confrontation]]
+|[[Land of Hot Water]], [[Land of Lightning]]
+|[[Allied Shinobi Forces]]
+|Casualties of war
+|-
+|[[Monga]] (Anime only)
+|[[Fourth Shinobi World War: Confrontation]]
+|[[Land of Hot Water]]
+|[[Pakura]]
+|[[Scorch Release: Extremely Steaming Murder]]
+|-
+|[[Yurui (anime)|Yurui]] (Anime only)
+|[[Fourth Shinobi World War: Confrontation]]
+|[[Land of Hot Water]]
+|[[Ameyuri Ringo]]
+|[[Lightning Release: Thunder Gate]]
+|-
+|[[Itachi's Crow]]
+|[[Fourth Shinobi World War: Confrontation]]
+|[[Land of Lightning]]
+|[[Itachi Uchiha]]
+|[[Amaterasu]]
+|-
+|[[White Zetsu]]
+|[[Fourth Shinobi World War: Confrontation]]
+|[[Mountains' Graveyard]]
+|[[Sasuke Uchiha]]
+|[[Blaze Release: Susanoo Kagutsuchi]]
+|-
+|[[Giant Clam]]
+|[[Fourth Shinobi World War: Confrontation]]
+|[[Land of Lightning]]
+|[[Ōnoki]]
+|[[Earth Release: Fist Rock Technique]] and [[Earth Release: Ultra-Added-Weight Rock Technique]]
+|-
+|[[Shikaku Nara]]
+|[[Fourth Shinobi World War: Climax]]
+|[[Kumogakure]]
+|[[Ten-Tails]]
+|[[Tailed Beast Ball]]
+|-
+|[[Inoichi Yamanaka]]
+|[[Fourth Shinobi World War: Climax]]
+|[[Kumogakure]]
+|[[Ten-Tails]]
+|[[Tailed Beast Ball]]
+|-
+|[[Kussaku]]
+|[[Fourth Shinobi World War: Climax]]
+|[[Kumogakure]]
+|[[Ten-Tails]]
+|[[Tailed Beast Ball]]
+|-
+|[[Mabui]]
+|[[Fourth Shinobi World War: Climax]]
+|[[Kumogakure]]
+|[[Ten-Tails]]
+|[[Tailed Beast Ball]]
+|-
+|Countless [[Kumogakure]] inhabitants and shinobi
+|[[Fourth Shinobi World War: Climax]]
+|[[Kumogakure]]
+|[[Ten-Tails]]
+|[[Tailed Beast Ball]]
+|-
+|[[Neji Hyūga]]
+|[[Fourth Shinobi World War: Climax]]
+|[[Land of Lightning]]
+|[[Obito Uchiha]] via the [[Ten-Tails]]
+|[[Wood Release: Cutting Technique]]
+|-
+|[[Mecha-Kyūbi]] (Anime Only)
+|[[Naruto vs. Mecha-Naruto|''Shippūden'' episode 377]]
+|[[Konohagakure]]
+|[[Mecha-Naruto]]
+|[[Tailed Beast Cannon]]
+|-
+|[[Mecha-Naruto]] (Anime Only)
+|[[Naruto vs. Mecha-Naruto|''Shippūden'' episode 377]]
+|[[Konohagakure]]
+|Itself
+|[[Tailed Beast Cannon|Extraction of Kurama's chakra]]
+|-
+|[[Kaya]] (Anime-Dream Only)
+|[[Jiraiya Shinobi Handbook: The Tale of Naruto the Hero]]
+|Unknown village
+|[[Deidara]]
+|[[C3]]
+|-
+|[[Ashitaba]] (Anime-Dream Only)
+|[[Jiraiya Shinobi Handbook: The Tale of Naruto the Hero]]
+|Unknown village
+|[[Deidara]]
+|[[C3]]
+|-
+|[[Komichi]] (Anime-Dream Only)
+|[[Jiraiya Shinobi Handbook: The Tale of Naruto the Hero]]
+|Unknown village
+|[[Deidara]]
+|[[C3]]
+|-
+|[[Obito Uchiha]]
+|[[Kaguya Ōtsutsuki Strikes]]
+|[[Kaguya's Dimension]]
+|[[Kaguya Ōtsutsuki]]
+|[[All-Killing Ash Bones]]
+|-
+|[[Madara Uchiha]]
+|[[Kaguya Ōtsutsuki Strikes]]
+|[[Land of Lightning]]
+|[[Naruto Uzumaki]] and [[Sasuke Uchiha]]
+|[[Six Paths — Chibaku Tensei|Extraction]] of the [[Ten-Tails]]
+|-
+|[[Tobi (Zetsu)|Tobi]]
+|[[Kaguya Ōtsutsuki Strikes]]
+|[[Land of Lightning]]
+|[[Naruto Uzumaki]] and [[Sasuke Uchiha]]
+|Released from [[Infinite Tsukuyomi]]
+|-
+|Remaining [[White Zetsu Army|White Zetsu Clones]]
+|[[Kaguya Ōtsutsuki Strikes]]
+|[[Land of Lightning]]
+|[[Naruto Uzumaki]] and [[Sasuke Uchiha]]
+|Released from [[Infinite Tsukuyomi]]
+|}
+
+== Blank Period ==
+:''Note: Episode numbers refer to the ''Naruto: Shippūden'' anime.''
+{| class="wikitable sortable"
+|-
+! Title
+! Episodes
+! Summary
+|-
+| ''[[Kakashi Hiden: Lightning in the Icy Sky]]''
+| —
+| Uncertain if he wants to be the next [[Hokage]], [[Kakashi Hatake]] goes on another mission to the [[Land of Waves]] to decide his future.
+|-
+| ''[[Shikamaru Hiden: A Cloud Drifting in Silent Darkness]]''
+| [[Shikamaru Hiden: A Cloud Drifting in Silent Darkness (Arc)|489-493]]
+| [[Shikamaru Nara]] travels to the [[Land of Silence]], willing to become an assassin if it means preserving the world's hard-won peace.
+|-
+| ''[[The Last: Naruto the Movie]]''
+| —
+| The world may be safe from wars between ninja, but can it survive a collision with the [[Moon]]?
+|-
+| ''[[Sakura Hiden: Thoughts of Love, Riding Upon a Spring Breeze]]''
+| —
+| [[Sakura Haruno]] discovers that peace is expensive, so much so that it might end up costing Sasuke his reputation.
+|-
+| ''[[Konoha Hiden: The Perfect Day for a Wedding]]''
+| [[Konoha Hiden: The Perfect Day for a Wedding (Arc)|494-500]]
+| The villagers of Konoha seek out the perfect wedding presents for Naruto and [[Hinata Hyūga]].
+|-
+| ''[[Gaara Hiden: A Sandstorm Mirage]]''
+| —
+| [[Gaara]] used to be a societal menace, then he used to be dead, more recently he's been [[Kazekage]]. Up next: arranged marriage.
+|-
+| ''[[Akatsuki Hiden: Evil Flowers in Full Bloom]]''
+| —
+| Sasuke encounters two young brothers, unaware of their connections to the former members of [[Akatsuki]].
+|-
+| ''[[Sasuke Shinden: Book of Sunrise]]''
+| [[Sasuke Shinden: Book of Sunrise (Arc)|484-488]]
+| Sasuke wanders the world seeking to atone for his past, in the process learning that he was not the only victim of injustice.
+|-
+|}
+
+=== Manga Omake ===
+* "[[After The Last]]"
+* "[[:File:Retsu Rest.jpg|The Rest]]"
+* "[[The Beast that was Shot by Love!!]]"
+
+=== Deaths ===
+{| class="box table coloured bordered innerbordered style-basic center-block cell-align-center"
+|-
+!|Character Name
+!|Arc in Which Death Occurred
+!|Place of Death
+!|Killer(s)
+!|Cause of Death
+|-
+|[[Rahyō]]
+|[[Kakashi Hiden: Lightning in the Icy Sky]]
+|[[Tobishachimaru]]
+|None
+|Fell out of the [[Tobishachimaru]]
+|-
+|[[Gatekeeper]]
+|[[The Last: Naruto the Movie]]
+|[[Moon]]
+|[[Shikamaru Nara]], [[Sai]], and [[Sakura Haruno]]
+|[[Shadow Sewing Technique]], [[Super God Imitating Drawing]], and [[Chakra Enhanced Strength]]
+|-
+|[[Ōtsutsuki Clan Patriarch]]
+|[[The Last: Naruto the Movie]]
+|[[Moon]]
+|None
+|Old age
+|-
+|[[Hamura Ōtsutsuki Golem]]
+|[[The Last: Naruto the Movie]]
+|[[Moon]]
+|[[Kurama]]
+|[[Tailed Beast Ball]]
+|-
+|[[Metoro Konjiki]]
+|[[Gaara Hiden: A Sandstorm Mirage]]
+|[[Sunagakure]]
+|[[Gaara]]
+|[[Sand Sword]]
+|-
+|[[Etoro Konjiki]]
+|[[Gaara Hiden: A Sandstorm Mirage]]
+|[[Sunagakure]]
+|[[Gaara]]
+|[[Sand Binding Coffin]] and [[Sand Waterfall Funeral]]
+|-
+|[[Tadaichi]]
+|[[Sasuke Shinden: Book of Sunrise]]
+|[[Konohagakure]]
+|[[Chino]]
+|[[Exploding Human Technique]]
+|-
+|[[Amino]]
+|[[Sasuke Shinden: Book of Sunrise (Arc)]]
+|[[Bamboo Village]]
+|[[Chino]]
+|[[Exploding Human Technique]]
+|-
+|[[Iō (Bamboo Village)|Iō]]
+|[[Sasuke Shinden: Book of Sunrise (Arc)]]
+|[[Bamboo Village]]
+|Himself
+|Died in the fire to save Amino.
+|-
+|[[Karyū]]
+|[[Sasuke Shinden: Book of Sunrise]]
+|[[Land of Hot Water]]
+|[[Iō (Bamboo Village)|Iō]]
+|Set him on fire
+|}
+
+== New Era: Part I ==
+:''Note: Unless indicated otherwise, chapter numbers refer to the ''Boruto: Naruto Next Generations'' manga and episode numbers refer to the ''Boruto: Naruto Next Generations'' anime.''
+{| class="wikitable sortable"
+|-
+! Arc Name
+! Chapters
+! Episodes
+! Summary
+|-
+| [[Academy Entrance Arc]]
+| —
+| 1-15
+| Naruto's son, [[Boruto Uzumaki]], enrols in Konoha's [[Ninja Academy]].
+|-
+| [[Sarada Uchiha Arc]]
+| [[Sarada Uchiha (volume)|701-710]]
+| 19-24
+| [[Sarada Uchiha]] sets out to learn more about her father, Sasuke.
+|-
+| ''[[Konoha Shinden: Steam Ninja Scrolls]]''
+| [[Konoha Shinden: Steam Ninja Scrolls (manga)|1-15]]
+| [[Steam Ninja Scrolls Arc|106-111]]
+| [[Mirai Sarutobi]] accompanies [[Kakashi Hatake]] and [[Might Guy]] on their top-secret vacation to the [[Land of Hot Water]].
+|-
+| [[School Trip Arc]]
+| —
+| 25-32
+| Boruto and his classmates go on a school trip to [[Kirigakure]].
+|-
+| [[Graduation Exams Arc]]
+| —
+| 34-37
+| Boruto and his classmates graduate from the Academy by participating in the [[Genin Exams]].
+|-
+| [[Genin Mission Arc]]
+| —
+| 40-42
+| Boruto, Sarada, and [[Mitsuki]] are added to [[Team Konohamaru|Team 7]] and begin taking missions.
+|-
+| [[Byakuya Gang Arc]]
+| —
+| 43-47
+| Boruto and [[Shikadai Nara]] work together against the [[Byakuya Gang]].
+|-
+| ''[[Naruto Shinden: Parent and Child Day]]''
+| —
+| [[Parent and Child Day Arc|93-95]]
+| Konoha celebrates [[Parent and Child Day]], a chance for families to spend time together.
+|-
+| [[Versus Momoshiki Arc]]
+| 1-10
+| 51-66
+| Boruto competes in the [[Chūnin Exams]] in an attempt to connect with his father, in the process helping stop an [[Ōtsutsuki]] invasion.
+|-
+| [[Chōchō Arc]]
+| —
+| 67-69
+| [[Team 7 (Konohamaru)|Team 7]] and [[Team 10 (Moegi)|Team 10]] go on a mission to protect actors [[Tomaru]] and [[Ashina]], whom received death threats.
+|-
+| [[Mitsuki's Disappearance Arc]]
+| —
+| 71-92
+| Mitsuki disappears. Boruto, Sarada, and Team 10 follow him to [[Iwagakure]] to know his true intentions.
+|-
+| ''[[Sasuke Shinden: The Teacher's Star Pupil]]''
+| —
+| —
+| Sasuke is momentarily put in charge of Team 7 as they go on a mission to protect pop-star [[Lily Himeno]].
+|-
+| [[Jūgo Arc]]
+| —
+| 98-103
+| Boruto goes on a mission to investigate an incident where people were attacked by a ferocious bird. On the way to the scene, Boruto and his friends encounter [[Jūgo]].
+|-
+| [[Konohamaru's Love Arc]]
+| —
+| 116-119
+| [[Boruto]] and [[Konohamaru]] meet [[Remon Yoimura]] and become involved in her family's shadowy business.
+|-
+| [[One-Tail Escort Arc]]
+| —
+| 120-126
+| [[Urashiki]] pursues [[Shukaku]], and Boruto and [[Shinki]] are tasked to protect him.
+|-
+| [[Time Slip Arc]]
+| —
+| 128-136
+| Boruto can't defeat Urashiki in the present, but he might be able to stop him in the past.
+|-
+| [[Mujina Bandits Arc]]
+| 11-15
+| 141-151
+| Team 7 confronts the [[Mujina Bandits]].
+|-
+| ''[[Shikamaru Shinden: A Cloud Dancing in Forlorn Falling Petals]]''
+| —
+| —
+| A disagreement at the [[Five Kage Summit]] causes a schism in the alliance that could trigger the Fifth Great Ninja War. Elsewhere, Shikamaru is dealing with a schism of his own, with his family beginning to drift apart.
+|-
+| [[Kara Actuation Arc]]
+| —
+| 157-175
+| A shadowy organisation, [[Kara]], tries to destabilise the world's peace.
+|-
+| ''[[Kakashi Retsuden: The Sixth Hokage and the Failure Boy]]''
+| —
+| —
+| Far from the [[Land of Fire]] is the [[Land of Redaku]]. There, Kakashi takes another outcast boy under his wing, but soon learns that the country is on the brink of waging a new war.
+|-
+| ''[[Sasuke Retsuden: The Uchiha Descendants and the Heavenly Stardust]]''
+| [[Sasuke Retsuden: The Uchiha Descendants and the Heavenly Stardust (manga)|1-10]]
+| [[Sasuke Retsuden Arc|282-286]]
+| Sasuke travels far from the Land of Fire to an astronomical observatory. He and Sakura go undercover in search of information on the Sage of Six Paths, but end up discovering a plot already in motion.
+|-
+| ''[[Naruto Retsuden: Naruto Uzumaki and the Spiral Destiny]]''
+| —
+| —
+| Naruto has lost his ability to use chakra. Meanwhile, Kakashi, Sasuke, and Sakura are out of the country searching for clues pertaining to the Sage of Six Paths when they find what may be the final piece to the puzzle.
+|-
+| [[Ao Arc]]
+| 16-23
+| 178-187
+| Kara escalates its activities.
+|-
+| [[Kawaki Arc]]
+| 24-55
+| 188-220
+| The discovery of [[Kawaki]] leads to the discovery of [[Isshiki Ōtsutsuki]].
+|-
+| [[Chūnin Re-Examination Arc]]
+| —
+| 221-230
+| Naruto, proposes that the [[Chūnin Exams]] be held to raise morale after Isshiki’s attack.
+|-
+| [[Great Sea Battle of Kirigakure Arc]]
+| —
+| 233-255
+| The new Team 7 — with Kawaki as its newest member — is assigned to escort Katasuke to a ceremony in the Land of Water. However, in the shadows of the ceremony, a group harbouring a grudge stealthily begins to make its move.
+|-
+| [[Kawaki & Himawari Academy Arc]]
+| —
+| 261-273
+| Kawaki enrols in a ninja school on a secret mission to protect [[Kae Yukiwari]]. He ends up in the same class as Himawari, who enroled at the same time, and proceeds to have a hectic ninja school life.
+|-
+| [[Labyrinth Game Arc]]
+| —
+| 274-281
+| Boruto and other people are abducted and forced to play a deadly survival game.
+|-
+| [[Code's Assault Arc]]
+| 56-67
+| 287-293
+| Code, together with his two allies [[Ada]] and [[Daemon]], is on the move to take revenge for Isshiki's death.
+|-
+| [[Omnipotence Arc]]
+| 68-80
+| —
+| Boruto and Kawaki's relationship spirals towards the former's fated destiny.
+|-
+|}
+
+=== Standalone Episodes ===
+{{#ask: [[Concept:Episodes]] [[Anime::Boruto]] [[Uncollected::Yes]]|?Episode number=#|?=Episode Title|sort=Episode number|headers=plain}}
+
+=== Manga Omake ===
+* "[[Boruto: Road to B]]"
+* "[[The Day Naruto Became Hokage]]"
+* "[[Naruto Gaiden: The Road Illuminated by the Full Moon]]"
+
+=== Deaths ===
+{| class="box table coloured bordered innerbordered style-basic center-block cell-align-center"
+|-
+!|Character Name
+!|Arc in Which Death Occurred
+!|Place of Death
+!|Killer(s)
+!|Cause of Death
+|-
+|[[Sharingan Spying Creature]]
+|[[Naruto Gaiden: The Seventh Hokage and the Scarlet Spring]]
+|[[Shin Uchiha's Hideout]]
+|[[Sarada Uchiha]]
+|[[Chakra Enhanced Strength]]
+|-
+|[[Shin Uchiha]]
+|[[Naruto Gaiden: The Seventh Hokage and the Scarlet Spring]]
+|Shin's Uchiha Hideout
+|[[Shin Uchiha (Clones)|Shin Uchiha's clones]]
+|Stab with multiple [[Kunai|three-pronged kunai]]
+|-
+|[[Iori]] (Anime Only)
+|[[Graduation Exams Arc]]
+|[[Green Banks]]
+|[[Ashimaru]]
+|Stabbed with a [[sword]]
+|-
+|[[Ashimaru]] (Anime Only)
+|[[Graduation Exams Arc]]
+|[[Green Banks]]
+|[[Sarada Uchiha]]
+|[[Full Bloom: Cherry Blossom Impact]]
+|-
+|[[Kinshiki Ōtsutsuki]]
+|[[Boruto: Naruto the Movie]]
+|[[Momoshiki's Planet]]
+|[[Momoshiki Ōtsutsuki]]
+|[[Chakra Edible Creation]]
+|-
+|[[Momoshiki Ōtsutsuki]]
+|[[Boruto: Naruto the Movie]]
+|[[Momoshiki's Planet]]
+|[[Naruto Uzumaki]] and [[Boruto Uzumaki]]
+|[[Parent and Child Rasengan]]
+|-
+|[[Kakō]] (Anime Only)
+|[[Mitsuki's Disappearance Arc]]
+|[[Iwagakure]]
+|Himself
+|Overexertion
+|-
+|[[Akkun]] (Anime Only)
+|[[Mitsuki's Disappearance Arc]]
+|[[Iwagakure]]
+|[[Kokuyō]]
+|Mask destroyed
+|-
+|[[Kokuyō]] (Anime Only)
+|[[Mitsuki's Disappearance Arc]]
+|[[Iwagakure]]
+|[[Chōchō Akimichi]]
+|[[Human Bullet Tank]]
+|-
+|[[Kirara]] (Anime Only)
+|[[Mitsuki's Disappearance Arc]]
+|[[Iwagakure]]
+|Giant [[Akuta]]
+|Crushed by falling boulder
+|-
+|[[Sekiei]] (Anime Only)
+|[[Mitsuki's Disappearance Arc]]
+|[[Iwagakure]]
+|Himself
+|Overexertion
+|-
+|[[Kū]] (Anime Only)
+|[[Mitsuki's Disappearance Arc]]
+|Old [[Iwagakure]]
+|[[Ōnoki]]
+|[[Dust Release: Detachment of the Primitive World Technique]]
+|-
+|[[Ōnoki]]
+|[[Mitsuki's Disappearance Arc]]
+|Old [[Iwagakure]]
+|Himself
+|Overexertion and old age
+|-
+|[[Urashiki Ōtsutsuki]] (Anime Only)
+|[[Time Slip Arc]]
+|[[Land of Fire]]
+|[[Naruto Uzumaki]] and [[Boruto Uzumaki]]
+|[[Parent and Child Rasengan]]
+|-
+|[[Benga]] (Anime Only)
+|[[Mujina Bandits Arc]]
+|[[Hōzuki Castle]]
+|[[Shojoji]]
+|[[Pink Lightning]]
+|-
+|[[Kokuri]] (Anime Only)
+|[[Mujina Bandits Arc]]
+|[[Hōzuki Castle]]
+|[[Shojoji]]
+|[[Corpse Clone Technique]]
+|-
+|[[Yamaoka]]
+|[[Mujina Bandits Arc]]
+|[[Konohagakure]]
+|[[Shojoji]]
+|[[Corpse Clone Technique]]
+|-
+|[[Garashi Tōno]] (Anime Only)
+|[[Kara Actuation Arc]]
+|[[Amegakure]]
+|Himself
+|Kunai
+|-
+|[[Anato]] (Anime Only)
+|[[Kara Actuation Arc]]
+|Victor's Company
+|Victor's employees
+|Unknown
+|-
+|[[Yoruga]] (Anime Only)
+|[[Kara Actuation Arc]]
+|Fushū Castle
+|Himself
+|[[Haze Ninja Art: Forbidden Technique: Afterlife Opening Gate]]
+|-
+|[[Sakuya]] (Anime Only)
+|[[Kara Actuation Arc]]
+|Fushū Castle
+|[[Asaka]] and [[Yūga]]
+|Poisoned kunai
+|-
+|[[Yūga]] (Anime Only)
+|[[Kara Actuation Arc]]
+|[[Land of Silence]]
+|Himself
+|[[Haze Ninja Art: Forbidden Technique: Ephemeral Life]]
+|-
+|[[Marui]] (Anime Only)
+|[[Kara Actuation Arc]]
+|[[Land of Silence]]
+|[[Deepa]]
+|Punched through the chest
+|-
+|[[Kakui]] (Anime Only)
+|[[Kara Actuation Arc]]
+|[[Land of Silence]]
+|[[Deepa]]
+|Punched through the chest
+|-
+|[[Hiruga]] (Anime Only)
+|[[Kara Actuation Arc]]
+|[[Land of Silence]]
+|[[Deepa]]
+|[[Carbon Control]]
+|-
+|[[Asaka]] (Anime Only)
+|[[Kara Actuation Arc]]
+|[[Land of Silence]]
+|Himself
+|[[Haze Ninja Art: Forbidden Technique: Red Spider Lily]]
+|-
+|[[Victor's Secretary]] (Anime Only)
+|[[Kara Actuation Arc]]
+|[[Land of Valleys]]
+|[[Orochimaru]]
+|Disintegration
+|-
+|[[Victor]]
+|[[Ao Arc]]
+|Victor's Hideout
+|[[Koji Kashin]]
+|[[True Fire of Samadhi]]
+|-
+|[[Deepa]] (Anime Only)
+|[[Kara Actuation Arc]] and [[Ao Arc]]
+|Victor's Company and Amado's Lab
+|None and [[Amado Sanzu]]
+|Falling debris and disintegration
+|-
+|[[Mugino]]
+|[[Ao Arc]]
+|Cave
+|[[Ao]]
+|[[Chakra Blade]]
+|-
+|[[Ao]]
+|[[Ao Arc]]
+|[[Land of Fire]]
+|[[Koji Kashin]]
+|[[Summoning Technique]]
+|-
+|[[Garō]]
+|[[Kawaki Arc]]
+|[[Land of Fire]]
+|[[Kawaki]]
+|[[Kāma: Great Burial Wave]]
+|-
+|[[Boro]]
+|[[Kawaki Arc]]
+|[[Kara's Dimension]]
+|[[Boruto Uzumaki]] under the influence of [[Momoshiki Ōtsutsuki]]
+|[[Kāma Rasengan]]
+|-
+|[[Jaggy]] (Anime Only)
+|[[Kawaki Arc]]
+|Konohagakure woods
+|Bear
+|Unknown
+|-
+|[[Tsuzumi (cultist)|Tsuzumi]] (Anime Only)
+|[[Kawaki Arc]]
+|Boro's facility
+|None
+|Falling debris
+|-
+|[[Shirabe]] (Anime Only)
+|[[Kawaki Arc]]
+|Boro's facility
+|[[Delta]]
+|[[Destruction Beam]]
+|-
+|[[Inori]] (Anime Only)
+|[[Kawaki Arc]]
+|Boro's facility
+|[[Delta]]
+|[[Destruction Beam]]
+|-
+|[[Jigen]]
+|[[Kawaki Arc]]
+|[[Kara's Dimension]]
+|[[Koji Kashin]]
+|[[Summoning: True Fire of the Flaming Mountain]]
+|-
+|[[Isshiki Ōtsutsuki]]
+|[[Kawaki Arc]]
+|Unspecified dimension
+|None
+|Body exhaustion
+|-
+|[[Mozuku (Land of Calm Seas)|Mozuku]] (Anime Only)
+|[[Chūnin Re-Examination Arc]]
+|Between [[Land of Fire]] and [[Land of Calm Seas]]
+|[[Kurobane]]
+|[[Manipulated Shuriken Technique]]
+|-
+|[[Sazanka]] (Anime Only)
+|[[Chūnin Re-Examination Arc]]
+|[[Land of Fire]]
+|[[Tsubaki Kurogane]]
+|[[Samurai Sabre Technique]]
+|-
+|[[Awaji Unabara]] (Anime Only)
+|[[Great Sea Battle of Kirigakure Arc]]
+|[[Kirigakure]]
+|[[Funato Clan]]
+|Explosion
+|-
+|[[Taiki]] (Anime Only)
+|[[Great Sea Battle of Kirigakure Arc]]
+|[[Land of Water]] sea
+|[[Kobanza]]
+|[[Kabutowari]]
+|-
+|[[Kobanza]] (Anime Only)
+|[[Great Sea Battle of Kirigakure Arc]]
+|[[Land of Water]] sea
+|Himself
+|Explosion
+|-
+|[[Kagura Karatachi]] (Anime Only)
+|[[Great Sea Battle of Kirigakure Arc]]
+|Kagura's Village
+|[[Funamushi]]
+|[[Water Release: Water Spikes]]
+|-
+|[[Tenma Funato]] (Anime Only)
+|[[Great Sea Battle of Kirigakure Arc]]
+|[[Land of Water]] sea
+|[[Chōjūrō]]
+|Sword
+|-
+|[[Funamushi]] (Anime Only)
+|[[Great Sea Battle of Kirigakure Arc]]
+|Kagura's Village
+|[[Buntan Kurosuki]]
+|[[Kiba (swords)|Kiba]]
+|-
+|[[Hebiichigo]] (Anime Only)
+|[[Great Sea Battle of Kirigakure Arc]]
+|Kagura's Village
+|[[Funamushi]]
+|[[Water Release: Raging Jellyfish]]
+|-
+|[[Seiren Funato]] (Anime Only)
+|[[Great Sea Battle of Kirigakure Arc]]
+|Funato Clan Island
+|[[Kagura Karatachi]]
+|Injury sustained from [[Hiramekarei]]
+|-
+|[[Isari Funato]] (Anime Only)
+|[[Great Sea Battle of Kirigakure Arc]]
+|Mizukage's Office
+|[[Araumi Funato]]
+|[[Marlin Harpoon]], command from Araumi
+|}
+
+== New Era: Part II ==
+''Note: Unless indicated otherwise, chapter numbers refer to the ''Boruto: Two Blue Vortex'' manga.''
+{| class="wikitable sortable"
+|-
+! Arc Name
+! Chapters
+! Episodes
+! Summary
+|-
+| [[Boruto's Return Arc]]
+| 1-15
+| N/A
+| 
+|-
+| [[Matsuri and Ryū Arc]]
+| 16-25
+| N/A
+| 
+|-
+| [[Mamushi Arc]]
+| 26-34
+| N/A 
+| 
+|-
+| [[Post Mamushi Arc]]
+| 35-
+| N/A 
+| 
+|}
+
+=== Deaths ===
+{| class="box table coloured bordered innerbordered style-basic center-block cell-align-center"
+|-
+!|Character Name
+!|Arc in Which Death Occurred
+!|Place of Death
+!|Killer(s)
+!|Cause of Death
+|-
+|[[Yodo]]
+|[[Matsuri and Ryū Arc]]
+|Land of Wind
+|[[Ryū]]
+|Iron Sand
+|-
+|[[Ryū]]
+|[[Matsuri and Ryū Arc]]
+|Land of Wind
+|[[Araya]]
+|Freed Shinki with Ryū's Thornsoul
+|-
+|[[Matsuri (God Tree)|Matsuri]]
+|[[Matsuri and Ryū Arc]]
+|Konohagakure
+|[[Konohamaru Sarutobi]]
+|Freed Moegi with Matsuri's Thornsoul
+|-
+|[[Mamushi]]
+|[[Mamushi Arc]]
+|Kara's Dimension
+|None
+|Mamushi's Thornsoul rotted
+|-
+|[[Bug]]
+|[[Mamushi Arc]]
+|Kara's Dimension
+|None
+|Mamushi's Thornsoul rotted
+|}
+
+== Trivia ==
+* Gaara died during the [[Kazekage Rescue Mission]] after [[Akatsuki]] [[Sealing Technique: Phantom Dragons Nine Consuming Seals|extracted]] his [[Shukaku|tailed beast]] from inside him. He was, however, [[One's Own Life Reincarnation|revived]] by [[Chiyo]].
+* In a similar manner [[Fukasaku]], [[Kakashi Hatake]], [[Shizune]] and several other unnamed Konoha shinobi died during [[Pain's Assault (Arc)|Pain's Assault]]. They were, however, revived by [[Nagato]]'s [[Outer Path: Samsara of Heavenly Life Technique]].
+
+== References ==
+<references />
+
+[[Category:Arcs| ]]
+[[fr:Histoire de Naruto]]
+[[id:Plot Naruto]]

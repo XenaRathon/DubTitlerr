@@ -41,8 +41,10 @@ Requires mkvtoolnix (mkvmerge) + ffprobe.  Built with help of Claude (Anthropic)
 import argparse
 import errno
 import json
+import math
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import time
@@ -370,7 +372,12 @@ def verify(orig, out):
         return "missing-av"
     if not has_dubtitles_track(info):
         return "no-dubtitles-track"
-    if abs(video_duration(out) - video_duration(orig)) > DUR_TOL:
+    out_s, orig_s = video_duration(out), video_duration(orig)
+    # An unmeasurable file reads 0.0 (ffprobe missing, timing out or erroring); two zeros are "equal" and used to let a
+    # truncated remux replace a full episode. Both measurements must be finite and positive before they are compared.
+    if not all(math.isfinite(s) and s > 0 for s in (out_s, orig_s)):
+        return "duration-unmeasurable"
+    if abs(out_s - orig_s) > DUR_TOL:
         return "duration-mismatch"
     # D2: font-attachment audit -- mkvmerge -J reports attachments as a top-level
     # "attachments" array (sibling of "tracks"), NOT as track entries; .get(..., [])
@@ -504,6 +511,61 @@ def _finalize(tmp, dst):
 RECOVERY_SUFFIX = ".dubtitles.mux-recovery"
 
 
+def temp_path(stem: str) -> str:
+    """Generate a unique per-run temp path in the same directory as stem.
+
+    Includes process id and random token to prevent collision across concurrent writers,
+    ending with .muxtmp.mkv to match existing sweeps and recovery logic.
+    """
+    return f"{stem}.{os.getpid()}.{secrets.token_hex(4)}.muxtmp.mkv"
+
+
+def _source_unchanged(orig: str, st: os.stat_result) -> bool:
+    """True if orig exists with identical size and mtime within 1 second.
+
+    Compares size and mtime only; inode and device are dropped because they are unstable
+    on CIFS/NFS/mergerfs mounts. Network mounts also introduce timestamp jitter, so mtime
+    is compared within a 1-second tolerance. A same-size same-mtime replacement is an
+    accepted blind spot to avoid false refusals on network storage.
+    """
+    try:
+        curr = os.stat(orig)
+    except OSError:
+        return False
+    return (
+        curr.st_size == st.st_size
+        and abs(curr.st_mtime - st.st_mtime) <= 1.0
+    )
+
+
+def cleanup_old_temps(stem: str, now: float | None = None) -> None:
+    """Delete leftover temp files for this stem older than 6 hours without a recovery marker.
+
+    Matches <stem>.<pid>.<hex>.muxtmp.mkv. No PID liveness check is performed as container
+    isolation and NFS make remote/recycled PIDs unreliable.
+    """
+    marker = stem + RECOVERY_SUFFIX
+    if os.path.exists(marker):
+        return
+    dirname = os.path.dirname(stem) or "."
+    base = os.path.basename(stem)
+    pattern = re.compile(r"^" + re.escape(base) + r"\.\d+\.[0-9a-fA-F]+\.muxtmp\.mkv$")
+    current_time = time.time() if now is None else now
+    try:
+        entries = os.listdir(dirname)
+    except OSError:
+        return
+    for name in entries:
+        if pattern.match(name):
+            full_path = os.path.join(dirname, name)
+            try:
+                st = os.stat(full_path)
+                if (current_time - st.st_mtime) > 6 * 3600:
+                    os.remove(full_path)
+            except OSError:
+                pass
+
+
 def process(orig, apply):
     stem, ext = os.path.splitext(orig)
     marker = stem + RECOVERY_SUFFIX
@@ -518,6 +580,8 @@ def process(orig, apply):
             except OSError:
                 pass
         return "recovery-pending"
+    if apply:
+        cleanup_old_temps(stem)
     stamp = stem + STAMP_SUFFIX
     src = sub_source(stem)
     if src is None:
@@ -549,7 +613,7 @@ def process(orig, apply):
     if not has_room(_free_bytes(orig), os.path.getsize(orig)):
         log("  skip (low disk):", os.path.basename(orig))
         return "skip-no-room"
-    out = stem + ".muxtmp.mkv"
+    out = temp_path(stem)
     final = stem + ".mkv"  # every episode ends as an mkv
     cmd, dropped = build_cmd(identify(orig), orig, src, out)
     if not apply:
@@ -565,6 +629,17 @@ def process(orig, apply):
                 os.remove(out)
             write_stage(stem, "mux", "build-error", f"verify:{res}")
             return "verify-" + res
+        if not _source_unchanged(orig, st):
+            if os.path.exists(out):
+                try:
+                    os.remove(out)
+                except OSError:
+                    pass
+            if stamp_valid(read_stamp(stamp), orig):
+                return "already-muxed"
+            log(f"  ERROR: {os.path.basename(orig)} changed during mux — aborting replace")
+            write_stage(stem, "mux", "refused", "source-changed")
+            return "refused"
         os.chown(out, st.st_uid or MEDIA_UID, st.st_gid or MEDIA_GID)
         try:
             # Stamp BEFORE the rename, from the temp file: write_stamp stats the path it
@@ -590,6 +665,22 @@ def process(orig, apply):
             )
             write_stage(stem, "mux", "unwritable", str(e))
             return "stamp-write-failed"
+        if not _source_unchanged(orig, st):
+            if stamped and not stamp_valid(read_stamp(stamp), orig):
+                try:
+                    os.remove(stamp)
+                except OSError:
+                    pass
+            if os.path.exists(out):
+                try:
+                    os.remove(out)
+                except OSError:
+                    pass
+            if stamp_valid(read_stamp(stamp), orig):
+                return "already-muxed"
+            log(f"  ERROR: {os.path.basename(orig)} changed during mux — aborting replace")
+            write_stage(stem, "mux", "refused", "source-changed")
+            return "refused"
         _finalize(out, final)  # write the muxed mkv
         stamped = False  # renamed: the stamp is now valid, keep it whatever follows
         # The stamp is written: the episode IS done. Cleanup failures from here on must not

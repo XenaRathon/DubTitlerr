@@ -13,6 +13,20 @@
 ROOT="${MERGE_ROOTS:-/media/Anime Library}"
 APP="${APP_DIR:-/scripts}"
 export PYTHONPATH="$APP${PYTHONPATH:+:$PYTHONPATH}" # so inline `python3 -c "import common"` snippets resolve
+# Stored settings (settings.json / secrets.json, written by the web UI): applied at the start of EVERY pass, so a change takes
+# effect at the next pass boundary and never mid-episode. NOT `source`d: review_settings_write.py parses and re-validates the
+# files and prints only registered, shell-quoted `export` lines. The guard is the exporter, not a settings file: once the old
+# runtime.env is migrated away there is no file to test for. If the exporter is missing or fails, the pass runs on the container
+# environment. (The exporter's stderr is kept: it names anything it ignored, which would otherwise be invisible.)
+if [ -f "$APP/review_settings_write.py" ]; then
+	eval "$(python3 "$APP/review_settings_write.py" export --scope merge)" || true
+fi
+# Report what THIS pass runs with, to its own file: the generate loop writes effective.env from an environment that never
+# applies the repair profile, so sharing one file would make the Settings page's "pending" flip as the two take turns.
+# Written on every pass (also after a reset), but only where a config directory exists.
+if [ -d "${CONFIG_DIR:-/config}" ] && [ -f "$APP/review_requests.py" ]; then
+	python3 "$APP/review_requests.py" write-effective-env "${CONFIG_DIR:-/config}/merge-effective.env" || true
+fi
 command -v ffmpeg >/dev/null 2>&1 || {
 	echo "FATAL: ffmpeg not found — image is misbuilt"
 	exit 1
@@ -42,6 +56,26 @@ cd "$ROOT" || {
 [ -f "$APP/shell/lib.sh" ] && . "$APP/shell/lib.sh"
 # Soft stop: stop_requested comes from lib.sh; without it nothing ever stops.
 command -v stop_requested >/dev/null 2>&1 || stop_requested() { return 1; }
+command -v library_sweep_enabled >/dev/null 2>&1 || library_sweep_enabled() { return 0; }
+
+# SCAN_DIRS ("$@" below): where the pass looks. The whole library by default. With LIBRARY_SWEEP off, only the show folders that
+# have a run request (pending, running, or done within the 7-day prune window), so nothing spends repair tokens unqueued.
+# A show name from a request file is a plain folder name (review_requests.py refuses path parts), and a folder that does
+# not exist is dropped. No qualifying show: the pass does nothing.
+set -- .
+if ! library_sweep_enabled; then
+	set --
+	_req_shows=$(python3 "$APP/review_requests.py" shows "${REQUESTS_DIR:-${CONFIG_DIR:-/config}/requests}" 7 </dev/null 2>/dev/null) || _req_shows=""
+	while IFS= read -r _show; do
+		[ -n "$_show" ] && [ -d "./$_show" ] && set -- "$@" "./$_show"
+	done <<EOF
+$_req_shows
+EOF
+	if [ "$#" -eq 0 ]; then
+		echo "merge_pass: LIBRARY_SWEEP is off and no show has a run request — nothing to merge"
+		exit 0
+	fi
+fi
 PATTERN=$(extras_grep_pattern "$APP/data/extras.txt" 2>/dev/null || echo '(Behind The Scenes|Deleted Scenes|Featurettes|Interviews|Scenes|Shorts|Trailers|Other|Extras)')
 
 # Prints the outcome of a stage that failed, nothing if it passed. Fails CLOSED: if the
@@ -55,9 +89,9 @@ has_record() {
 	python3 -c "import common,sys; sys.exit(0 if sys.argv[2] in common.read_stages(sys.argv[1]) else 1)" "$1" "$2" </dev/null >/dev/null 2>&1
 }
 
-before=$(find . -type f -name "*.dubtitles.done" | wc -l)
+before=$(find "$@" -type f -name "*.dubtitles.done" | wc -l)
 # episodes with a sidecar (srt or ass) -> dedup to the stem
-find . -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) |
+find "$@" -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) |
 	grep -ivE "/$PATTERN/" |
 	sed -E 's/\.eng\.dubtitles\.(srt|ass)$//' | sort -u | while IFS= read -r stem; do
 	# window closed (container_run.sh got SIGTERM): start no new stem. This loop is a pipe
@@ -119,7 +153,7 @@ find . -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) 
 		}
 	done
 done
-after=$(find . -type f -name "*.dubtitles.done" | wc -l)
+after=$(find "$@" -type f -name "*.dubtitles.done" | wc -l)
 
 if [ "$after" -gt "$before" ] && [ -n "${PLEX_TOKEN:-}" ]; then
 	echo "muxed $((after - before)) new episode(s) -> refreshing Plex"
@@ -130,7 +164,7 @@ fi
 # counter incremented inside it survives past `done` -- the COMPLETE/
 # INCOMPLETE decision is computed here, after the loop exits, by a fresh scan
 # of every stage sidecar under ROOT rather than from any loop-local state.
-scan_out=$(find . -type f -name "*.dubtitles.stages.json" -print0 |
+scan_out=$(find "$@" -type f -name "*.dubtitles.stages.json" -print0 |
 	xargs -0 -r python3 -c "
 import common, sys
 n = 0

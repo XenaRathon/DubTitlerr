@@ -1,0 +1,32 @@
+{
+  "name": "dubtitlerr-review",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "build": "vite build",
+    "test": "node --test tests/*.test.mjs",
+    "test:bundle": "npm run build && node --test tests/noLegacyHeaders.test.mjs",
+    "test:browser": "playwright test",
+    "format": "prettier --write src tests/browser *.ts *.json *.html",
+    "format:check": "prettier --check src tests/browser *.ts *.json *.html"
+  },
+  "dependencies": {
+    "@lucide/svelte": "1.55.0",
+    "diff": "9.0.0",
+    "svelte": "5.57.2"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.64.0",
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "prettier": "3.9.10",
+    "prettier-plugin-svelte": "4.1.1",
+    "svelte-check": "4.7.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.71.2",
+    "vite": "8.3.4"
+  }
+}

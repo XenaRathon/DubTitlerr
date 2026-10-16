@@ -1,0 +1,10 @@
+{
+  "eventType": "Test",
+  "movie": {
+    "id": 10,
+    "title": "Akira",
+    "folderPath": "/movies/Akira (1988)",
+    "tmdbId": 149,
+    "year": 1988
+  }
+}

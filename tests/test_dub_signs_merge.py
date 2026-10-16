@@ -3,6 +3,7 @@
 import os
 
 import pysubs2
+import pytest
 
 import common
 import dub_signs_merge as dsm
@@ -774,3 +775,678 @@ def test_narration_over_an_opening_is_dropped_known_ceiling(tmp_path, monkeypatc
 
     assert status == "ok"
     assert dub == 1, "the narration is dropped with the song span -- documented, not desired"
+
+
+# --- Item 1: cross-track de-duplication --------------------------------------
+
+
+def test_cross_track_dedup_two_groups_same_sign(tmp_path, monkeypatch, capsys):
+    track0 = _sign_track(style_name="Sign1", fontname="FontA", fontsize=35.0, text="Tokyo Tower")
+    track0.events[0].text = r"{\pos(100,200)\fs35}Tokyo Tower"
+    track0.events[0].start = 1000
+    track0.events[0].end = 3000
+
+    track1 = _sign_track(style_name="Sign2", fontname="FontB", fontsize=45.0, text="Tokyo Tower")
+    track1.events[0].text = r"{\pos(120,210)\fs45\c&H00FFFF&}Tokyo Tower"
+    track1.events[0].start = 1100
+    track1.events[0].end = 2900
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 1
+    res = pysubs2.load(out_ass)
+    sign_events = [e for e in res.events if e.style != "Dubtitles"]
+    assert len(sign_events) == 1
+    assert sign_events[0].text == r"{\pos(100,200)\fs35}Tokyo Tower"
+    assert "cross-track dedup: dropped 1 duplicate event(s) from stream 1" in capsys.readouterr().out
+    assert "Sign2" not in res.styles
+
+
+def test_cross_track_dedup_same_song_karaoke(tmp_path, monkeypatch):
+    track0 = pysubs2.SSAFile()
+    track0.styles["Opening-Romaji"] = pysubs2.SSAStyle()
+    track0.events = [
+        pysubs2.SSAEvent(start=1000, end=4000, style="Opening-Romaji", text=r"{\k50}la{\k50}la"),
+    ]
+
+    track1 = pysubs2.SSAFile()
+    track1.styles["OP"] = pysubs2.SSAStyle()
+    track1.events = [
+        pysubs2.SSAEvent(start=1200, end=3800, style="OP", text=r"{\k40}la{\k60}la"),
+    ]
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 1
+    res = pysubs2.load(out_ass)
+    sign_events = [e for e in res.events if e.style != "Dubtitles"]
+    assert len(sign_events) == 1
+    assert sign_events[0].text == r"{\k50}la{\k50}la"
+
+
+def test_cross_track_dedup_sign_only_in_second_track_kept(tmp_path, monkeypatch):
+    track0 = _sign_track(style_name="Sign0", text="Common Sign")
+    track0.events[0].start = 1000
+    track0.events[0].end = 3000
+    ev_extra0 = pysubs2.SSAEvent(start=8000, end=9000, style="Sign0", text=r"{\pos(10,10)}Track 0 Extra")
+    track0.events.append(ev_extra0)
+
+    track1 = _sign_track(style_name="Sign1", text="Common Sign")
+    track1.events[0].start = 1000
+    track1.events[0].end = 3000
+    ev_unique = pysubs2.SSAEvent(start=5000, end=7000, style="UniqueSign", text=r"{\pos(50,50)}Unique Second Track Sign")
+    track1.styles["UniqueSign"] = pysubs2.SSAStyle(fontname="UniqueFont")
+    track1.events.append(ev_unique)
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 3
+    res = pysubs2.load(out_ass)
+    texts = [e.plaintext.strip() for e in res.events if e.style != "Dubtitles"]
+    assert "Unique Second Track Sign" in texts
+    assert "Common Sign" in texts
+    assert "Track 0 Extra" in texts
+    assert "UniqueSign" in res.styles
+
+
+def test_cross_track_dedup_two_stacked_events_inside_one_track_both_kept(tmp_path, monkeypatch):
+    track0 = _layered_track()
+    track1 = pysubs2.SSAFile()
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 2
+    res = pysubs2.load(out_ass)
+    sign_events = [e for e in res.events if e.style != "Dubtitles"]
+    assert len(sign_events) == 2
+
+
+def test_cross_track_dedup_non_overlapping_repeats_both_kept(tmp_path, monkeypatch):
+    track0 = _sign_track(style_name="Sign0", text="Repeated Sign")
+    track0.events[0].start = 1000
+    track0.events[0].end = 2000
+
+    track1 = _sign_track(style_name="Sign1", text="Repeated Sign")
+    track1.events[0].start = 5000
+    track1.events[0].end = 6000
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 2
+    res = pysubs2.load(out_ass)
+    sign_events = [e for e in res.events if e.style != "Dubtitles"]
+    assert len(sign_events) == 2
+
+
+def test_cross_track_dedup_opt_out(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIGNS_CROSS_TRACK_DEDUP", "0")
+    track0 = _sign_track(style_name="Sign1", text="Tokyo Tower")
+    track0.events[0].text = r"{\pos(100,200)}Tokyo Tower"
+    track0.events[0].start = 1000
+    track0.events[0].end = 3000
+
+    track1 = _sign_track(style_name="Sign2", text="Tokyo Tower")
+    track1.events[0].text = r"{\pos(120,210)}Tokyo Tower"
+    track1.events[0].start = 1100
+    track1.events[0].end = 2900
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 2
+    res = pysubs2.load(out_ass)
+    sign_events = [e for e in res.events if e.style != "Dubtitles"]
+    assert len(sign_events) == 2
+
+
+def test_single_track_releases_byte_identical_output(tmp_path, monkeypatch):
+    track0 = _song_track()
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:10,000 --> 00:00:12,000\nDub line\n\n", encoding="utf-8")
+
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out_path: track0.save(out_path) or True)
+
+    out_default = str(tmp_path / "out_default.ass")
+    out_legacy = str(tmp_path / "out_legacy.ass")
+
+    monkeypatch.setenv("SIGNS_CROSS_TRACK_DEDUP", "1")
+    monkeypatch.setenv("DUB_FANSUB_FONT", "0")
+    s1, signs1, dub1 = dsm.build("fake.mkv", str(dub_srt), out_default)
+
+    monkeypatch.setenv("SIGNS_CROSS_TRACK_DEDUP", "0")
+    s2, signs2, dub2 = dsm.build("fake.mkv", str(dub_srt), out_legacy)
+
+    assert s1 == s2 == "ok"
+    assert signs1 == signs2
+    assert dub1 == dub2
+    assert open(out_default, "rb").read() == open(out_legacy, "rb").read()
+
+
+# --- Item 2: dialogue font matching ------------------------------------------
+
+
+def _track_with_dialogue(fontname="Arial", style_name="Default"):
+    t = pysubs2.SSAFile()
+    t.styles[style_name] = pysubs2.SSAStyle(fontname=fontname)
+    t.styles["Sign"] = pysubs2.SSAStyle(fontname="SignFont")
+    t.events = [
+        pysubs2.SSAEvent(start=1000, end=3000, style=style_name, text="Spoken dialogue line 1"),
+        pysubs2.SSAEvent(start=3500, end=5500, style=style_name, text="Spoken dialogue line 2"),
+        pysubs2.SSAEvent(start=6000, end=7000, style="Sign", text=r"{\pos(10,20)}A sign"),
+    ]
+    return t
+
+
+def test_fansub_font_attachment_present(tmp_path, monkeypatch):
+    track = _track_with_dialogue(fontname="WildWords", style_name="Default")
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: track.save(out) or True)
+    monkeypatch.setattr(dsm, "list_attachment_filenames", lambda video: ["wildwords-regular.ttf"])
+
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nDub line\n\n", encoding="utf-8")
+    out_ass = str(tmp_path / "out.ass")
+
+    status, signs, dub = dsm.build("fake.mkv", str(dub_srt), out_ass)
+    assert status == "ok"
+    res = pysubs2.load(out_ass)
+    assert res.styles["Dubtitles"].fontname == "WildWords"
+
+
+def test_fansub_font_no_attachment_exotic_font_falls_back_to_trebuchet_ms(tmp_path, monkeypatch, capsys):
+    track = _track_with_dialogue(fontname="WildWords", style_name="Default")
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: track.save(out) or True)
+    monkeypatch.setattr(dsm, "list_attachment_filenames", lambda video: [])
+
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nDub line\n\n", encoding="utf-8")
+    out_ass = str(tmp_path / "out.ass")
+
+    status, signs, dub = dsm.build("fake.mkv", str(dub_srt), out_ass)
+    assert status == "ok"
+    res = pysubs2.load(out_ass)
+    assert res.styles["Dubtitles"].fontname == "Trebuchet MS"
+    out = capsys.readouterr().out
+    assert "falling back to Trebuchet MS" in out
+
+
+def test_fansub_font_safe_set_without_attachment_used(tmp_path, monkeypatch):
+    track = _track_with_dialogue(fontname="Verdana", style_name="Default")
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: track.save(out) or True)
+    monkeypatch.setattr(dsm, "list_attachment_filenames", lambda video: [])
+
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nDub line\n\n", encoding="utf-8")
+    out_ass = str(tmp_path / "out.ass")
+
+    status, signs, dub = dsm.build("fake.mkv", str(dub_srt), out_ass)
+    assert status == "ok"
+    res = pysubs2.load(out_ass)
+    assert res.styles["Dubtitles"].fontname == "Verdana"
+
+
+def test_fansub_font_leading_at_symbol_stripped(tmp_path, monkeypatch):
+    track = _track_with_dialogue(fontname="@Verdana", style_name="Main")
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: track.save(out) or True)
+    monkeypatch.setattr(dsm, "list_attachment_filenames", lambda video: [])
+
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nDub line\n\n", encoding="utf-8")
+    out_ass = str(tmp_path / "out.ass")
+
+    status, signs, dub = dsm.build("fake.mkv", str(dub_srt), out_ass)
+    assert status == "ok"
+    res = pysubs2.load(out_ass)
+    assert res.styles["Dubtitles"].fontname == "Verdana"
+
+
+def test_fansub_font_no_dialogue_style_falls_back_to_trebuchet_ms(tmp_path, monkeypatch):
+    track = pysubs2.SSAFile()
+    track.styles["Sign"] = pysubs2.SSAStyle(fontname="SomeFont")
+    track.events = [pysubs2.SSAEvent(start=1000, end=2000, style="Sign", text=r"{\pos(10,10)}Sign only")]
+
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: track.save(out) or True)
+    monkeypatch.setattr(dsm, "list_attachment_filenames", lambda video: ["somefont.ttf"])
+
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nDub line\n\n", encoding="utf-8")
+    out_ass = str(tmp_path / "out.ass")
+
+    status, signs, dub = dsm.build("fake.mkv", str(dub_srt), out_ass)
+    assert status == "ok"
+    res = pysubs2.load(out_ass)
+    assert res.styles["Dubtitles"].fontname == "Trebuchet MS"
+
+
+def test_fansub_font_opt_out(tmp_path, monkeypatch):
+    monkeypatch.setenv("DUB_FANSUB_FONT", "0")
+    track = _track_with_dialogue(fontname="WildWords", style_name="Default")
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
+    monkeypatch.setattr(dsm, "extract", lambda video, idx, out: track.save(out) or True)
+    monkeypatch.setattr(dsm, "list_attachment_filenames", lambda video: ["wildwords.ttf"])
+
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nDub line\n\n", encoding="utf-8")
+    out_ass = str(tmp_path / "out.ass")
+
+    status, signs, dub = dsm.build("fake.mkv", str(dub_srt), out_ass)
+    assert status == "ok"
+    res = pysubs2.load(out_ass)
+    assert res.styles["Dubtitles"].fontname == "Trebuchet MS"
+
+
+# --- Item 1 fix: drawing vs clipped text & drawing proximity ------------------
+
+
+def test_events_match_clipped_text_different_content_kept():
+    p = pysubs2.SSAEvent(start=0, end=2000, style="Sign", text=r"{\pos(5,5)\clip(0,0,300,80)}LIBRARY")
+    s = pysubs2.SSAEvent(start=0, end=2000, style="Signs", text=r"{\pos(800,400)\clip(600,300,900,500)}CAFE")
+    assert not dsm._events_match(p, s)
+
+
+def test_events_match_drawing_vs_clipped_text_kept():
+    p = pysubs2.SSAEvent(start=0, end=5000, style="Sign", text=r"{\p1}m 0 0 l 100 0 100 100")
+    s = pysubs2.SSAEvent(start=1000, end=3000, style="Signs", text=r"{\pos(800,400)\clip(600,300,900,500)}EXIT")
+    assert not dsm._events_match(p, s)
+
+
+def test_events_match_drawings_distant_positions_kept():
+    p = pysubs2.SSAEvent(start=0, end=2000, style="Sign", text=r"{\p1\pos(10,10)}m 0 0 l 9 0 9 9")
+    s = pysubs2.SSAEvent(start=0, end=2000, style="Signs", text=r"{\p1\pos(900,600)}m 0 0 l 5 0 2 7")
+    assert not dsm._events_match(p, s)
+
+
+def test_events_match_drawings_near_positions_deduped():
+    p = pysubs2.SSAEvent(start=0, end=2000, style="Sign", text=r"{\p1\pos(100,100)}m 0 0 l 9 0 9 9")
+    s = pysubs2.SSAEvent(start=0, end=2000, style="Signs", text=r"{\p1\pos(110,110)}m 0 0 l 9 0 9 9")
+    assert dsm._events_match(p, s)
+
+
+# --- Item 2 fix: song events matching, scripts & language hints ---------------
+
+
+def test_song_events_secondary_english_translation_kept_when_primary_is_romaji():
+    p = pysubs2.SSAEvent(start=0, end=3000, style="OP Romaji", text=r"{\k20}kimi{\k20}no")
+    s = pysubs2.SSAEvent(start=0, end=3000, style="OP English", text=r"{\an8}Your name")
+    assert not dsm._events_match(p, s)
+
+
+def test_song_events_different_lyrics_same_time_kept():
+    p = pysubs2.SSAEvent(start=0, end=3000, style="OP Romaji", text=r"{\k20}kimi")
+    s = pysubs2.SSAEvent(start=0, end=3000, style="OP-Romaji", text=r"{\k20}sora")
+    assert not dsm._events_match(p, s)
+
+
+def test_song_events_kanji_vs_latin_kept():
+    p = pysubs2.SSAEvent(start=0, end=3000, style="OP", text=r"{\k20}君の")
+    s = pysubs2.SSAEvent(start=0, end=3000, style="OP", text=r"{\k20}kimino")
+    assert not dsm._events_match(p, s)
+
+
+def test_song_events_same_romaji_different_syllable_splits_deduped():
+    p = pysubs2.SSAEvent(start=0, end=3000, style="OP Romaji", text=r"{\k20}ki{\k20}mi")
+    s = pysubs2.SSAEvent(start=200, end=3200, style="OP-Romaji", text=r"{\k40}kimi")
+    assert dsm._events_match(p, s)
+
+
+# --- Item 3 fix: bisect window performance bound ------------------------------
+
+
+def test_cross_track_dedup_perf_bounded(tmp_path, monkeypatch):
+    import time
+
+    def tr(off):
+        return [
+            pysubs2.SSAEvent(
+                start=i * 600 + off,
+                end=i * 600 + off + 1500,
+                style="Signs",
+                text=f"{{\\pos(100,100)}}SIGN {i}",
+            )
+            for i in range(2000)
+        ]
+
+    t0 = pysubs2.SSAFile()
+    t0.styles["Signs"] = pysubs2.SSAStyle()
+    t0.events = tr(0)
+    t1 = pysubs2.SSAFile()
+    t1.styles["Signs"] = pysubs2.SSAStyle()
+    t1.events = tr(100)
+
+    calls = 0
+    orig_match = dsm._events_match
+
+    def counting_match(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return orig_match(*args, **kwargs)
+
+    monkeypatch.setattr(dsm, "_events_match", counting_match)
+    monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0, 1])
+
+    def extract_fake(video, idx, out_path):
+        (t0 if idx == 0 else t1).save(out_path)
+        return True
+
+    monkeypatch.setattr(dsm, "extract", extract_fake)
+    dub_srt = tmp_path / "dub.srt"
+    dub_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nDub\n\n", encoding="utf-8")
+    out_ass = str(tmp_path / "out.ass")
+
+    t_start = time.perf_counter()
+    status, signs, dub = dsm.build("fake.mkv", str(dub_srt), out_ass)
+    elapsed = time.perf_counter() - t_start
+
+    assert status == "ok"
+    assert calls < 50_000, f"too many checks: {calls} (quadratic scan not using bisect window)"
+    assert elapsed < 3.0, f"took too long: {elapsed:.2f}s"
+
+
+# --- Item 4: mutation coverage (primary selection & overlap thresholds) -------
+
+
+def test_primary_track_selection_more_events_wins(tmp_path, monkeypatch, capsys):
+    track0 = _sign_track(style_name="SignA", text="Tokyo Tower")
+    track0.events[0].text = r"{\pos(100,200)\fs35}Tokyo Tower"
+    track0.events[0].start = 1000
+    track0.events[0].end = 3000
+
+    track1 = _sign_track(style_name="SignB", text="Tokyo Tower")
+    track1.events[0].text = r"{\pos(120,210)\fs40}Tokyo Tower"
+    track1.events[0].start = 1000
+    track1.events[0].end = 3000
+    track1.events.append(
+        pysubs2.SSAEvent(start=5000, end=7000, style="SignB", text=r"{\pos(200,300)}Shinjuku")
+    )
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 2
+    res = pysubs2.load(out_ass)
+    sign_texts = [e.text for e in res.events if e.style != "Dubtitles"]
+    assert r"{\pos(120,210)\fs40}Tokyo Tower" in sign_texts
+    assert r"{\pos(100,200)\fs35}Tokyo Tower" not in sign_texts
+    assert "cross-track dedup: dropped 1 duplicate event(s) from stream 0" in capsys.readouterr().out
+
+
+def test_overlap_threshold_40_percent_kept(tmp_path, monkeypatch):
+    track0 = _sign_track(style_name="Sign0", text="Same Sign")
+    track0.events[0].start = 1000
+    track0.events[0].end = 3000
+
+    track1 = _sign_track(style_name="Sign1", text="Same Sign")
+    track1.events[0].start = 2200
+    track1.events[0].end = 4200
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 2
+
+
+def test_overlap_threshold_60_percent_deduped(tmp_path, monkeypatch):
+    track0 = _sign_track(style_name="Sign0", text="Same Sign")
+    track0.events[0].start = 1000
+    track0.events[0].end = 3000
+
+    track1 = _sign_track(style_name="Sign1", text="Same Sign")
+    track1.events[0].start = 1800
+    track1.events[0].end = 3800
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 1
+
+
+# --- Item 5: font attachment matching ----------------------------------------
+
+
+def test_font_attachment_matching_unidirectional_and_unicode(tmp_path, monkeypatch):
+    def resolve_font(candidate_font, attachments):
+        track = _track_with_dialogue(fontname=candidate_font, style_name="Default")
+        loaded_tracks = [{"subs": track, "src_events": track.events, "kept_events": []}]
+        monkeypatch.setattr(dsm, "list_attachment_filenames", lambda v: attachments)
+        return dsm.resolve_dialogue_font("fake.mkv", loaded_tracks, loaded_tracks[0])
+
+    # False positives from reverse matching (norm_att in norm_font) must NOT match:
+    # "Gill Sans" vs "Sans.ttf", "Arial Rounded MT Bold" vs "Arial.ttf", "Fontin Sans" vs "Font.ttf"
+    assert resolve_font("Gill Sans", ["Sans.ttf"]) == "Trebuchet MS"
+    assert resolve_font("Arial Rounded MT Bold", ["Arial.ttf"]) == "Trebuchet MS"
+    assert resolve_font("Fontin Sans", ["Font.ttf"]) == "Trebuchet MS"
+
+    # Forward matching (norm_font in norm_att) matches
+    assert resolve_font("CC Wild Words", ["CCWildWords-Regular.ttf"]) == "CC Wild Words"
+    assert resolve_font("Fontin Sans", ["FontinSans-Regular.otf"]) == "Fontin Sans"
+
+    # Unicode / non-ASCII font matching
+    assert resolve_font("ＭＳ ゴシック", ["ＭＳ ゴシック.ttf"]) == "ＭＳ ゴシック"
+
+
+# --- Item 6: Z-order & style collisions ---------------------------------------
+
+
+def test_secondary_sign_layer_preserved_and_style_conflict_logged(tmp_path, monkeypatch, capsys):
+    track0 = pysubs2.SSAFile()
+    track0.styles["Sign"] = pysubs2.SSAStyle(fontname="Arial", fontsize=40.0)
+    track0.styles["OtherSign"] = pysubs2.SSAStyle(fontname="Arial", fontsize=30.0)
+    track0.events = [
+        pysubs2.SSAEvent(start=1000, end=3000, style="Sign", layer=1, text=r"{\pos(100,200)}Primary Banner"),
+        pysubs2.SSAEvent(start=5000, end=7000, style="OtherSign", layer=1, text=r"{\pos(100,400)}Primary Sign 2"),
+    ]
+
+    track1 = pysubs2.SSAFile()
+    track1.styles["Sign"] = pysubs2.SSAStyle(fontname="Comic Sans MS", fontsize=50.0)
+    track1.styles["OtherSign"] = pysubs2.SSAStyle(fontname="Impact", fontsize=60.0)
+    track1.events = [
+        # Surviving secondary sign at the SAME time interval (1000-3000), higher layer (layer 2)
+        pysubs2.SSAEvent(start=1000, end=3000, style="Sign", layer=2, text=r"{\pos(400,200)}Secondary Text"),
+        # Duplicate secondary sign at 5000-7000 that gets dropped by dedup
+        pysubs2.SSAEvent(start=5000, end=7000, style="OtherSign", layer=1, text=r"{\pos(100,400)}Primary Sign 2"),
+    ]
+
+    status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    assert signs == 3  # 2 primary + 1 surviving secondary
+    res = pysubs2.load(out_ass)
+
+    sec_ev = [e for e in res.events if "Secondary Text" in e.text][0]
+    pri_ev = [e for e in res.events if "Primary Banner" in e.text][0]
+    dub_ev = [e for e in res.events if e.style == "Dubtitles"][0]
+
+    # Dubtitles is on layer 0; signs are shifted up by 1 layer
+    assert dub_ev.layer == 0
+    assert pri_ev.layer == 2
+    assert sec_ev.layer == 3
+    assert sec_ev.layer > pri_ev.layer > dub_ev.layer
+
+    out = capsys.readouterr().out
+    # Style collision logged for surviving secondary event's colliding style 'Sign'
+    assert out.count("style conflict: 'Sign' — font/size differ, using first definition") == 1
+    # Dropped secondary event's style 'OtherSign' should NOT trigger a style conflict log
+    assert "style conflict: 'OtherSign'" not in out
+
+
+
+
+# --- Follow-up 1: PlayRes declared as a float / padded / garbage -------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("1920", 1920),
+        ("1920.0", 1920),
+        ("1920.5", 1920),
+        (" 1080 ", 1080),
+        ("", 7),
+        (None, 7),
+        ("abc", 7),
+        ("nan", 7),
+        ("inf", 7),
+        ("-5", 7),
+    ],
+)
+def test_parse_playres_tolerates_floats_whitespace_and_garbage(raw, expected):
+    assert dsm._parse_playres(raw, 7) == expected
+
+
+def test_build_with_float_playres_merges_and_keeps_the_declared_canvas(tmp_path, monkeypatch):
+    track0, track1 = _sign_track(text="first"), _sign_track(text="second")
+    for t in (track0, track1):
+        t.info["PlayResX"], t.info["PlayResY"] = "1920.0", "1080.5"
+    status, _signs, _dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
+    assert status == "ok"
+    out = pysubs2.load(out_ass)
+    assert (int(float(out.info["PlayResX"])), int(float(out.info["PlayResY"]))) == (1920, 1080)
+
+
+# --- Follow-up 2: a chorus line differing by one word is not a duplicate -----
+
+
+def test_song_chorus_lines_differing_by_one_word_are_kept():
+    p = pysubs2.SSAEvent(start=0, end=3000, style="OP Romaji", text=r"{\k20}we will never give up on this dream")
+    s = pysubs2.SSAEvent(start=0, end=3000, style="OP-Romaji", text=r"{\k20}we will never give in on this dream")
+    assert not dsm._events_match(p, s)
+
+
+def test_song_line_with_a_trailing_particle_is_still_collapsed():
+    p = pysubs2.SSAEvent(start=0, end=3000, style="OP Romaji", text=r"{\k20}Shinjitsu")
+    s = pysubs2.SSAEvent(start=0, end=3000, style="OP-Romaji", text=r"{\k20}Shinjitsu no")
+    assert dsm._events_match(p, s)
+
+
+def test_song_line_with_a_typo_in_one_word_is_still_collapsed():
+    p = pysubs2.SSAEvent(start=0, end=3000, style="OP Romaji", text=r"{\k20}we will never give up on this dream")
+    s = pysubs2.SSAEvent(start=0, end=3000, style="OP-Romaji", text=r"{\k20}we wil never give up on this dream")
+    assert dsm._events_match(p, s)
+
+
+# --- Follow-up 3: drawing proximity is 10% of PlayRes; unpositioned drawings compare paths ---
+
+
+def _drawing(text, start=0, end=2000, style="Sign"):
+    return pysubs2.SSAEvent(start=start, end=end, style=style, text=text)
+
+
+def test_drawings_150px_apart_on_a_1280_canvas_are_kept():
+    p = _drawing(r"{\p1\pos(100,100)}m 0 0 l 9 0 9 9")
+    s = _drawing(r"{\p1\pos(250,100)}m 0 0 l 9 0 9 9", style="Signs")
+    assert not dsm._events_match(p, s)
+
+
+def test_drawings_within_10_percent_are_still_collapsed():
+    p = _drawing(r"{\p1\pos(100,100)}m 0 0 l 9 0 9 9")
+    s = _drawing(r"{\p1\pos(220,160)}m 0 0 l 9 0 9 9", style="Signs")
+    assert dsm._events_match(p, s)
+
+
+def test_the_window_follows_the_declared_play_res():
+    p = _drawing(r"{\p1\pos(100,100)}m 0 0 l 9 0 9 9")
+    s = _drawing(r"{\p1\pos(250,100)}m 0 0 l 9 0 9 9", style="Signs")
+    assert dsm._events_match(p, s, (1920, 1080))
+
+
+def test_unpositioned_drawings_with_different_paths_are_kept():
+    p = _drawing(r"{\p1}m 0 0 l 100 0 100 100")
+    s = _drawing(r"{\p1}m 0 0 b 5 5 9 9 3 3", style="Signs")
+    assert not dsm._events_match(p, s)
+
+
+def test_unpositioned_drawings_with_the_same_path_are_collapsed_whatever_the_spacing():
+    p = _drawing(r"{\p1}m 0 0 l 100 0 100 100")
+    s = _drawing("{\\p1}m  0 0\tl 100 0   100 100 ", style="Signs")
+    assert dsm._events_match(p, s)
+
+
+# --- Follow-up 4: a few very long primary events must not widen every other event's window ---
+
+
+def _count_match_calls(tmp_path, monkeypatch, primary_extra):
+    def tr(off):
+        return [
+            pysubs2.SSAEvent(
+                start=i * 600 + off, end=i * 600 + off + 1500, style="Signs", text=f"{{\\pos(100,100)}}SIGN {i}"
+            )
+            for i in range(2000)
+        ]
+
+    t0 = pysubs2.SSAFile()
+    t0.styles["Signs"] = pysubs2.SSAStyle()
+    t0.events = tr(0) + primary_extra
+    t1 = pysubs2.SSAFile()
+    t1.styles["Signs"] = pysubs2.SSAStyle()
+    t1.events = tr(100)
+    calls = 0
+    orig_match = dsm._events_match
+
+    def counting_match(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return orig_match(*args, **kwargs)
+
+    monkeypatch.setattr(dsm, "_events_match", counting_match)
+    status, signs, _dub, _out = _two_track_build(tmp_path, monkeypatch, t0, t1)
+    assert status == "ok"
+    return calls, signs
+
+
+def test_long_primary_events_do_not_blow_up_the_number_of_comparisons(tmp_path, monkeypatch):
+    base_calls, _ = _count_match_calls(tmp_path, monkeypatch, [])
+    long_karaoke = [
+        pysubs2.SSAEvent(start=i * 300_000, end=i * 300_000 + 120_000, style="OP", text=r"{\k20}la{\k20}la")
+        for i in range(3)
+    ]
+    calls, _ = _count_match_calls(tmp_path, monkeypatch, long_karaoke)
+    assert calls <= 3 * base_calls, f"{calls} comparisons vs {base_calls} without the long events"
+
+
+def test_bisect_window_gives_the_same_survivors_as_a_full_scan(tmp_path, monkeypatch):
+    import random
+
+    texts = ["EXIT", "CAFE", "GATE", "OPEN"]
+
+    def rand_track(rng, n, long_ones):
+        t = pysubs2.SSAFile()
+        t.styles["Signs"] = pysubs2.SSAStyle()
+        for _ in range(n):
+            start = rng.randrange(0, 600_000, 10)
+            dur = rng.choice([0, 500, 2000, 8000])
+            t.events.append(
+                pysubs2.SSAEvent(
+                    start=start, end=start + dur, style="Signs", text=f"{{\\pos(10,10)}}{rng.choice(texts)}"
+                )
+            )
+        for _ in range(long_ones):
+            start = rng.randrange(0, 400_000, 10)
+            t.events.append(
+                pysubs2.SSAEvent(start=start, end=start + 120_000, style="Signs", text=r"{\pos(10,10)}EXIT")
+            )
+        return t
+
+    def kept(track):
+        seen, out = set(), []
+        for e in track.events:
+            k = (int(e.start), int(e.end), e.style, e.layer, e.text)
+            if dsm.keep_event(e) and k not in seen:
+                seen.add(k)
+                out.append(e)
+        return out
+
+    for seed in range(8):
+        rng = random.Random(seed)
+        t0, t1 = rand_track(rng, 120, seed % 3), rand_track(rng, 100, 0)
+        primary, secondary = kept(t0), kept(t1)
+        if len(secondary) > len(primary):  # build() takes the track with more kept events as the primary
+            primary, secondary = secondary, primary
+        expected = sorted(
+            [(e.start, e.end, e.text) for e in primary]
+            + [(e.start, e.end, e.text) for e in secondary if not any(dsm._events_match(p, e, (1280, 720)) for p in primary)]
+        )
+        sub = tmp_path / str(seed)
+        sub.mkdir()
+        _status, _signs, _dub, out_ass = _two_track_build(sub, monkeypatch, t0, t1)
+        got = sorted((e.start, e.end, e.text) for e in pysubs2.load(out_ass).events if e.style != "Dubtitles")
+        assert got == expected, f"seed {seed}"

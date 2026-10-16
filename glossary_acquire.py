@@ -8,6 +8,13 @@ wiki owns the candidate list AND every canonical spelling, and the show's own tr
 only decide which wiki entities are worth asking about. Our errors can raise a question;
 they can never become an answer.
 
+Its LLM calls (tier B's per-term pick, tier C's per-pair merge) use glossary_verify.acquire_backend(): ACQUIRE_BACKEND when set,
+else VERIFY_BACKEND, except that VERIFY_BACKEND=decision means the LOCAL backend (acquire opts in to the decision model with
+ACQUIRE_BACKEND=decision). Settings: the VERIFY_* variables and ACQUIRE_DECISION_TAU. Local by default, or opt-in a hosted text
+model (openai) or a decision model (decision). A
+decision call that fails leaves the pair "unavailable" (never cached) and the term without a tier-B entry; the run reports its
+decision counters. See glossary_decision.
+
 See docs/superpowers/specs/2026-08-19-glossary-name-acquisition-design.md.
 Built with help of Claude (Anthropic).
 """
@@ -15,6 +22,7 @@ Built with help of Claude (Anthropic).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import math
@@ -24,6 +32,7 @@ import re
 import jellyfish
 
 import acquire_cache
+import adjudication_journal
 import glossary
 import glossary_verify
 import mine_glossary
@@ -358,18 +367,31 @@ def adjudicate_merge(variant: str, canonical: str, ctx_v: list, ctx_c: list, sho
     cached: the model looked and was unsure, which is worth not paying for twice."""
     none = {"same_entity": False, "confidence": "none", "unavailable": True}
     try:
-        out = llm_chat(
-            build_merge_prompt(variant, canonical, ctx_v, ctx_c, show),
-            backend=glossary_verify.VERIFY_BACKEND,
-            ollama_url=glossary_verify.OLLAMA,
-            llamacpp_url=glossary_verify.VERIFY_LLAMACPP_URL,
-            model=glossary_verify.VERIFY_MODEL,
-            max_tokens=glossary_verify.VERIFY_MAX_TOKENS,
-            first_line=False,
-        )
+        problem = glossary_verify.acquire_problem()
+        if problem:
+            raise glossary_verify.BackendConfigError(problem)
+        backend = glossary_verify.acquire_backend()
+        if backend == "decision":
+            import glossary_decision
+
+            # The local fallback's answer is marked: it must never be journaled as if the decision model had given it.
+            return glossary_decision.adjudicate_pair(
+                variant, canonical, ctx_v, ctx_c, show,
+                local=lambda: {
+                    **_merge_via_llm(variant, canonical, ctx_v, ctx_c, show, glossary_verify.local_backend()),
+                    "fallback": True,
+                },
+            )  # fmt: skip
+        return _merge_via_llm(variant, canonical, ctx_v, ctx_c, show, backend)
     except Exception as e:
         log("acquire: merge adjudication failed:", variant, e)
         return none
+
+
+def _merge_via_llm(variant: str, canonical: str, ctx_v: list, ctx_c: list, show: str, backend: str) -> dict:
+    """The text-model merge decision: one llm_chat call, its reply parsed; "unavailable" when it is unusable."""
+    none = {"same_entity": False, "confidence": "none", "unavailable": True}
+    out = llm_chat(build_merge_prompt(variant, canonical, ctx_v, ctx_c, show), **glossary_verify.llm_settings(backend))
     if not out:
         return none
     m = re.search(r"\{.*\}", out, re.S)
@@ -392,7 +414,37 @@ class StopRequested(Exception):
         self.step, self.done, self.unit = step, done, unit
 
 
-def escalate(proposals: list, ctx: dict, show: str, cache: dict | None = None) -> list:
+# Stored adjudications live in TWO places and the older one wins; the help and the CHANGELOG say how to clear them.
+BUST_HELP = (
+    "Stored answers: pair adjudications are remembered in <glossary>.acquire-cache.json (the older cache, consulted FIRST, so it "
+    "shadows the journal) and every completed adjudication in <glossary>.acquire.journal.jsonl. To re-ask the model, delete BOTH "
+    "files or set ACQUIRE_NO_CACHE=1 (which neither reads nor writes either)."
+)
+
+
+def open_journal(gloss_path: str):
+    """The acquire stage's adjudication journal for this glossary (beside acquire_cache), or None with ACQUIRE_NO_CACHE=1."""
+    if not glossary_verify.journal_enabled("acquire"):
+        return None
+    base = gloss_path[:-5] if gloss_path.endswith(".json") else gloss_path
+    return adjudication_journal.Journal(base + ".acquire.journal.jsonl", "acquire")
+
+
+def pair_provenance(show: str, variant: str, canonical: str, ctx_v: list, ctx_c: list) -> dict:
+    """What a pair adjudication depended on: the pair, both context lists, the prompt, and who answered (backend, model, tau)."""
+    return {
+        "stage": "pair",
+        "show": show,
+        "variant": variant,
+        "canonical": canonical,
+        "ctx_v": adjudication_journal.digest(ctx_v),
+        "ctx_c": adjudication_journal.digest(ctx_c),
+        "prompt": glossary_verify.prompt_version("pair"),
+        **glossary_verify.backend_identity(glossary_verify.acquire_backend(), "pair"),
+    }
+
+
+def escalate(proposals: list, ctx: dict, show: str, cache: dict | None = None, journal=None) -> list:
     """Re-decide share-too-close proposals with context. Other verdicts pass through.
 
     ONLY share-too-close escalates. below-floor, sentence-initial-only, already-canonical,
@@ -406,6 +458,13 @@ def escalate(proposals: list, ctx: dict, show: str, cache: dict | None = None) -
     acquire_cache's module docstring for why the PAIR's adjudication is cached and not the
     proposal's final verdict. Mutated in place; the caller owns saving it.
 
+    Clearing stored answers: delete BOTH <glossary>.acquire-cache.json and <glossary>.acquire.journal.jsonl, or set
+    ACQUIRE_NO_CACHE=1. The cache above is consulted BEFORE the journal, so an old cache shadows a fresher journal.
+
+    `journal` (adjudication_journal), if given, makes each completed pair answer durable the moment it exists and serves a
+    previous run's answer when its provenance (both context lists, model, prompt, threshold) is unchanged; unlike `cache` it
+    survives a kill, because `cache` is only saved after escalation finishes. An unavailable or fallback answer is not journaled.
+
     Raises StopRequested BEFORE a fresh (uncached) adjudication once the soft-stop flag is up:
     each completed pair is already in `cache`, and the proposals are only decided if every
     pair is, so a stopped run returns no verdicts at all rather than a partly-escalated set."""
@@ -416,6 +475,14 @@ def escalate(proposals: list, ctx: dict, show: str, cache: dict | None = None) -
             out.append(p)
             continue
         adj = cache is not None and acquire_cache.escalation_for(cache, p["variant"], p["canonical"])
+        prov = key = None
+        if not adj and journal is not None:
+            ctx_v, ctx_c = ctx.get(p["variant"], []), ctx.get(p["canonical"], [])
+            key = adjudication_journal.pair_key(p["variant"], p["canonical"])
+            prov = pair_provenance(show, p["variant"], p["canonical"], ctx_v, ctx_c)
+            adj = journal.lookup(key, prov)
+            if adj and cache is not None:
+                acquire_cache.remember_escalation(cache, p["variant"], p["canonical"], adj)
         if not adj:
             if stop_requested():
                 raise StopRequested("escalate", asked, "pair")
@@ -423,6 +490,8 @@ def escalate(proposals: list, ctx: dict, show: str, cache: dict | None = None) -
             asked += 1
             if cache is not None:
                 acquire_cache.remember_escalation(cache, p["variant"], p["canonical"], adj)
+            if key is not None:
+                journal.record(key, prov, adj)  # durable before the next pair; refuses unavailable and fallback answers
         if adj["same_entity"] and adj["confidence"] == "high":
             out.append({**p, "verdict": "apply", "reason": "context-merged"})
         elif not adj["same_entity"] and adj["confidence"] == "high":
@@ -626,13 +695,13 @@ def propose(
     transcript candidate may be a near-miss OF, which also picks D4's floor. Both are
     optional: without them every token is treated as an unanchored transcript token, which
     is the safe reading."""
-    settled = settled or set()
+    settled = {str(t).lower() for t in (settled or ())}
     candidates = candidates or {}
     if resolved is None:
         resolved = _resolve_tokens(counts, titles)
     out = []
     for tok, (canon, score) in sorted(resolved.items()):
-        if tok in settled:
+        if tok.lower() in settled:
             continue
         canon_count = counts.get(canon, 0)
         cand = candidates.get(tok) or _candidate(tok, SOURCE_TRANSCRIPT)
@@ -699,11 +768,112 @@ def _provenance(p: dict, scope: int) -> dict:
     }
 
 
+CONFLICTS_WITH_CURATED = "conflicts-with-curated-fix"
+
+
+def _key(d: dict, term: str):
+    """The key of `d` equal to `term` ignoring case, else None. glossary.load_dict lowercases every
+    hard_fixes key at load, so `zolo` and `Zolo` are ONE fix downstream and must never coexist."""
+    low = term.lower()
+    return next((k for k in d if str(k).lower() == low), None)
+
+
+def _is_curated(g: dict, term: str) -> bool:
+    """True when a person owns the hard_fix for `term` (case-insensitive), so acquire may not pop or overwrite it.
+
+    Curated = no `acquired` record (hand-written), OR run == "review" (a human approved it through
+    record_decision / decisions.promote, the same marker revert() honours), OR its value no longer
+    matches the canonical acquire recorded (hand-edited since, as revert() also leaves alone).
+    Debt: a fix an OLDER acquire wrote without an `acquired` record counts as curated forever; there
+    is no way to tell it from a hand-written one."""
+    fixes = g.get("hard_fixes") or {}
+    fk = _key(fixes, term)
+    if fk is None:
+        return False
+    acquired = g.get("acquired") or {}
+    ak = _key(acquired, term)
+    if ak is None:
+        return True
+    meta = acquired[ak] or {}
+    return meta.get("run") == "review" or fixes[fk] != meta.get("canonical")
+
+
+def _drop(d: dict, term: str) -> None:
+    """Remove every case-variant of `term` from `d`."""
+    k = _key(d, term)
+    while k is not None:
+        d.pop(k)
+        k = _key(d, term)
+
+
+def _flag_entry(p: dict, scope: int) -> dict:
+    return {
+        "reason": p["reason"],
+        "canonical": p["canonical"],
+        "variant_count": p["variant_count"],
+        "canonical_count": p["canonical_count"],
+        "score": p["score"],
+        "bound": round(p.get("bound", 0.0), 3),
+        "context": p.get("context", []),
+        **_provenance(p, scope),
+    }
+
+
+SETTLE_REASONS = frozenset({"human-rejected-conflict", "human-confirmed-curated"})
+
+
+def _norm(g: dict) -> dict:
+    """Coerce explicit nulls ({"known": None}) to empty containers, in place, so every reader below can index freely."""
+    for k in ("hard_fixes", "acquired", "flagged"):
+        if not isinstance(g.get(k), dict):
+            g[k] = {}
+    for k in ("names", "phrases"):
+        if k in g and g[k] is None:
+            g[k] = []
+    g["known"] = list(g.get("known") or [])
+    return g
+
+
+def _ldrop(items, term: str) -> list:
+    """`items` without any case-variant of `term`."""
+    return [k for k in items if str(k).lower() != term.lower()]
+
+
+def _settle_curated(g: dict, term: str, reason: str = "human-rejected-conflict") -> None:
+    """Remember that a person looked at a flag on a CURATED fix and left the fix as it is: a protected
+    (run == "review") `acquired` record holding the curated value, so `_settled` skips the term and the next
+    sweep does not re-flag the same conflict. It only counts while the fix exists (see _settled)."""
+    acq = g.setdefault("acquired", {})
+    ak = _key(acq, term)
+    if ak is None or (acq[ak] or {}).get("run") != "review":
+        _drop(acq, term)
+        fix = g["hard_fixes"][_key(g["hard_fixes"], term)]
+        acq[term] = {**_human_record(fix, {}), "reason": reason}
+
+
+def _settled(gloss: dict) -> set:
+    """Terms a sweep must not propose again: known + acquired, lowercased (compare with .lower()).
+
+    A settle record (SETTLE_REASONS) is a person's "leave this curated fix alone"; it stops counting when the fix
+    it protects is deleted by hand. Human-approved additive entries have no fix and always count."""
+    fixes = {str(k).lower() for k in (gloss.get("hard_fixes") or {})}
+    out = {str(t).lower() for t in (gloss.get("known") or [])}
+    for t, meta in (gloss.get("acquired") or {}).items():
+        if (meta or {}).get("reason") in SETTLE_REASONS and str(t).lower() not in fixes:
+            continue
+        out.add(str(t).lower())
+    return out
+
+
 def apply_proposals(gloss: dict, proposals: list, run_id: str, scope: int = 0, episode_keys_by_stem: dict | None = None) -> dict:
     """Write applied proposals into hard_fixes + acquired; record the rest in flagged.
 
     Pure: deep-copies its input the way glossary_verify.apply_results does, so curated
-    hard_fixes, names and initial_prompt survive untouched.
+    hard_fixes, names and initial_prompt survive untouched. A hard_fix is CURATED (see _is_curated:
+    no `acquired` record, a human-approved run == "review" record, or hand-edited since) when a person
+    owns it: it is never popped, never overwritten with a different canonical (the disagreement is
+    recorded in `flagged` as CONFLICTS_WITH_CURATED instead) and never also marked `known`. Keys match
+    case-insensitively. Only fixes this module wrote are re-evaluated, replaced or removed.
 
     Acquired canonicals deliberately do NOT join `names`, and therefore never reach the
     regenerated initial_prompt. That is the cut that keeps a wrong entry from biasing the
@@ -714,32 +884,41 @@ def apply_proposals(gloss: dict, proposals: list, run_id: str, scope: int = 0, e
     for the same term, mirroring record_decision. Without this a term can end up both
     `known` (a human said no) and freshly hard-fixed (a later sweep said yes), which is
     exactly the both-states bug this module exists to avoid reintroducing."""
-    g = json.loads(json.dumps(gloss))
-    fixes = g.setdefault("hard_fixes", {})
-    acquired = g.setdefault("acquired", {})
-    flagged = g.setdefault("flagged", {})
-    known = set(g.get("known", []))
+    g = _norm(json.loads(json.dumps(gloss)))
+    fixes = g["hard_fixes"]
+    acquired = g["acquired"]
+    flagged = g["flagged"]
+    known = list(g["known"])
     for p in proposals:
         term = p["variant"]
-        flagged.pop(term, None)  # I3: never stays queued once decided
+        _drop(flagged, term)  # I3: never stays queued once decided (any case)
+        curated = _is_curated(g, term)
+        if curated:
+            # A person owns this fix: keep it AND its record, never mark it known too (both-states), and
+            # if the proposal disagrees say so in the review queue instead of acting on it.
+            mine = fixes[_key(fixes, term)]
+            if p["verdict"] == "apply" and p["canonical"] == mine:
+                continue
+            if p["verdict"] == "known":
+                continue
+            ak = _key(acquired, term)
+            if ak is not None and (acquired[ak] or {}).get("run") != "review":
+                acquired.pop(ak)  # hand-edited since acquire wrote it: drop only our provenance, as revert() does
+            reason = CONFLICTS_WITH_CURATED if p["canonical"] != mine else p["reason"]
+            flagged[term] = {**_flag_entry(p, scope), "reason": reason}
+            continue
         if p["verdict"] == "known":
-            known.add(term)
+            if not any(str(k).lower() == term.lower() for k in known):
+                known.append(term)
             continue
         if p["verdict"] != "apply":
-            fixes.pop(term, None)
-            acquired.pop(term, None)
-            flagged[term] = {
-                "reason": p["reason"],
-                "canonical": p["canonical"],
-                "variant_count": p["variant_count"],
-                "canonical_count": p["canonical_count"],
-                "score": p["score"],
-                "bound": round(p.get("bound", 0.0), 3),
-                "context": p.get("context", []),
-                **_provenance(p, scope),
-            }
+            _drop(fixes, term)
+            _drop(acquired, term)
+            flagged[term] = _flag_entry(p, scope)
             continue
-        known.discard(term)  # C2: an apply verdict wins over a stale known
+        known = _ldrop(known, term)  # C2: an apply verdict wins over a stale known
+        _drop(fixes, term)  # replacing our own fix: never leave a second spelling that differs only by case
+        _drop(acquired, term)
         fixes[term] = p["canonical"]
         acquired[term] = {
             "canonical": p["canonical"],
@@ -778,7 +957,7 @@ def revert(gloss: dict, run_id: str | None = None) -> dict:
     module's automated guess. A blanket --revert must never delete one, regardless of
     `run_id` -- reverting an automated sweep must not also undo what a person approved."""
     g = json.loads(json.dumps(gloss))
-    fixes, acquired = g.get("hard_fixes", {}), g.get("acquired", {})
+    fixes, acquired = g.get("hard_fixes") or {}, g.get("acquired") or {}
     for variant, meta in list(acquired.items()):
         if meta.get("run") == "review":
             continue
@@ -821,27 +1000,130 @@ def review_items(gloss: dict) -> list:
     return out
 
 
+# The order a reviewer should meet flagged entries in: the ones that carry a decision first, most actionable first. Reasons not
+# listed (acquire's own: share-too-close, no-wiki-match, ...) come after these, still before the collapsed no-matches.
+REVIEW_PRIORITY = (
+    "respelling-needs-review",
+    "common-word",
+    "not-in-arc-pages",
+    "expansion-guarded",
+    "low-confidence",
+    "possessive_floor_crossing",
+)
+
+
+def review_groups(gloss: dict) -> tuple[list, list]:
+    """(decisions, no_matches): review_items split for a human. `no-match` entries have no candidate to accept or reject, so
+    they are returned apart (and the CLI collapses them); everything else is ordered by REVIEW_PRIORITY, then reason, then
+    term."""
+    items = review_items(gloss)
+    no_match = [i for i in items if i["reason"] == "no-match" and not i["canonical"]]
+    rank = {r: n for n, r in enumerate(REVIEW_PRIORITY)}
+    decisions = sorted(
+        (i for i in items if not (i["reason"] == "no-match" and not i["canonical"])),
+        key=lambda i: (rank.get(i["reason"], len(REVIEW_PRIORITY)), i["reason"], i["term"]),
+    )
+    return decisions, no_match
+
+
+# Flags that glossary_verify raises on an EXPANSION it would otherwise have written: accepting one in review writes it.
+WRITE_BLOCKED_REASONS = frozenset({"common-word", "not-in-arc-pages", "respelling-needs-review", "expansion-guarded"})
+
+
+def accept_effect(term: str, meta) -> str:
+    """What a human 'y' on this flag does: 'hard_fix' (every ``term`` in the show is rewritten to the canonical), 'additive' (the
+    canonical is added as a name or phrase; the term stays), 'refused' (an unsafe canonical, kept flagged) or 'none' (no
+    canonical).
+    ONE place, so record_decision and the review prompt cannot disagree about it.
+
+    A respelling-needs-review flag whose canonical has the same number of tokens (Usop -> Usopp) is a spelling fix, but only for a
+    term that is NOT an ordinary English word by the same check the common-word guard uses: 'Burn' -> 'Coburn' also lands here (a
+    substring match flagged before the common-word guard looks) and a hard fix would rewrite every "burn" in the show. Real short
+    names (Kid, Law, Gin) are not in the word list as lowercase entries, so a letter-count rule is not used."""
+    meta = {"reason": meta} if isinstance(meta, str) else (meta or {})
+    canon = meta.get("canonical", "")
+    if not canon:
+        return "none"
+    normal = normalize_title(canon) == canon
+    expansion = is_expansion(term, canon)
+    respelling = meta.get("reason") == "respelling-needs-review" and len(canon.split()) == len(term.split())
+    if normal and (not expansion or (respelling and not glossary.is_ordinary_word(term))):
+        return "hard_fix"
+    if meta.get("reason") in WRITE_BLOCKED_REASONS and expansion:
+        return "additive"
+    return "refused"
+
+
+def _human_record(canon: str, meta: dict) -> dict:
+    return {
+        "canonical": canon,
+        "count": meta.get("variant_count", 0),
+        "canonical_count": meta.get("canonical_count", 0),
+        "score": meta.get("score", 0.0),
+        "bound": meta.get("bound", 0.0),
+        "reason": "human-approved",
+        "run": "review",
+    }
+
+
 def record_decision(gloss: dict, term: str, accept: bool) -> dict:
     """Apply one human decision and drop the term from the queue for good, in exactly one state.
 
     accept and reject are mutually exclusive: each clears whatever the other branch -- or a
     stale prior decision from an earlier run -- may have left behind, so a term is never both
-    known and hard-fixed at once.
+    known and hard-fixed at once. A CURATED fix (see _is_curated) survives a reject untouched and the
+    term is NOT marked known (the rejection is remembered as a protected `acquired` record instead);
+    a yes on a flag for a curated term replaces the curated value, as a human decision (run == "review").
+    Keys of `flagged` match case-insensitively.
 
     C1 defence in depth: this cannot see `titles` (best_title's normalised set), so it
     cannot repeat R1's membership check. It CAN repeat the other two structural checks --
     not an expansion, and the canonical is already in normalised form -- and does, before
     ever writing to hard_fixes. A canonical failing either is free-form model/human-typo
     text, not a wiki spelling, and must not become a hard_fix even on a human 'y'."""
-    g = json.loads(json.dumps(gloss))
-    meta = (g.get("flagged") or {}).get(term)
+    g = _norm(json.loads(json.dumps(gloss)))
+    fk = _key(g["flagged"], term)
+    if fk is None:
+        return g  # nothing is awaiting a decision: a stale answer must not touch hard_fixes or known
+    term = _key(g["hard_fixes"], term) or fk  # one spelling in the file: the stored key's, not the typed one
+    meta = g["flagged"][fk]
     if isinstance(meta, str):
         meta = {"reason": meta}
     meta = meta or {}
     canon = meta.get("canonical", "")
-    if accept and canon and not is_expansion(term, canon) and normalize_title(canon) == canon:
-        g.setdefault("hard_fixes", {})[term] = canon
-        g.setdefault("acquired", {})[term] = {
+    effect = accept_effect(term, meta) if accept else "none"
+    # A respelling is not only what is_expansion refuses: the whole-word guard flags 'Usop' -> 'Usopp' (a substring match, so an
+    # "expansion" to is_expansion) as respelling-needs-review. Same number of tokens, different letters: a human's yes on it is a
+    # spelling fix and must reach hard_fixes, or the runtime leaves 'Usop' exactly as spoken. A longer canonical stays additive,
+    # and so does an ordinary English word (see accept_effect).
+    if effect == "additive" and meta.get("reason") == "respelling-needs-review" and len(canon.split()) == len(term.split()):
+        log(f"kept {term!r} -> {canon!r} additive: {term!r} is an ordinary English word (a hard fix would rewrite all of them)")
+    curated = _is_curated(g, term)
+    if effect == "hard_fix" and curated and g["hard_fixes"][_key(g["hard_fixes"], term)] != canon:
+        # A person has seen term and canonical and pressed y: their yes overrides the curated value.
+        _drop(g["hard_fixes"], term)
+        _drop(g["acquired"], term)
+        g["hard_fixes"][term] = canon
+        g["acquired"][term] = _human_record(canon, meta)
+        g["known"] = sorted(_ldrop(g["known"], term))
+        _drop(g.get("flagged", {}), term)
+    elif effect == "hard_fix" and curated:  # same canonical: already what the person wants; remember they said so
+        _settle_curated(g, term, "human-confirmed-curated")
+        _drop(g["flagged"], term)
+    elif effect == "hard_fix":
+        _drop(g["hard_fixes"], term)
+        _drop(g["acquired"], term)
+        g["hard_fixes"][term] = canon
+        g["acquired"][term] = _human_record(canon, meta)
+        g["known"] = sorted(_ldrop(g["known"], term))
+        _drop(g.get("flagged", {}), term)
+    elif effect == "additive":
+        # verify's apply_results would have WRITTEN this expansion; a guard flagged it instead (the common-word guard, the
+        # arc gate, the whole-word guard). A human 'y' puts it where apply_results puts a write -- additive, the term stays.
+        dest = glossary_verify._shape_list(g.setdefault("names", []), g.setdefault("phrases", []), canon)
+        if canon not in dest:
+            dest.append(canon)
+        g["acquired"][term] = {
             "canonical": canon,
             "count": meta.get("variant_count", 0),
             "canonical_count": meta.get("canonical_count", 0),
@@ -850,15 +1132,22 @@ def record_decision(gloss: dict, term: str, accept: bool) -> dict:
             "reason": "human-approved",
             "run": "review",
         }
-        g["known"] = sorted(set(g.get("known", [])) - {term})
-        g.get("flagged", {}).pop(term, None)
+        g["known"] = sorted(_ldrop(g["known"], term))
+        _drop(g.get("flagged", {}), term)
     elif accept and canon:
-        g.setdefault("flagged", {})[term] = {**meta, "reason": "unsafe-canonical-rejected"}
+        _drop(g["flagged"], term)
+        g["flagged"][term] = {**meta, "reason": "unsafe-canonical-rejected"}
+    elif curated:
+        # A person owns the fix: keep it and do not also call the term known. Record the rejection as a
+        # protected (run == "review") acquired entry holding the CURATED value, so `_settled` skips the term
+        # and the next sweep does not re-flag the same conflict; revert() and acquire leave it alone.
+        _drop(g["flagged"], term)
+        _settle_curated(g, term)
     else:
-        g["known"] = sorted(set(g.get("known", [])) | {term})
-        g.get("hard_fixes", {}).pop(term, None)
-        g.get("acquired", {}).pop(term, None)
-        g.get("flagged", {}).pop(term, None)
+        g["known"] = sorted(g["known"] if any(str(k).lower() == term.lower() for k in g["known"]) else [*g["known"], term])
+        _drop(g.get("hard_fixes", {}), term)
+        _drop(g.get("acquired", {}), term)
+        _drop(g.get("flagged", {}), term)
     for k in ("flagged", "known", "hard_fixes", "acquired"):
         if not g.get(k):
             g.pop(k, None)
@@ -945,12 +1234,45 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     """Harvest -> score -> gate -> (optionally) write. Returns a report; never raises.
 
     Resilient by the same contract as glossary_verify.verify(): any wiki, LLM or IO failure
-    leaves the glossary untouched and is reported, not raised."""
+    leaves the glossary untouched and is reported, not raised. On a hosted backend the run opens by saying which fields go
+    to which host (the transcript lines among them); on the decision backend it ends with one summary line and the report
+    gains `decision` (calls / ok / failures / fallbacks / pending)."""
+    import glossary_lock
+
+    if not apply:  # a dry run writes no glossary (only the acquire cache): nothing to lose, nothing to lock
+        return _acquire_run(gloss_path, show_dir, apply, override)
+    with glossary_lock.locked(gloss_path, "acquire") as ok:
+        if not ok:
+            return {"note": "glossary busy: acquire skipped"}
+        return _acquire_run(gloss_path, show_dir, apply, override)
+
+
+def _acquire_run(gloss_path: str, show_dir: str, apply: bool, override: str | None) -> dict:
+    backend = glossary_verify.acquire_backend()
+    usable = not glossary_verify.acquire_problem()
+    if usable:
+        glossary_verify.begin_run("acquire", backend)
+        if glossary_verify.VERIFY_BACKEND in ("openai", "decision") or os.environ.get("ACQUIRE_BACKEND"):
+            log(f"glossary acquire: backend {backend}")  # names the split from verify; a plain local run stays silent
+    rep = _acquire(gloss_path, show_dir, apply, override)
+    if not usable:
+        return rep
+    return {**glossary_verify.end_run(rep, backend), "backend": backend}
+
+
+def _acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str | None = None) -> dict:
     try:
         gloss = json.load(open(gloss_path, encoding="utf-8"))
     except (OSError, ValueError) as e:
         return {"note": f"load-failed: {e}"}
     show = gloss.get("show") or os.path.basename(gloss_path)[:-5]
+    problem = glossary_verify.acquire_problem()
+    if problem:
+        log(f"glossary acquire refused: {problem}")
+        return {"show": show, "note": f"refused: {problem}"}
+    # Completed adjudications (tier C pairs, tier B picks) are journaled as they finish, so a kill loses only the call in flight;
+    # ACQUIRE_NO_CACHE=1 turns this off with the rest of the memo.
+    journal = open_journal(gloss_path)
     # Harvest-first: nothing to score means no reason to spend a wiki round-trip.
     cands, mid, scope = harvest_candidates(show_dir)
     counts = {t: c["occurrence_count"] for t, c in cands.items() if c["occurrence_count"]}
@@ -969,7 +1291,7 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     norm_titles = {normalize_title(t) for t in titles if normalize_title(t)}
     # C2: skip anything a human or an earlier sweep already settled, so an unattended
     # rerun can never re-propose (and re-apply) a term someone already rejected.
-    settled = set(gloss.get("known", [])) | set(gloss.get("acquired", {}))
+    settled = _settled(gloss)
     # I6/perf: the token x title join is the module's dominant cost -- resolve every
     # harvested token against the wiki exactly once and hand the same result to propose()
     # and unmatched(), instead of each independently re-running it (was ~1.5x the work).
@@ -1050,7 +1372,7 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
         cache = {} if os.environ.get("ACQUIRE_NO_CACHE") else acquire_cache.load(gloss_path)
         toks = sorted({p["variant"] for p in close} | {p["canonical"] for p in close})
         try:
-            proposals = escalate(proposals, context_lines(show_dir, toks), show, cache=cache)
+            proposals = escalate(proposals, context_lines(show_dir, toks), show, cache=cache, journal=journal)
         except StopRequested as e:
             # Keep what was adjudicated (a pair costs ~1.3 s of LLM time), apply nothing.
             acquire_cache.save(gloss_path, cache)
@@ -1080,12 +1402,16 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
             log(f"stop requested: leaving tier-b after {done_terms} terms")
             return {"show": show, "wiki": api, "note": "stopped", "files": files}
         try:
-            adj = glossary_verify.adjudicate(term, glossary_verify.candidates(term, titles), show)
+            cands_b = glossary_verify.candidates(term, titles)
+            # acquire may run on a different backend than verify (ACQUIRE_BACKEND, or local under decision verify)
+            adj = glossary_verify.adjudicate_journaled(
+                term, cands_b, show, journal, backend=glossary_verify.acquire_backend()
+            )
         except Exception as e:
             log("acquire: adjudicate failed:", term, e)
             continue
-        if adj.get("confidence") != "high" or not adj.get("canonical"):
-            continue
+        if adj is None or adj.get("confidence") != "high" or not adj.get("canonical"):
+            continue  # None: the decision backend could not answer; the term simply gets no tier-B entry this run
         # C1: tier B's canonical is free-form LLM text -- re-run R1 (wiki membership) and
         # R2 (expansion) on it exactly like tier A, or it becomes the module's only path
         # for un-vetted model text to reach hard_fixes. A failing canonical is recorded
@@ -1131,6 +1457,8 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
             except OSError:
                 pass
             return {"show": show, "wiki": api, "note": f"write-failed: {e}", "files": files}
+    if journal is not None and apply:
+        journal.compact()  # a clean apply: latest line per key, nothing older than the journal's age limit
     return {
         "show": show,
         "wiki": api,
@@ -1153,37 +1481,237 @@ def acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str |
     }
 
 
+def prune_no_match(gloss: dict) -> tuple[dict, int]:
+    """(gloss without its candidate-less 'no-match' flags, how many were removed). Only flags whose term is already in `verified`
+    (so verify will not re-adjudicate it), whose reason is no-match and which name no canonical; a no-match that carries a
+    candidate is a decision and stays. Pure."""
+    g = json.loads(json.dumps(gloss))
+    verified = set(g.get("verified", []))
+    flagged = g.get("flagged") or {}
+    drop = []
+    for term, meta in flagged.items():
+        reason = meta if isinstance(meta, str) else (meta or {}).get("reason", "")
+        canon = "" if isinstance(meta, str) else (meta or {}).get("canonical", "")
+        if reason == "no-match" and not canon and term in verified:
+            drop.append(term)
+    for term in drop:
+        del flagged[term]
+    if not flagged:
+        g.pop("flagged", None)
+    return g, len(drop)
+
+
+def _pending_path(gloss_path: str) -> str:
+    return gloss_path + ".review-pending"
+
+
+def _valid_answer(row) -> bool:
+    """One saved answer: [term, accept, canonical, reason] with strings and a real JSON boolean (an older file may hold [term,
+    accept] or [term, accept, canonical]). Nothing is coerced: "false" is not a boolean and bool("false") is True."""
+    return (
+        isinstance(row, list)
+        and 2 <= len(row) <= 4
+        and isinstance(row[0], str)
+        and isinstance(row[1], bool)
+        and all(isinstance(x, str) for x in row[2:])
+    )
+
+
+def _read_pending(gloss_path: str, quarantine: bool = True) -> list:
+    """The answers a busy glossary kept from an earlier --review: [[term, accept, canonical, reason], ...] (an older file may
+    hold [term, accept] only). A file that cannot be read, or has a row that is not exactly that shape, is set aside as '.bad'
+    (never trusted, never deleted, never coerced) and counts as empty. ``quarantine=False`` (a read-only run) reports it the same
+    way but leaves the file where it is."""
+    path = _pending_path(gloss_path)
+    if not os.path.exists(path):
+        return []
+    try:
+        doc = json.load(open(path, encoding="utf-8"))
+        rows = doc["answers"]
+        if not isinstance(rows, list) or not all(_valid_answer(r) for r in rows):
+            raise ValueError("malformed answer row")
+        return [list(r) for r in rows]
+    except (OSError, ValueError, KeyError, TypeError):
+        if quarantine:
+            aside = path + ".bad"
+            n = 0
+            while os.path.exists(aside):  # never overwrite an earlier set-aside file: .bad, .bad.1, .bad.2, ...
+                n += 1
+                aside = f"{path}.bad.{n}"
+            log(f"the saved review answers in {path} are unreadable or malformed; set aside as {aside}")
+            with contextlib.suppress(OSError):
+                os.replace(path, aside)
+        else:
+            log(f"the saved review answers in {path} are unreadable or malformed; left in place (read-only run)")
+        return []
+
+
+@contextlib.contextmanager
+def _pending_lock(gloss_path: str):
+    """A small blocking flock on '<glossary>.json.review-pending.lock' around every read-modify-write of the pending file, so a
+    concurrent reviewer's appended answer is never dropped by another's apply-then-remove. Held briefly and never while waiting
+    for the glossary lock; the order is always glossary lock, then this one. Where it cannot be made, the caller proceeds."""
+    try:
+        import fcntl
+
+        fd = os.open(_pending_path(gloss_path) + ".lock", os.O_RDWR | os.O_CREAT, 0o644)
+    except (ImportError, OSError):
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)  # closing the descriptor releases the lock
+
+
+def _append_pending(gloss_path: str, answers: list) -> None:
+    """Add ``answers`` to '<glossary>.json.review-pending' (atomic, one JSON document), keeping what is already there."""
+    with _pending_lock(gloss_path):
+        _write_json(_pending_path(gloss_path), {"answers": _read_pending(gloss_path) + [list(a) for a in answers]})
+
+
+def _commit_answers(gloss_path: str, answers: list, stage: str = "review") -> bool:
+    """Apply a human's answers (after any saved by an earlier busy run) to the FRESH glossary, under the lock, waiting up to
+    GLOSSARY_LOCK_WAIT_INTERACTIVE for it. True when written.
+
+    The answers go to '<glossary>.json.review-pending' BEFORE the wait and leave it only after the glossary is written, so a kill
+    while waiting (or between the write and the delete) loses nothing: the next --review replays them. A replay is safe because
+    an answer is applied only to a term that is still flagged in the fresh glossary WITH THE SAME CANONICAL the human saw; one
+    decided meanwhile, re-proposed differently, or saved in the older two-element format is skipped and logged, so a stale answer
+    can never undo a decision or approve a proposal the human never saw."""
+    import glossary_lock
+
+    if answers:
+        _append_pending(gloss_path, answers)
+    with glossary_lock.locked(gloss_path, stage, wait=glossary_lock.interactive_wait_seconds(), announce=True) as ok:
+        if not ok:
+            if answers:
+                log(
+                    f"glossary busy: your answers were saved to {_pending_path(gloss_path)} and the next --review will apply them"
+                )
+            return False
+        with _pending_lock(gloss_path):
+            todo = _read_pending(gloss_path)
+            if not todo:
+                return True
+            g = json.load(open(gloss_path, encoding="utf-8"))
+            for term, accept, *seen in todo:
+                flag = (g.get("flagged") or {}).get(term)
+                if flag is None:
+                    log(f"skipped the saved answer for {term!r}: it is no longer flagged (decided meanwhile)")
+                    continue
+                if not seen:
+                    log(f"skipped the saved answer for {term!r}: it is in an older format and cannot be checked against the flag")
+                    continue
+                now = "" if isinstance(flag, str) else (flag or {}).get("canonical", "")
+                if now != seen[0]:
+                    log(
+                        f"skipped the saved answer for {term!r}: the proposal changed since you answered ({seen[0]!r} -> {now!r})"
+                    )
+                    continue
+                g = record_decision(g, term, accept=accept)
+            _write_json(gloss_path, g)
+            with contextlib.suppress(OSError):
+                os.remove(_pending_path(gloss_path))
+        return True
+
+
+def _prune_cli(a) -> None:
+    import glossary_lock
+
+    g = json.load(open(a.glossary, encoding="utf-8"))
+    pruned, n = prune_no_match(g)
+    if not a.apply:
+        log(json.dumps({"pruned": n, "written": False, "note": "dry run: add --apply to write"}))
+        return
+    with glossary_lock.locked(a.glossary, "prune", wait=glossary_lock.interactive_wait_seconds(), announce=True) as ok:
+        if not ok:
+            log(json.dumps({"pruned": 0, "written": False}))
+            return
+        pruned, n = prune_no_match(json.load(open(a.glossary, encoding="utf-8")))  # fresh, under the lock
+        _write_json(a.glossary, pruned)
+    log(json.dumps({"pruned": n, "written": True}))
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Acquire proper nouns from a show's own output + its wiki.")
+    ap = argparse.ArgumentParser(
+        description="Acquire proper nouns from a show's own output + its wiki.",
+        epilog=BUST_HELP,
+    )
     ap.add_argument("glossary", help="path to <show>.json")
     ap.add_argument("show_dir", help="the show's media directory")
     ap.add_argument("--apply", action="store_true", help="write changes (default: dry run)")
     ap.add_argument("--wiki", default=None, help="override the wiki API base")
     ap.add_argument("--revert", action="store_true", help="undo previously acquired fixes and exit")
     ap.add_argument("--review", action="store_true", help="walk the pending queue interactively")
+    ap.add_argument(
+        "--all", action="store_true", help="with --review: also walk the 'no-match' entries (collapsed into one line otherwise)"
+    )
+    ap.add_argument(
+        "--prune-no-match",
+        action="store_true",
+        help="with --review: remove the stored 'no-match' flags that carry no candidate (their terms are already verified); "
+        "prints the count, writes with --apply",
+    )
     a = ap.parse_args()
+    if a.review and a.prune_no_match:
+        _prune_cli(a)
+        return
     if a.review:
+        n_saved = len(_read_pending(a.glossary, quarantine=a.apply))
+        if n_saved and a.apply:
+            log(f"{n_saved} answers from an earlier --review were saved while the glossary was busy: applying them first")
+            _commit_answers(a.glossary, [])
+        elif n_saved:
+            # Read-only: replaying them would write the glossary and delete the file while reporting written:false.
+            plural = "s" if n_saved != 1 else ""
+            log(f"{n_saved} saved answer{plural} from an earlier --review kept, not applied: add --apply to apply them")
         g = json.load(open(a.glossary, encoding="utf-8"))
-        for item in review_items(g):
+        answers = []  # (term, accept) in order; applied to the FRESH file at the end, not to this stale copy
+        decisions, no_match = review_groups(g)
+        if no_match and not a.all:
+            log(
+                f"{len(no_match)} no-match terms have no candidate to accept or reject and are not listed here; "
+                "list them with --review --all"
+            )
+        for item in decisions + (no_match if a.all else []):
             log(f"\n{item['term']}  ->  {item['canonical'] or '(no canonical)'}   [{item['reason']}]")
             log(f"  seen {item['variant_count']}x vs canonical {item['canonical_count']}x, bound {item['bound']:.3f}")
             for ln in item["context"]:
                 log(f"    | {ln}")
             if item["canonical"]:
+                effect = accept_effect(item["term"], item)
+                if effect == "hard_fix":
+                    log(f"  y rewrites every \"{item['term']}\" in this show")
+                elif effect == "additive":
+                    log("  y adds it as a name only")
                 ans = input("  accept this fix? [y/N/q] ").strip().lower()
                 if ans == "q":
                     break
                 g = record_decision(g, item["term"], accept=(ans == "y"))
+                answers.append((item["term"], ans == "y", item["canonical"], item["reason"]))
             else:
                 ans = input("  no fix proposed - mark this spelling correct as-is? [y/N/q] ").strip().lower()
                 if ans == "q":
                     break
                 if ans == "y":
                     g = record_decision(g, item["term"], accept=False)
+                    answers.append((item["term"], False, "", item["reason"]))
                 # 'n' (or anything else): leave it pending in flagged, untouched
+        summary = {"reviewed": True, "written": False}
         if a.apply:
-            _write_json(a.glossary, g)
-        log(json.dumps({"reviewed": True, "written": a.apply, "pending": len(g.get("flagged", {}))}))
+            # The walk can take minutes: another stage may have rewritten the glossary meanwhile. The decisions are applied to the
+            # file as it is NOW, under the lock; a busy glossary is waited for, and the answers are kept if it stays busy.
+            summary["written"] = _commit_answers(a.glossary, answers)
+            with contextlib.suppress(OSError, ValueError):
+                g = json.load(open(a.glossary, encoding="utf-8"))  # report what is ON DISK
+            if saved := _read_pending(a.glossary):
+                summary["saved"] = len(saved)
+        elif n_saved:
+            summary["saved"] = n_saved  # a dry run applied none of them and deleted none
+        summary["pending"] = len(g.get("flagged", {}))
+        log(json.dumps(summary))
         return
     if a.revert:
         try:
@@ -1192,9 +1720,17 @@ def main():
             log(json.dumps({"note": f"load-failed: {e}"}))
             return
         out = revert(g)
+        written = False
         if a.apply:
-            _write_json(a.glossary, out)
-        log(json.dumps({"reverted": len(g.get("acquired", {})), "written": a.apply}))
+            import glossary_lock
+
+            with glossary_lock.locked(a.glossary, "revert", wait=glossary_lock.interactive_wait_seconds(), announce=True) as ok:
+                if ok:
+                    g = json.load(open(a.glossary, encoding="utf-8"))  # fresh, under the lock
+                    out = revert(g)
+                    _write_json(a.glossary, out)
+                    written = True
+        log(json.dumps({"reverted": len(g.get("acquired", {})), "written": written}))
         return
     rep = acquire(a.glossary, a.show_dir, apply=a.apply, override=a.wiki)
     for p in rep.get("proposals", []):
@@ -1204,6 +1740,7 @@ def main():
             f"bound {p.get('bound', 0.0):.3f}  {p['reason']}"
         )
     log(json.dumps({k: v for k, v in rep.items() if k != "proposals"}, ensure_ascii=False))
+    glossary_verify.refusal_exit(rep)
 
 
 if __name__ == "__main__":

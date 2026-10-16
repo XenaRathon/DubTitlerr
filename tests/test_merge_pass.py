@@ -8,8 +8,10 @@ involved) and drive the real script end-to-end via subprocess, stubbing only the
 binary-presence checks (`mkvmerge`, which is not installed on this dev box) so the
 script reaches its own logic instead of exiting at the FATAL guard."""
 
+import json
 import os
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -422,3 +424,115 @@ def test_a_stop_after_the_last_stem_still_reports_stopped(tmp_path):
     flag = tmp_path / "stop.flag"
     res, calls = _gated_run(tmp_path, root, extra_env={"STOP_FLAG": str(flag)}, stop_after="signs")
     assert "MERGE PASS STOPPED (soft stop)" in res.stdout, res.stdout
+
+
+_REAL_REPAIR = """
+import os, sys
+sys.path.insert(0, {repo!r})
+import glossary
+import repair
+
+with open(os.environ["CALLLOG"], "a") as f:
+    f.write("repair " + os.path.basename(sys.argv[1]).split(".")[0] + "\\n")
+g = glossary.load_dict({{"names": [], "hard_fixes": {{}}, "show": "T"}})
+repair.glossary_for = lambda video: g
+repair.dialogue_intervals = lambda video: [(0.0, 30.0, "the official sub")]
+
+
+def llm(prompt, model=None):
+    if os.environ.get("STOP_AFTER_FIRST_CALL"):  # SIGTERM arrives while the first target is repaired
+        open(os.environ["STOP_FLAG"], "w").close()
+    return "a garbled line here"
+
+
+repair.llm = llm
+repair.main()
+"""
+
+
+def test_a_stopped_repair_holds_the_stem_back_and_the_next_pass_retries_it(tmp_path):
+    """The REAL repair.py over two real merge_pass.sh passes (signs and mux are the usual stubs).
+    Pass 1 gets the soft stop mid-episode: repair records `stopped` and leaves the srt alone, so no
+    signs and no mux. Pass 2 re-runs repair for real, then signs, then mux."""
+    root, stem = _episode(tmp_path)
+    app = _stub_app(tmp_path)
+    (app / "repair.py").write_text(_REAL_REPAIR.format(repo=_REPO))
+    row = {"text": "garbled line here", "avg_logprob": -0.9, "no_speech_prob": 0.1}
+    rows = [{**row, "start": k * 3.0, "end": k * 3.0 + 2.0} for k in range(3)]
+    (root / "Show" / "ep01.dubtitles.conf.json").write_text(json.dumps(rows))
+    srt = root / "Show" / "ep01.eng.dubtitles.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nSHIPPED\n\n")
+    shipped = srt.read_bytes()
+
+    flag = tmp_path / "stop.flag"
+    res, calls = _gated_run(tmp_path, root, extra_env={"STOP_FLAG": str(flag), "STOP_AFTER_FIRST_CALL": "1"})
+    assert calls == ["repair ep01"], (calls, res.stdout, res.stderr)
+    assert "skip mux: repair failed (stopped)" in res.stdout
+    assert srt.read_bytes() == shipped
+    assert not (root / "Show" / "ep01.eng.dubtitles.ass").exists()
+
+    flag.unlink()  # the next window: no stop flag
+    res2, calls2 = _gated_run(tmp_path, root)
+    assert calls2 == ["repair ep01", "repair ep01", "signs ep01", "mux ep01"], (calls2, res2.stdout, res2.stderr)
+    assert "MERGE PASS COMPLETE" in res2.stdout
+
+
+# --- LIBRARY_SWEEP off: only shows with a run request are merged -------------------------------------------------------
+
+
+def _two_shows(tmp_path):
+    root = tmp_path / "library"
+    for show in ("Requested", "Second"):
+        d = root / show
+        d.mkdir(parents=True)
+        (d / "ep01.mkv").write_text("")
+        (d / "ep01.eng.dubtitles.srt").write_text("")
+    (tmp_path / "calls.log").write_text("")
+    rdir = tmp_path / "requests"
+    rdir.mkdir()
+    shutil.copy(os.path.join(_REPO, "review_requests.py"), _stub_app(tmp_path) / "review_requests.py")
+    return root, rdir
+
+
+def _called_dirs(calls):
+    return sorted({c.split()[1] for c in calls})
+
+
+def test_sweep_off_merges_only_the_show_with_a_request(tmp_path):
+    # Mutation caught: the pass still walks every show in MERGE_ROOTS with LIBRARY_SWEEP off.
+    root, rdir = _two_shows(tmp_path)
+    (rdir / "r1.json").write_text(json.dumps({"id": "r1", "show": "Requested", "status": "pending"}))
+    res, calls = _gated_run(tmp_path, root, extra_env={"LIBRARY_SWEEP": "false", "REQUESTS_DIR": str(rdir)})
+    assert calls  # the requested show was processed
+    assert (root / "Requested" / "ep01.eng.dubtitles.ass").exists()
+    assert (root / "Second" / "ep01.eng.dubtitles.srt").exists()
+    assert not (root / "Second" / "ep01.eng.dubtitles.ass").exists()
+    assert "MERGE PASS COMPLETE" in res.stdout, res.stdout + res.stderr
+
+
+def test_sweep_off_counts_a_finished_request_in_the_done_dir(tmp_path):
+    root, rdir = _two_shows(tmp_path)
+    (rdir / "done").mkdir()
+    (rdir / "done" / "r1.json").write_text(json.dumps({"id": "r1", "show": "Requested", "status": "done"}))
+    res, _ = _gated_run(tmp_path, root, extra_env={"LIBRARY_SWEEP": "off", "REQUESTS_DIR": str(rdir)})
+    assert (root / "Requested" / "ep01.eng.dubtitles.ass").exists()
+    assert not (root / "Second" / "ep01.eng.dubtitles.ass").exists()
+
+
+def test_sweep_off_with_no_request_touches_nothing_and_says_so(tmp_path):
+    # Mutation caught: an empty show list falls back to scanning the whole library.
+    root, rdir = _two_shows(tmp_path)
+    res, calls = _gated_run(tmp_path, root, extra_env={"LIBRARY_SWEEP": "0", "REQUESTS_DIR": str(rdir)})
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert calls == []
+    assert res.stdout.count("LIBRARY_SWEEP is off") == 1, res.stdout
+    for show in ("Requested", "Second"):
+        assert not (root / show / "ep01.eng.dubtitles.ass").exists()
+
+
+def test_sweep_on_still_merges_every_show(tmp_path):
+    # Guard: today's behaviour. Passes before the change too.
+    root, rdir = _two_shows(tmp_path)
+    res, calls = _gated_run(tmp_path, root, extra_env={"LIBRARY_SWEEP": "true", "REQUESTS_DIR": str(rdir)})
+    assert (root / "Requested" / "ep01.eng.dubtitles.ass").exists()
+    assert (root / "Second" / "ep01.eng.dubtitles.ass").exists()

@@ -2,9 +2,12 @@
 #
 # This is the Compose equivalent of the README's `docker pull` + `docker run`
 # Quick start, and mirrors the tested example in the wiki's "Your first show"
-# tutorial (docs/wiki/Your-First-Show.md — read that for the full walkthrough,
-# including serving the repair model). Every environment variable is listed
-# in docs/wiki/Reference.md.
+# tutorial (docs/wiki/Your-First-Show.md: read that for the full walkthrough,
+# including serving the repair model). Only the variables set below reach the
+# container: this file is an explicit allowlist, not a pass-through. The
+# optional flags (docs/wiki/Reference.md and CHANGELOG.md, "Optional flags")
+# reach the container only when listed in the `environment:` block; the decided
+# defaults apply without any line, and a line is only needed to change one.
 #
 #   docker compose pull && docker compose up -d   # use the published image
 #   docker compose up -d --build                  # or build from source instead
@@ -13,7 +16,7 @@
 # Copy .env.example to .env and edit it before starting.
 #
 # The repair stage calls an OpenAI-compatible chat-completions endpoint (e.g.
-# llama.cpp serving a GGUF) that you run yourself — it is not part of this
+# llama.cpp serving a GGUF) that you run yourself: it is not part of this
 # container. `host.docker.internal` below reaches a server on the Docker host.
 #
 # GPU access uses the nvidia device spec (the Compose equivalent of
@@ -32,7 +35,7 @@ services:
       dockerfile: Dockerfile.builder
     restart: unless-stopped
     ports:
-      - "8842:8842"   # repair-review web UI
+      - "8842:8842" # repair-review web UI
     environment:
       # --- where things are ---
       # ANIME_ROOT and MERGE_ROOTS have different built-in defaults; set all
@@ -50,21 +53,85 @@ services:
       COMPUTE_TYPE: int8
       REQUIRE_ENG: "1"
 
-      # --- repair model — point this at a server you run yourself (see the
+      # --- repair model: point this at a server you run yourself (see the
       # wiki's "Your first show", Step 1, for a llama.cpp example) ---
       REPAIR_BACKEND: llamacpp
       REPAIR_MODEL: qwen3-4b-instruct
       REPAIR_LLAMACPP_URL: http://host.docker.internal:8090/v1/chat/completions
 
-      # --- Plex refresh (optional — blank skips it) ---
+      # --- optional flags (CHANGELOG.md, "Optional flags"). Only variables listed in
+      # this block reach the container. The values below are the DECIDED DEFAULTS
+      # (2026-10-09): they apply when the line stays commented out. Uncomment a
+      # line only to change it; set "0" (or the noted off value) for the old behaviour.
+      # If the cron host runs these stages, give it the same values.
+      #
+      # on by default (glossary verify / acquire):
+      # VERIFY_WRITE_WHOLE_WORD: "1" # "0": also auto-write near-respellings (Usop -> Usopp)
+      # VERIFY_SKIP_COMMON_WORDS: "1" # "0": write ordinary one-word terms; needs the wamerican word list (WORDLIST_PATH)
+      # VERIFY_QUEUE_NO_MATCH: "0" # "1": queue terms the model found no candidate for
+      # VERIFY_QUEUE_BLOCKED_EXPANSIONS: "1" # "0": do not queue a blocked longer expansion
+      # on by default (repair):
+      # REPAIR_KEEP_NAME_PARTS: "1" # "0": no name-part check and no prompt rule
+      # REPAIR_AUTO_DISMISS_WORDS: "6" # "off": never dismiss; a whole number sets the word-change limit
+      # REPAIR_TRANSPORT_RETRIES: "2" # "0": single attempt (openai backend only; 0 to 5)
+      # off by default (opt in):
+      # VERIFY_ARC_GATE: "1"
+      # VERIFY_COMMON_WORD_ARC_RESCUE: "1" # needs VERIFY_ARC_GATE=1
+      # REPAIR_ACCEPT_PUNCT_CASE_ONLY: "1"
+      # REPAIR_GUARD_TERMINAL_PUNCT: "1"
+      # VERIFY_REFUSE_EXIT: "1"
+      # GLOSSARY_ARC_TAGS: "1"
+      # The decision model is NOT enabled here. To use it for verify: VERIFY_BACKEND: decision and
+      # VERIFY_DECISION_MODEL: typesafe/jev, plus the key: add
+      #   COMMANDCODE_API_KEY: ${COMMANDCODE_API_KEY:-}
+      # to this block and put the value in .env. The .env file only feeds ${...}
+      # substitution (there is no env_file), so a key that is not listed here never
+      # reaches the container. Acquire stays on the local model unless ACQUIRE_BACKEND: decision.
+      # ACQUIRE_BACKEND: "" # unset: local when VERIFY_BACKEND is decision; llamacpp|ollama|openai|decision to force
+      # VERIFY_BACKEND: decision
+
+      # --- Plex refresh (optional: blank skips it) ---
       PLEX_URL: ${PLEX_URL:-}
       PLEX_TOKEN: ${PLEX_TOKEN:-}
       PLEX_SECTION: ${PLEX_SECTION:-}
 
-      # --- repair-review web UI auth — leave unset to auto-generate a token
-      # at startup (printed to the log, also readable at /config/review_token) ---
+      # --- repair-review web UI auth: accounts live in users.json; visit /review/setup on first start ---
       REVIEW_TOKEN: ${REVIEW_TOKEN:-}
       REVIEW_AUTH: ${REVIEW_AUTH:-}
+      # Optional one-time automated seed for the initial admin account when users.json is empty.
+      # If unset, create the first administrator on the /review/setup page in your browser.
+      # REVIEW_USERNAME: ${REVIEW_USERNAME:-}
+      # REVIEW_PASSWORD_FILE: /config/review_password # read once at start; or REVIEW_PASSWORD
+
+      # --- web UI run control, settings writes and Sonarr/Radarr webhooks (all optional) ---
+      # REVIEW_ADMIN_TOKEN is retired (0.3.0): administrators sign in with an account, and the API key in
+      # Settings -> General -> Security replaces the old admin token for scripts.
+      # Webhook receiver for Sonarr/Radarr (Settings > Connect > Webhook, POST to
+      # http://<host>:8842/api/webhook/sonarr or /radarr, header X-Webhook-Token).
+      # Unset means the routes answer 404. REMOTE_PATH_MAPPINGS translates the paths
+      # Sonarr/Radarr report into this container's paths: "remote=local;remote2=local2".
+      # WEBHOOK_TOKEN: ${WEBHOOK_TOKEN:-}
+      # REMOTE_PATH_MAPPINGS: ${REMOTE_PATH_MAPPINGS:-}
+      # The queue, schedule and effective-settings files live under /config by default
+      # (requests/, schedule.json, effective.env); change them only together:
+      # REQUESTS_DIR: /config/requests
+      # SCHEDULE_FILE: /config/schedule.json
+      # EFFECTIVE_ENV_FILE: /config/effective.env
+
+      # --- optional: repair through an OpenAI-compatible API instead of llama.cpp ---
+      # Replace the three REPAIR_* lines above with these. The key is read from the
+      # environment variable NAMED by REPAIR_OPENAI_KEY_ENV; put the key itself in .env.
+      # REPAIR_BACKEND: openai
+      # REPAIR_MODEL: LongCat-2.0
+      # REPAIR_OPENAI_URL: ${REPAIR_OPENAI_URL:-}
+      # REPAIR_OPENAI_KEY_ENV: LONGCATAI_API_KEY
+      # LONGCATAI_API_KEY: ${LONGCATAI_API_KEY:-}
+      # REPAIR_EXTRA_BODY: ${REPAIR_EXTRA_BODY:-}
+
+      # Settings live in the web UI (Settings, in the review workspace) and are stored in the config volume. The old
+      # REPAIR_PROFILES, RUNTIME_VERIFY_BACKENDS and RUNTIME_DECISION_MODELS variables are retired: the first start
+      # imports REPAIR_PROFILES as Connections and nothing reads these variables afterwards. The restart policy above
+      # is what lets the page's Restart Now bring the builder back.
 
       # --- ownership of what it writes ---
       MEDIA_UID: ${MEDIA_UID:-1000}

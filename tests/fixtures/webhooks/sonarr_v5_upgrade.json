@@ -1,0 +1,45 @@
+{
+  "eventType": "Upgrade",
+  "isUpgrade": true,
+  "series": {
+    "id": 2,
+    "title": "Frieren",
+    "titleSlug": "frieren",
+    "path": "/tv/Frieren",
+    "tvdbId": 403172,
+    "type": "anime",
+    "malIds": [20],
+    "aniListIds": [21],
+    "originalCountry": "Japan"
+  },
+  "episodes": [
+    {
+      "id": 301,
+      "episodeNumber": 1,
+      "seasonNumber": 1,
+      "title": "The Journey's End",
+      "finaleType": "season"
+    },
+    {
+      "id": 302,
+      "episodeNumber": 2,
+      "seasonNumber": 1,
+      "title": "It Didn't Have to Be Magic",
+      "finaleType": "season"
+    }
+  ],
+  "episodeFile": {
+    "id": 401,
+    "relativePath": "Season 01/Frieren - S01E01E02.mkv",
+    "path": "/tv/Frieren/Season 01/Frieren - S01E01E02.mkv",
+    "quality": "WEBDL-1080p",
+    "size": 1200000000,
+    "indexerFlags": ["Freeleech"]
+  },
+  "downloadClient": "qBittorrent",
+  "downloadId": "def456",
+  "release": {
+    "releaseTitle": "Frieren.S01E01E02.1080p",
+    "indexerFlags": ["Freeleech"]
+  }
+}

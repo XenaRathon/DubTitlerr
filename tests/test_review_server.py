@@ -395,22 +395,6 @@ def test_the_token_is_never_placed_in_a_url(tmp_path, monkeypatch):
     assert review_server.TOKEN_HEADER.lower() == "x-review-token"
 
 
-def test_the_token_comparison_is_timing_safe():
-    """A SOURCE assertion, and it is the weaker kind of test on purpose.
-
-    `==` and `secrets.compare_digest` return the same answer for every input, so no
-    behavioural test can tell them apart -- a mutation swapping one for the other passes the
-    whole suite. The difference is only observable as a timing side channel, which is not
-    something this suite can measure reliably. This token is the single thing between a LAN
-    and a root-owned endpoint that rewrites subtitles, so the property is worth a guard that
-    catches a silent revert, even though it pins the decision rather than the behaviour."""
-    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "review_server.py")).read()
-    body = src[src.index("def authorised(") : src.index("def known_stems(")]
-
-    assert "compare_digest" in body, "the token comparison must be constant-time"
-    assert "== resolve_token" not in body and "resolve_token() ==" not in body
-
-
 def test_a_show_with_an_ampersand_in_its_name_is_still_usable(tmp_path, monkeypatch):
     """html.escape is right for HTML TEXT and wrong for the JS and URL contexts.
 
@@ -896,23 +880,6 @@ def test_the_index_page_shows_both_counts(tmp_path, monkeypatch):
     assert "admitted" in page.lower() and "refused" in page.lower()
 
 
-def test_the_page_remembers_the_token_in_the_browser(tmp_path, monkeypatch):
-    """Paste it once per browser, not once per visit.
-
-    The token is generated, 0600 and root-owned, so retrieving it means a docker exec
-    incantation nobody should be expected to remember. It is already in the reviewer's
-    browser the moment they paste it, so keeping it in localStorage gives up nothing and
-    removes the only genuinely annoying step. It is NEVER rendered into the page by the
-    server -- the browser puts it there, which is a different thing."""
-    stem = _episode(tmp_path)
-    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
-
-    page = review_server.render_page(stem)
-
-    assert "localStorage" in page, "the token must survive a reload"
-    assert "dubtitlerr_token" in page, "under a name that will not collide"
-
-
 # --- the index has to survive a real library ---------------------------------
 # Rendered against the owner's 294 episodes it was a flat wall of links, every row reading
 # "0 admitted", with no way to find a show. Built without ever being looked at at that size.
@@ -1265,7 +1232,9 @@ def test_shared_lists_each_repeated_line_once_with_its_episode_count(tmp_path, m
     assert rows[0]["episodes"] == 3
     assert rows[0]["proposed_text"].startswith("Running forever.")
     assert rows[0]["risk"] == "punctuation" and rows[0]["offered"] == ["accept", "reject", "correct"]
-    assert rows[0]["pair"] == 0, "a stable handle the client sends back, so raw text never has to be trusted"
+    assert rows[0]["id"] and rows[0]["id"] == review_server.handle_shared()["pairs"][0]["id"], (
+        "a stable handle the client sends back, so raw text never has to be trusted"
+    )
 
 
 def test_deciding_a_shared_line_clears_it_from_every_episode(tmp_path, monkeypatch):
@@ -1278,7 +1247,7 @@ def test_deciding_a_shared_line_clears_it_from_every_episode(tmp_path, monkeypat
     monkeypatch.setattr(review_server, "show_for", lambda s: "One Pace")
     assert [len(review_server.handle_episode(s)["entries"]) for s in stems] == [2, 2, 2]
 
-    res = review_server.handle_shared_decide([{"pair": 0, "verdict": "accept"}])
+    res = review_server.handle_shared_decide([{"id": review_server.handle_shared()["pairs"][0]["id"], "verdict": "accept"}])
 
     assert res["saved"] == 1 and not res["errors"]
     assert [len(review_server.handle_episode(s)["entries"]) for s in stems] == [1, 1, 1], "gone from all three"
@@ -1295,13 +1264,69 @@ def test_a_shared_verdict_is_refused_for_a_pair_that_is_not_on_the_list(tmp_path
     monkeypatch.setattr(review_server.decisions, "DECISIONS_DIR", str(tmp_path))
     monkeypatch.setattr(review_server, "show_for", lambda s: "One Pace")
 
-    res = review_server.handle_shared_decide([{"pair": 7, "verdict": "accept"}, {"pair": 0, "verdict": "force"}])
+    real = review_server.handle_shared()["pairs"][0]["id"]
+    res = review_server.handle_shared_decide([{"id": "0" * 16, "verdict": "accept"}, {"id": real, "verdict": "force"}])
 
     assert res["saved"] == 0
-    assert {e["pair"] for e in res["errors"]} == {7, 0}
-    assert "not offered" in [e["error"] for e in res["errors"] if e["pair"] == 0][0], (
+    assert {e["id"] for e in res["errors"]} == {"0" * 16, real}
+    assert "not offered" in [e["error"] for e in res["errors"] if e["id"] == real][0], (
         "force on an admitted repair is a gate bypass here exactly as it is on an episode page"
     )
+
+
+def _two_shared_pairs(tmp_path, monkeypatch):
+    """Two episodes that each hold the shared pairs A and B (Sol's F1 fixture)."""
+    pairs = [("A harmless line", "A corrected line"), ("B harmless line", "B WRONG line")]
+    for name in ("e01", "e02"):
+        stem = str(tmp_path / name)
+        with open(stem + ".dubtitles.conf.json", "w") as f:
+            json.dump([{"start": 100.0, "end": 102.0, "text": o} for o, _ in pairs], f)
+        for o, p in pairs:
+            unresolved.record(stem, "repair_applied", "accepted", original_text=o, proposed_text=p)
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", (0.0, []))
+    monkeypatch.setattr(review_server, "_QUEUE_CACHE", {})
+    monkeypatch.setattr(review_server.decisions, "DECISIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(review_server, "show_for", lambda s: "S")
+    return pairs
+
+
+def test_a_stale_tab_is_refused_and_never_approves_a_different_pair(tmp_path, monkeypatch):
+    """Two tabs load the page with A first. Tab one decides A; tab two, still showing A, decides A too. By index, B had become
+    row 0 and the second verdict approved B's WRONG line. By stable id it is refused as stale."""
+    pairs = _two_shared_pairs(tmp_path, monkeypatch)
+    shown = review_server.handle_shared()["pairs"]
+    a = next(r for r in shown if r["original_text"] == pairs[0][0])
+    first = review_server.handle_shared_decide([{"id": a["id"], "verdict": "reject"}])
+    stale = review_server.handle_shared_decide([{"id": a["id"], "verdict": "accept"}])
+    store = review_server.decisions.load("S", str(tmp_path))
+    assert first["saved"] == 1 and not first["errors"]
+    assert stale["saved"] == 0 and "stale" in stale["errors"][0]["error"]
+    assert review_server.decisions.lookup(store, *pairs[1]) is None, "B was never shown to tab two and is not decided"
+    assert review_server.decisions.lookup(store, *pairs[0])["verdict"] == "reject"
+
+
+def test_ids_do_not_move_when_another_pair_is_decided(tmp_path, monkeypatch):
+    pairs = _two_shared_pairs(tmp_path, monkeypatch)
+    before = {r["original_text"]: r["id"] for r in review_server.handle_shared()["pairs"]}
+    review_server.handle_shared_decide([{"id": before[pairs[0][0]], "verdict": "reject"}])
+    after = {r["original_text"]: r["id"] for r in review_server.handle_shared()["pairs"]}
+    assert after == {pairs[1][0]: before[pairs[1][0]]}
+
+
+def test_an_index_only_verdict_is_refused(tmp_path, monkeypatch):
+    """The old protocol sent a list offset, which stops meaning anything the moment the list changes."""
+    _two_shared_pairs(tmp_path, monkeypatch)
+    res = review_server.handle_shared_decide([{"pair": 0, "verdict": "accept"}])
+    assert res["saved"] == 0 and res["errors"]
+    assert review_server.decisions.load("S", str(tmp_path)).get("decisions", []) == []
+
+
+def test_the_shared_page_submits_ids_not_offsets(tmp_path, monkeypatch):
+    _two_shared_pairs(tmp_path, monkeypatch)
+    page = review_server.render_shared()
+    row = review_server.handle_shared()["pairs"][0]
+    assert f'name="p{row["id"]}"' in page and "id:r.name.slice(1)" in page
 
 
 def test_the_shared_route_is_gated_like_every_other_write(tmp_path, monkeypatch):
@@ -1323,7 +1348,8 @@ def test_the_shared_page_renders_one_row_per_line_with_its_count(tmp_path, monke
     page = review_server.render_shared()
 
     assert "in 3 episodes" in page
-    assert 'name="p0" value="accept"' in page and 'name="p0" value="force"' not in page
+    sid = review_server.handle_shared()["pairs"][0]["id"]
+    assert f'name="p{sid}" value="accept"' in page and f'name="p{sid}" value="force"' not in page
     assert 'id="save"' in page and 'id="apply"' not in page
 
 
@@ -1624,7 +1650,7 @@ def test_episode_sort_reorders_rows_without_changing_the_posted_index_set(tmp_pa
     )
     assert set(displayed) == {0, 1, 2}, "every queued entry is still addressable exactly once"
 
-    sort_body = page.split("function sortEpisode", 1)[1].split("const TOK", 1)[0]
+    sort_body = page.split("function sortEpisode", 1)[1].split("async function post", 1)[0]
     assert "appendChild(row)" in sort_body, "reordering must move existing nodes"
     assert "fetch(" not in sort_body and "location.reload" not in sort_body, "no round trip"
     assert "name.slice(1)" in page, "posted indexes come from stable radio names, not visual position"
@@ -1830,32 +1856,10 @@ def test_cookie_token_malformed_cookie_header_returns_none():
     assert review_server._cookie_token({"Cookie": ";;;=== not a cookie"}) is None
 
 
-def test_render_locked_page_has_no_episode_data_and_no_fetch_call():
-    out = review_server.render_locked("page")
-    assert "needs-token" in out
-    assert "fetch(" not in out, "the locked shell must not call any write route either"
-    assert "id=tok" in out
-
-
 def test_render_locked_shared_uses_the_shared_title():
     out = review_server.render_locked("shared")
     assert "Shared lines" in out
     assert "needs-token" in out
-
-
-def test_the_token_box_js_syncs_a_cookie_next_to_localstorage(monkeypatch):
-    """The existing TOK 'input' listener (review_server.py:829-831 in render_shared,
-    byte-for-byte the same at :1038-1040 in render_page) already writes to
-    localStorage; it must ALSO write the cookie authorised() now reads, in the SAME
-    handler, so the two never drift out of sync."""
-    monkeypatch.setattr(review_server, "known_stems", lambda: [])
-
-    for out in (review_server.render_page(), review_server.render_shared()):
-        start = out.index("TOK.addEventListener('input'")
-        handler = out[start : start + 400]
-        assert "localStorage.setItem('dubtitlerr_token'" in handler
-        assert "syncTokenCookie()" in handler
-        assert "document.cookie=" in out
 
 
 def test_get_index_without_a_token_shows_the_locked_shell_not_the_queue(tmp_path, monkeypatch):
@@ -1976,28 +1980,6 @@ def test_review_auth_off_keeps_every_page_open_with_no_token(tmp_path, monkeypat
     assert "S01E01" in body
 
 
-def test_every_fetch_call_on_the_index_page_still_carries_the_token_header(monkeypatch):
-    monkeypatch.setattr(review_server, "known_stems", lambda: [])
-    page = review_server.render_page()
-    assert page.count("fetch(") == 1, "expected exactly one fetch() call on the index page"
-    assert f"'{review_server.TOKEN_HEADER}':TOK.value" in page
-
-
-def test_every_fetch_call_on_the_shared_page_still_carries_the_token_header(monkeypatch):
-    monkeypatch.setattr(review_server, "known_stems", lambda: [])
-    page = review_server.render_shared()
-    assert page.count("fetch(") == 1, "expected exactly one fetch() call on the shared page"
-    assert f"'{review_server.TOKEN_HEADER}':TOK.value" in page
-
-
-def test_a_401_is_still_surfaced_by_alert_and_the_token_box_stays_visible(monkeypatch):
-    monkeypatch.setattr(review_server, "known_stems", lambda: [])
-    page = review_server.render_page()
-    shared = review_server.render_shared()
-    assert "id=tok" in page and "if(r.error){alert(r.error)" in page
-    assert "id=tok" in shared and "if(r.error){alert(r.error)" in shared
-
-
 def test_get_api_episodes_without_token_is_401_with_the_literal_body(tmp_path, monkeypatch):
     """authorised() now gates GET the same as POST for every /api/* route -- route()
     is reached only from api paths (verified: do_GET serves /, /index.html and
@@ -2012,7 +1994,7 @@ def test_get_api_episodes_without_token_is_401_with_the_literal_body(tmp_path, m
     h = wire.as_handler("/api/episodes")
     h.do_GET()
     assert wire.status == 401
-    assert json.loads(wire.wfile.getvalue()) == {"error": "a token is required"}
+    assert json.loads(wire.wfile.getvalue()) == {"error": "login required"}
 
     wire2 = _Wire()
     wire2.headers[review_server.TOKEN_HEADER] = tok
@@ -2038,3 +2020,127 @@ def test_get_index_page_stays_open_without_a_token(tmp_path, monkeypatch):
     h = wire.as_handler("/")
     h.do_GET()
     assert wire.status == 200
+
+
+def _strip_ts(stem):
+    """Rewrite the queue the way an old build left it: entries with no ts."""
+    entries = [{k: v for k, v in e.items() if k != "ts"} for e in unresolved.items(stem)]
+    with open(unresolved.path_for(stem), "w") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+
+def test_oldest_pending_at_is_the_earliest_entry_ts_among_the_undecided(tmp_path, monkeypatch):
+    stem = _episode(tmp_path, "busy")
+    rows = unresolved.items(stem)
+    rows[0]["ts"] = "2026-01-03T00:00:00Z"
+    rows[1]["ts"] = "2026-01-02T00:00:00Z"  # rejected_guard: pending, the oldest
+    rows[2]["ts"] = "2026-01-04T00:00:00Z"
+    rows[3]["ts"] = "2025-12-01T00:00:00Z"  # llm_empty is not a primary reason: not counted
+    with open(unresolved.path_for(stem), "w") as f:
+        for e in rows:
+            f.write(json.dumps(e) + "\n")
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    assert review_server.handle_index()["episodes"][0]["oldest_pending_at"] == "2026-01-02T00:00:00Z"
+
+
+def test_oldest_pending_at_ignores_a_decided_entry(tmp_path, monkeypatch):
+    stem = _episode(tmp_path, "busy")
+    rows = unresolved.items(stem)
+    for e, ts in zip(rows, ("2026-01-05T00:00:00Z", "2026-01-01T00:00:00Z", "2026-01-06T00:00:00Z", "2026-01-07T00:00:00Z")):
+        e["ts"] = ts
+    rows[1]["resolved"] = True  # the oldest is settled
+    with open(unresolved.path_for(stem), "w") as f:
+        for e in rows:
+            f.write(json.dumps(e) + "\n")
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    assert review_server.handle_index()["episodes"][0]["oldest_pending_at"] == "2026-01-05T00:00:00Z"
+
+
+def test_oldest_pending_at_falls_back_to_the_sidecar_mtime_when_no_entry_has_a_ts(tmp_path, monkeypatch):
+    stem = _episode(tmp_path, "busy")
+    _strip_ts(stem)
+    os.utime(unresolved.path_for(stem), (1_700_000_000, 1_700_000_000))
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+
+    assert review_server.handle_index()["episodes"][0]["oldest_pending_at"] == "2023-11-14T22:13:20Z"
+
+
+def test_oldest_pending_at_is_null_when_there_is_no_ts_and_the_file_cannot_be_stat(tmp_path, monkeypatch):
+    stem = _episode(tmp_path, "busy")
+    _strip_ts(stem)
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+    monkeypatch.setattr(review_server.os.path, "getmtime", lambda p: (_ for _ in ()).throw(OSError("gone")))
+
+    assert review_server.handle_index()["episodes"][0]["oldest_pending_at"] is None
+
+
+def test_forget_drops_the_cached_mtime_with_the_cached_queue(tmp_path, monkeypatch):
+    stem = _episode(tmp_path, "busy")
+    _strip_ts(stem)
+    monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
+    os.utime(unresolved.path_for(stem), (1_700_000_000, 1_700_000_000))
+    assert review_server.handle_index()["episodes"][0]["oldest_pending_at"] == "2023-11-14T22:13:20Z"
+
+    os.utime(unresolved.path_for(stem), (1_800_000_000, 1_800_000_000))
+    review_server.forget(stem)
+
+    assert review_server.handle_index()["episodes"][0]["oldest_pending_at"] == "2027-01-15T08:00:00Z"
+
+
+def test_a_fresh_walk_drops_the_cached_mtime_too(tmp_path, monkeypatch):
+    _triage_episode(tmp_path, "e01")
+    monkeypatch.setattr(review_server, "ROOTS", [str(tmp_path)])
+    monkeypatch.setattr(review_server, "_STEMS_CACHE", None)
+    monkeypatch.setattr(review_server, "_QUEUE_CACHE", {})
+    monkeypatch.setattr(review_server, "_QUEUE_MTIME", {})
+    monkeypatch.setattr(review_server, "STEMS_TTL", 0.0)
+    monkeypatch.setattr(review_server, "STEMS_TTL_FACTOR", 0.0)
+    stem = review_server.known_stems()[0]
+    _strip_ts(stem)
+    review_server.queue_written_at(stem)
+    assert review_server._QUEUE_MTIME
+
+    review_server.known_stems()
+
+    assert review_server._QUEUE_MTIME == {}
+
+
+def _shows_route(tmp_path, monkeypatch, root):
+    monkeypatch.delenv("REVIEW_TOKEN", raising=False)
+    monkeypatch.setattr(review_server, "TOKEN_DIR", str(tmp_path))
+    monkeypatch.setenv("ANIME_ROOT", str(root))
+    return review_server.route("GET", "/api/shows", {}, review_server.resolve_token(str(tmp_path)))
+
+
+def test_api_shows_lists_only_directories_the_run_validator_accepts(tmp_path, monkeypatch):
+    import review_requests
+
+    root = tmp_path / "lib"
+    for name in ("Frieren", "Bleach", "a..b"):
+        (root / name / "Season 1").mkdir(parents=True)
+    (root / "notes.txt").write_text("x")
+    (root / "linked").symlink_to(tmp_path)
+    (root / "alias").symlink_to(root / "Bleach")  # inside the root, but a link: not followed
+    for name in (".hidden", "@eaDir", "lost+found"):
+        (root / name).mkdir()
+
+    status, body = _shows_route(tmp_path, monkeypatch, root)
+
+    assert status == 200
+    assert body == {"shows": ["Bleach", "Frieren"]}
+    for s in body["shows"]:
+        review_requests.validate({"show": s}, anime_root=str(root))
+
+
+def test_api_shows_requires_the_token(tmp_path, monkeypatch):
+    monkeypatch.delenv("REVIEW_TOKEN", raising=False)
+    monkeypatch.setattr(review_server, "TOKEN_DIR", str(tmp_path))
+    monkeypatch.setenv("ANIME_ROOT", str(tmp_path))
+    assert review_server.route("GET", "/api/shows", {}, None)[0] == 401
+
+
+def test_api_shows_is_empty_when_the_root_is_missing(tmp_path, monkeypatch):
+    assert _shows_route(tmp_path, monkeypatch, tmp_path / "nope") == (200, {"shows": []})

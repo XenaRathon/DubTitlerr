@@ -130,6 +130,62 @@ scope for the beta.
 
 ---
 
+## Why the queues are smaller
+
+Both the glossary and the repair stage hand decisions to a human. As the guards multiplied the
+queues grew faster than anyone could read them, so each queue now has to carry a decision. The
+changes below come from measuring the queues, not from trimming them by feel.
+
+### The glossary queue was mostly empty questions
+
+A rebuild of the One Pace glossary flagged 687 terms. 578 of them were `no-match`: the wiki had
+no candidate, so there was nothing to accept or reject. 109 carried a decision. A term with no
+candidate is now recorded as checked and counted, and the review lists the other 109.
+
+### Two write guards, and what they cost
+
+Verify writes an expansion such as `Momonosuke` → `Kouzuki Momonosuke` next to the short form,
+and never over it, so a wrong write costs one unused phrase. Wrong writes still add up: with the
+guards off, the Jev decision backend wrote 87 expansions and 45% were right. Two guards fix most of it.
+
+- **Whole word.** `Usop` → `Usopp` is a spelling fix and `Burn` → `Coburn` is a different word, but
+  a substring test passes both. The term must now be a whole word of the title.
+- **Common word.** `Castle` → `Hancock Castle` expands an ordinary word into a name. A term the
+  word list spells in lowercase is now flagged. The list capitalises names (`Hancock`,
+  `Rayleigh`), so real names are not caught.
+
+With both on, Jev wrote 29 expansions, 86% right, and sent 58 to the queue, of which 14 were
+right. That is the price: a person reads 58 items to find 14. `VERIFY_QUEUE_BLOCKED_EXPANSIONS=0`
+stops queuing those, and 9 correct fuller names are then never offered. Because the short form
+stays, the loss is small, which is why it is a setting and not a default.
+
+### The repair queue: the guards were right
+
+A blind sample of 100 rejected repairs from the Wano episodes, judged by two models that agreed on
+86%, found that about four in five rejections were correct: a wrong name, added words, a
+rewording. So nothing is accepted automatically. Two things did come out of it.
+
+- A rejection that changed more than six words was never one a person accepted. These are still
+  recorded and now hidden from the default view.
+- Seven of the 100 changed no word at all, only a comma or a capital, and were refused anyway. The
+  check that stops a repair from making a crowded card worse treats one added period as one more
+  visible character. An opt-in setting, `REPAIR_ACCEPT_PUNCT_CASE_ONLY`, relaxes it for added `.`
+  and `,` only.
+
+### Punctuation that changes meaning
+
+`Let's eat, Grandma.` and `Let's eat Grandma.` are the same words. The gate compares words, so it
+cannot tell them apart, and in a set of 60 invented pairs 33 pass it today. Refusing every removed
+or changed mark would be worse: on the real Wano repairs about half the accepted ones changed a
+mark, and a hand-judged sample of 40 found 30 harmless, 7 that shifted the tone and 3 that also
+changed words. At least four of those seven were improvements. So there is no general guard.
+`REPAIR_GUARD_TERMINAL_PUNCT` refuses the narrow case of a flipped `?`, a swapped `!` and `?`, or an
+ellipsis turned into a stop. On 451 real pairs it refused 21, and most were corrections of a stray
+`?`, so it is off. If you turn on `REPAIR_ACCEPT_PUNCT_CASE_ONLY`, audit a sample of what it
+accepted first.
+
+---
+
 ## What "reviewed" claims, and what it does not
 
 The review stage does not present you with the whole episode. It presents the lines the
@@ -214,6 +270,41 @@ waits for a safe point instead of interrupting: the unit in flight finishes, no 
 starts, and the exit code is 0. The cost is that `docker stop` needs a grace period as long as
 your longest unit of work. [Stop the container without losing
 work](How-To-Guides.md#stop-the-container-without-losing-work) says how to set it.
+
+---
+
+## Why repair refuses on a failure rate, and keeps going past one bad line
+
+Repair rebuilds the whole `.srt` from its results. A run that loses its model halfway would
+ship a file that mixes repaired lines with raw speech recognition, so a failing backend has to
+be judged across the run, not one line at a time.
+
+The 0.2.2 guard refused an episode only when every target had failed. That missed the ordinary
+case. Ten of a hundred targets had no fansub line to anchor on, the backend went down, and the
+ninety targets that did reach it all failed. Ninety is not a hundred, so the guard stayed quiet
+and the `.srt` was rebuilt as raw speech recognition over repairs that had already shipped. The
+count now starts from the targets that actually reached the model.
+
+The trigger is a share of failures, because a single failure says too little. Some providers
+refuse certain lines every time, for example with a content filter. A line the model rejects as a
+request (HTTP 400, 404, 409, 413 or 422) therefore counts as no repair for that line, and the
+transcript text stays. A bad key, a rate limit, a server error and a dead connection do count.
+They say nothing about the line and a lot about the backend. If every request of an episode is
+rejected as a request, the model id or the URL is wrong, and the episode is refused.
+
+Five failures in a row count as an outage on their own. Once the backend is clearly down,
+sending the other targets only costs time.
+
+The deadlines exist because retries and slow answers add up. A throttled provider that asks for
+a long wait on every line can hold one episode for hours, and the stop at the end of the
+nightly window would arrive in the middle of a wait. The default of 3600 seconds per episode is
+about four times the slowest of the 1,631 episodes repaired on the reference install (897
+seconds; the median took 52). A separate cap on each request stops a server that sends a byte
+every few seconds from outlasting the per-read timeout.
+
+A refusal leaves the `.srt` as it was, records `backend-unreachable` (or `stopped`, for a soft
+stop), and the next pass tries again. Below the 10% line the episode ships, and the few lines
+that failed keep their transcript text.
 
 ---
 

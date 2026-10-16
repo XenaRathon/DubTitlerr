@@ -1,0 +1,23 @@
+{
+  "eventType": "Download",
+  "isUpgrade": false,
+  "movie": {
+    "id": 10,
+    "title": "Akira",
+    "folderPath": "/movies/Akira (1988)",
+    "tmdbId": 149,
+    "year": 1988
+  },
+  "movieFile": {
+    "id": 501,
+    "relativePath": "Akira (1988).mkv",
+    "path": "/movies/Akira (1988)/Akira (1988).mkv",
+    "quality": "Bluray-1080p",
+    "size": 2000000000
+  },
+  "downloadClient": "qBittorrent",
+  "downloadId": "ghi789",
+  "release": {
+    "releaseTitle": "Akira.1988.1080p.BluRay"
+  }
+}

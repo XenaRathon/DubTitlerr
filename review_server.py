@@ -36,28 +36,48 @@ Env:
   REVIEW_TOKEN   see above
   DECISIONS_DIR  default /config/decisions   (the token lives beside it)
   MERGE_ROOTS    default /data/Media/Anime Library  (colon list; the only stems accepted)
+  REVIEW_USERNAME, REVIEW_PASSWORD, REVIEW_PASSWORD_FILE
+                 imported once as the first admin account when no account exists yet
+                 (review_auth.import_env_admin); not read again afterwards.
 """
 
+import datetime
+import hashlib
 import html
 import http.cookies
 import http.server
 import json
+import math
 import os
+import re
 import secrets
 import string
+import subprocess
 import tempfile
 import threading
 import time
+from pathlib import Path
 from urllib.parse import quote
 
 import common
 import decisions
 import review_apply
+import review_auth
+import review_glossary
+import review_requests
+import review_status
+import review_webhooks
+import settings_api
 import unresolved
 from common import log
 from decisions import show_for
 
+review_auth.register_routes(settings_api.ROLE_ENTRIES)
+
 REVIEW_PORT = int(os.environ.get("REVIEW_PORT", "8842"))
+UI_DIST = Path(__file__).resolve().parent / "web" / "dist"
+_AUDIO_SLOTS = threading.BoundedSemaphore(2)
+AUDIO_MAX_SECONDS = 20
 
 
 # Beside DECISIONS_DIR rather than inside it: that directory is the artifact a user may
@@ -87,7 +107,7 @@ STEMS_TTL = float(os.environ.get("REVIEW_STEMS_TTL", "30"))
 # actually took. A list this expensive to rebuild is allowed to be an hour stale; a fresh
 # episode still appears within that, and immediately on restart.
 STEMS_TTL_FACTOR = float(os.environ.get("REVIEW_STEMS_TTL_FACTOR", "20"))
-_STEMS_CACHE = None
+_STEMS_CACHE = None  # (expiry, stems, filled_at): filled_at is the walk START, time.monotonic(), for /api/status's cache_age_s
 # One episode's open queue, filled by the same pass that discovers the episodes and dropped
 # when that pass is redone. The index reads every episode's queue jsonl AND its conf.json --
 # ~200s across the live library, on top of the walk.
@@ -103,6 +123,9 @@ _STEMS_CACHE = None
 # Deliberately holds the entries BEFORE the decisions store is consulted. The store is one
 # small file read per request, so a verdict shows up everywhere immediately.
 _QUEUE_CACHE: dict = {}
+# stem -> queue sidecar mtime as ISO 8601 UTC (None when unreadable). Filled and dropped with _QUEUE_CACHE: a stat per episode
+# on every index call is exactly the touch that cache exists to avoid.
+_QUEUE_MTIME: dict = {}
 CONF_SUFFIX = ".dubtitles.conf.json"
 # A HEADER, never a query parameter: a token in a URL lands in proxy logs, browser history
 # and any Referer the page emits.
@@ -151,6 +174,7 @@ OFFERED = {
     ("repair_applied", "accepted"): ("accept", "reject", "correct"),
     ("repair", "rejected_guard"): ("force", "reject", "correct"),
     ("repair", "rejected_name_invented"): ("force", "reject", "correct"),
+    ("repair", "rejected_name_part"): ("force", "reject", "correct"),
     ("repair", "decision_unfittable"): ("correct", "reject"),
     # An approval the model orphaned by proposing different wording for the same line
     # (usually a REPAIR_MODEL change). The reviewer is being asked to rule again, on the
@@ -206,6 +230,9 @@ def resolve_token(token_dir: str = "") -> str:
     return tok
 
 
+review_auth.set_token_fallback(lambda: resolve_token())  # until a key file exists, the 0.2.x review token IS the API key
+
+
 def announce_token(token_dir: str = "", bind: str = "") -> None:
     """Say WHERE the token is on every start; say what it IS only when it is new.
 
@@ -235,12 +262,49 @@ def announce_token(token_dir: str = "", bind: str = "") -> None:
     log("review server:   docker exec <container> cat " + path)
 
 
+# A request target after whitespace -- origin-form (/path) or absolute-form (scheme://host/path) -- and the query that
+# follows it, whatever the method token (PROPFIND, lowercase get, M-SEARCH...).
+_REQUEST_LINE_QUERY = re.compile(r'(\s(?:[A-Za-z][A-Za-z0-9+.-]*://[^\s"?/]*)?/[^\s"?]*)\?[^\s"]*')
+# Write routes added with the webui whose body must be JSON: garbage is a 400 there. The inbox routes keep their old
+# lenient reading (unparseable becomes an empty body).
+_JSON_REQUIRED = frozenset(
+    (
+        ("POST", "/api/requests"),
+        ("PUT", "/api/schedule"),
+        ("PUT", "/api/settings"),
+        ("POST", "/api/settings/test"),
+        ("POST", "/api/settings/reset"),
+        ("POST", "/api/glossary"),
+        ("POST", "/api/glossary/wiki-test"),
+        ("POST", "/api/users"),
+        ("PUT", "/api/me/password"),
+    )
+)
+# (method, path) -> handler(body) for routes the role table marks admin; route_full has already checked the role. Tests
+# register a probe here.
+ADMIN_ROUTES: dict = {}
+
+
+def _anime_root():
+    """ANIME_ROOT from the environment at call time (None lets review_requests apply its own default)."""
+    return os.environ.get("ANIME_ROOT") or None
+
+
+# Builder-affecting writes (admin role, enforced by route_full before these run).
+ADMIN_ROUTES[("POST", "/api/requests")] = lambda body: review_requests.handle(
+    "POST", "/api/requests", body, anime_root=_anime_root()
+)
+ADMIN_ROUTES[("POST", "/api/glossary/wiki-test")] = review_glossary.wiki_test
+ADMIN_ROUTES[("PUT", "/api/schedule")] = lambda body: review_requests.handle(
+    "PUT", "/api/schedule", body, anime_root=_anime_root()
+)
+
+
 def authorised(method: str, presented, path: str = "") -> bool:
     """All routes require the token when auth is enabled."""
     if not auth_required():
         return True
-    # compare_digest, not ==: timing-safe -- the only guard between a LAN and a write.
-    return bool(presented) and secrets.compare_digest(str(presented), resolve_token())
+    return review_auth.key_matches(presented)  # the classic pages' token box: the API key by its old name
 
 
 def _stems_ttl(elapsed: float) -> float:
@@ -264,6 +328,7 @@ def open_entries(stem: str) -> list:
 def forget(stem: str) -> None:
     """Drop one episode's cached queue, after writing to it."""
     _QUEUE_CACHE.pop(stem, None)
+    _QUEUE_MTIME.pop(stem, None)
 
 
 def known_stems() -> list:
@@ -298,7 +363,10 @@ def known_stems() -> list:
     # Filled together, dropped together. Nothing else expires a queue entry, so a re-repaired
     # episode would otherwise keep its old queue until the container restarted.
     _QUEUE_CACHE.clear()
-    _STEMS_CACHE = (time.monotonic() + _stems_ttl(time.monotonic() - now), stems)
+    _QUEUE_MTIME.clear()
+    # One tuple, one assignment: a reader never sees a list paired with another fill's timestamp. ``now`` is the
+    # walk START -- the list describes the tree as the walk saw it from then on, not as of when it finished.
+    _STEMS_CACHE = (time.monotonic() + _stems_ttl(time.monotonic() - now), stems, now)
     return stems
 
 
@@ -318,6 +386,18 @@ def _store_for(stem: str, cache: dict) -> dict:
     if show not in cache:
         cache[show] = decisions.load(show, decisions.DECISIONS_DIR) if show else {}
     return cache[show]
+
+
+def queue_written_at(stem: str):
+    """When this episode's queue sidecar was last written, ISO 8601 UTC, or None: the fallback for entries that carry no ts.
+    Cached per walk, like the entries it describes."""
+    if stem not in _QUEUE_MTIME:
+        try:
+            when = datetime.datetime.fromtimestamp(os.path.getmtime(unresolved.path_for(stem)), datetime.timezone.utc)
+            _QUEUE_MTIME[stem] = when.strftime("%Y-%m-%dT%H:%M:%SZ")
+        except OSError:
+            _QUEUE_MTIME[stem] = None
+    return _QUEUE_MTIME[stem]
 
 
 def handle_index() -> dict:
@@ -341,6 +421,9 @@ def handle_index() -> dict:
             continue
         admitted = sum(1 for e in live if e.get("stage") == "repair_applied")
         season = os.path.basename(os.path.dirname(stem))
+        # Entries written before they were stamped have no ts; the sidecar's mtime stands in only when none of these has one.
+        stamps = [e["ts"] for e in live if isinstance(e.get("ts"), str) and e["ts"]]
+        oldest_at = min(stamps) if stamps else queue_written_at(stem)
         out.append(
             {
                 "stem": stem,
@@ -354,6 +437,7 @@ def handle_index() -> dict:
                 "pending": len(live),
                 "admitted": admitted,
                 "refused": len(live) - admitted,
+                "oldest_pending_at": oldest_at,
             }
         )
     # Most admitted first. With everything at 0 the flat list had no meaningful order at all,
@@ -433,12 +517,19 @@ def _triage_key(e: dict) -> tuple:
     )
 
 
+def entry_id(entry: dict) -> str:
+    """Identity of the exact question, independent of its position in a rewritten queue."""
+    fields = [entry.get(k, "") for k in ("stage", "reason", "original_text", "proposed_text")]
+    return hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode()).hexdigest()[:24]
+
+
 def _decorate(stem: str, e: dict, index: int, starts: dict, context: dict | None = None) -> dict:
     """One queue entry as the page needs it: its own index, what may be done to it, whether
     doing it is reversible, what the repair changed, where in the episode to hear it, and
     the cards either side of it."""
     d = dict(e)
     d["index"] = index
+    d["id"] = entry_id(e)
     d["risk"] = risk_class(e.get("original_text", ""), e.get("proposed_text", ""))
     # DERIVED, not stored: repair.py records no timing on an accepted repair. Every card the
     # line appears on, because duplicate-pair suppression makes repeats a single entry.
@@ -514,6 +605,12 @@ def handle_episode(stem: str, all_reasons: bool = False) -> dict:
 _WRITE_LOCK = threading.Lock()
 
 
+def shared_id(show: str, key_orig: str, key_prop: str) -> str:
+    """A stable handle for one shared (show, original, proposed) pair: a hash of exactly what one stored verdict settles. Unlike
+    a list offset it names the same pair in every tab and on every reload, so a stale page cannot land on a different pair."""
+    return hashlib.sha256(json.dumps([show, key_orig, key_prop]).encode()).hexdigest()[:16]
+
+
 def handle_shared() -> dict:
     """Every still-open line that appears in MORE than one episode, listed once.
 
@@ -549,6 +646,7 @@ def handle_shared() -> dict:
         e = g["e"]
         rows.append(
             {
+                "id": shared_id(show, _ko, _kp),
                 "show": show,
                 "original_text": e.get("original_text", ""),
                 "proposed_text": e.get("proposed_text", ""),
@@ -557,9 +655,9 @@ def handle_shared() -> dict:
                 "offered": list(OFFERED[("repair_applied", "accepted")]),
             }
         )
-    # DETERMINISTIC, because `pair` below is an index into this list and the client sends it
-    # back: render and submit must agree even across processes. Most-repeated first is also
-    # the order that clears the most work per decision.
+    # Deterministic display order (most-repeated first clears the most work per decision). `pair` is only the row's position in
+    # THIS rendering, for the page's sort tie-break: it moves whenever another row disappears, so nothing is ever written by it.
+    # What a verdict names is `id`, the hash of the exact text pair, which does not move.
     rows.sort(key=lambda r: (-r["episodes"], RISK_ORDER.get(r["risk"], 1), r["show"], r["original_text"]))
     for i, r in enumerate(rows):
         r["pair"] = i
@@ -575,24 +673,34 @@ def handle_shared_decide(verdicts: list) -> dict:
     [S-6]. Marking 24 episodes' rows resolved would be 24 rewrites to reach a state the
     pipeline already agrees on.
 
-    The client sends an INDEX into the list this module just built, never the text. A client
-    is not a trust boundary, and accepting raw text here would let it write a decision for
-    any line in the show -- including one nobody was ever shown."""
-    rows = handle_shared()["pairs"]
+    The client sends the stable `id` of a pair this module issued, never the text and never a list offset. A client is not a trust
+    boundary, and accepting raw text here would let it write a decision for any line in the show -- including one nobody was ever
+    shown. An offset is no better: it names whatever row sits there NOW, so a stale tab would approve a different pair. The id is
+    looked up in the list rebuilt UNDER the write lock, so a pair that was decided meanwhile (or no longer shared) is refused as
+    stale instead of being written."""
     errors: list = []
     by_show: dict = {}
     with _WRITE_LOCK:
+        rows = {r["id"]: r for r in handle_shared()["pairs"]}
         for d in verdicts if isinstance(verdicts, list) else []:
             if not isinstance(d, dict):
-                errors.append({"pair": None, "error": "not a verdict"})
+                errors.append({"id": None, "error": "not a verdict"})
                 continue
-            pair, verdict = d.get("pair"), str(d.get("verdict", ""))
-            if isinstance(pair, bool) or not isinstance(pair, int) or not (0 <= pair < len(rows)):
-                errors.append({"pair": pair, "error": "no such shared line"})
+            sid, verdict = d.get("id"), str(d.get("verdict", ""))
+            if not isinstance(sid, str) or sid not in rows:
+                errors.append(
+                    {
+                        "id": sid if isinstance(sid, str) else None,
+                        "error": "stale or unknown shared line: it was decided meanwhile or the page is out of date; reload",
+                    }
+                )
                 continue
-            r = rows[pair]
+            r = rows[sid]
             if verdict not in r["offered"]:
-                errors.append({"pair": pair, "error": "verdict not offered for this entry"})
+                errors.append({"id": sid, "error": "verdict not offered for this entry"})
+                continue
+            if verdict == "correct" and decisions.is_blank(d.get("text", "")):
+                errors.append({"id": sid, "error": "a correction needs text; the line stays on the page"})
                 continue
             by_show.setdefault(r["show"], []).append((r, verdict, str(d.get("text", ""))))
         saved, ddir = 0, decisions.DECISIONS_DIR
@@ -604,7 +712,7 @@ def handle_shared_decide(verdicts: list) -> dict:
                 if not decisions.save(store, show, ddir):
                     # Named per show, not swallowed: with two shows on the page one store
                     # can fail while the other lands, and the reviewer must know which.
-                    errors.append({"pair": None, "error": f"the decisions for {show} could not be saved"})
+                    errors.append({"id": None, "error": f"the decisions for {show} could not be saved"})
                     continue
                 saved += len(wanted)
     return {"saved": saved, "errors": errors}
@@ -651,18 +759,36 @@ def handle_decide_batch(stem: str, verdicts: list) -> dict:
                     errors.append({"index": index, "error": "no such entry"})
                     continue
                 e = items[index]
+                # New workspace sends an identity as well as the legacy index. Never let a stale tab approve a new row.
+                if "id" in d and (
+                    d["id"] != entry_id(e)
+                    or e.get("resolved")
+                    or not unresolved.undecided([e], store)
+                    or not unresolved.live_only(ep, [e])
+                ):
+                    errors.append({"index": index, "error": "stale review entry; reload this episode"})
+                    continue
                 # Enforced here, not merely rendered: a client is not a trust boundary, and
                 # `force` on an accepted entry would be an unlabelled bypass of the gate.
                 if verdict not in OFFERED.get((str(e.get("stage", "")), str(e.get("reason", ""))), DEFAULT_OFFERED):
                     errors.append({"index": index, "error": "verdict not offered for this entry"})
                     continue
                 text, note = str(d.get("text", "")), str(d.get("note", ""))
-                store = decisions.record(
-                    store, e.get("original_text", ""), e.get("proposed_text", ""), verdict, text=text, note=note
-                )
-                updates.append((index, verdict != "reject", note))
+                if verdict == "correct" and decisions.is_blank(text):
+                    # Named and left pending: decisions.record would drop it silently, and a queue entry resolved for a verdict
+                    # that does not exist releases an opted-in review hold with no human decision behind it.
+                    errors.append({"index": index, "error": "a correction needs text; the entry stays pending"})
+                    continue
+                orig, prop = e.get("original_text", ""), e.get("proposed_text", "")
+                store = decisions.record(store, orig, prop, verdict, text=text, note=note)
+                stored = decisions.lookup(store, orig, prop)
+                if stored is None:
+                    # Counted as saved only once the verdict is in the store (record() refuses an unusable pair or verdict).
+                    errors.append({"index": index, "error": "the verdict could not be stored; the entry stays pending"})
+                    continue
+                updates.append((index, stored.get("verdict") != "reject", note))
             if not updates:
-                return {"saved": 0, "errors": errors}
+                return {"saved": 0, "show": show, "errors": errors, "queue_cleared": False}
             if not decisions.save(store, show, ddir):
                 # Reported as NOT saved rather than swallowed: a review that silently
                 # discards the human's decisions is worse than one that errors, because
@@ -709,14 +835,273 @@ def handle_apply(stem: str) -> dict:
 # token), so every test drives it directly and no socket is ever opened in the suite.
 
 
-def route(method: str, path: str, body: dict, token) -> tuple:
-    """(status, payload) for one request."""
+# Routes answered without a token, besides the /review document and its assets. EXPLICIT, so adding one is a visible edit and
+# a test (tests/test_review_login.py) compares this list with the code. Everything else under /api needs the token.
+OPEN_ROUTES = (("GET", "/healthz"), ("GET", "/api/auth-mode"), ("POST", "/api/login"), ("POST", "/api/setup"))
+_SMALL_JSON_ROUTES = ("/api/login", "/api/setup")
+_FORM_TYPES = ("text/plain", "application/x-www-form-urlencoded", "multipart/form-data")  # what a cross-site <form> can send
+LOGIN_MAX_BODY = 4096  # a username and a password; the generic POST cap (1 MiB) is far too generous for an unauthenticated route
+
+
+class LoginThrottle:
+    """Per-client failure counter for /api/login, in memory, with an injectable clock.
+
+    After ``max_fail`` consecutive failures inside ``window`` seconds the client is locked out for ``lockout`` seconds (the
+    answer is 429 with Retry-After, and the credentials are not even compared); a success forgets the client. At most ``cap``
+    addresses are tracked: a flood of distinct addresses evicts the OLDEST, so memory is bounded and a real client's record is
+    only lost to a newer flood, which only ever helps the attacker by resetting their own counter."""
+
+    def __init__(self, clock=time.monotonic, max_fail=5, window=300.0, lockout=60.0, cap=1024):
+        from collections import OrderedDict
+
+        self.clock, self.max_fail, self.window, self.lockout, self.cap = clock, max_fail, window, lockout, cap
+        self._seen: OrderedDict[str, dict] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def __len__(self):
+        return len(self._seen)
+
+    def tracked(self, addr: str) -> bool:
+        return addr in self._seen
+
+    def retry_after(self, addr: str) -> int:
+        """Seconds until ``addr`` may try again; 0 when it may try now."""
+        with self._lock:
+            rec = self._seen.get(addr)
+            wait = (rec["locked_until"] - self.clock()) if rec else 0
+            return max(0, math.ceil(wait)) if wait > 0 else 0
+
+    def failure(self, addr: str) -> None:
+        with self._lock:
+            now = self.clock()
+            rec = self._seen.pop(addr, None)
+            if rec is None or now - rec["first"] > self.window:
+                rec = {"fails": 0, "first": now, "locked_until": 0.0}
+            rec["fails"] += 1
+            if rec["fails"] >= self.max_fail:
+                rec["locked_until"], rec["fails"], rec["first"] = now + self.lockout, 0, now
+            self._seen[addr] = rec  # re-inserted last: the newest
+            while len(self._seen) > self.cap:
+                self._seen.popitem(last=False)
+
+    def success(self, addr: str) -> None:
+        with self._lock:
+            self._seen.pop(addr, None)
+
+
+_THROTTLE = LoginThrottle()
+
+
+def workspace_asset(path: str) -> tuple:
+    """Serve only the inert SPA document and Vite's flat asset directory, never arbitrary files."""
+    if path in ("/review", "/review/", "/review/index.html", "/review/setup", "/review/login"):
+        target = UI_DIST / "index.html"
+    elif re.fullmatch(r"/review/assets/[A-Za-z0-9_.-]+\.(?:js|css|woff2|svg)", path):
+        target = UI_DIST / "assets" / path.rsplit("/", 1)[1]
+    else:
+        return 404, {"error": "no such asset"}
+    if not target.resolve().is_relative_to(UI_DIST.resolve()):
+        return 404, {"error": "no such asset"}
+    try:
+        return 200, target.read_bytes()
+    except OSError:
+        return 503 if target.name == "index.html" else 404, {
+            "error": "Review workspace not built. Run npm ci && npm run build in web/. The classic review page is at /."
+        }
+
+
+def preview_audio(body: dict) -> tuple:
+    """Short, on-demand English audio evidence. Cue bounds come from the known episode, never the client."""
+    stem = _resolve(str(body.get("stem", "")))
+    if stem is None:
+        return 404, {"error": "unknown episode"}
+    try:
+        index, occurrence = int(body.get("index", "")), int(body.get("occurrence", "0"))
+        if index < 0 or occurrence < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return 400, {"error": "invalid parameter: index and occurrence must be non-negative integers"}
+    try:
+        entries = unresolved.items(stem)
+        entry = entries[index]
+        if body.get("id") != entry_id(entry):
+            return 409, {"error": "stale review entry; reload this episode"}
+        conf_path = Path(stem + CONF_SUFFIX)
+        if not any(conf_path.resolve().is_relative_to(Path(root).resolve()) for root in ROOTS):
+            return 404, {"error": "episode evidence unavailable"}
+        with conf_path.open(encoding="utf-8") as f:
+            cards = json.load(f)
+        if not isinstance(cards, list) or not isinstance(entry, dict):
+            raise ValueError
+        matches = [
+            c
+            for c in cards
+            if isinstance(c, dict) and decisions.key(c.get("text", "")) == decisions.key(entry.get("original_text", ""))
+        ]
+        card = matches[occurrence]
+        start, end = float(card["start"]), float(card["end"])
+        if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start:
+            raise ValueError
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return 400, {"error": "no playable card for this occurrence"}
+    video = common.find_video(stem)
+    if not video or not any(Path(video).resolve().is_relative_to(Path(root).resolve()) for root in ROOTS):
+        return 404, {"error": "episode media unavailable"}
+    if not _AUDIO_SLOTS.acquire(blocking=False):
+        return 429, {"error": "audio preview busy; try again shortly"}
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_streams", "-of", "json", video],
+            capture_output=True,
+            timeout=10,
+            check=True,
+            stdin=subprocess.DEVNULL,
+        )
+        info = json.loads(probe.stdout)
+        streams = info.get("streams", []) if isinstance(info, dict) else []
+        audio = [
+            s
+            for s in streams
+            if isinstance(s, dict)
+            and s.get("codec_type") == "audio"
+            and isinstance(s.get("tags", {}), dict)
+            and str(s.get("tags", {}).get("language", "")).lower() in ("eng", "en")
+            and "commentary" not in str(s.get("tags", {}).get("title", "")).lower()
+        ]
+        if not audio:
+            return 422, {"error": "no English dialogue audio track"}
+        offset = max(0, start - 1.5)
+        duration = min(AUDIO_MAX_SECONDS, end + 1.5 - offset)
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-ss",
+                str(offset),
+                "-i",
+                video,
+                "-map",
+                f"0:{int(audio[0]['index'])}",
+                "-t",
+                str(duration),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_s16le",
+                "-f",
+                "wav",
+                "pipe:1",
+            ],
+            capture_output=True,
+            timeout=30,
+            check=True,
+            stdin=subprocess.DEVNULL,
+        )
+        if not result.stdout.startswith(b"RIFF") or len(result.stdout) <= 44:
+            return 502, {"error": "audio extraction produced no clip"}
+        return 200, result.stdout
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        return 502, {"error": "audio preview unavailable; check the media and ffmpeg"}
+    finally:
+        _AUDIO_SLOTS.release()
+
+
+# debt: ``admin_token`` is accepted and ignored (the admin token is retired); drop the parameter in v0.4.0. It stays until then
+# because tests and older callers still pass it as a keyword.
+def route(
+    method: str, path: str, body: dict, token, client: str = "", admin_token: str = "", headers: dict | None = None
+) -> tuple:
+    """(status, payload) for one request; route_full is the same call with the response headers (a Set-Cookie) as a third item."""
+    return route_full(method, path, body, token, client, admin_token, headers)[:2]
+
+
+# debt: ``admin_token`` is accepted and ignored (the admin token is retired); drop the parameter in v0.4.0. It stays until then
+# because tests and older callers still pass it as a keyword.
+def route_full(
+    method: str, path: str, body: dict, token, client: str = "", admin_token: str = "", headers: dict | None = None
+) -> tuple:
+    """(status, payload, extra_headers). ``token`` is the pre-accounts calling convention and counts as X-Review-Token;
+    ``headers`` carry the Cookie, X-Api-Key and CSRF header. review_auth.decide runs first, on the bare path (no query
+    string): no handler is reached by a caller its route's role does not allow. ``admin_token`` is accepted and ignored (the
+    admin token is retired). ``client`` is the peer address, used only to throttle /api/login."""
+    bare = path.partition("?")[0]
+    hdrs = dict(headers or {})
+    if token and not (review_auth.header(hdrs, review_auth.API_KEY_HEADER) or review_auth.header(hdrs, review_auth.ALIAS_HEADER)):
+        hdrs[review_auth.ALIAS_HEADER] = token
+    decision = review_auth.decide(method, bare, hdrs)
+    if decision.status is not None:
+        return decision.status, {"error": decision.error}, {}
+    result = _route(method, path, bare, body, decision, client, admin_token, hdrs)
+    status, payload, extra = result if len(result) == 3 else (*result, {})
+    p = decision.principal
+    if p is not None and p.kind == "session" and p.refresh and status < 400 and "Set-Cookie" not in extra:
+        extra = {
+            **extra,
+            "Set-Cookie": review_auth.session_cookie(p.sid, True, review_auth.cookie_secure(hdrs)),
+        }  # sliding 30 days
+        review_auth.sessions().cookie_sent(p.sid)
+    return status, payload, extra
+
+
+# debt: ``admin_token`` is accepted and ignored (the admin token is retired); drop the parameter in v0.4.0. It stays until then
+# because tests and older callers still pass it as a keyword.
+def _route(method: str, path: str, bare: str, body: dict, decision, client: str, admin_token: str, headers: dict | None) -> tuple:
+    """The old route() body: (status, payload) or (status, payload, extra_headers). ``headers`` are read by the webhook
+    routes (their own X-Webhook-Token)."""
+    if method == "GET" and (path == "/review" or path.startswith("/review/")):
+        return workspace_asset(path)
     if method == "GET" and path == "/healthz":
         return handle_healthz()
-    if not authorised(method, token, path):
-        return 401, {"error": "a token is required"}
+    if method == "GET" and path == "/api/auth-mode":
+        return (
+            200,
+            {
+                "setup_required": review_auth.setup_required(),
+                "accounts_ok": review_auth.accounts_ok(),
+            },
+        )
+    if method == "POST" and bare == "/api/setup":
+        return review_auth.handle_setup(body)
+    if method == "POST" and bare == "/api/login":
+        return review_auth.handle_login(body, client, _THROTTLE, headers)
+    if method == "POST" and bare == "/api/logout":
+        return review_auth.handle_logout(decision.principal, headers)
+    if method == "GET" and bare == "/api/me":
+        return review_auth.handle_me(decision.principal)
+    if method == "POST" and bare in review_webhooks.WEBHOOK_ROUTES:
+        # Sonarr/Radarr cannot send the review token: these routes carry their own WEBHOOK_TOKEN, checked inside
+        # handle(). They are deliberately NOT in OPEN_ROUTES, which stays the three pinned entries.
+        return review_webhooks.handle(
+            method,
+            path,
+            body,
+            headers=headers,
+            create=review_requests.create,
+            list_requests=review_requests.list_requests,
+            anime_root=_anime_root(),
+        )
+    admin_handler = ADMIN_ROUTES.get((method, bare))
+    if admin_handler is not None:
+        return (400, {"error": "invalid JSON"}) if body is None else admin_handler(body)
+    if bare in ("/api/apikey", "/api/apikey/reset"):
+        return review_auth.handle_apikey(method, bare)
+    if body is None:  # only the strict JSON routes produce None (see Handler._with_body)
+        return 400, {"error": "invalid JSON"}
+    if bare == "/api/users" or bare.startswith("/api/users/"):
+        return review_auth.handle_users(method, bare, body, decision.principal)
+    if method == "PUT" and bare == "/api/me/password":
+        return review_auth.handle_change_password(body, decision.principal, client, _THROTTLE, headers)
+    if method == "GET" and path == "/api/audio":
+        return preview_audio(body)
     if method == "GET" and path == "/api/episodes":
         return 200, handle_index()
+    if method == "GET" and path == "/api/shows":
+        return 200, {"shows": review_requests.list_shows(_anime_root())}
     if method == "GET" and path == "/api/episode":
         return 200, handle_episode(str(body.get("stem", "")), all_reasons=bool(body.get("all")))
     if method == "POST" and path == "/api/decide":
@@ -740,6 +1125,19 @@ def route(method: str, path: str, body: dict, token) -> tuple:
         return 200, handle_shared_decide(d if isinstance(d, list) else [])
     if method == "POST" and path == "/api/apply":
         return 200, handle_apply(str(body.get("stem", "")))
+    if method == "GET" and bare in ("/api/requests", "/api/schedule"):
+        return review_requests.handle("GET", bare, body, anime_root=_anime_root())
+    if bare in ("/api/settings", "/api/settings/schema", "/api/settings/reset", "/api/settings/test", "/api/system/restart"):
+        p = decision.principal
+        return settings_api.handle(method, bare, body, who=f"{p.kind}:{p.name}" if p and p.name else "admin")
+    if path == "/api/status" and method == "GET":
+        # ONE read of the cache global: list and fill time always come from the same fill.
+        snapshot = _STEMS_CACHE
+        return review_status.handle(method, path, body, stems_cache=snapshot, open_entries=open_entries, now=time.monotonic())
+    if path == "/api/glossary" and method in ("GET", "POST"):
+        p = decision.principal
+        who = f"{p.kind}:{p.name}" if p and p.name else ("token" if auth_required() else "anonymous")
+        return review_glossary.handle(method, path, body, operator=who, role=decision.role or "user")
     return 404, {"error": "no such route"}
 
 
@@ -799,7 +1197,7 @@ def render_shared() -> str:
         lis = []
         for r in srows:
             buttons = "".join(
-                f'<label><input type="radio" name="p{r["pair"]}" value="{html.escape(v)}"> {html.escape(v)}</label> '
+                f'<label><input type="radio" name="p{r["id"]}" value="{html.escape(v)}"> {html.escape(v)}</label> '
                 for v in r["offered"]
             )
             lis.append(
@@ -815,7 +1213,7 @@ def render_shared() -> str:
                     r["episodes"],
                     html.escape(RISK_LABEL.get(r["risk"], "")),
                     buttons,
-                    r["pair"],
+                    r["id"],
                 )
             )
         sections.append(
@@ -831,7 +1229,6 @@ def render_shared() -> str:
         '<option value="repeated" selected>most repeated first</option>'
         '<option value="risk">risk first</option>'
         "</select></label></p>"
-        "<p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
         f"<p><small>{len(rows)} line(s) that appear in more than one episode, grouped by show. "
         f"Deciding one here settles it everywhere and removes {saved} repeat question(s) from "
         "the episode queues. Grouped on the exact text pair, so the same sung line transcribed "
@@ -851,17 +1248,11 @@ def render_shared() -> str:
         "try{const saved=localStorage.getItem(SHARED_SORT_KEY);if(['repeated','risk'].includes(saved))SS.value=saved}catch(e){}"
         "sortShared(SS.value);SS.addEventListener('change',()=>{sortShared(SS.value);"
         "try{localStorage.setItem(SHARED_SORT_KEY,SS.value)}catch(e){}});"
-        "const TOK=document.getElementById('tok');"
-        "function syncTokenCookie(){if(TOK.value){document.cookie="
-        "'dubtitlerr_token='+encodeURIComponent(TOK.value)+'; Path=/; SameSite=Strict'}"
-        "else{document.cookie='dubtitlerr_token=; Path=/; SameSite=Strict; Max-Age=0'}}"
-        "try{TOK.value=localStorage.getItem('dubtitlerr_token')||''}catch(e){}"
-        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}syncTokenCookie()});"
         "async function post(p,b){return (await fetch(p,{method:'POST',headers:{'Content-Type':'application/json',"
-        f"'{TOKEN_HEADER}':TOK.value}},"
+        "'X-DubTitlerr-Request':'1'},"
         "body:JSON.stringify(b)})).json()}"
         "function chosen(){return [...document.querySelectorAll('#list input[type=radio]:checked')]"
-        ".map(r=>({pair:Number(r.name.slice(1)),verdict:r.value,"
+        ".map(r=>({id:r.name.slice(1),verdict:r.value,"
         "text:(document.getElementById('t'+r.name.slice(1))||{}).value||''}))}"
         "const SV=document.getElementById('save'),TAL=document.getElementById('tally');"
         "function tally(){const n=chosen().length,"
@@ -882,10 +1273,12 @@ def render_shared() -> str:
         "document.addEventListener('click',function(ev){const r=ev.target;"
         "if(r&&r.type==='radio'&&r.dataset.wasOn){r.checked=false;r.dataset.wasOn='';tally()}});"
         "tally();SV.addEventListener('click',async()=>{const d=chosen();if(!d.length)return;"
+        "if(d.some(x=>x.verdict==='correct'&&!/[^\\s\\u00ad\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\ufeff]/.test(x.text))){"
+        "alert('A correction needs text: type the corrected line, or pick another verdict.');return}"
         "SV.disabled=true;const r=await post('/api/shared',{decisions:d});"
         "if(r.error){alert(r.error);SV.disabled=false;return}"
         "if(r.errors&&r.errors.length){alert('saved '+r.saved+', REFUSED '+r.errors.length+':\\n'+"
-        "r.errors.map(x=>'line '+x.pair+': '+x.error).join('\\n'))}"
+        "r.errors.map(x=>'line '+x.id+': '+x.error).join('\\n'))}"
         "location.reload()});"
         "</script>"
     )
@@ -1054,25 +1447,16 @@ def render_page(stem: str = "") -> str:
     return (
         "<!doctype html><meta charset=utf-8><title>DubTitlerr review</title>"
         f"<style>{_CSS}</style>"
-        "<h1>Review</h1><p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
+        "<h1>Review</h1>"
         f"{controls}"
         f"<div id=list>{''.join(rows)}</div>"
         f"{apply_html}"
         "<script>"
         f"const STEM={_js(doc.get('stem', ''))};"
         f"{episode_sort_script}"
-        # Restored on load and saved on every edit. The server never renders the value --
-        # the browser holds it, which is where it already was the moment it was pasted.
-        # A cookie is set alongside localStorage, so the value survives a page navigation
-        # to /shared and the shared page's own token box reads the same source.
-        "const TOK=document.getElementById('tok');"
-        "function syncTokenCookie(){if(TOK.value){document.cookie="
-        "'dubtitlerr_token='+encodeURIComponent(TOK.value)+'; Path=/; SameSite=Strict'}"
-        "else{document.cookie='dubtitlerr_token=; Path=/; SameSite=Strict; Max-Age=0'}}"
-        "try{TOK.value=localStorage.getItem('dubtitlerr_token')||''}catch(e){}"
-        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}syncTokenCookie()});"
+        # The session cookie rides along by itself; the header proves the write came from this page, not a cross-site form.
         "async function post(p,b){return (await fetch(p,{method:'POST',headers:{'Content-Type':'application/json',"
-        f"'{TOKEN_HEADER}':TOK.value}},"
+        "'X-DubTitlerr-Request':'1'},"
         "body:JSON.stringify(b)})).json()}"
         # One request for the whole episode. Sequential per-verdict posts would each be a
         # read-modify-write of two whole files over the media mount, and concurrent ones
@@ -1100,6 +1484,8 @@ def render_page(stem: str = "") -> str:
         "document.addEventListener('click',function(ev){const r=ev.target;"
         "if(r&&r.type==='radio'&&r.dataset.wasOn){r.checked=false;r.dataset.wasOn='';tally()}});"
         "if(SV){tally();SV.addEventListener('click',async()=>{const d=chosen();if(!d.length)return;"
+        "if(d.some(x=>x.verdict==='correct'&&!/[^\\s\\u00ad\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\ufeff]/.test(x.text))){"
+        "alert('A correction needs text: type the corrected line, or pick another verdict.');return}"
         "SV.disabled=true;const r=await post('/api/decide',{stem:STEM,decisions:d});"
         # Errors are NAMED, not counted. A reviewer told "2 refused" cannot tell which two of
         # their thirty verdicts did not land, and a verdict that vanishes quietly is the
@@ -1130,35 +1516,30 @@ def render_page(stem: str = "") -> str:
     )
 
 
-def render_locked(page_kind: str) -> str:
+def render_locked(page_kind: str, setup: bool = False) -> str:
     """The shell shown instead of render_page()/render_shared() when authorised()
     refuses the GET -- same chrome (title, CSS, the token box and its JS) as the real
     page, but the episode/shared list is never built: handle_index()/handle_episode()/
     handle_shared() walk MERGE_ROOTS and the decision stores and return every stem and
     every card's original/proposed text, so the one thing this shell must not do is
-    call any of them. NO fetch() call either -- there is nothing to save from a page
-    that was never shown data. page_kind ("page" or "shared") picks only the <h1>; the
-    token box and its JS are identical between the two, so there is exactly one place
-    a cookie gets synced from this shell."""
+    call any of them. NO script and NO fetch() call either -- there is nothing to save from
+    a page that was never shown data. page_kind ("page" or "shared") picks only the <h1>;
+    ``setup`` points at first-run setup instead of sign-in."""
     h1 = "Shared lines" if page_kind == "shared" else "Review"
     back = '<p><a href="/">← all episodes</a></p>' if page_kind == "shared" else ""
     return (
         "<!doctype html><meta charset=utf-8><title>DubTitlerr review</title>"
         f"<style>{_CSS}</style>"
         f"<h1>{h1}</h1>"
-        "<p>Token: <input id=tok size=44 placeholder='paste from the container log'></p>"
         f"{back}"
-        '<p id="needs-token">Paste the review token to load the queue.</p>'
-        "<script>"
-        "const TOK=document.getElementById('tok');"
-        "function syncTokenCookie(){if(TOK.value){document.cookie="
-        "'dubtitlerr_token='+encodeURIComponent(TOK.value)+'; Path=/; SameSite=Strict'}"
-        "else{document.cookie='dubtitlerr_token=; Path=/; SameSite=Strict; Max-Age=0'}}"
-        "try{TOK.value=localStorage.getItem('dubtitlerr_token')||''}catch(e){}"
-        "TOK.addEventListener('input',()=>{try{localStorage.setItem('dubtitlerr_token',TOK.value)}catch(e){}"
-        "syncTokenCookie();clearTimeout(window.__tokReload);"
-        "window.__tokReload=setTimeout(()=>location.reload(),300)});"
-        "</script>"
+        '<p id="needs-token">Sign in to load the queue.</p>'
+        "<p>"
+        + (
+            'No accounts exist yet: <a href="/review/setup">create the first admin</a>.'
+            if setup
+            else 'Or <a href="/review/login">sign in with your account</a>.'
+        )
+        + "</p>"
     )
 
 
@@ -1201,7 +1582,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # 30s is long for a review POST (a verdict is a few hundred bytes) and short for a drip.
     timeout = 30
 
-    def _send(self, status, payload, ctype="application/json"):
+    def _client(self) -> str:
+        """The peer address (throttle key); empty when the transport has none."""
+        return (getattr(self, "client_address", None) or ("",))[0]
+
+    def _send(self, status, payload, ctype="application/json", extra=None):
         raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", ctype)
@@ -1211,6 +1596,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
+        if status == 429 and isinstance(payload, dict) and payload.get("retry_after"):
+            self.send_header("Retry-After", str(int(payload["retry_after"])))
+        if self.path.split("?", 1)[0].startswith("/review"):
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self'; style-src 'self'; "
+                "img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; "
+                "object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+            )
+        for name, value in (extra or {}).items():
+            for v in value if isinstance(value, list) else [value]:  # a login sends two Set-Cookie lines
+                self.send_header(name, v)
         self.end_headers()
         self.wfile.write(raw)
 
@@ -1218,33 +1616,60 @@ class Handler(http.server.BaseHTTPRequestHandler):
         from urllib.parse import parse_qs, urlparse
 
         u = urlparse(self.path)
-        # A plain page load cannot carry a custom header, so the cookie the token box's own
-        # JS sets is the fallback here -- /api/* callers (curl, the page's own fetch()
-        # calls) keep sending the header, which still wins when present.
-        presented = self.headers.get(TOKEN_HEADER) or _cookie_token(self.headers)
+        # The classic pages accept a signed-in session, the token header and, for these page routes only, the legacy token
+        # cookie (review_auth.authenticate). /api/* never reads that cookie.
+        hdrs = dict(self.headers.items())
         if u.path == "/shared":
-            if not authorised("GET", presented):
-                return self._send(200, render_locked("shared").encode(), "text/html; charset=utf-8")
+            _role, why = review_auth.role_for("GET", "/shared", hdrs)
+            if why is not None:
+                return self._send(200, render_locked("shared", setup=why == 409).encode(), "text/html; charset=utf-8")
             return self._send(200, render_shared().encode(), "text/html; charset=utf-8")
         if u.path in ("/", "/index.html"):
-            if not authorised("GET", presented):
-                return self._send(200, render_locked("page").encode(), "text/html; charset=utf-8")
+            _role, why = review_auth.role_for("GET", u.path, hdrs)
+            if why is not None:
+                return self._send(200, render_locked("page", setup=why == 409).encode(), "text/html; charset=utf-8")
             stem = (parse_qs(u.query).get("stem") or [""])[0]
             return self._send(200, render_page(stem).encode(), "text/html; charset=utf-8")
         if u.path == "/healthz":
             status, payload = handle_healthz()
             return self._send(status, payload)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
-        status, payload = route("GET", u.path, q, presented)
-        self._send(status, payload)
+        status, payload, extra = route_full(
+            "GET",
+            u.path,
+            q,
+            self.headers.get(TOKEN_HEADER),
+            client=self._client(),
+            headers=dict(self.headers.items()),
+        )
+        ctype = "application/json"
+        if isinstance(payload, bytes):
+            if u.path == "/api/audio":
+                ctype = "audio/wav"
+            else:
+                ctype = {".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2"}.get(
+                    Path(u.path).suffix, "text/html; charset=utf-8"
+                )
+        self._send(status, payload, ctype, extra)
 
     def do_POST(self):
+        self._with_body("POST")
+
+    def do_PUT(self):
+        self._with_body("PUT")
+
+    def do_DELETE(self):
+        self._with_body("DELETE")
+
+    def _with_body(self, method: str):
         # The body is read BEFORE authorised() runs, so this bound is what stands between an
         # unauthenticated caller and this root process's memory. int("-1") does NOT raise, so
         # a declared length of -1 slipped past a `> cap` test and rfile.read(-1) then read to
         # EOF -- unbounded, which is exactly what the check existed to prevent. Anything not
         # a non-negative integer is refused without reading a byte.
         raw = self.headers.get("Content-Length")
+        if method == "DELETE" and raw is None:
+            raw = "0"  # a DELETE normally has no body
         try:
             n = int(raw or "")
         except (TypeError, ValueError):
@@ -1253,17 +1678,41 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(411, {"error": "a valid Content-Length is required"})
         if n > 1 << 20:
             return self._send(413, {"error": "body too large"})
-        try:
-            body = json.loads(self.rfile.read(n) or b"{}")
-        except ValueError:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        status, payload = route("POST", self.path, body, self.headers.get(TOKEN_HEADER) or _cookie_token(self.headers))
-        self._send(status, payload)
+        if self.path.split("?", 1)[0] in _SMALL_JSON_ROUTES:
+            # Unauthenticated, so stricter than the other POSTs: JSON only, and a few KiB at most.
+            if n > LOGIN_MAX_BODY:
+                return self._send(413, {"error": "body too large"})
+            if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+                return self._send(415, {"error": "application/json is required"})
+        path_only = self.path.split("?", 1)[0]
+        is_webhook = method == "POST" and path_only in review_webhooks.WEBHOOK_ROUTES
+        if n > 0 and not is_webhook and self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() in _FORM_TYPES:
+            return self._send(415, {"error": "application/json is required"})
+        if is_webhook:
+            # The webhook handler wants the RAW bytes: it checks its token first, then the 256 KiB cap, then parses,
+            # so a bad JSON body is a 400 (not a silent {}) and an oversize one a 413. Read at most cap + 1 bytes.
+            body = self.rfile.read(min(n, review_webhooks.BODY_CAP + 1))
+        else:
+            strict = (method, path_only) in _JSON_REQUIRED
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except ValueError:
+                body = None if strict else {}
+            if body is not None and not isinstance(body, dict):
+                body = None if strict else {}  # None reaches route(), which answers 400 once the caller is authorised
+        status, payload, extra = route_full(
+            method,
+            self.path,
+            body,
+            self.headers.get(TOKEN_HEADER),
+            client=self._client(),
+            headers=dict(self.headers.items()),
+        )
+        self._send(status, payload, extra=extra)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 - the base class names it this
-        log("review server: " + (format % args))
+        # Never log a query string: the webhook routes accept ?token=, and a token in the request line would reach the log.
+        log("review server: " + _REQUEST_LINE_QUERY.sub(r"\1?[query hidden]", format % args))
 
 
 class BoundedHTTPServer(http.server.ThreadingHTTPServer):
@@ -1358,6 +1807,22 @@ def _warm_cache_forever() -> None:
         time.sleep(_next_warm_delay(_STEMS_CACHE, time.monotonic()))
 
 
+def startup_auth() -> None:
+    """Auth on: refuse to start without scrypt, import REVIEW_USERNAME/REVIEW_PASSWORD once, seed the API key from the
+    review token. Auth off (REVIEW_AUTH=off): nothing to prepare, but say so loudly."""
+    if not auth_required():
+        log("review server: WARNING auth is off: admin writes are open to anyone who can reach this port")
+        return
+    if os.environ.get("REVIEW_ADMIN_TOKEN") or os.environ.get("REVIEW_ADMIN_TOKEN_FILE"):
+        log("review server: REVIEW_ADMIN_TOKEN is retired and ignored; admins sign in with an account or use the API key")
+    if not review_auth.scrypt_available():
+        log("review server: hashlib.scrypt is not available in this Python/OpenSSL build; refusing to start with auth on")
+        raise SystemExit(2)
+    review_auth.import_env_admin()
+    review_auth.init_api_key()
+    review_auth.dummy_hash()  # built now, so the first login for an unknown name costs one scrypt like every other
+
+
 def serve(port: int = 0):
     # Checked before ANYTHING else, including resolve_token() (which would otherwise
     # mint/print a token nobody needs). A fail-closed opt-in for an unattended deploy:
@@ -1369,6 +1834,7 @@ def serve(port: int = 0):
         raise SystemExit(2)
     resolve_token()  # generates and prints the VALUE on first start, before anything is served
     announce_token()  # and on every start, says where to find it
+    startup_auth()
     srv = BoundedHTTPServer((REVIEW_BIND, port or REVIEW_PORT), Handler)
     log(f"review server: listening on {REVIEW_BIND}:{port or REVIEW_PORT}")
     # Started BEFORE serve_forever and as a daemon: the port must open immediately either

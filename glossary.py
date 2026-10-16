@@ -30,6 +30,8 @@ except ImportError:
 
 # Guarded-fuzzy thresholds: short words demand near-identical matches.
 MIN_FUZZY_LEN = 4
+# Metaphone codes shorter than this collide too often ('soba' and 'Sabo' are both 'SB').
+MIN_PHONETIC_CODE_LEN = 3
 
 
 def fuzzy_cutoff(n: int) -> float:
@@ -56,6 +58,62 @@ def _load_words() -> set[str]:
     if _WORDS is None:
         _WORDS = _read_words(_BUNDLED) | _read_words(WORDLIST_PATH)
     return _WORDS
+
+
+_ORDINARY: set[str] | None = None
+
+
+_ORDINARY_STATUS: str | None = None  # "ok" | "missing" once ordinary_words() has run
+
+
+def _read_lowercase_entries(path: str) -> set[str] | None:
+    """The lowercase entries of a word list, or None when it cannot be read (distinct from an empty list)."""
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            return {w for w in (ln.strip() for ln in f) if w and "'" not in w and w == w.lower()}
+    except OSError:
+        return None
+
+
+def wordlist_status() -> str:
+    """'ok' or 'missing' (the configured word list could not be read, so the guard runs on the bundled list alone)."""
+    ordinary_words()
+    return _ORDINARY_STATUS or "ok"
+
+
+def ordinary_words() -> set[str]:
+    """The word list's entries that are spelled in LOWERCASE -- ordinary words, as opposed to proper names.
+
+    is_english() lowercases the whole list, which is right for the fuzzy path (a name the dictionary also knows must not be
+    rewritten) but loses the one signal that separates 'castle' from 'Hancock': the production list (wamerican) spells proper
+    names capitalised and ordinary words lowercase. This keeps the original case and returns only the lowercase entries
+    (bundled list included; entries with an apostrophe dropped, as in _read_words)."""
+    global _ORDINARY, _ORDINARY_STATUS
+    if _ORDINARY is None:
+        bundled, listed = _read_lowercase_entries(_BUNDLED), _read_lowercase_entries(WORDLIST_PATH)
+        _ORDINARY = (bundled or set()) | (listed or set())
+        _ORDINARY_STATUS = "ok" if listed is not None else "missing"
+        if listed is None:
+            # Loud once, because the guard degrades quietly otherwise: on the 228-word bundled list it blocks 6 of 119 wrong
+            # writes instead of 99, and the report would look healthy.
+            print(
+                f"word list {WORDLIST_PATH} unreadable: the common-word guard uses the {len(_ORDINARY)}-word bundled list "
+                "(install wamerican or set WORDLIST_PATH)",
+                flush=True,
+            )
+    return _ORDINARY
+
+
+def is_ordinary_word(token: str) -> bool:
+    """True if the list spells ``token`` (any case) as a lowercase word: 'castle', 'Castle' yes; 'Hancock' no."""
+    core = token or ""
+    lo, hi = 0, len(core)
+    while lo < hi and not core[lo].isalpha():
+        lo += 1  # 'castle!', '(castle)', curly quotes: leading and trailing non-letters are not part of the word
+    while hi > lo and not core[hi - 1].isalpha():
+        hi -= 1
+    core = core[lo:hi]
+    return bool(core) and core.lower() in ordinary_words()
 
 
 def is_english(token: str) -> bool:
@@ -291,7 +349,7 @@ def _phonetic_match(token: str, names: list[str]) -> str | None:
     if jellyfish is None or not names:
         return None
     code = jellyfish.metaphone(token)
-    if not code:
+    if len(code) < MIN_PHONETIC_CODE_LEN:
         return None
     for nm in names:
         if jellyfish.metaphone(nm) == code:
@@ -328,7 +386,9 @@ def correct(text: str, gloss: dict) -> tuple[str, int]:
     """Apply the tiered correction to one line; return (corrected, n_changes)."""
     n = 0
     for key in sorted(gloss["phrase_fixes"], key=len, reverse=True):  # phrases first
-        text, c = re.compile(r"\b" + re.escape(key) + r"\b", re.I).subn(gloss["phrase_fixes"][key], text)
+        # A function replacement, not the value itself: a str is a re template, so a backslash or \g<0> in a
+        # hard_fixes value (hand-edited or from the web editor) would raise or silently change the replacement.
+        text, c = re.compile(r"\b" + re.escape(key) + r"\b", re.I).subn(lambda _m, v=gloss["phrase_fixes"][key]: v, text)
         n += c
     out = []
     for tok in text.split():

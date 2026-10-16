@@ -7,9 +7,11 @@ Pipeline: load cards -- either a captured raw whisper dump (--raw, reflowed here
 production <stem>.dubtitles.conf.json (--conf, already reflowed; the same file repair.py
 consumes, so the models are judged on exactly the lines production sends them) --
 -> apply the deterministic glossary correction -> pick the repair targets (is_target) ->
-ask each model to repair each target (glossary-only prompt; pass --refs for an mkv's
-fansub if you have one) -> print orig vs each model, then SCORE every model and suggest a
-shortlist to hand-judge.
+ask each model to repair each target -> print orig vs each model, then SCORE every model
+and suggest a shortlist to hand-judge. By default the prompt is glossary-only; production's
+normal path is ANCHORED (the line plus the overlapping line of the video's embedded English
+subtitle track), which the two-step --dump-refs / --refs mode reproduces: the video is only
+needed for the first step, so the model runs can happen on a machine without the media.
 
 Why the scores exist: the candidate pool is ~19 models, and at --limit 15 that is ~285
 line pairs for a human to read. docs/model-candidates-4-5gb-vram.md names three judging
@@ -27,17 +29,45 @@ Usage:
       --ollama http://127.0.0.1:11434/api/generate \\
       --models qwen3:8b qwen3.5:4b qwen2.5:7b --limit 15
 
+  # anchored, step 1 (where the video is; no model calls; --limit 0 = every target):
+  python3 tools/bakeoff.py --conf "/media/.../Ep.dubtitles.conf.json" \\
+      --glossary "glossaries/One Pace.json" --video "/media/.../Ep.mkv" \\
+      --dump-refs refs.json --limit 0
+  # anchored, step 2 (anywhere; targets without a fansub line are skipped unless
+  # --include-unanchored or the glossary sets unanchored_repair):
+  python3 tools/bakeoff.py --conf "Ep.dubtitles.conf.json" --glossary "glossaries/One Pace.json" \\
+      --refs refs.json --models qwen3:8b qwen2.5:7b
+
+  # experiment: a plainer prompt for a strong hosted model (production repair.py is unchanged)
+  python3 tools/bakeoff.py --conf ... --models vendor/model-x --openai-url ... --key-env NAME --prompt-variant capable
+
+  # a rate-limited free tier (~40 requests a minute): pace the calls, 429s then stay out of the score
+  python3 tools/bakeoff.py --conf ... --models vendor/model-x --openai-url ... --key-env NAME --delay 1.5
+
+  # any OpenAI-compatible API (key is read from the env var NAMED by --key-env):
+  python3 tools/bakeoff.py --conf ... --models vendor/model-x \\
+      --openai-url https://api.example.com/v1/chat/completions --key-env EXAMPLE_API_KEY
+
 No GPU needed locally — the models run on the Ollama host. Built with help of Claude.
 """
 
 import argparse
+import hashlib
 import json
+import math
+import os
 import sys
+import threading
 import time
+import urllib.error
 import urllib.request
 
 sys.path.insert(0, ".")
+import common  # noqa: E402
 import glossary  # noqa: E402
+import hallucination  # noqa: E402
+import ordering  # noqa: E402
+import qc  # noqa: E402
 import reflow  # noqa: E402
 import repair  # noqa: E402
 
@@ -76,6 +106,166 @@ def cards_from_raw(raw):
     return reflow.reflow(words, segments)
 
 
+def _sha256_file(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def dump_refs(conf_path, cards, gloss, video, limit, sample, glossary_path=""):
+    """Anchored step 1: the fansub reference for each target, exactly as repair.process
+    selects it, as a JSON-able dict. Needs the video; makes no model calls.
+
+    ``cards`` must be the RAW conf rows -- process() uses the conf as generate.py wrote it and
+    never re-runs glossary.correct on it, so is_target, bad_source_window, the dumped text and
+    the prev/next lines all see that same raw text. (main() therefore skips its correction
+    pass in the anchored modes.) ``idx`` is the row's position in the conf list, which --refs
+    keys on; ``start``/``end`` let --refs notice a conf that was retimed since. ``limit`` 0
+    means every target. ``episode``/``arc`` are what process() passes to build_prompt.
+    ``glossary_path`` is fingerprinted (sha256 of the file) so --refs can tell a changed glossary."""
+    ivals = common.dialogue_intervals(video)
+    rec = qc.Recorder()
+    picked = [(i, c) for i, c in enumerate(cards) if repair.is_target(c, gloss)]
+    out = []
+    for i, c in sample_targets(picked, limit, sample):
+        # Same two lines as repair.process: S-6 bad source window -> no reference, else the
+        # overlap on the SOURCE window (C6).
+        if hallucination.bad_source_window(c, rec=rec):
+            ref = ""
+        else:
+            ref = repair.overlap_ref(ivals, c.get("source_start", c["start"]), c.get("source_end", c["end"]))
+        out.append(
+            {
+                "idx": i,
+                "text": c["text"],
+                "ref": ref,
+                "prev": cards[i - 1]["text"] if i > 0 else "",
+                "next": cards[i + 1]["text"] if i + 1 < len(cards) else "",
+                "start": c.get("start"),
+                "end": c.get("end"),
+                "source_start": c.get("source_start"),
+                "source_end": c.get("source_end"),
+            }
+        )
+    return {
+        "conf": os.path.basename(conf_path),
+        "cards": len(cards),
+        "episode": ordering.episode_key(video),
+        "arc": glossary.arc_for(video),
+        "glossary_sha256": _sha256_file(glossary_path) if glossary_path else None,
+        "targets": out,
+    }
+
+
+def load_refs(refs_path, cards, conf_path, allow_conf_mismatch=False, glossary_path="", allow_glossary_mismatch=False):
+    """Anchored step 2: targets from a --dump-refs file, as card dicts carrying their own
+    ``_ref`` / ``_prev`` / ``_next`` / ``_arc`` / ``_episode``. ``cards`` are the RAW conf rows.
+
+    Every way the file can disagree with the conf is a different bake-off than the one the refs
+    were cut for, so each exits with a message naming the problem: another conf, a different
+    card count, a duplicate or non-integer idx, a target with no text, a card retimed since, or
+    text that differs from the conf's."""
+    doc = json.load(open(refs_path))
+    if not isinstance(doc, dict) or not isinstance(doc.get("targets"), list):
+        sys.exit(f"{refs_path}: not a --dump-refs file (expected an object with a 'targets' list)")
+    if doc.get("conf") != os.path.basename(conf_path) and not allow_conf_mismatch:
+        sys.exit(
+            f"{refs_path}: cut from {doc.get('conf')!r}, but --conf is {os.path.basename(conf_path)!r} "
+            "(--allow-conf-mismatch if it is a renamed copy)"
+        )
+    dumped_sha = doc.get("glossary_sha256")
+    if dumped_sha and glossary_path and not allow_glossary_mismatch:
+        now = _sha256_file(glossary_path)
+        if now != dumped_sha:
+            sys.exit(
+                f"{refs_path}: cut with glossary sha256 {dumped_sha[:12]}, but --glossary is {now[:12]} "
+                "(--allow-glossary-mismatch to run anyway)"
+            )
+    if doc.get("cards") != len(cards):
+        sys.exit(f"{refs_path}: cut from a conf with {doc.get('cards')} cards, this one has {len(cards)}")
+    out, seen = [], set()
+    for t in doc["targets"]:
+        i = t.get("idx") if isinstance(t, dict) else None
+        if type(i) is not int or not 0 <= i < len(cards):
+            sys.exit(f"{refs_path}: idx {i!r} is not a card in this conf ({len(cards)} cards)")
+        if i in seen:
+            sys.exit(f"{refs_path}: duplicate idx {i}")
+        seen.add(i)
+        if not isinstance(t.get("text"), str):
+            sys.exit(f"{refs_path}: idx {i} has no 'text'")
+        if cards[i]["text"] != t["text"]:
+            sys.exit(
+                f"{refs_path}: idx {i} does not match this conf: refs file has {t['text']!r}, "
+                f"conf card is {cards[i]['text']!r} (wrong --conf?)"
+            )
+        for k in ("start", "end", "source_start", "source_end"):
+            if k in t and t[k] != cards[i].get(k):
+                sys.exit(f"{refs_path}: idx {i} was retimed since the dump ({k} {t[k]!r} -> {cards[i].get(k)!r})")
+        out.append(
+            {
+                **cards[i],
+                "_ref": t.get("ref", ""),
+                "_prev": t.get("prev", ""),
+                "_next": t.get("next", ""),
+                "_arc": doc.get("arc"),
+                "_episode": doc.get("episode"),
+            }
+        )
+    return out
+
+
+def build_prompt_capable(asr, sub, gloss, prev_text="", next_text="", arc=None, episode=None):
+    """EXPERIMENT ONLY (--prompt-variant capable): a plainer prompt for a strong hosted model.
+
+    repair.build_prompt was tuned on small local models and is prohibition-heavy; this variant states the
+    task and the limits in plain sentences and asks for the line back unchanged when it is already right.
+    The text is frozen on purpose -- it is run once and must not be tuned on the lines being judged.
+    Same signature and name list as repair.build_prompt, which is untouched. The first segments (head, names,
+    reference intro, rules) are identical for every line of an episode, so a provider's prompt cache keeps
+    hitting; the per-line context and the ASR line come last, with nothing after "Corrected line:"."""
+    names = repair._glossary_terms(gloss, arc, episode)
+    head = (
+        "You correct speech-recognition errors in one line of English-dub subtitles. The line was transcribed "
+        "from the dub audio, so after correction it should say what the dub actor said.\n"
+    )
+    name_line = (
+        (
+            "Reference spellings (use them to confirm names the line already contains - "
+            f"this is NOT a list of names to insert): {names}.\n"
+        )
+        if names
+        else ""
+    )
+    ref_intro = (
+        (
+            "A DIFFERENT translation of this moment, made from the Japanese, is quoted below. Use it only to work "
+            "out garbled words and to confirm names. The dub wording usually differs, so never copy its wording.\n"
+        )
+        if sub
+        else ""
+    )
+    rules = (
+        "Fix: misheard or garbled words; misspelled names when the reference spellings, the neighbouring lines or "
+        "the quoted translation confirm the right one; missing sentence punctuation; run-together sentences; "
+        "capitalisation.\n"
+        "Keep: the speaker's wording, meaning and length. Do not add, drop or paraphrase words, and do not insert "
+        "a name the line does not already contain.\n"
+        "If the line is already correct, return it unchanged.\n"
+        "Return ONLY the corrected line - no quotes, notes or explanations.\n\n"
+    )
+    prev_line = f'Previous line (for context): "{prev_text}"\n' if prev_text else ""
+    next_line = f'Next line (for context): "{next_text}"\n' if next_text else ""
+    ref_line = f"<official_subtitle_reference>{sub}</official_subtitle_reference>\n" if sub else ""
+    return f"{head}{name_line}{ref_intro}{rules}{prev_line}{next_line}{ref_line}ASR line: {asr}\nCorrected line:"
+
+
+PROMPT_VARIANTS = ("production", "capable")
+
+
+def build_prompt_for(variant):
+    """The prompt builder for --prompt-variant: production is repair.build_prompt itself."""
+    return build_prompt_capable if variant == "capable" else repair.build_prompt
+
+
 def parse_llamacpp_specs(specs):
     """``NAME=URL`` pairs -> {name: completion_url}. Lets a model that Ollama cannot serve
     take part in the bake-off: Nanbeige's GGUF, for one, needs a patched llama.cpp and
@@ -91,10 +281,72 @@ def parse_llamacpp_specs(specs):
     return out
 
 
-def _post_json(url, body, timeout=180):
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+def _delay_seconds(raw):
+    """argparse type for --delay: a finite, non-negative number of seconds."""
+    try:
+        value = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a number of seconds") from None
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError(f"{raw!r} must be a finite number of seconds, 0 or more")
+    return value
+
+
+def parse_extra_body(raw):
+    """``--extra-body`` JSON object -> dict (exit on anything else, like the other arg parsers)."""
+    if not raw:
+        return {}
+    try:
+        extra = json.loads(raw)
+    except ValueError as e:
+        sys.exit(f"--extra-body is not valid JSON: {e}")
+    if not isinstance(extra, dict):
+        sys.exit("--extra-body must be a JSON object")
+    return extra
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib would re-send a redirected POST (as a GET) with the Authorization header to
+    whatever host the Location names. Refuse: the 3xx surfaces as an HTTPError instead."""
+
+    def redirect_request(self, *a, **k):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _post_json(url, body, timeout=180, headers=None, follow_redirects=True, deadline=None):
+    """POST JSON. ``deadline`` (opt-in) bounds the TOTAL wall time: urllib's timeout is per socket read, so a server
+    that trickles a byte at a time would hold the call. The request runs in a daemon thread that is abandoned
+    (it dies on its own at the next read timeout) when the deadline passes."""
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json", **(headers or {})}
+    )
+    opener = urllib.request.urlopen if follow_redirects else _NO_REDIRECT_OPENER.open
+
+    def call(read_timeout):
+        with opener(req, timeout=read_timeout) as r:
+            return json.loads(r.read())
+
+    if deadline is None:
+        return call(timeout)
+    box = {}
+
+    def worker():
+        try:
+            box["value"] = call(min(timeout, deadline))
+        except BaseException as e:  # noqa: BLE001 -- handed back to the caller's thread unchanged
+            box["error"] = e
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(deadline)
+    if t.is_alive():
+        raise TimeoutError(f"request deadline of {deadline}s exceeded")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
 
 
 def _first_line(out):
@@ -153,13 +405,130 @@ def ask_llamacpp_chat(url, prompt):
     return out, time.monotonic() - t0
 
 
-def ask(ollama, model, prompt, llamacpp=None, llamacpp_chat=None):
+def _retry_after(err, default=5.0, cap=60.0):
+    """Seconds to wait after a 429. Only a finite number of seconds in 0..cap is believed;
+    nan, inf, negatives, an HTTP-date or garbage all fall back to ``default`` (the caller makes
+    that at least --delay, capped at ``cap`` too)."""
+    try:
+        wait = float(err.headers.get("Retry-After"))
+    except (TypeError, ValueError, AttributeError):
+        return default
+    return wait if math.isfinite(wait) and 0 <= wait <= cap else default
+
+
+def _dig(obj, *path):
+    """obj[path[0]][path[1]]... through dicts only; None when anything on the way is not one."""
+    for p in path:
+        obj = obj.get(p) if isinstance(obj, dict) else None
+    return obj
+
+
+def _usage_of(resp):
+    u = resp.get("usage") if isinstance(resp, dict) else None
+    if not isinstance(u, dict):
+        return None
+    usage = {"prompt_tokens": u.get("prompt_tokens"), "completion_tokens": u.get("completion_tokens")}
+    cached = _dig(u, "prompt_tokens_details", "cached_tokens")
+    if cached is not None:
+        usage["cached_tokens"] = cached
+    return usage
+
+
+def _error_label(e):
+    """What may be printed about a failure. Never str(e): http.client's ValueError quotes the
+    Authorization header value, and a provider's error body may echo the key."""
+    if isinstance(e, urllib.error.HTTPError):
+        return f"HTTP {e.code} redirect refused" if 300 <= e.code < 400 else f"HTTP {e.code}"
+    name = type(e).__name__
+    if isinstance(e, urllib.error.URLError):
+        name += f"({type(e.reason).__name__})"
+    return name
+
+
+def ask_openai(
+    url, model, prompt, key_env, extra_body=None, usage_sink=None, max_tokens=1024, delay=0.0, first_line=True, deadline=None
+):
+    """Any OpenAI-compatible chat API; mirrors repair.llm_openai (same body and headers).
+
+    The key is read from the env var NAMED ``key_env`` and never printed (a key with spaces or
+    control characters exits naming only the variable). HTTP 429 is the provider throttling us,
+    not the model saying nothing, so it is retried once (Retry-After honoured when it is 0..60 s,
+    else 5 s) and, if it persists, reported as ``<ERROR rate-limited ...>`` -- a dead call in the
+    score, never an <EMPTY>. A reply cut off at max_tokens with no content is
+    ``<ERROR truncated ...>``. Redirects are refused.
+
+    The returned latency covers the last attempt only: a Retry-After sleep is not model time.
+    ``deadline`` (opt-in, seconds) bounds the total wall time of each request; the default is no total bound.
+    ``first_line=False`` keeps a multi-line reply whole (the glossary bake-off asks for JSON; repair wants one line).
+    ``delay`` (--delay) is the floor of the 429 wait when the provider sends no usable Retry-After.
+    ``usage_sink`` (a list) gets exactly one entry per call: the token counts from ``usage``
+    (``cached_tokens`` when the provider reports it) or None."""
+    usage = None
+    raw = os.environ.get(key_env, "")
+    key = repair.clean_api_key(raw)
+    if raw.strip() and key is None:
+        sys.exit(f"the key in env var {key_env} contains spaces or control characters (CRLF .env?)")
+    t0 = time.monotonic()
+    if not key:
+        out = f"<ERROR env var {key_env} is not set>"
+    else:
+        body = {
+            "temperature": 0,
+            "max_tokens": max_tokens,
+            **(extra_body or {}),
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        headers = {"Authorization": f"Bearer {key}", "User-Agent": "DubTitlerr/repair"}
+        out = None
+        for attempt in (0, 1):
+            t0 = time.monotonic()
+            try:
+                extra = {} if deadline is None else {"deadline": deadline}
+                resp = _post_json(url, body, headers=headers, follow_redirects=False, **extra)
+                choice = resp["choices"][0]
+                content = (choice["message"].get("content") or "").strip()
+                out = _first_line(content) if first_line else content
+                if not out:
+                    truncated = choice.get("finish_reason") == "length"
+                    out = "<ERROR truncated (finish_reason=length)>" if truncated else "<EMPTY no content>"
+                usage = _usage_of(resp)
+                break
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    if attempt == 0:
+                        time.sleep(_retry_after(e, default=min(max(5.0, delay), 60.0)))
+                        continue
+                    out = "<ERROR rate-limited (HTTP 429)>"
+                else:
+                    out = f"<ERROR {_error_label(e)}>"
+                break
+            except Exception as e:
+                out = f"<ERROR {_error_label(e)}>"
+                break
+    if usage_sink is not None:
+        usage_sink.append(usage)
+    return out, time.monotonic() - t0
+
+
+def ask(ollama, model, prompt, llamacpp=None, llamacpp_chat=None, openai=None, usage_sink=None):
     raw = (llamacpp or {}).get(model)
     if raw:
         return ask_llamacpp(raw, prompt)
     chat = (llamacpp_chat or {}).get(model)
     if chat:
         return ask_llamacpp_chat(chat, prompt)
+    if openai:
+        return ask_openai(
+            openai["url"],
+            model,
+            prompt,
+            openai["key_env"],
+            openai.get("extra_body"),
+            usage_sink,
+            openai.get("max_tokens", 1024),
+            openai.get("delay", 0.0),
+        )
     return ask_ollama(ollama, model, prompt)
 
 
@@ -245,12 +614,17 @@ def score_model(model, targets, outs, total_s, gloss, ref=""):
     against a reference the model was never shown would measure a gate the run did not
     face, and the empty reference is what keeps ``substitutes_a_vouched_name`` live.
 
+    A target carrying its own ``_ref`` (anchored mode) overrides ``ref`` for that target;
+    ``ref_borrow`` counts outputs that import at least one word present in that reference
+    and absent from the ASR line -- the model copying the fansub.
+
     Every rate is over ``scored`` (results actually produced) and is None when that is 0,
     so a model that returned nothing renders as a row rather than a ZeroDivisionError."""
     n = len(outs)
-    inert = changed = errors = empties = admitted = name_edits = no_duration = 0
+    inert = changed = errors = empties = admitted = name_edits = no_duration = ref_borrow = 0
     for i, out in enumerate(outs):
         orig = targets[i]["text"] if i < len(targets) else ""
+        t_ref = targets[i].get("_ref", ref) if i < len(targets) else ref
         # <ERROR ...>/<EMPTY ...> mean the model produced NOTHING. They are never compared
         # against the original: "" or an error marker is not the model leaving the line
         # alone, and scoring it that way turns a dead backend into a clean no-op.
@@ -260,19 +634,23 @@ def score_model(model, targets, outs, total_s, gloss, ref=""):
         if out.startswith("<EMPTY"):
             empties += 1
             continue
-        if _norm(out) == _norm(orig):
+        # Production ships glossary.correct(reply) (repair.py), so that is what is judged.
+        new = glossary.correct(out, gloss)[0]
+        if _norm(new) == _norm(orig):
             inert += 1
             continue
         changed += 1
-        if changed_a_name(orig, out):
+        if changed_a_name(orig, new):
             name_edits += 1
+        if repair.borrowed_from_ref(orig, new, t_ref):
+            ref_borrow += 1
         dur = _card_duration(targets[i]) if i < len(targets) else None
         if dur is None:
             no_duration += 1
             continue
         # THE production gate itself, not a re-implemented bar: what this counts is what
         # would actually ship if this model were REPAIR_MODEL.
-        if repair.accept_repair(orig, out, ref, dur, gloss):
+        if repair.accept_repair(orig, new, t_ref, dur, gloss):
             admitted += 1
 
     def rate(k):
@@ -290,6 +668,8 @@ def score_model(model, targets, outs, total_s, gloss, ref=""):
         "admitted": admitted,
         "name_edits": name_edits,
         "no_duration": no_duration,
+        "ref_borrow": ref_borrow,
+        "anchored": bool(targets) and all("_ref" in t for t in targets),
         "inert_rate": rate(inert),
         "change_rate": rate(changed),
         "error_rate": rate(errors + empties),
@@ -385,20 +765,28 @@ def format_summary(ranked, bounds=()):
     that never ran, a mid-run kill); they are printed unconditionally so a partial run is
     never read as a complete one."""
     w = max([len(s["model"]) for s in ranked] + [5])
+    anchored = any(s.get("anchored") for s in ranked)
     out = ["\n=== SCORES (ranked; safe-fix quality still needs your eyes) ==="]
-    out.append(f"  {'#':>2}  {'model':<{w}}  {'ship':>5} {'inert':>5} {'names':>5} {'err':>5}  {'lines':>7}  {'s/line':>7}")
+    borrow_h = f" {'borrow':>6}" if anchored else ""
+    out.append(
+        f"  {'#':>2}  {'model':<{w}}  {'ship':>5} {'inert':>5} {'names':>5} {'err':>5}{borrow_h}  {'lines':>7}  {'s/line':>7}"
+    )
     for s in ranked:
         lat = "    n/a" if s["avg_latency_s"] is None else f"{s['avg_latency_s']:7.1f}"
         lines = f"{s['scored']:>3}/{s['targets']:<3}"
+        borrow = f" {s.get('ref_borrow', 0):>6}" if anchored else ""
         out.append(
             f"  {s['rank']:>2}  {s['model']:<{w}}  {_pct(s['admitted_rate'])} {_pct(s['inert_rate'])} "
-            f"{_pct(s['name_edit_rate'])} {_pct(s['error_rate'])}  {lines}  {lat}"
+            f"{_pct(s['name_edit_rate'])} {_pct(s['error_rate'])}{borrow}  {lines}  {lat}"
         )
     out.append("")
-    out.append("  ship  = would repair.accept_repair() write it? (production's own gate, no reference)")
+    ref_note = "each line's own fansub reference" if anchored else "no reference"
+    out.append(f"  ship  = would repair.accept_repair() write it? (production's own gate, {ref_note})")
     out.append("  inert = reply identical to the input after casefold/whitespace — no fix offered")
     out.append("  names = touched a proper noun (right or wrong; pair with ship to tell which)")
     out.append("  err   = <ERROR>/<EMPTY> — the model produced nothing, NOT 'left the line alone'")
+    if anchored:
+        out.append("  borrow = outputs importing a word from the fansub reference that the ASR line lacked (copying)")
     out.append("")
     for s in ranked:
         out.append(f"  {s['rank']:>2}. {s['model']}: {s['note']}")
@@ -500,6 +888,7 @@ def format_score_line(s):
     return (
         f"  SCORE {s['model']}: ship {s['admitted']}/{s['scored']} | inert {s['inert']} | "
         f"names {s['name_edits']} | err {s['errors'] + s['empties']} | {s['avg_latency_s']:.1f}s/line"
+        + (f" | borrow {s['ref_borrow']}" if s.get("anchored") else "")
     )
 
 
@@ -509,7 +898,12 @@ def main():
     ap.add_argument("--conf", help="a production <stem>.dubtitles.conf.json (what repair.py reads)")
     ap.add_argument("--glossary", default="")
     ap.add_argument("--ollama", default="http://127.0.0.1:11434/api/generate")
-    ap.add_argument("--models", nargs="+", default=["qwen3:8b", "qwen3.5:4b", "qwen2.5:7b"])
+    ap.add_argument(
+        "--models",
+        nargs="+",
+        default=None,
+        help="model names (default: qwen3:8b qwen3.5:4b qwen2.5:7b; required with --openai-url)",
+    )
     ap.add_argument("--limit", type=int, default=15)
     ap.add_argument("--json", help="also write per-line results here, for cross-model comparison")
     ap.add_argument(
@@ -544,18 +938,152 @@ def main():
         "is applied and thinking is disabled (needed by templated instruct "
         "models; repair.py's raw /completion path cannot drive them)",
     )
+    ap.add_argument(
+        "--openai-url",
+        default="",
+        help="send the --models names (as the request's \"model\") to this OpenAI-compatible "
+        "chat/completions URL instead of Ollama (OpenRouter, Kilo, CommandCode, NVIDIA, ...); "
+        "names also listed in --llamacpp / --llamacpp-chat go there instead. Needs --models and --key-env",
+    )
+    ap.add_argument(
+        "--prompt-variant",
+        choices=PROMPT_VARIANTS,
+        default="production",
+        help="production: repair.build_prompt (default, unchanged). capable: an experiment-only plainer "
+        "prompt for strong hosted models (build_prompt_capable); the run header then says prompt=capable",
+    )
+    ap.add_argument(
+        "--delay",
+        type=_delay_seconds,
+        default=0.0,
+        metavar="SECONDS",
+        help="sleep this long between consecutive model calls in every mode (not before a model's first call, "
+        "not counted in the latency), for providers that answer HTTP 429 to a fast loop (NVIDIA's free "
+        "tier allows ~40 requests a minute: use 1.5). Also the floor of the 429 retry wait when the "
+        "provider sends no Retry-After. Default 0",
+    )
+    ap.add_argument(
+        "--max-tokens",
+        type=int,
+        default=repair.env_int("REPAIR_MAX_TOKENS", 1024, lo=1),
+        help="max_tokens for --openai-url requests (default: $REPAIR_MAX_TOKENS or 1024)",
+    )
+    ap.add_argument("--key-env", default="", metavar="NAME", help="NAME of the env var holding the API key (with --openai-url)")
+    ap.add_argument(
+        "--extra-body", default="", metavar="JSON", help="JSON object merged into the body, e.g. '{\"enable_thinking\": false}'"
+    )
+    ap.add_argument(
+        "--video",
+        help="the episode's video (with --dump-refs): its embedded English subtitle track supplies the fansub reference",
+    )
+    ap.add_argument(
+        "--dump-refs",
+        metavar="OUT.json",
+        help="anchored step 1: write each target's fansub reference to OUT.json and exit "
+        "(needs --conf and --video; no model calls; --limit 0 = every target)",
+    )
+    ap.add_argument(
+        "--refs",
+        metavar="REFS.json",
+        help="anchored step 2: judge the models on the targets in this --dump-refs file, with "
+        "their references in the prompt (needs --conf; the file's targets are used as-is, "
+        "--limit/--sample do not apply)",
+    )
+    ap.add_argument(
+        "--include-unanchored",
+        action="store_true",
+        help="with --refs: also judge targets that have no fansub reference (production skips "
+        "them unless the glossary sets unanchored_repair)",
+    )
+    ap.add_argument(
+        "--allow-conf-mismatch",
+        action="store_true",
+        help="with --refs: accept a refs file cut from a conf with a different file name (a renamed copy)",
+    )
+    ap.add_argument(
+        "--allow-glossary-mismatch",
+        action="store_true",
+        help="with --refs: run even though the glossary file differs from the one the refs were cut with",
+    )
     a = ap.parse_args()
 
+    if a.dump_refs and a.refs:
+        sys.exit("--dump-refs and --refs are two separate steps; give one")
+    if (a.dump_refs or a.refs) and not a.conf:
+        sys.exit("--dump-refs / --refs work from a production --conf")
+    if a.dump_refs and not a.video:
+        sys.exit("--dump-refs needs --video (the file whose embedded English subtitles are the reference)")
+    if a.refs and not a.glossary:
+        sys.exit("--refs needs --glossary (the prompt's reference spellings and the output correction come from it)")
+    if a.dump_refs and not a.glossary:
+        # is_target consults glossary.name_suspect: a dump cut without the glossary silently drops those targets.
+        sys.exit("--dump-refs needs --glossary (it decides which lines are targets)")
+
+    openai = None
+    if a.openai_url:
+        if not a.key_env:
+            sys.exit("--openai-url needs --key-env NAME")
+        if not a.models:
+            sys.exit("--openai-url needs an explicit --models list (the Ollama defaults must never be sent to a provider)")
+        raw_key = os.environ.get(a.key_env, "")
+        if not raw_key.strip():
+            sys.exit(f"--key-env: env var {a.key_env} is not set")
+        if repair.clean_api_key(raw_key) is None:
+            sys.exit(f"--key-env: the key in env var {a.key_env} contains spaces or control characters (CRLF .env?)")
+        openai = {
+            "url": a.openai_url,
+            "key_env": a.key_env,
+            "extra_body": parse_extra_body(a.extra_body),
+            "max_tokens": a.max_tokens,
+            "delay": a.delay,
+        }
+    if not a.models:
+        a.models = ["qwen3:8b", "qwen3.5:4b", "qwen2.5:7b"]
     llamacpp = parse_llamacpp_specs(a.llamacpp)
     llamacpp_chat = parse_llamacpp_specs(a.llamacpp_chat)
     gloss = glossary.load(a.glossary)
     cards = load_cards(a.raw, a.conf)
-    for c in cards:  # deterministic layer first (as in prod)
-        c["text"] = glossary.correct(c["text"], gloss)[0]
-    all_targets = [c for c in cards if repair.is_target(c, gloss)]
-    targets = sample_targets(all_targets, a.limit, a.sample)
-    prompts = [repair.build_prompt(c["text"], "", gloss) for c in targets]  # glossary-only (mp4)
-    print(f"cards={len(cards)} targets={len(targets)} of {len(all_targets)} (--limit {a.limit})  models={a.models}\n")
+    if not (a.dump_refs or a.refs):
+        # Glossary-only mode: deterministic layer first. The anchored modes keep the RAW conf text
+        # instead, because that is what repair.process sees (it never re-corrects the conf).
+        for c in cards:
+            c["text"] = glossary.correct(c["text"], gloss)[0]
+    if a.dump_refs:
+        doc = dump_refs(a.conf, cards, gloss, a.video, a.limit, a.sample, a.glossary)
+        with open(a.dump_refs, "w") as f:
+            json.dump(doc, f, indent=2)
+        with_ref = sum(1 for t in doc["targets"] if t["ref"])
+        n = len(doc["targets"])
+        print(f"targets={n} with_ref={with_ref} without_ref={n - with_ref} -> {a.dump_refs}")
+        return
+    extra_bounds = []
+    build_prompt = build_prompt_for(a.prompt_variant)
+    # Only the experiment names itself: the production header stays byte-identical to what it always was.
+    variant_note = f"  prompt={a.prompt_variant}" if a.prompt_variant != "production" else ""
+    if a.refs:
+        entries = load_refs(a.refs, cards, a.conf, a.allow_conf_mismatch, a.glossary, a.allow_glossary_mismatch)
+        targets = [t for t in entries if a.include_unanchored or not repair.skips_unanchored(t["_ref"], gloss)]
+        all_targets = targets  # --limit does not apply here; the dump already chose
+        if len(targets) < len(entries):
+            extra_bounds.append(
+                f"{len(entries) - len(targets)} target(s) skipped: no fansub reference, and production skips those "
+                "(--include-unanchored, or unanchored_repair in the glossary, judges them)"
+            )
+        prompts = [
+            build_prompt(t["text"], t["_ref"], gloss, t["_prev"], t["_next"], t["_arc"], t["_episode"]) for t in targets
+        ]
+        print(
+            f"cards={len(cards)} targets={len(targets)} of {len(entries)} in {a.refs} "
+            f"({len(entries) - len(targets)} skipped for no ref)  models={a.models}{variant_note}\n"
+        )
+    else:
+        all_targets = [c for c in cards if repair.is_target(c, gloss)]
+        targets = sample_targets(all_targets, a.limit, a.sample)
+        prompts = [build_prompt(c["text"], "", gloss) for c in targets]  # glossary-only (mp4)
+        print(
+            f"cards={len(cards)} targets={len(targets)} of {len(all_targets)} (--limit {a.limit})"
+            f"  models={a.models}{variant_note}\n"
+        )
 
     # model-OUTER so each model loads once (avoids reload thrash on the 8GB GPU).
     # Each model's block is printed AS SOON AS that model finishes: these runs can take
@@ -564,10 +1092,13 @@ def main():
     # SCORE line lands with that block for the same reason.
     outs = {m: [] for m in a.models}
     totals = dict.fromkeys(a.models, 0.0)
+    usages = {m: [] for m in a.models}
     scores = []
     for m in a.models:
         for n, p in enumerate(prompts, 1):
-            out, dt = ask(a.ollama, m, p, llamacpp, llamacpp_chat)
+            if n > 1 and a.delay:
+                time.sleep(a.delay)  # between calls only, and outside ask(): never part of the latency
+            out, dt = ask(a.ollama, m, p, llamacpp, llamacpp_chat, openai, usages[m])
             outs[m].append(out)
             totals[m] += dt
             print(f"    [{m} {n}/{len(prompts)}] {dt:5.1f}s  {out[:70]}", flush=True)
@@ -582,12 +1113,20 @@ def main():
             # than only aggregated, because "is this change an improvement" is judged line by
             # line and a rate cannot be read back into one.
             rows = []
-            for c, out in zip(targets, outs[m]):
+            for i, (c, out) in enumerate(zip(targets, outs[m])):
                 dur = (c.get("end") or 0) - (c.get("start") or 0)
-                admitted = bool(
-                    dur > 0 and not out.startswith(("<ERROR", "<EMPTY")) and repair.accept_repair(c["text"], out, "", dur, gloss)
-                )
-                rows.append({"orig": c["text"], "out": out, "admitted": admitted})
+                ref = c.get("_ref", "")  # anchored targets carry their own; glossary-only runs score with none
+                live = dur > 0 and not out.startswith(("<ERROR", "<EMPTY"))
+                shipped = glossary.correct(out, gloss)[0] if live else out  # as production ships it
+                admitted = bool(live and repair.accept_repair(c["text"], shipped, ref, dur, gloss))
+                row = {"orig": c["text"], "out": out, "admitted": admitted}
+                if i < len(usages[m]) and usages[m][i]:
+                    row.update(usages[m][i])  # prompt_tokens / completion_tokens / cached_tokens
+                if a.prompt_variant != "production":
+                    row["prompt_variant"] = a.prompt_variant  # so two result files can be told apart
+                if a.refs:
+                    row["ref"] = c["_ref"]
+                rows.append(row)
             with open(a.json, "w") as f:
                 json.dump({m: rows}, f, indent=2)
 
@@ -599,7 +1138,8 @@ def main():
             print(f"  {m:16}: {got}")
         print()
 
-    print(format_summary(rank_models(scores, a.shortlist), coverage_bounds(scores, all_targets, targets, a.limit, gloss)))
+    bounds = [*coverage_bounds(scores, all_targets, targets, a.limit, gloss), *extra_bounds]
+    print(format_summary(rank_models(scores, a.shortlist), bounds))
 
 
 if __name__ == "__main__":

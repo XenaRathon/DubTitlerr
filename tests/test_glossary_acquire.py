@@ -1024,7 +1024,12 @@ def test_record_decision_accept_clears_a_stale_known_entry():
 
 
 def test_record_decision_reject_clears_a_stale_hard_fix():
-    gloss = {"hard_fixes": {"Deccan": "Decken"}, "flagged": {"Deccan": {"canonical": "Decken2"}}}
+    # an acquire-written fix (it has an `acquired` entry); a curated one is kept, see the curated tests
+    gloss = {
+        "hard_fixes": {"Deccan": "Decken"},
+        "acquired": {"Deccan": {"canonical": "Decken"}},
+        "flagged": {"Deccan": {"canonical": "Decken2"}},
+    }
     g = ga.record_decision(gloss, "Deccan", accept=False)
     assert g["known"] == ["Deccan"]
     assert "Deccan" not in g.get("hard_fixes", {})
@@ -1035,7 +1040,7 @@ def test_record_decision_reject_clears_a_stale_hard_fix():
 def test_main_review_asks_a_real_question_for_a_legacy_no_canonical_entry(tmp_path, monkeypatch):
     gp = tmp_path / "One Pace.json"
     gp.write_text(json.dumps({"flagged": {"Yuji": "no-match"}}))
-    monkeypatch.setattr("sys.argv", ["glossary_acquire.py", str(gp), str(tmp_path), "--review", "--apply"])
+    monkeypatch.setattr("sys.argv", ["glossary_acquire.py", str(gp), str(tmp_path), "--review", "--all", "--apply"])
     prompts = []
 
     def fake_input(prompt):
@@ -1275,7 +1280,7 @@ def test_c3_main_revert_reports_rather_than_tracebacks_on_a_malformed_glossary(t
 def test_c3_main_review_apply_writes_through_write_json(tmp_path, monkeypatch):
     gp = tmp_path / "One Pace.json"
     gp.write_text(json.dumps({"flagged": {"Yuji": "no-match"}}))
-    monkeypatch.setattr("sys.argv", ["glossary_acquire.py", str(gp), str(tmp_path), "--review", "--apply"])
+    monkeypatch.setattr("sys.argv", ["glossary_acquire.py", str(gp), str(tmp_path), "--review", "--all", "--apply"])
     monkeypatch.setattr("builtins.input", lambda prompt: "y")
     ga.main()
     assert not (tmp_path / "One Pace.json.tmp").exists()
@@ -1776,3 +1781,287 @@ def test_write_json_removes_the_tmp_on_any_exception_and_keeps_the_original(tmp_
 
     assert not (tmp_path / "g.json.tmp").exists()
     assert json.loads(gp.read_text()) == {"keep": True}
+
+
+# --- curated hard_fixes (keys NOT in `acquired`) are never popped or overwritten -----------
+
+
+def _prop(variant, canonical, verdict, reason="dominant"):
+    return {
+        "variant": variant,
+        "canonical": canonical,
+        "variant_count": 5,
+        "canonical_count": 50,
+        "score": 0.9,
+        "verdict": verdict,
+        "reason": reason,
+        "bound": 0.5,
+    }
+
+
+def test_a_flag_verdict_never_removes_a_curated_hard_fix():
+    gloss = {"show": "Digimon", "hard_fixes": {"Edamon": "Etemon"}}
+    g = ga.apply_proposals(gloss, [_prop("Edamon", "Datamon", "flag", "unseen-needs-evidence")], run_id="r1")
+    assert g["hard_fixes"] == {"Edamon": "Etemon"}, "curated fix must survive a non-apply verdict"
+
+
+def test_an_apply_verdict_never_overwrites_a_curated_hard_fix_and_records_the_conflict():
+    gloss = {"show": "Digimon", "hard_fixes": {"Edimon": "Etemon"}}
+    g = ga.apply_proposals(gloss, [_prop("Edimon", "Devimon", "apply", "context-merged")], run_id="r1")
+    assert g["hard_fixes"] == {"Edimon": "Etemon"}
+    assert "Edimon" not in g.get("acquired", {}), "a refused write must not claim ownership of the curated key"
+    assert g["flagged"]["Edimon"]["reason"] == "conflicts-with-curated-fix"
+    assert g["flagged"]["Edimon"]["canonical"] == "Devimon"
+
+
+def test_an_apply_verdict_agreeing_with_a_curated_fix_changes_nothing():
+    gloss = {"show": "Digimon", "hard_fixes": {"Edimon": "Etemon"}}
+    g = ga.apply_proposals(gloss, [_prop("Edimon", "Etemon", "apply")], run_id="r1")
+    assert g["hard_fixes"] == {"Edimon": "Etemon"}
+    assert "Edimon" not in g.get("acquired", {}), "must stay curated, not become re-evaluable"
+    assert not g.get("flagged")
+
+
+def test_acquire_written_fixes_are_still_replaced_and_removed():  # guard: unchanged behaviour
+    acq = {"A": {"canonical": "Old"}, "B": {"canonical": "Bee"}}
+    gloss = {"show": "S", "hard_fixes": {"A": "Old", "B": "Bee"}, "acquired": acq}
+    g = ga.apply_proposals(gloss, [_prop("A", "New", "apply"), _prop("B", "Bee", "flag", "share-too-close")], run_id="r2")
+    assert g["hard_fixes"] == {"A": "New"}
+    assert "B" not in g["acquired"] and g["flagged"]["B"]["reason"] == "share-too-close"
+
+
+def test_rejecting_a_flag_keeps_a_curated_hard_fix_and_does_not_mark_it_known():
+    flagged = {"Mojomon": {"reason": "share-too-close", "canonical": "Mojyamon"}}
+    gloss = {"show": "S", "hard_fixes": {"Mojomon": "Mojyamon"}, "flagged": flagged}
+    g = ga.record_decision(gloss, "Mojomon", accept=False)
+    assert g["hard_fixes"] == {"Mojomon": "Mojyamon"}
+    assert "Mojomon" not in g.get("known", []), "never both hard-fixed and known"
+    assert "Mojomon" not in g.get("flagged", {})
+
+
+def test_rejecting_a_flag_still_removes_an_acquire_written_fix():  # guard
+    gloss = {
+        "show": "S",
+        "hard_fixes": {"Zolo": "Zoro"},
+        "acquired": {"Zolo": {"canonical": "Zoro"}},
+        "flagged": {"Zolo": {"reason": "x", "canonical": "Zoro"}},
+    }
+    g = ga.record_decision(gloss, "Zolo", accept=False)
+    assert "hard_fixes" not in g and "acquired" not in g
+
+
+def test_accepting_any_flag_is_the_explicit_override_of_a_curated_fix():
+    # Round 3: a human who presses y has seen term and canonical, so the yes overrides in every case; the
+    # earlier rule (only a conflicts-with-curated-fix flag could be accepted, others were re-labelled and
+    # needed a second review) made the first y a silent no-op.
+    gloss = {
+        "show": "S",
+        "hard_fixes": {"Edimon": "Etemon"},
+        "flagged": {"Edimon": {"reason": "share-too-close", "canonical": "Devimon"}},
+    }
+    g = ga.record_decision(gloss, "Edimon", accept=True)
+    assert g["hard_fixes"] == {"Edimon": "Devimon"}
+    assert g["acquired"]["Edimon"]["run"] == "review"
+    assert "Edimon" not in g.get("flagged", {})
+
+
+def test_a_human_accepting_a_conflict_flag_overrides_the_curated_fix():  # guard: round-2 behaviour, passes on round-2 code
+    gloss = {
+        "show": "S",
+        "hard_fixes": {"Edimon": "Etemon"},
+        "flagged": {"Edimon": {"reason": "conflicts-with-curated-fix", "canonical": "Devimon"}},
+    }
+    g = ga.record_decision(gloss, "Edimon", accept=True)
+    assert g["hard_fixes"] == {"Edimon": "Devimon"}
+    assert g["acquired"]["Edimon"]["run"] == "review"
+    assert "Edimon" not in g.get("flagged", {})
+    assert "Edimon" not in g.get("known", [])
+
+# --- round 2: case-insensitive keys, human-approved fixes, both-states, hand edits ---------
+
+
+def test_a_lowercase_curated_key_blocks_a_differently_cased_apply():
+    gloss = {"show": "S", "hard_fixes": {"zolo": "Zoro"}}
+    g = ga.apply_proposals(gloss, [_prop("Zolo", "Devimon", "apply")], run_id="r1")
+    assert g["hard_fixes"] == {"zolo": "Zoro"}, "no second key differing only by case"
+    assert g["flagged"]["Zolo"]["reason"] == "conflicts-with-curated-fix"
+
+
+def test_a_capitalised_curated_key_blocks_a_lowercase_apply():
+    gloss = {"show": "S", "hard_fixes": {"Zolo": "Zoro"}}
+    g = ga.apply_proposals(gloss, [_prop("zolo", "Devimon", "apply")], run_id="r1")
+    assert g["hard_fixes"] == {"Zolo": "Zoro"}
+
+
+def test_a_flag_verdict_keeps_a_case_variant_curated_key():
+    gloss = {"show": "S", "hard_fixes": {"zolo": "Zoro"}}
+    g = ga.apply_proposals(gloss, [_prop("Zolo", "Devimon", "flag", "share-too-close")], run_id="r1")
+    assert g["hard_fixes"] == {"zolo": "Zoro"}
+    assert g["flagged"]["Zolo"]["reason"] == "conflicts-with-curated-fix"
+
+
+def test_replacing_an_acquire_written_fix_never_leaves_two_case_variants():
+    gloss = {"show": "S", "hard_fixes": {"zolo": "Old"}, "acquired": {"zolo": {"canonical": "Old", "run": "r0"}}}
+    g = ga.apply_proposals(gloss, [_prop("Zolo", "New", "apply")], run_id="r1")
+    assert g["hard_fixes"] == {"Zolo": "New"}
+    assert list(g["acquired"]) == ["Zolo"]
+
+
+def test_human_approved_fixes_are_protected_like_curated_ones():
+    gloss = {
+        "show": "S",
+        "hard_fixes": {"Vedamon": "Vademon"},
+        "acquired": {"Vedamon": {"canonical": "Vademon", "run": "review"}},
+    }
+    g = ga.apply_proposals(gloss, [_prop("Vedamon", "Datamon", "flag", "unseen-needs-evidence")], run_id="r1")
+    assert g["hard_fixes"] == {"Vedamon": "Vademon"}
+    assert g["acquired"]["Vedamon"]["run"] == "review"
+    g = ga.apply_proposals(g, [_prop("Vedamon", "Datamon", "apply")], run_id="r2")
+    assert g["hard_fixes"] == {"Vedamon": "Vademon"}
+    assert g["acquired"]["Vedamon"]["run"] == "review"
+    assert g["flagged"]["Vedamon"]["reason"] == "conflicts-with-curated-fix"
+
+
+def test_a_known_verdict_on_a_curated_key_does_not_also_mark_it_known():
+    gloss = {"show": "S", "hard_fixes": {"Edamon": "Etemon"}}
+    g = ga.apply_proposals(gloss, [_prop("Edamon", "Etemon", "known", "short-form")], run_id="r1")
+    assert g["hard_fixes"] == {"Edamon": "Etemon"}
+    assert "Edamon" not in g.get("known", [])
+
+
+def test_a_flag_that_disagrees_with_a_curated_fix_is_recorded_as_a_conflict():
+    gloss = {"show": "S", "hard_fixes": {"Edamon": "Etemon"}}
+    g = ga.apply_proposals(gloss, [_prop("Edamon", "Datamon", "flag", "unseen-needs-evidence")], run_id="r1")
+    assert g["flagged"]["Edamon"]["reason"] == "conflicts-with-curated-fix"
+    assert g["flagged"]["Edamon"]["canonical"] == "Datamon"
+
+
+def test_a_hand_edited_acquire_fix_is_left_alone():
+    gloss = {"show": "S", "hard_fixes": {"A": "Mine"}, "acquired": {"A": {"canonical": "Orig", "run": "r1"}}}
+    g = ga.apply_proposals(gloss, [_prop("A", "Orig", "flag", "share-too-close")], run_id="r2")
+    assert g["hard_fixes"] == {"A": "Mine"}
+    g = ga.apply_proposals(gloss, [_prop("A", "Other", "apply")], run_id="r2")
+    assert g["hard_fixes"] == {"A": "Mine"}
+
+
+def test_rejecting_a_review_approved_fix_keeps_it():
+    gloss = {
+        "show": "S",
+        "hard_fixes": {"Vedamon": "Vademon"},
+        "acquired": {"Vedamon": {"canonical": "Vademon", "run": "review"}},
+        "flagged": {"Vedamon": {"reason": "x", "canonical": "Datamon"}},
+    }
+    g = ga.record_decision(gloss, "Vedamon", accept=False)
+    assert g["hard_fixes"] == {"Vedamon": "Vademon"} and g["acquired"]["Vedamon"]["run"] == "review"
+    assert "Vedamon" not in g.get("known", [])
+
+
+# --- round 3: a rejected conflict stays rejected; flagged and settled are case-insensitive ---
+
+
+def test_a_rejected_conflict_is_not_proposed_or_flagged_again():
+    gloss = {
+        "show": "S",
+        "hard_fixes": {"Edimon": "Etemon"},
+        "flagged": {"Edimon": {"reason": "conflicts-with-curated-fix", "canonical": "Devimon"}},
+    }
+    g = ga.record_decision(gloss, "Edimon", accept=False)
+    assert g["hard_fixes"] == {"Edimon": "Etemon"} and "Edimon" not in g.get("known", [])
+    assert "edimon" in ga._settled(g), "the next sweep must treat the term as settled"
+    props = ga.propose({"Edimon": 9, "Devimon": 50}, {"Edimon", "Devimon"}, ["Devimon"], ga._settled(g))
+    assert not [p for p in props if p["variant"] == "Edimon"]
+    g2 = ga.apply_proposals(g, [_prop("Edimon", "Devimon", "apply")], run_id="r2")
+    assert g2["hard_fixes"] == {"Edimon": "Etemon"}
+
+
+def test_the_reject_record_is_protected_from_revert_and_acquire():
+    gloss = {"show": "S", "hard_fixes": {"Edimon": "Etemon"}, "flagged": {"Edimon": {"reason": "x", "canonical": "Devimon"}}}
+    g = ga.record_decision(gloss, "Edimon", accept=False)
+    assert ga.revert(g)["hard_fixes"] == {"Edimon": "Etemon"}
+
+
+def test_settled_matches_case_insensitively():
+    g = {"acquired": {"zolo": {"canonical": "Zoro", "run": "r"}}}
+    props = ga.propose({"Zolo": 9, "Zoro": 50}, {"Zolo", "Zoro"}, ["Zoro"], ga._settled(g))
+    assert not [p for p in props if p["variant"] == "Zolo"]
+
+
+def test_a_flag_verdict_replaces_a_case_variant_flag():
+    gloss = {"show": "S", "flagged": {"zolo": {"reason": "old", "canonical": "Zoro"}}}
+    g = ga.apply_proposals(gloss, [_prop("Zolo", "Zoro", "flag", "share-too-close")], run_id="r1")
+    assert list(g["flagged"]) == ["Zolo"]
+
+
+def test_a_review_decision_finds_a_flag_whose_case_differs():
+    gloss = {"show": "S", "flagged": {"zolo": {"reason": "share-too-close", "canonical": "Zoro"}}}
+    g = ga.record_decision(gloss, "Zolo", accept=True)
+    assert g["hard_fixes"] == {"zolo": "Zoro"}, "round 4: the stored flag's case is reused, no second spelling"
+    assert "flagged" not in g
+
+
+# --- round 4: known is case-insensitive, null fields, settled records, stored-key case ---
+
+
+def test_an_apply_verdict_clears_a_case_variant_known_entry():
+    g = ga.apply_proposals({"show": "S", "known": ["edimon"]}, [_prop("Edimon", "Devimon", "apply")], run_id="r1")
+    assert "known" not in g and g["hard_fixes"] == {"Edimon": "Devimon"}
+
+
+def test_a_known_verdict_does_not_duplicate_a_case_variant():
+    g = ga.apply_proposals({"show": "S", "known": ["edimon"]}, [_prop("Edimon", "Devimon", "known", "short-form")], run_id="r1")
+    assert g["known"] == ["edimon"]
+
+
+def test_accepting_a_flag_clears_a_case_variant_known_entry():
+    gloss = {"show": "S", "known": ["edimon"], "flagged": {"Edimon": {"reason": "x", "canonical": "Devimon"}}}
+    g = ga.record_decision(gloss, "Edimon", accept=True)
+    assert "known" not in g and g["hard_fixes"] == {"Edimon": "Devimon"}
+
+
+def test_rejecting_a_flag_does_not_duplicate_a_case_variant_known_entry():
+    gloss = {"show": "S", "known": ["EDIMON"], "flagged": {"Edimon": {"reason": "x", "canonical": "Devimon"}}}
+    assert ga.record_decision(gloss, "Edimon", accept=False)["known"] == ["EDIMON"]
+
+
+NULLS = {"known": None, "acquired": None, "flagged": None, "hard_fixes": None}
+
+
+def test_explicit_null_fields_do_not_crash_any_reader():
+    assert ga._settled(dict(NULLS)) == set()
+    assert ga.apply_proposals(dict(NULLS), [_prop("Zolo", "Zoro", "apply")], run_id="r1")["hard_fixes"] == {"Zolo": "Zoro"}
+    ga.revert(dict(NULLS))  # must not raise
+    g = {**NULLS, "flagged": {"Zolo": {"reason": "x", "canonical": "Zoro"}}}
+    assert ga.record_decision(g, "Zolo", accept=True)["hard_fixes"] == {"Zolo": "Zoro"}
+    rejected = ga.record_decision({**NULLS, "flagged": {"Zolo": {"reason": "x", "canonical": "Zoro"}}}, "Zolo", accept=False)
+    assert rejected["known"] == ["Zolo"]
+
+
+def test_accepting_a_flag_that_matches_the_curated_value_settles_it():
+    gloss = {
+        "show": "S",
+        "hard_fixes": {"Edimon": "Etemon"},
+        "flagged": {"Edimon": {"reason": "share-too-close", "canonical": "Etemon"}},
+    }
+    g = ga.record_decision(gloss, "Edimon", accept=True)
+    assert g["hard_fixes"] == {"Edimon": "Etemon"} and "known" not in g and "flagged" not in g
+    assert "edimon" in ga._settled(g), "else the next sweep re-proposes and re-flags it forever"
+
+
+def test_a_settle_record_stops_counting_once_its_fix_is_deleted_by_hand():
+    gloss = {"show": "S", "hard_fixes": {"Edimon": "Etemon"}, "flagged": {"Edimon": {"reason": "x", "canonical": "Devimon"}}}
+    g = ga.record_decision(gloss, "Edimon", accept=False)
+    assert "edimon" in ga._settled(g)
+    del g["hard_fixes"]["Edimon"]
+    assert "edimon" not in ga._settled(g)
+    g["hard_fixes"] = {"edimon": "Etemon"}  # load_dict lowercases keys: still the same fix
+    assert "edimon" in ga._settled(g)
+
+
+def test_a_human_approved_additive_entry_still_settles_without_a_hard_fix():  # guard: unchanged behaviour
+    assert "foo" in ga._settled({"acquired": {"Foo": {"canonical": "Foo Bar", "run": "review", "reason": "human-approved"}}})
+
+
+def test_a_decision_reuses_the_stored_keys_case():
+    gloss = {"show": "S", "hard_fixes": {"zolo": "Old"}, "flagged": {"zolo": {"reason": "x", "canonical": "Zoro"}}}
+    g = ga.record_decision(gloss, "Zolo", accept=True)
+    assert list(g["hard_fixes"]) == ["zolo"] and list(g["acquired"]) == ["zolo"]

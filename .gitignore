@@ -6,6 +6,12 @@ __pycache__/
 .coverage
 htmlcov/
 
+# Svelte review workspace build and browser-test output
+web/node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/
+
 # Pipeline artifacts (per-episode sidecars/stamps written into the media tree, never
 # meant to be committed to this repo -- see specs/v2-models-ops/spec.md, Phase B).
 *.eng.dubtitles.srt
@@ -17,6 +23,12 @@ htmlcov/
 *.dubtitles.mux.log
 *.muxtmp.mkv
 glossaries/*.lastrun.json
+
+# Resumable glossary stages (adjudication_journal.py): acquire writes <glossary>.acquire.journal.jsonl beside each tracked glossary,
+# verify writes <show>.verify.journal.jsonl under the wiki cache dir; each has a .lock and a compaction temp file. Local run state.
+*.journal.jsonl
+*.journal.jsonl.lock
+*.journal.jsonl.*.tmp
 
 # procoder: generated artifacts. config.toml and ask/ are the tracked standard;
 # the code index and session state are rebuilt on demand and never belong in a commit.

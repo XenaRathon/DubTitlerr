@@ -13,8 +13,15 @@ alone when the evidence is ambiguous.
 import json
 import os
 
+import pytest
+
 import common
 from tools import reclaim_orphans as ro
+
+
+@pytest.fixture(autouse=True)
+def _idle_pipeline(monkeypatch):
+    monkeypatch.setattr(ro, "pipeline_is_live", lambda: False)
 
 
 def _video(path, payload):
@@ -170,7 +177,7 @@ def test_apply_never_deletes_anything(tmp_path):
     assert os.path.exists(stem + common.STAMP_SUFFIX)
 
 
-def test_apply_refuses_while_the_pipeline_is_live(tmp_path, monkeypatch):
+def test_apply_refuses_while_the_pipeline_is_live(tmp_path, monkeypatch, capsys):
     """generate and mux write and delete exactly the files this renames. A re-key racing
     a live mux re-creates the silent-corruption class this whole epic is about."""
     payload = b"L" * 500
@@ -181,6 +188,7 @@ def test_apply_refuses_while_the_pipeline_is_live(tmp_path, monkeypatch):
 
     ro.reclaim(str(tmp_path), apply=True)
 
+    assert "REFUSING: a pipeline process is running" in capsys.readouterr().out
     assert os.path.exists(stem + common.STAMP_SUFFIX), "re-keyed despite a live pipeline"
 
 

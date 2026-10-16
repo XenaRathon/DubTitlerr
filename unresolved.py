@@ -44,7 +44,9 @@ episode that otherwise generated correctly. Every entry point returns a bool.
 
 import json
 import os
+import re
 import tempfile
+import time
 
 import decisions
 from common import SIDECAR_MODE, out_for
@@ -63,6 +65,8 @@ REASONS = {
         "rejected_guard",  # the model proposed an edit; accept_repair() refused it
         "rejected_name_invented",  # the model substituted a proper noun that is in
         # neither the glossary nor the original -- the phonetic name guard refused it
+        "rejected_name_part",  # the repair added or removed a part of a multi-word glossary
+        # name the line already had a piece of (REPAIR_KEEP_NAME_PARTS, on unless set to 0)
         "decision_unfittable",  # [S-4] a HUMAN verdict whose text cannot be displayed on
         # this card. C1 holds timing immutable, so the ASR text stands -- and the reviewer
         # is told, because a decision that disappears silently is the failure this whole
@@ -111,6 +115,7 @@ PRIMARY = (
     ("repair_applied", "accepted"),
     ("repair", "rejected_guard"),
     ("repair", "rejected_name_invented"),
+    ("repair", "rejected_name_part"),
     # [S-4]. In PRIMARY because it is the reviewer's OWN decision coming back refused: left
     # out of the default view, their verdict would vanish silently, which is precisely what
     # the entry was written to prevent. Unlike the punctuation entries held out above, this
@@ -146,14 +151,83 @@ def items(stem: str) -> list:
     return out
 
 
+_WORD = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
+
+
+def _join_known_phrases(text: str, phrases) -> str:
+    """``text`` with every occurrence of a listed multi-word phrase written as one word ('Van der Decken' -> 'vanderdecken'), so a
+    re-spacing of a known phrase ('Vanderdecken' <-> 'Van der Decken') is the same word on both sides."""
+    for phrase in sorted(phrases or (), key=len, reverse=True):
+        words = _WORD.findall(phrase.replace("\u2019", "'").lower())
+        if len(words) > 1:
+            text = re.sub(r"(?<!\w)" + r"[\W_]+".join(map(re.escape, words)) + r"(?!\w)", "".join(words), text)
+    return text
+
+
+def word_changes(original: str, proposed: str, phrases=()) -> int:
+    """How many words a proposal changed: words added plus words dropped, as a multiset difference over lower-cased words with
+    punctuation stripped. ONE definition for every caller (repair, punctuation, the tests): case and punctuation alone are 0;
+    letters with accents are letters; a curly apostrophe is a straight one; order does not count. A respelled or split word is a
+    drop plus its additions ('Mobydick' -> 'Moby Dick' is 3), unless ``phrases`` lists 'Moby Dick': re-spacing a KNOWN phrase is
+    0, because it is the correction the glossary asks for, not a large rewrite."""
+    import collections
+
+    def words(text: str) -> collections.Counter:
+        text = _join_known_phrases((text or "").replace("\u2019", "'").lower(), phrases)
+        return collections.Counter(_WORD.findall(text))
+
+    a, b = words(original), words(proposed)
+    return sum((b - a).values()) + sum((a - b).values())
+
+
+_WARNED_THRESHOLDS: set = set()
+DEFAULT_DISMISS_WORDS = 6
+
+
+def auto_dismiss_threshold():
+    """REPAIR_AUTO_DISMISS_WORDS as an int, or None (off). Unset or empty: DEFAULT_DISMISS_WORDS (6). 'off' (any case) turns it
+    off. Any other value that is not a whole number >= 0 is off too, and one that is set but unusable ('abc', '4.0', '-1') is
+    logged once so it is not mistaken for 'on'. 0 means any word change dismisses."""
+    raw = (os.environ.get("REPAIR_AUTO_DISMISS_WORDS") or "").strip()
+    if not raw:
+        return DEFAULT_DISMISS_WORDS
+    if raw.lower() == "off":
+        return None
+    if raw.isdecimal():
+        return int(raw)
+    if raw and raw not in _WARNED_THRESHOLDS:
+        _WARNED_THRESHOLDS.add(raw)
+        print(f"  REPAIR_AUTO_DISMISS_WORDS={raw!r} is not a whole number >= 0: auto-dismiss is OFF", flush=True)
+    return None
+
+
+def dismissal(original: str, proposed: str, phrases=()) -> dict:
+    """The fields that mark a rejected proposal as dismissed from the review queue: {} while the rule is off or the change is not
+    larger than the threshold. Spread into the record() call, so the entry is ALWAYS written (the audit trail), only marked."""
+    limit = auto_dismiss_threshold()
+    if limit is None:
+        return {}
+    n = word_changes(original, proposed, phrases)
+    return {"dismissed": "large_change", "changes": n} if n > limit else {}
+
+
+DISMISSIBLE = ("rejected_guard", "rejected_name_invented", "rejected_name_part")
+
+
+def _is_dismissed(entry: dict) -> bool:
+    """Only a rejected proposal can be dismissed as a large change: a decision the human owes (decision_unfittable, a stale
+    verdict) stays visible whatever fields it carries."""
+    return bool(entry.get("dismissed")) and entry.get("reason") in DISMISSIBLE
+
+
 def pending(stem: str, primary_only: bool = False) -> list:
-    """Unresolved entries; with ``primary_only``, only those worth a human's attention.
+    """Unresolved entries; with ``primary_only``, only those worth a human's attention (and not dismissed as a large change).
 
     The filter lives here, not in the caller, so the review UI and the --review CLI cannot
     disagree about what "the queue" means -- the same reason REASONS is a module constant."""
     out = [e for e in items(stem) if not e.get("resolved")]
     if primary_only:
-        out = [e for e in out if (e.get("stage"), e.get("reason")) in PRIMARY]
+        out = [e for e in out if (e.get("stage"), e.get("reason")) in PRIMARY and not _is_dismissed(e)]
     return out
 
 
@@ -316,15 +390,23 @@ def record(stem: str, stage: str, reason: str, **fields) -> bool:
     is original_text/proposed_text/source_start/source_end/avg_logprob; for punctuation the
     run's text. `proposed_text` matters most: today a rejected repair discards what the model
     said, which is exactly what a human needs to judge whether the guard was right."""
-    entry = {"stage": stage, "reason": reason, "resolved": False}
+    entry = {"stage": stage, "reason": reason, "resolved": False, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     entry.update({k: v for k, v in fields.items() if v is not None})
     path = path_for(stem)
     try:
         # O(1) append. The array version re-read and re-wrote the whole file per card --
         # O(n^2) I/O, and one CIFS round-trip each, on a path that fires ~86x per episode.
         exists = os.path.exists(path)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        line = (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
+        with open(path, "a+b") as f:
+            # A crash mid-append leaves an unterminated tail. Writing straight after it would join this record to the broken
+            # bytes on one line and lose BOTH; start on a fresh line instead and keep the damaged bytes (items() skips them).
+            # One write() call, so the newline and the record go out together.
+            if f.seek(0, os.SEEK_END):
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b"\n":
+                    line = b"\n" + line
+            f.write(line)
         if not exists:
             os.chmod(path, SIDECAR_MODE)  # only the creator sets the mode
         return True
@@ -343,6 +425,20 @@ def resolve(stem: str, index: int, accept: bool, note: str = "") -> bool:
     doc[index]["accepted"] = bool(accept)
     if note:
         doc[index]["note"] = note
+    return _rewrite(stem, doc)
+
+
+def reopen(stem: str, index: int) -> bool:
+    """Make a resolved entry pending again (the model proposed the same pair once more after it was superseded). The evidence
+    stays; the old resolution is dropped and counted in `reopened`, so the audit trail shows it happened."""
+    doc = items(stem)
+    if not (0 <= index < len(doc)):
+        return False
+    e = doc[index]
+    e["resolved"] = False
+    e.pop("accepted", None)
+    e.pop("note", None)
+    e["reopened"] = int(e.get("reopened") or 0) + 1
     return _rewrite(stem, doc)
 
 
@@ -379,6 +475,7 @@ _EVIDENCE = {
     "no_reference": ("original_text", "source_start", "source_end", "avg_logprob"),
     "rejected_guard": ("original_text", "proposed_text", "reference", "avg_logprob", "words"),
     "rejected_name_invented": ("original_text", "proposed_text", "reference", "avg_logprob", "words"),
+    "rejected_name_part": ("original_text", "proposed_text", "reference", "avg_logprob", "words"),
     "llm_empty": ("original_text", "segments", "words"),
     # The repair was APPLIED. The reviewer's whole job is comparing these two texts.
     "accepted": ("original_text", "proposed_text", "avg_logprob"),
@@ -404,7 +501,7 @@ def _render(i: int, e: dict) -> str:
 #
 #   repair_applied/accepted -- the repair SHIPPED, so the card shows it. Keeping it as-is
 #       endorses the repair (`accept`); needing fixing rejects it.
-#   repair/rejected_guard, rejected_name_invented -- the repair was REFUSED, so the card
+#   repair/rejected_guard, rejected_name_invented, rejected_name_part -- the repair was REFUSED, so the card
 #       shows the ASR text. Keeping it as-is endorses the refusal (`reject` of the
 #       proposal); needing fixing says the ASR is wrong and the refused proposal should
 #       stand, which is `force`.
@@ -415,6 +512,7 @@ _CLI_VERDICT = {
     ("repair_applied", "accepted"): {"k": "accept", "f": "reject"},
     ("repair", "rejected_guard"): {"k": "reject", "f": "force"},
     ("repair", "rejected_name_invented"): {"k": "reject", "f": "force"},
+    ("repair", "rejected_name_part"): {"k": "reject", "f": "force"},
     ("repair", "decision_unfittable"): {"k": "reject", "f": "reject"},
 }
 
@@ -451,6 +549,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Review subtitle-quality cases the pipeline could not settle.")
     ap.add_argument("target", help="an episode stem, or a directory to walk")
     ap.add_argument("--review", action="store_true", help="interactive walk (default: list pending and exit)")
+    ap.add_argument("--all", action="store_true", help="also list entries dismissed as large changes (REPAIR_AUTO_DISMISS_WORDS)")
     a = ap.parse_args(argv)
 
     stems = (
@@ -461,9 +560,14 @@ def main(argv=None):
     total = 0
     for stem in stems:
         todo = pending(stem)
+        dismissed = [e for e in todo if e.get("dismissed")]
+        if not a.all:
+            todo = [e for e in todo if not e.get("dismissed")]
         if not todo:
             continue
         print(f"\n=== {os.path.basename(stem)}  ({len(todo)} pending) ===")
+        if dismissed and not a.all:
+            print(f"  ({len(dismissed)} dismissed as large changes: --all shows them)")
         for e in todo:
             idx = items(stem).index(e)
             print(_render(idx, e))

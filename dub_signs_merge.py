@@ -32,22 +32,187 @@ Idempotent. Env: MERGE_ROOTS (colon list), DUB_SUFFIX, MEDIA_UID/GID, SUB_LANGS
 Requires ffmpeg/ffprobe + pysubs2.  Built with help of Claude (Anthropic).
 """
 
+import bisect
+import difflib
+import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
+from collections import Counter
 
 import pysubs2
 
 from common import MEDIA_GID, MEDIA_UID, find_video, log, out_for, signs_sub_streams, write_stage
 from common import extract_sub as extract
 
+SAFE_FONTS = {
+    "Arial",
+    "Arial Black",
+    "Verdana",
+    "Tahoma",
+    "Trebuchet MS",
+    "Georgia",
+    "Times New Roman",
+    "Calibri",
+    "Segoe UI",
+    "Open Sans",
+    "Roboto",
+}
+SAFE_FONTS_LOWER = {f.lower() for f in SAFE_FONTS}
+DEFAULT_DUB_FONT = "Trebuchet MS"
+
+_STYLE_WORDS = {
+    "regular",
+    "bold",
+    "italic",
+    "oblique",
+    "medium",
+    "light",
+    "semibold",
+    "demibold",
+    "black",
+    "heavy",
+    "thin",
+}
+
+
+def fansub_font_enabled():
+    val = os.environ.get("DUB_FANSUB_FONT", "1").strip().lower()
+    return val not in {"0", "no", "false", "off"}
+
+
+def _normalize_font_token(s):
+    if not s:
+        return ""
+    s = s.lstrip("@")
+    s = re.sub(r"\.(?:ttf|otf|ttc|woff2?|eot)$", "", s, flags=re.I)
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", s)
+    s = s.lower()
+    s = re.sub(r"[^\w]+|_", " ", s)
+    words = [w for w in s.split() if w not in _STYLE_WORDS]
+    return "".join(words)
+
+
+def list_attachment_filenames(video):
+    """List attachment filenames carried by the video file via mkvmerge or ffprobe."""
+    try:
+        r = subprocess.run(
+            ["mkvmerge", "-J", video],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=30,
+        )
+        if r.returncode == 0:
+            data = json.loads(r.stdout)
+            atts = [
+                att.get("file_name", "")
+                for att in data.get("attachments", [])
+                if att.get("file_name")
+            ]
+            if atts:
+                return atts
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=index:stream_tags=filename",
+                "-select_streams",
+                "t",
+                "-of",
+                "json",
+                video,
+            ],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=30,
+        )
+        if r.returncode == 0:
+            streams = json.loads(r.stdout).get("streams", [])
+            return [
+                (st.get("tags") or {}).get("filename", "")
+                for st in streams
+                if (st.get("tags") or {}).get("filename")
+            ]
+    except Exception:
+        pass
+    return []
+
+
+def _track_dialogue_font(track):
+    dialogue_events = [
+        ev
+        for ev in track["src_events"]
+        if not keep_event(ev)
+        and not ev.is_comment
+        and ev.plaintext.strip()
+        and not STRONG_DROP_STYLE.search(ev.style or "")
+    ]
+    if not dialogue_events:
+        return None
+    counts = Counter(
+        ev.style for ev in dialogue_events if ev.style and ev.style in track["subs"].styles
+    )
+    if not counts:
+        return None
+    top_style = counts.most_common(1)[0][0]
+    raw_font = track["subs"].styles[top_style].fontname or ""
+    clean_font = raw_font.lstrip("@").strip()
+    return clean_font if clean_font else None
+
+
+def resolve_dialogue_font(video, loaded_tracks, primary_track):
+    if not fansub_font_enabled():
+        return DEFAULT_DUB_FONT
+
+    candidate_font = None
+    if primary_track:
+        candidate_font = _track_dialogue_font(primary_track)
+    if not candidate_font:
+        for t in loaded_tracks:
+            if t is not primary_track:
+                candidate_font = _track_dialogue_font(t)
+                if candidate_font:
+                    break
+
+    if not candidate_font:
+        return DEFAULT_DUB_FONT
+
+    attachments = list_attachment_filenames(video)
+    norm_font = _normalize_font_token(candidate_font)
+    font_attached = False
+    if norm_font:
+        for att in attachments:
+            norm_att = _normalize_font_token(att)
+            if norm_att and (norm_font in norm_att):
+                font_attached = True
+                break
+
+    if font_attached:
+        return candidate_font
+
+    if candidate_font.lower() in SAFE_FONTS_LOWER:
+        return candidate_font
+
+    log(f"  font '{candidate_font}' not attached and not in safe set — falling back to {DEFAULT_DUB_FONT}")
+    return DEFAULT_DUB_FONT
+
 ROOTS = os.environ.get("MERGE_ROOTS", "/data/Media/Anime Library").split(":")
 SUFFIX = os.environ.get("DUB_SUFFIX", ".eng.dubtitles.srt")
 SUB_LANGS = set(os.environ.get("SUB_LANGS", "eng,en,und,").split(","))
 
 KARAOKE = re.compile(r"\\[kK][fo]?\d")
-HAS_DRAWING = re.compile(r"\\p\d|\\clip|\\iclip")
+DRAWING_TAG = re.compile(r"\\p[1-9]")
+CLIP_TAG = re.compile(r"\\i?clip\(")
+HAS_DRAWING = DRAWING_TAG
 ANIMATED = re.compile(r"\\t\(|\\fade?\(|\\move\(")
 POSITIONED = re.compile(r"\\(?:pos|move)\(|\\an[134567 89]")
 # KEEP the Japanese romaji karaoke (top) + signs/credits + the fansub's own English song
@@ -93,12 +258,12 @@ def keep_event(ev):
     if SONG_FAMILY_STYLE.search(style):  # Opening-/ED<N>- sibling, any language -> keep
         return True
     t = ev.text
-    tagged = bool(KARAOKE.search(t) or HAS_DRAWING.search(t) or POSITIONED.search(t) or ANIMATED.search(t))
+    tagged = bool(KARAOKE.search(t) or DRAWING_TAG.search(t) or CLIP_TAG.search(t) or POSITIONED.search(t) or ANIMATED.search(t))
     if WEAK_DROP_STYLE.search(style) and not tagged:  # a style-name GUESS, only when nothing else says otherwise
         return False
     if KARAOKE.search(t):  # Japanese romaji karaoke (top) -> keep
         return True
-    if HAS_DRAWING.search(t):  # vector-drawn sign (\p/\clip/\iclip) -> keep
+    if DRAWING_TAG.search(t) or CLIP_TAG.search(t):  # vector-drawn sign or clipped sign -> keep
         return True
     if POSITIONED.search(t) or ANIMATED.search(t):  # positioned/animated sign -> keep
         return True  # (ANIMATED's \move overlaps POSITIONED; merged into one check)
@@ -143,14 +308,171 @@ def _overlaps_any(start, end, spans):
     return any(start < s_end and end > s_start for s_start, s_end in spans)
 
 
+def cross_track_dedup_enabled():
+    val = os.environ.get("SIGNS_CROSS_TRACK_DEDUP", "1").strip().lower()
+    return val not in {"0", "no", "false", "off"}
+
+
+def _song_family(style):
+    if not style:
+        return None
+    s = style.strip()
+    if re.match(r"^(?:opening|op\d*)(?:[\s_-]|$)", s, re.I):
+        return "op"
+    if re.match(r"^(?:ending|ed\d*)(?:[\s_-]|$)", s, re.I):
+        return "ed"
+    return None
+
+
+def _is_cjk_or_hangul(text):
+    for ch in text:
+        cp = ord(ch)
+        if (
+            0x3040 <= cp <= 0x309F
+            or 0x30A0 <= cp <= 0x30FF
+            or 0x4E00 <= cp <= 0x9FFF
+            or 0x3400 <= cp <= 0x4DBF
+            or 0xAC00 <= cp <= 0xD7AF
+            or 0x1100 <= cp <= 0x11FF
+        ):
+            return True
+    return False
+
+
+def _is_latin(text):
+    for ch in text:
+        if "a" <= ch.lower() <= "z":
+            return True
+    return False
+
+
+def _song_lang_hint(style):
+    if not style:
+        return None
+    s = style.lower()
+    if re.search(r"romaji|romanized|roma", s):
+        return "romaji"
+    if re.search(r"english|translation|trans|eng", s):
+        return "english"
+    if re.search(r"kanji|japanese|jap|nihongo", s):
+        return "kanji"
+    return None
+
+
+def _normalize_sign_plaintext(text):
+    t = re.sub(r"\{[^}]*\}", "", text or "")
+    t = re.sub(r"\\[Nnh]", "", t)
+    return "".join(ch for ch in t.lower() if ch.isalnum())
+
+
+def _plain_words(text):
+    t = re.sub(r"\{[^}]*\}", "", text or "")
+    return re.findall(r"[^\W_]+", re.sub(r"\\[Nnh]", " ", t).lower())
+
+
+def _drawing_path(text):
+    """The m/l/b path of a \\p drawing, whitespace-normalised, for comparing drawings that carry no \\pos."""
+    return " ".join(re.sub(r"\{[^}]*\}", "", text or "").split())
+
+
+LONG_EVENT_MS = 10_000
+
+
+def _parse_playres(value, default):
+    """An ASS PlayRes header as a positive int; ``default`` for anything else. Real files write "1920.0" or pad it."""
+    try:
+        n = int(float(str(value).strip()))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return n if n > 0 else default
+
+
+def _get_pos(text):
+    m = re.search(r"\\pos\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)", text or "")
+    if m:
+        return float(m.group(1)), float(m.group(2))
+    return None
+
+
+# debt: cross-track dedup matches by time overlap and normalized text/type without comparing
+# spatial coordinates (\pos(x, y) / clip rects). If two distinct identical signs appear at the
+# same time in different positions (e.g. two simultaneous character nametags reading "Staff"),
+# or two concurrent independent vector drawings share a time window, the secondary track's
+# event will be dropped as a duplicate of the primary's. Distinguishing co-occurring identical
+# signs/drawings requires coordinate-space bounding-box comparison (deferred to V3 coordinate
+# transform work).
+def _events_match(p, s, play_res=None):
+    dur_p = max(0, p.end - p.start)
+    dur_s = max(0, s.end - s.start)
+    min_dur = min(dur_p, dur_s)
+    if min_dur <= 0:
+        if p.start != s.start:
+            return False
+    else:
+        overlap = max(0, min(p.end, s.end) - max(p.start, s.start))
+        if overlap < 0.5 * min_dur:
+            return False
+
+    fam_p = _song_family(p.style)
+    fam_s = _song_family(s.style)
+    is_song_p = bool(KARAOKE.search(p.text)) or (fam_p is not None)
+    is_song_s = bool(KARAOKE.search(s.text)) or (fam_s is not None)
+    if is_song_p or is_song_s:
+        if not (is_song_p and is_song_s):
+            return False
+        if fam_p and fam_s and fam_p != fam_s:
+            return False
+        hint_p = _song_lang_hint(p.style)
+        hint_s = _song_lang_hint(s.style)
+        if hint_p and hint_s and hint_p != hint_s:
+            return False
+        norm_p = _normalize_sign_plaintext(p.text)
+        norm_s = _normalize_sign_plaintext(s.text)
+        if not norm_p and not norm_s:
+            return True
+        if not norm_p or not norm_s:
+            return False
+        cjk_p = _is_cjk_or_hangul(norm_p)
+        cjk_s = _is_cjk_or_hangul(norm_s)
+        lat_p = _is_latin(norm_p)
+        lat_s = _is_latin(norm_s)
+        if (cjk_p and lat_s) or (lat_p and cjk_s):
+            return False
+        if difflib.SequenceMatcher(None, norm_p, norm_s).ratio() < 0.85:
+            return False
+        # One whole word swapped in a repeated chorus line scores ~0.93 as a string: same word count, a
+        # word that is not merely a misspelling of its counterpart means a different line.
+        words_p, words_s = _plain_words(p.text), _plain_words(s.text)
+        if len(words_p) == len(words_s) >= 2:
+            return all(difflib.SequenceMatcher(None, a, b).ratio() >= 0.5 for a, b in zip(words_p, words_s))
+        return True
+
+    draw_p = bool(DRAWING_TAG.search(p.text or ""))
+    draw_s = bool(DRAWING_TAG.search(s.text or ""))
+    if draw_p or draw_s:
+        if not (draw_p and draw_s):
+            return False
+        pos_p = _get_pos(p.text)
+        pos_s = _get_pos(s.text)
+        if pos_p and pos_s:
+            pw, ph = play_res if play_res else (1280, 720)
+            dx = abs(pos_p[0] - pos_s[0])
+            dy = abs(pos_p[1] - pos_s[1])
+            return (dx <= 0.10 * pw) and (dy <= 0.10 * ph)
+        if not pos_p and not pos_s:
+            return _drawing_path(p.text) == _drawing_path(s.text)
+        return True
+
+    norm_p = _normalize_sign_plaintext(p.text)
+    norm_s = _normalize_sign_plaintext(s.text)
+    return norm_p == norm_s
+
+
 def build(video, dub_srt, out_ass):
-    base = None  # the merged ScriptInfo/styles canvas
-    kept = []  # (event, source_style_name)
-    seen = set()
-    base_ws = None  # D3: base track's WrapStyle, for cross-track comparison
-    resolutions = []  # D5: (PlayResX, PlayResY) per source track, for mismatch warning
-    failed_streams = 0  # streams that would not extract/load
-    for _n, idx in enumerate(signs_sub_streams(video, SUB_LANGS)):
+    loaded_tracks = []
+    resolutions = []
+    failed_streams = 0
+    for idx in signs_sub_streams(video, SUB_LANGS):
         with tempfile.TemporaryDirectory() as td:
             ex = os.path.join(td, "s.ass")
             if not extract(video, idx, ex):
@@ -162,46 +484,107 @@ def build(video, dub_srt, out_ass):
                 log("  load fail", idx, e)
                 failed_streams += 1
                 continue
-        src_events = list(subs.events)  # snapshot BEFORE any clearing (base may alias subs)
-        resolutions.append((subs.info.get("PlayResX"), subs.info.get("PlayResY")))  # D5
-        if base is None:
-            base = subs
-            base.events = []
-            base.info["ScaledBorderAndShadow"] = "yes"  # D4: consistent cross-player rendering
-            base_ws = base.info.get("WrapStyle")  # D3
-        else:
-            track_ws = subs.info.get("WrapStyle")  # D3
-            if track_ws != base_ws:
-                log(f"WrapStyle differs: base={base_ws} track={track_ws} — using base")
-            for sname, sty in subs.styles.items():  # carry styles from later tracks
-                if sname in base.styles:
-                    existing = base.styles[sname]  # D1: flag conflicting redefinitions
-                    if existing.fontname != sty.fontname or existing.fontsize != sty.fontsize:
-                        log(f"  style conflict: '{sname}' — font/size differ, using first definition")
-                else:
-                    base.styles[sname] = sty
+        src_events = list(subs.events)
+        resolutions.append((subs.info.get("PlayResX"), subs.info.get("PlayResY")))
+        seen_intra = set()
+        kept_events = []
         for ev in src_events:
             if not keep_event(ev):
                 continue
-            # Dedup on the FULL override text and the layer, not the plaintext: a
-            # typeset sign is often several stacked events sharing \pos, style, timing
-            # and plaintext, differing only in tags (a black backing copy supplying the
-            # stroke, plus the visible copy that \t()s its fill to white). Keying on
-            # plaintext collapsed those to the first — the black one — so credits and
-            # captions rendered solid black. Byte-identical events (the same sign
-            # carried by both the full track and the signs/songs track) still collapse.
             key = (int(ev.start), int(ev.end), ev.style, ev.layer, ev.text)
-            if key in seen:
+            if key in seen_intra:
                 continue
-            seen.add(key)
-            base.events.append(ev)
-            kept.append(ev)
-    if base is None:
-        # Nothing loaded. If streams existed but none could be read we do NOT know the
-        # episode is signs-free, so fail closed rather than ship the dialogue-only srt.
+            seen_intra.add(key)
+            kept_events.append(ev)
+        loaded_tracks.append({
+            "idx": idx,
+            "subs": subs,
+            "src_events": src_events,
+            "kept_events": kept_events,
+            "ws": subs.info.get("WrapStyle"),
+        })
+
+    if not loaded_tracks:
         return ("extract-failed" if failed_streams else "no-signs"), 0, 0
-    if len(set(resolutions)) > 1:  # D5: warn only — no coordinate transform (deferred to V3)
+
+    if len(set(resolutions)) > 1:
         log("WARNING: resolution mismatch between subtitle tracks — signs may be mispositioned")
+
+    if not cross_track_dedup_enabled():
+        primary_track = loaded_tracks[0]
+        base = loaded_tracks[0]["subs"]
+        base.events = []
+        base.info["ScaledBorderAndShadow"] = "yes"
+        base_ws = loaded_tracks[0]["ws"]
+        seen = set()
+        kept = []
+        for t in loaded_tracks:
+            if t is not loaded_tracks[0]:
+                if t["ws"] != base_ws:
+                    log(f"WrapStyle differs: base={base_ws} track={t['ws']} — using base")
+                for sname, sty in t["subs"].styles.items():
+                    if sname in base.styles:
+                        existing = base.styles[sname]
+                        if existing.fontname != sty.fontname or existing.fontsize != sty.fontsize:
+                            log(f"  style conflict: '{sname}' — font/size differ, using first definition")
+                    else:
+                        base.styles[sname] = sty
+            for ev in t["kept_events"]:
+                key = (int(ev.start), int(ev.end), ev.style, ev.layer, ev.text)
+                if key in seen:
+                    continue
+                seen.add(key)
+                base.events.append(ev)
+                kept.append(ev)
+    else:
+        primary_track = max(loaded_tracks, key=lambda t: len(t["kept_events"]))
+        base = primary_track["subs"]
+        base.events = []
+        base.info["ScaledBorderAndShadow"] = "yes"
+        base_ws = primary_track["ws"]
+        base.events.extend(primary_track["kept_events"])
+        kept = list(primary_track["kept_events"])
+
+        # Events longer than LONG_EVENT_MS are scanned for every secondary event; the rest are bisected
+        # with their OWN max duration, so one episode-long logo cannot widen every other event's window.
+        sorted_primary = sorted(primary_track["kept_events"], key=lambda e: e.start)
+        long_primary = [e for e in sorted_primary if e.end - e.start > LONG_EVENT_MS]
+        sorted_rest = [e for e in sorted_primary if e.end - e.start <= LONG_EVENT_MS]
+        primary_starts = [e.start for e in sorted_rest]
+        max_primary_dur = max((e.end - e.start for e in sorted_rest), default=0)
+        max_primary_dur = max(0, max_primary_dur)
+        play_w = _parse_playres(base.info.get("PlayResX"), 1280)
+        play_h = _parse_playres(base.info.get("PlayResY"), 720)
+        play_res = (play_w, play_h)
+
+        for track in loaded_tracks:
+            if track is primary_track:
+                continue
+            if track["ws"] != base_ws:
+                log(f"WrapStyle differs: base={base_ws} track={track['ws']} — using base")
+            dropped_count = 0
+            surviving_events = []
+            for ev in track["kept_events"]:
+                left_idx = bisect.bisect_left(primary_starts, ev.start - max_primary_dur)
+                right_idx = bisect.bisect_right(primary_starts, ev.end)
+                candidates = long_primary + sorted_rest[left_idx:right_idx]
+                if any(_events_match(p_ev, ev, play_res) for p_ev in candidates):
+                    dropped_count += 1
+                else:
+                    surviving_events.append(ev)
+            log(f"  cross-track dedup: dropped {dropped_count} duplicate event(s) from stream {track['idx']}")
+            base.events.extend(surviving_events)
+            kept.extend(surviving_events)
+            surviving_styles = {ev.style for ev in surviving_events if ev.style}
+            for sname in surviving_styles:
+                if sname in track["subs"].styles:
+                    sty = track["subs"].styles[sname]
+                    if sname in base.styles:
+                        existing = base.styles[sname]
+                        if existing.fontname != sty.fontname or existing.fontsize != sty.fontsize:
+                            log(f"  style conflict: '{sname}' — font/size differ, using first definition")
+                    else:
+                        base.styles[sname] = sty
     # bottom dub dialogue style
     #
     # PlayResY is NOT a font scalar: it is the coordinate space every value in the script is
@@ -220,11 +603,7 @@ def build(video, dub_srt, out_ass):
     # Declaring the video's PROBED resolution would be more correct, but only together with a
     # transform of every inherited sign coordinate into the new space -- the transform D5
     # above still defers to V3. Until that lands, the assumed space is the honest one.
-    play_y = 0
-    try:
-        play_y = int(base.info.get("PlayResY") or 0)
-    except Exception:
-        pass
+    play_y = _parse_playres(base.info.get("PlayResY"), 0)
     if not play_y:
         base.info["PlayResX"], base.info["PlayResY"] = "384", "288"
         play_y = 288
@@ -236,7 +615,7 @@ def build(video, dub_srt, out_ass):
     ref = play_y / 720
     fs = max(round(32 * ref), round(play_y / 17))
     st = pysubs2.SSAStyle()
-    st.fontname = "Arial"
+    st.fontname = resolve_dialogue_font(video, loaded_tracks, primary_track)
     st.fontsize = fs
     st.bold = True
     st.primarycolor = pysubs2.Color(255, 255, 255)

@@ -33,6 +33,9 @@ LP_FLAG = -0.6
 REPEAT_MIN_TOKENS = 6  # below this a card is too short to call a loop (protects emphasis)
 REPEAT_COVERAGE = 0.6  # a repeated word/1-3-gram covering >= this fraction of the card
 RUN_COLLAPSE = 4  # collapse a run of >= this many near-identical consecutive cards
+# a run of >= LOOP_MIN_CARDS consecutive cards that are each only one token, >= LOOP_MIN_TOKENS tokens in all
+LOOP_MIN_CARDS = 5
+LOOP_MIN_TOKENS = 6
 
 # Known whisper hallucination phrases (music/credits/UGC boilerplate). Conservative —
 # only phrases that are never real dub dialogue. V2 C8: sourced from
@@ -203,3 +206,43 @@ def collapse_runs(cards: list[dict]) -> list[dict]:
             out.extend(run)
         i = j
     return out
+
+
+def repeat_loops(cards: list[dict], known=()) -> tuple[set[int], dict[int, str]]:
+    """Find a word whisper looped across many short cards ('Xanamon!' x15 in 18 s). Reflow
+    leaves these as one- and two-word cards that neither collapse_runs (needs identical cards)
+    nor is_repetition (needs >= REPEAT_MIN_TOKENS per card) can see.
+
+    A loop is a maximal run of consecutive cards that each hold only one token T (repeated any
+    number of times, case and punctuation ignored), with >= LOOP_MIN_CARDS cards and
+    >= LOOP_MIN_TOKENS tokens. T in ``known`` (the glossary's names and phrases, matched per
+    token) is real and never a loop. Returns (indices to drop, {index: text}) where the second
+    is the card just before a loop whose TRAILING words are T: its real words stay and the loop
+    words are cut. Nothing else is touched."""
+    names = {t for k in known for t in re.findall(r"[a-z0-9']+", str(k).lower())}
+    toks = [re.findall(r"[a-z0-9']+", c.get("text", "").lower()) for c in cards]
+    drops: set[int] = set()
+    trims: dict[int, str] = {}
+    i = 0
+    while i < len(cards):
+        word = toks[i][0] if toks[i] and len(set(toks[i])) == 1 else None
+        j = i + 1
+        while word and j < len(cards) and toks[j] and set(toks[j]) == {word}:
+            j += 1
+        if word and word not in names and j - i >= LOOP_MIN_CARDS and sum(len(t) for t in toks[i:j]) >= LOOP_MIN_TOKENS:
+            drops.update(range(i, j))
+            if i and toks[i - 1] and toks[i - 1][-1] == word:
+                text = cards[i - 1]["text"]
+                cut = re.sub(rf"(?:[\W_]*\b{re.escape(word)}\b)+[\W_]*$", "", text, flags=re.I)
+                if cut != text and re.search(r"[a-z0-9]", cut, re.I):
+                    # the sentence's own final mark went with the loop words; keep what preceded them
+                    trims[i - 1] = _restore_end(text, cut)
+        i = j
+    return drops, trims
+
+
+def _restore_end(text: str, cut: str) -> str:
+    """Re-attach the terminal punctuation that closed the last real word ('Let's go! Xanamon!' -> 'Let's go!')."""
+    tail = text[len(cut) :]
+    m = re.match(r"[^\w\s]+", tail)
+    return cut + (m.group(0) if m else "")

@@ -22,4 +22,4 @@ ExecStart=-/bin/sh -c 'c=$$(/usr/bin/docker inspect -f "{{.State.ExitCode}}" dub
 # not corrupt a library file, EXCEPT on the cross-device copy fallback, which overwrites the
 # episode in place: there a failed copy writes <stem>.dubtitles.mux-recovery and the muxtmp
 # file may be the only complete copy, so the sweep SKIPS any stem that has that marker.
-ExecStart=/bin/sh -c "find \"/mnt/r520-media-full/Anime Library\" -name \x27*.muxtmp.mkv\x27 2>/dev/null | while IFS= read -r f; do s=\"$${f%%.muxtmp.mkv}\"; if [ -e \"$$s.dubtitles.mux-recovery\" ]; then echo \"kept (recovery marker): $$f\"; else echo \"$$f\"; rm -f -- \"$$f\"; fi; done || true"
+ExecStart=/bin/sh -c "find \"/mnt/r520-media-full/Anime Library\" -name \x27*.muxtmp.mkv\x27 2>/dev/null | while IFS= read -r f; do s=\"$${f%%.muxtmp.mkv}\"; m=\"$$s.dubtitles.mux-recovery\"; [ ! -e \"$$m\" ] && m=\"$${s%%.*.*}.dubtitles.mux-recovery\"; if [ -e \"$$m\" ]; then echo \"kept (recovery marker): $$f\"; else echo \"$$f\"; rm -f -- \"$$f\"; fi; done || true"

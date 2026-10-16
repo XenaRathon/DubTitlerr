@@ -106,6 +106,8 @@ GLOSS_DIR = os.environ.get("GLOSSARY_DIR", "/config/glossaries")
 # tests/test_dockerfile_copy.py cannot see that, and it is recorded here as the known gap.
 MODEL = os.environ.get("WHISPER_MODEL", "large-v3-turbo")
 COMPUTE = os.environ.get("COMPUTE_TYPE", "int8")
+# cuda is what the image ships for; cpu and auto exist so a card-less test box can run the same code (settings: ASR_DEVICE).
+ASR_DEVICE = os.environ.get("ASR_DEVICE", "cuda")
 MODEL_DIR = os.environ.get("MODEL_DIR", "/subgen/models")
 # V2 A8: optional pre-transcription audio cleanup (default highpass + dynamic-range
 # compand, tuned for noisy/quiet anime dub tracks). Empty string ("") disables it
@@ -562,6 +564,7 @@ def _record_qc(rec, cards):
     breaking the ordinary_under_min_dur_after == 0 acceptance assertion it is exempt
     from. Muxing a short orphan is an explicit decision; muxing a short ordinary card
     is the defect."""
+    rec.record_duration_flags(cards)
     for c in cards:
         a, b, t = c["start"], c["end"], c["text"]
         dur = b - a
@@ -792,8 +795,12 @@ def text_stages(stem, words, segments, audio_duration, rec, fail):
     except reflow.CascadeInfeasible as e:
         return _cascade_infeasible(stem, fail, e)
     kept, fixes, dropped = [], 0, 0
-    for c in cards:
-        if hallucination.drop_reason(c, rec=rec):  # blocklist / repetition / music -> drop
+    # a word looped across many short cards is invisible to the per-card rules; glossary names and phrases are exempt
+    loops, trims = hallucination.repeat_loops(cards, known=[*GLOSS["names"], *GLOSS.get("phrases", [])])
+    for idx, c in enumerate(cards):
+        if idx in trims:
+            c = {**c, "text": trims[idx]}  # a real sentence that ends in the loop word keeps its real words
+        if idx in loops or hallucination.drop_reason(c, rec=rec):  # repeat-loop / blocklist / repetition -> drop
             dropped += 1
             continue
         lines, n = [], 0
@@ -1099,6 +1106,21 @@ def _staleness_census(files):
     return census
 
 
+def filter_only_re(files, pattern):
+    """Filter files whose basename matches regex pattern. Fail closed on invalid regex."""
+    if not pattern:
+        return files
+    try:
+        rx = re.compile(pattern)
+    except re.error as e:
+        log(f"invalid GENERATE_ONLY_RE regex {pattern!r}: {e}")
+        sys.exit(2)
+    total = len(files)
+    kept = [f for f in files if rx.search(os.path.basename(f))]
+    log(f"GENERATE_ONLY_RE: kept {len(kept)} of {total} files")
+    return kept
+
+
 def main():
     args = sys.argv[1:]
     files = []
@@ -1108,6 +1130,9 @@ def main():
             for fn in fs:
                 if fn.lower().endswith(VIDEO_EXTS) and not SKIP_FILE_RE.search(fn):
                     files.append(os.path.join(dp, fn))
+        only_re = os.environ.get("GENERATE_ONLY_RE", "")
+        if only_re:
+            files = filter_only_re(files, only_re)
         # Watch-order priority: process seasons >= a per-show start season first (the arc
         # the viewer is about to watch), then earlier ones. Absent config -> plain sort.
         files = ordering.order_files(files, ordering.read_start(os.environ.get("SHOW_NAME", "")))
@@ -1159,7 +1184,7 @@ def main():
         # the loops below break on their first check; do not pay the load for nothing
         log("stop requested: not loading the model")
     elif transcribe_todo:
-        globals()["WMODEL"] = WhisperModel(MODEL, device="cuda", compute_type=COMPUTE, download_root=MODEL_DIR)
+        globals()["WMODEL"] = WhisperModel(MODEL, device=ASR_DEVICE, compute_type=COMPUTE, download_root=MODEL_DIR)
     else:
         log("text-tier work only — skipping the model load")
     t0 = time.monotonic()  # V2 C1: per-show run summary

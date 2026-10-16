@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import time
 import urllib.parse
+import uuid
 
 import pysubs2
 
@@ -314,6 +315,15 @@ def read_words(stem, rec=None, expect: dict | None = None):
     return doc
 
 
+_PROCESS_BOOT_ID = uuid.uuid4().hex
+
+
+def boot_id():
+    """Changes on every container start. container_run.sh exports DT_CONTAINER_BOOT_ID once at start, so a review server that
+    crashed and was restarted by the supervisor keeps the id; a server started by hand falls back to an id of its own process."""
+    return os.environ.get("DT_CONTAINER_BOOT_ID") or _PROCESS_BOOT_ID
+
+
 def stop_requested():
     """True once the soft-stop flag file exists (container_run.sh touches $STOP_FLAG on
     SIGTERM). Callers check it BEFORE starting a unit of work, never inside one. With
@@ -470,8 +480,10 @@ def stamp_valid(stamp: dict | None, video: str) -> bool:
 # are non-failures. Everything else (llm-empty, backend-unreachable, extract-error,
 # build-error, timeout, crashed, unwritable, refused) is a genuine failure that blocks mux.
 # "refused" is repair declining to overwrite already-shipped repairs: the srt on disk is raw
-# ASR, so it must never be muxed. Records are never reset on their own; merge_pass.sh calls
-# clear_stage() before it re-runs a stage so a stale record cannot stand in for a new one.
+# ASR, so it must never be muxed. "stopped" is repair honouring a soft stop mid-episode: the srt
+# was left unrewritten, so the episode is held back (no assemble, no mux) and retried next pass.
+# Records are never reset on their own; merge_pass.sh calls clear_stage() before it re-runs a stage
+# so a stale record cannot stand in for a new one.
 STAGES_SUFFIX = ".dubtitles.stages.json"
 STAGE_ORDER = ("repair", "signs", "mux")
 
@@ -487,6 +499,7 @@ STAGE_OUTCOMES = (
     "crashed",
     "unwritable",
     "refused",
+    "stopped",
 )
 
 # "no-reference" is LEGACY: nothing writes it any more (repair's refusal is "refused"), but
@@ -828,7 +841,106 @@ def _post_json(url, body, timeout=None):
         conn.close()
 
 
-def llm_chat(prompt, *, backend="ollama", ollama_url=None, llamacpp_url=None, model=None, max_tokens=80, first_line=True):
+LEGACY_BACKENDS = ("llamacpp", "ollama")  # the local servers a stage may inherit from REPAIR_BACKEND
+
+
+def inherit_repair_backend(repair_value, stage, fix, default="ollama"):
+    """(backend, problem): what a stage that has no backend variable of its own inherits from REPAIR_BACKEND.
+
+    Only the two legacy values are inherited (unset: ``default``). REPAIR_BACKEND=openai describes repair's chat-completions
+    client; handing it to a stage that speaks Ollama's or llama.cpp's request shape sent the wrong request, so anything else
+    is refused with ``stage`` and ``fix`` in the message. One rule for every stage that follows REPAIR_BACKEND."""
+    value = (repair_value or "").strip()
+    if not value or value in LEGACY_BACKENDS:
+        return value or default, ""
+    return "", f"REPAIR_BACKEND={value!r} cannot be inherited by {stage} (it is not llamacpp or ollama): {fix}"
+
+
+OPENAI_RETRIES = 2  # extra tries after HTTP 429 / 5xx on the glossary stages' openai backend (not configurable: YAGNI)
+
+
+def openai_endpoint_problem(url):
+    """Why ``url`` may not carry an API key, or "" when it may: an http(s) URL without userinfo, and https unless it is
+    loopback (a key must never travel in clear text to another machine)."""
+    parts = urllib.parse.urlsplit(url or "")
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return "the URL must be http(s) with a host"
+    if "@" in parts.netloc:
+        return "the URL must not carry credentials"
+    if parts.scheme != "https" and parts.hostname not in ("127.0.0.1", "localhost", "::1"):
+        return "a key may only be sent over https (plain http is for loopback only)"
+    return ""
+
+
+def _llm_chat_openai(prompt, *, url, key_env, extra_body, model, max_tokens, first_line):
+    """The glossary stages' hosted-text-model branch of llm_chat: any OpenAI-compatible chat API.
+
+    Same contract as the other branches: the reply text, or "" for no answer / any failure (never raises). Only
+    choices[0].message.content is read (a reasoning monologue in ``reasoning_content`` is ignored). The key is looked up by
+    NAME at call time; only the name, an HTTP status or an exception class is ever logged -- a provider may echo the key in
+    an error body and http.client quotes a bad header value. Transport is repair's hardened helper (connect/read timeouts and
+    a wall-clock request deadline); 429 and 5xx get OPENAI_RETRIES retries, Retry-After honoured and capped."""
+    import repair  # at call time: repair imports this module
+
+    key_name = key_env or "VERIFY_OPENAI_KEY_ENV"
+    raw_key = os.environ.get(key_env, "") if key_env else ""
+    if not url or not model or not raw_key.strip():
+        log("  llm fail: the openai backend is not configured for this stage (URL, model or key missing)")
+        return ""
+    problem = openai_endpoint_problem(url)
+    if problem:
+        log(f"  llm fail: the openai endpoint is refused: {problem}")
+        return ""
+    key = repair.clean_api_key(raw_key)
+    if key is None:
+        log(f"  llm fail: the key in env var {key_name} contains spaces or control characters (CRLF .env?)")
+        return ""
+    try:
+        extra = repair._parse_extra_body(extra_body or "")
+    except ValueError:
+        log("  llm fail: VERIFY_OPENAI_EXTRA_BODY is not a valid JSON object")  # the name only, never the content
+        return ""
+    body = {
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        **extra,
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    headers = {"Authorization": f"Bearer {key}", "User-Agent": "DubTitlerr/glossary"}
+    for attempt in range(OPENAI_RETRIES + 1):
+        try:
+            choice = repair._post_json(url, body, headers=headers)["choices"][0]
+            out = (choice["message"].get("content") or "").strip()
+        except repair._HttpError as e:
+            if (e.status == 429 or e.status >= 500) and attempt < OPENAI_RETRIES and not stop_requested():
+                log(f"  llm retry {attempt + 1}/{OPENAI_RETRIES} after HTTP {e.status}")
+                time.sleep(repair._retry_wait(e.retry_after, attempt))
+                continue
+            log(f"  llm fail: HTTP {e.status}")
+            return ""
+        except Exception as e:  # noqa: BLE001 -- the class only: the text may quote a header
+            log(f"  llm fail: {type(e).__name__}")
+            return ""
+        if not out:
+            return ""
+        return out.splitlines()[0].strip().strip('"').strip() if first_line else out
+    return ""
+
+
+def llm_chat(
+    prompt,
+    *,
+    backend="ollama",
+    ollama_url=None,
+    llamacpp_url=None,
+    model=None,
+    max_tokens=80,
+    first_line=True,
+    openai_url=None,
+    openai_key_env=None,
+    openai_extra_body=None,
+):
     """One prompt in, the model's text out. ``""`` means "no answer" — never raises, since
     a transport error must not abort a whole show mid-sweep.
 
@@ -841,7 +953,15 @@ def llm_chat(prompt, *, backend="ollama", ollama_url=None, llamacpp_url=None, mo
 
     ``first_line`` suits a subtitle (one line, often quoted by the model). Adjudication
     returns a multi-line JSON object and must pass ``first_line=False`` or it is truncated
-    to its opening brace — and ``max_tokens`` high enough that the JSON isn't cut short."""
+    to its opening brace — and ``max_tokens`` high enough that the JSON isn't cut short.
+
+    ``openai`` (glossary stages only, opt-in) posts to ``openai_url`` with the key held in the env var NAMED ``openai_key_env``
+    and ``openai_extra_body`` (a JSON object string) merged into the request; see _llm_chat_openai."""
+    if backend == "openai":
+        return _llm_chat_openai(
+            prompt, url=openai_url, key_env=openai_key_env, extra_body=openai_extra_body, model=model,
+            max_tokens=max_tokens, first_line=first_line,
+        )  # fmt: skip
     if backend == "llamacpp":
         url = llamacpp_url
         body = {

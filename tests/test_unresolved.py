@@ -493,3 +493,62 @@ def test_card_context_width_two_reaches_two_cards_either_side(tmp_path):
 def test_card_context_is_empty_rather_than_raising_without_conf(tmp_path):
     """Same contract as card_starts: observability never fails an episode."""
     assert unresolved.card_context(str(tmp_path / "gone")) == {}
+
+
+# ---- phase 28 F4: an append after a torn tail starts on its own line ---------------------------------------------------------
+
+
+def test_the_first_append_after_a_torn_tail_is_readable_and_the_damage_is_kept(tmp_path):
+    """Sol's probe: the unterminated bytes of a crashed write followed by a normal record. The new object used to be joined to the
+    broken tail on one physical line, so `items` rejected the combination and the successful write vanished."""
+    stem = str(tmp_path / "ep")
+    torn = '{"stage":"repair_applied","reas'
+    with open(unresolved.path_for(stem), "w") as f:
+        f.write(torn)
+    assert unresolved.record(stem, "repair_applied", "accepted", original_text="the old line", proposed_text="the wrong line")
+    got = unresolved.items(stem)
+    assert [e["proposed_text"] for e in got] == ["the wrong line"]
+    raw = open(unresolved.path_for(stem)).read()
+    assert raw.startswith(torn + "\n"), "the damaged bytes stay, on their own line, for audit"
+
+
+def test_appends_to_a_clean_file_add_no_blank_lines(tmp_path):
+    stem = str(tmp_path / "ep")
+    unresolved.record(stem, "repair", "no_reference", original_text="a")
+    unresolved.record(stem, "repair", "no_reference", original_text="b")
+    raw = open(unresolved.path_for(stem)).read()
+    assert raw.count("\n") == 2 and "\n\n" not in raw
+
+
+def test_a_torn_tail_does_not_hold_back_an_opted_in_episode_from_being_held(tmp_path, monkeypatch):
+    import mux
+
+    stem = str(tmp_path / "ep")
+    with open(unresolved.path_for(stem), "w") as f:
+        f.write('{"stage":"repair_applied","reas')
+    with open(stem + ".dubtitles.conf.json", "w") as f:
+        f.write('[{"text": "the old line"}]')
+    unresolved.record(stem, "repair_applied", "accepted", original_text="the old line", proposed_text="the wrong line")
+    monkeypatch.setattr(mux, "REVIEW_GATE_SHOWS", ["S"])
+    monkeypatch.setattr(mux, "show_for", lambda _: "S")
+    assert mux.held_for_review(stem) is True
+
+
+def test_record_stamps_each_new_entry_with_a_utc_ts(tmp_path):
+    import re
+
+    stem = str(tmp_path / "ep")
+    unresolved.record(stem, "repair", "rejected_guard", original_text="a")
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", unresolved.items(stem)[0]["ts"])
+
+
+def test_resolve_and_resolve_many_keep_the_ts_of_every_entry_they_rewrite(tmp_path):
+    stem = str(tmp_path / "ep")
+    for t in ("a", "b", "c"):
+        unresolved.record(stem, "repair", "rejected_guard", original_text=t)
+    before = [e["ts"] for e in unresolved.items(stem)]
+    assert unresolved.resolve(stem, 0, True)
+    assert unresolved.resolve_many(stem, [(1, False, "no")])
+    after = unresolved.items(stem)
+    assert [e["ts"] for e in after] == before
+    assert after[0]["resolved"] and after[1]["resolved"] and not after[2]["resolved"]

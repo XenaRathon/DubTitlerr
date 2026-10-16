@@ -2,6 +2,13 @@
 # Plex refresh) as one long-running, restart-safe service. Built FROM subgen for the exact
 # CUDA / faster-whisper / ctranslate2 stack already proven on the 1060 (Pascal) + driver 550.
 # DockHand can't build images -> build on the host and reference fasc/dubtitle-builder:latest.
+FROM node:24-alpine AS review-ui
+WORKDIR /ui
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run check && npm run build
+
 FROM mccloud/subgen:2026.06.2
 
 # subgen ships python3 + ffmpeg but no pip; bootstrap pip to add pysubs2 (for the merge step)
@@ -20,7 +27,7 @@ FROM mccloud/subgen:2026.06.2
 # to pyproject.toml, which is where this project declares its ranges.
 # hadolint ignore=DL3008,DL3013
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3-pip wamerican mkvtoolnix git \
+    && apt-get install -y --no-install-recommends python3-pip wamerican mkvtoolnix git tzdata \
     && python3 -m pip install --no-cache-dir pysubs2 jellyfish \
     && (python3 -m pip install --no-cache-dir webrtcvad || echo "webrtcvad install failed -- analytics-only, use --vad ffmpeg-silencedetect; NOT fatal for generation") \
     && rm -rf /var/lib/apt/lists/*
@@ -58,7 +65,7 @@ RUN python3 -c "import os; from faster_whisper import WhisperModel; WhisperModel
 # [S-7] the review page. EXPOSE documents it; publishing still needs -p on docker run,
 # which the README's example now carries.
 EXPOSE 8842
-HEALTHCHECK --interval=5m --timeout=10s --start-period=10m --retries=3 CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8842/healthz', timeout=5).status==200 else 1)"
+HEALTHCHECK --interval=5m --timeout=10s --start-period=10m --retries=3 CMD python3 -c "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('REVIEW_PORT', '8842'), timeout=5).status==200 else 1)"
 
 WORKDIR /app
 # NOTE (V2-U3 B7/B9): common.py was missing from this COPY list since V1 introduced it --
@@ -73,9 +80,10 @@ WORKDIR /app
 # existing library without this in the image.
 COPY generate.py reflow.py glossary.py glossary_verify.py glossary_acquire.py hallucination.py ordering.py common.py common_words.txt \
      repair.py dub_signs_merge.py mux.py plex_refresh.py mine_glossary.py recreate_srt.py merge_pass.sh card_split.py \
-     qc.py punctuation.py unresolved.py decisions.py review_apply.py review_server.py watch_queue.py acquire_cache.py gen_loop.sh container_run.sh /app/
+     qc.py punctuation.py unresolved.py decisions.py review_apply.py review_server.py review_glossary.py review_auth.py settings_registry.py settings_store.py settings_api.py settings_connections.py settings_migrate.py review_users.py review_status.py review_requests.py review_settings.py review_settings_write.py review_webhooks.py watch_queue.py acquire_cache.py adjudication_journal.py decision_client.py glossary_decision.py glossary_lock.py wiki_scope.py gen_loop.sh container_run.sh /app/
 COPY data/ /app/data/
 COPY shell/ /app/shell/
+COPY --from=review-ui /ui/dist/ /app/web/dist/
 # tools/ ships for the same reason recreate_srt.py does: recover_dub_srt.py rebuilds the
 # srt from the already-muxed Dubtitles track, which is the only way to regenerate an
 # episode whose conf.json is gone without sending it back through Whisper.

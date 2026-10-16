@@ -200,11 +200,15 @@ def test_sweep_removes_orphan_muxtmp_and_keeps_recovery(tmp_path):
         p.write_text("")
 
     orphan = tmp_path / "Show Name" / "X.muxtmp.mkv"
+    orphan_new = tmp_path / "Show Name" / "X.12345.abcdef12.muxtmp.mkv"
     kept = tmp_path / "Show [1080p]" / "Y.muxtmp.mkv"
+    kept_new = tmp_path / "Show [1080p]" / "Y.67890.fedcba98.muxtmp.mkv"
     recovery = tmp_path / "Show [1080p]" / "Y.dubtitles.mux-recovery"
     recovered = tmp_path / "Show {S01}" / "Z.muxtmp.mkv.recovered"
+    recovered_new = tmp_path / "Show {S01}" / "Z.11111.22222222.muxtmp.mkv.recovered"
     normal = tmp_path / "Show's" / "Z.mkv"
-    for p in (orphan, kept, recovery, recovered, normal):
+    unrelated = tmp_path / "Show Name" / "notes.txt"
+    for p in (orphan, orphan_new, kept, kept_new, recovery, recovered, recovered_new, normal, unrelated):
         touch(p)
 
     proc = subprocess.run(
@@ -213,10 +217,14 @@ def test_sweep_removes_orphan_muxtmp_and_keeps_recovery(tmp_path):
     assert proc.returncode == 0, f"exit {proc.returncode}: {proc.stderr}"
 
     assert not orphan.exists(), "orphan .muxtmp.mkv should have been removed"
+    assert not orphan_new.exists(), "new-style orphan .muxtmp.mkv should have been removed"
     assert kept.exists(), "a .muxtmp.mkv with a recovery marker must be kept"
+    assert kept_new.exists(), "a new-style .muxtmp.mkv with a recovery marker must be kept"
     assert recovery.exists(), "the recovery marker itself must survive"
     assert recovered.exists(), ".muxtmp.mkv.recovered must be untouched"
+    assert recovered_new.exists(), "new-style .muxtmp.mkv.recovered must be untouched"
     assert normal.exists(), "a normal episode must be untouched"
+    assert unrelated.exists(), "an unrelated file must be untouched"
 
 
 # --------------------------------------------------------------------------- #
