@@ -50,7 +50,6 @@ configuration that a `git pull` cannot show you. If an unanchored repair ships
 something wrong, the recovery is a `reject` verdict recorded with `decisions.record`
 followed by `review_apply.py`, not disabling the flag.
 
-
 ---
 
 ## Queue a whole library, in watch order
@@ -281,6 +280,205 @@ loading. Ask for a real completion instead, as above.
 
 ---
 
+## Repair with a hosted model
+
+**Problem:** you have a key for an OpenAI-compatible API and want repair to use it instead of a
+model you serve yourself.
+
+**Know where your text goes.** Every repair request carries the dub line, the lines around it,
+the glossary names and the overlapping fansub line. All of it goes to the provider. Read the
+provider's data terms before you point a real library at it.
+
+**1. Pick a model that answers in one short line.** Repair asks for one corrected line. A model
+without reasoning works best, or one whose reasoning you can switch off. A reasoning model that
+spends its whole token budget thinking returns empty content, and repair counts that as the
+backend being unreachable.
+
+**2. Give the container the key by name.** Put the key in an environment variable on the host
+and pass that variable through. `REPAIR_OPENAI_KEY_ENV` holds the variable's _name_; the key
+itself stays out of config files, command lines and logs.
+
+```yaml
+environment:
+  REPAIR_BACKEND: openai
+  REPAIR_OPENAI_URL: https://api.example.com/v1/chat/completions
+  REPAIR_MODEL: vendor/model-x
+  REPAIR_OPENAI_KEY_ENV: EXAMPLE_API_KEY
+  EXAMPLE_API_KEY: ${EXAMPLE_API_KEY}
+```
+
+Compose fills `${EXAMPLE_API_KEY}` from your shell or from a `.env` file beside `compose.yaml`.
+
+**3. Switch reasoning off if the model reasons.** Put the provider's switch in
+`REPAIR_EXTRA_BODY`. The switch differs by provider, so read the provider's documentation. As
+one example, LongCat's API accepts `{"thinking":{"type":"disabled"}}`.
+
+**4. Try a few lines before a whole episode.** `tools/bakeoff.py` sends real target lines from
+one episode to the model and scores each reply with repair's own gate:
+
+```sh
+python3 tools/bakeoff.py --conf "<stem>.dubtitles.conf.json" \
+    --glossary "glossaries/<Show>.json" \
+    --openai-url https://api.example.com/v1/chat/completions \
+    --key-env EXAMPLE_API_KEY \
+    --extra-body '{"thinking":{"type":"disabled"}}' \
+    --models vendor/model-x --limit 12
+```
+
+It ends with a table of results. If most lines come back as `<EMPTY ...>` or `<ERROR ...>`, fix
+that first. `<ERROR rate-limited ...>` means the provider is throttling you, and
+`<ERROR truncated ...>` means the model ran out of tokens before it answered, so reasoning is
+still on or `REPAIR_MAX_TOKENS` is too low.
+
+**5. Run one episode and read the summary.** Queue one show and wait for repair to finish an
+episode. Then open `<stem>.dubtitles.repair-summary.json`. Repair worked when `unreachable` is
+`0` and `repaired` is above `0`. `llm_empty` counts the targets the model answered with nothing,
+and `rejected_4xx` counts the ones the provider refused as a request. `<stem>.dubtitles.stages.json`
+shows the stage as `ok`.
+
+**6. If repair refuses an episode.** The stage shows `backend-unreachable` and the `.srt` is
+left as it was. The log says why: too many failed targets, too many in a row, or the episode
+deadline. [When repair refuses an episode](Reference.md#repair) lists each rule and its
+variable. The episode is tried again on the next pass.
+
+---
+
+## Use a decision model for glossary verification
+
+**Problem:** the local model that checks glossary names against the wiki picks wrong titles. On a
+rebuild of the One Pace glossary it wrote 106 expansions, 13 of them right. A decision model picks
+among the wiki's candidates and reports how confident it is; on the same audit it wrote 87
+expansions, 38 of them right.
+
+**Know where your text goes.** Each decision sends the **show name, the term and the candidate
+wiki titles** to the provider. No dialogue goes. CommandCode's `typesafe/jev`, the model the
+maintainer uses, bills per call; OpenRouter's `inception/mercury-decide:free` does not, and in
+testing it wrote few names, most of them right.
+
+**1. Give the container the key by name.** The key lives in a host environment variable. Config
+carries only the variable's name.
+
+```yaml
+environment:
+  VERIFY_BACKEND: decision
+  VERIFY_DECISION_MODEL: typesafe/jev
+  COMMANDCODE_API_KEY: ${COMMANDCODE_API_KEY}
+```
+
+`VERIFY_DECISION_KEY_ENV` defaults to `COMMANDCODE_API_KEY` for CommandCode models and
+`OPENROUTER_JEV_API_KEY` for OpenRouter ones. Set it only when you use a different name.
+
+**2. Try it on a copy.** Verify rewrites the glossary it is given.
+
+```sh
+cp "/config/glossaries/<Show>.json" /tmp/<Show>.try.json
+python3 glossary_verify.py /tmp/<Show>.try.json --force
+```
+
+**3. Read the last lines.** Verify prints one summary line,
+`decision backend: model=typesafe/jev calls=986 ok=985 failures=1 fallbacks=0 pending=1`. A
+failed call leaves its term pending for the next sweep. After five failed terms in a row the run
+stops calling the provider (`VERIFY_DECISION_BREAKER`), so an outage costs five requests and not a
+night's worth. `VERIFY_DECISION_FALLBACK=local` lets the local model answer instead.
+
+**4. Know what acquisition does.** `glossary_acquire.py` asks a same-entity question. On the
+audit set the decision model was worse than the local one at it (47% against 72%), so acquire
+stays on the local model when verify uses the decision model. `ACQUIRE_BACKEND=decision` changes that.
+
+---
+
+## Triage the review queue
+
+**Problem:** the review queue is long, and most of it is not worth your time.
+
+**Glossary flags.** Run the review on the glossary and the show folder:
+
+```sh
+python3 glossary_acquire.py "/config/glossaries/<Show>.json" "/media/Anime Library/<Show>" --review
+```
+
+Without `--apply` it only shows what it would do. Add `--apply` to write your answers. Decisions
+come first, in this order: `respelling-needs-review`, `common-word`, `not-in-arc-pages`,
+`low-confidence`, `possessive_floor_crossing`. Terms with no wiki candidate are collapsed into one
+line, because there is nothing to accept or reject. `--all` lists them, and `--prune-no-match`
+removes the stored ones.
+
+If a stage holds the glossary while you answer, your answers wait up to ten minutes, and are then
+saved beside the glossary and applied at the next `--review`. An answer is applied only to the
+proposal you saw. If the term was flagged again with another canonical in the meantime, the answer
+is skipped and the log says so.
+
+**Repair rejections.** The review page lists them. A rejection that changed more than six words is
+kept in the file but hidden from the default view, because in a blind sample of 100 real
+rejections no acceptable fix needed more than that. Show them with the all-reasons view. Raise
+`REPAIR_AUTO_DISMISS_WORDS` to see more by default, or set it to `off` to see all.
+
+**What to expect.** On the Wano run, about four in five rejections were right, so the queue is
+mostly confirming a guard. The ones worth finding are casing, punctuation and single-name
+respellings. See [Why the queues are smaller](Why-It-Works-This-Way.md#why-the-queues-are-smaller).
+
+---
+
+## Give a show without arc names a wiki scope
+
+**Problem:** the arc stage names each season's arc from its `season.nfo`. Most shows have no such
+name, so the stage has nothing to scope the wiki lookup by.
+
+**1. Pick the rung that fits the wiki.**
+
+| The wiki has                                      | Use           |
+| ------------------------------------------------- | ------------- |
+| An index page with arcs and their episode numbers | `arc_index`   |
+| One page per season                               | `season_page` |
+| Little structure, or the show has one season      | `whole_wiki`  |
+
+**2. Add a `wiki_scope` block to the show's glossary.** For Naruto Shippuden:
+
+```json
+{
+  "wiki_scope": {
+    "rung": "arc_index",
+    "wiki": "https://naruto.fandom.com/api.php",
+    "index_page": "Plot of Naruto",
+    "part": "Part II",
+    "season_offsets": { "2": 32, "3": 53 }
+  }
+}
+```
+
+The wiki's table restarts its episode numbers in each part, so `part` is required when the page
+has several, and `season_offsets` maps your season's episode numbers to the table's. Library
+seasons often do not line up with the wiki's arcs, so the scope is picked by episode number.
+
+**3. Check the file names.** Season and episode scopes read `SxxExx` from the video file names. A
+file without one gets no scope.
+
+**4. Tag once by hand and read the result.**
+
+```sh
+python3 glossary_verify.py "/config/glossaries/<Show>.json" --tag-arcs
+```
+
+The glossary now has `arc_titles` and `arc_coverage`. A scope that failed, came back partial or
+could not be parsed stores nothing and appears in `arc_titles_missing`. Fix that before you rely
+on the stored titles. Set `GLOSSARY_ARC_TAGS=1` to run the same step every night.
+
+**5. For a show that has arcs but some seasons that are not arcs**, tell the stage what to do with
+them. One Pace's `Gaimon` and `Water Seven` seasons are the examples: Gaimon has no wiki arc page,
+and Water Seven's page is named `Water 7`.
+
+```json
+{
+  "arc_aliases": { "Water Seven": "Water 7", "Fishman Island": "Fish-Man Island" },
+  "arc_waived": ["Gaimon", "The Adventures of Buggy's Crew", "The Trials of Koby-Meppo"]
+}
+```
+
+`VERIFY_ARC_GATE=1` stays off until `arc_titles_missing` is empty. On the audit set the gate stopped
+45 of 119 wrong writes and 8 of 42 right ones, so it is the weaker of the two write guards.
+
+---
+
 ## Choose a quantisation for your card
 
 **Problem:** you want Whisper and the repair model resident at once on one card.
@@ -320,35 +518,134 @@ transcriptions on one small card at once.
 
 ---
 
-## Secure the review page
+## Sign in and manage accounts
 
-**Problem:** the review server's write routes rewrite subtitles and force re-muxes, from a
-root-owned process.
+**Problem:** you need to control access to the review workspace, add user accounts, or rotate keys.
 
-**The default is already safe.** With `REVIEW_TOKEN` unset a token is generated, persisted
-`0600`, and printed once:
+**First-run setup.** On a fresh install without accounts, browse to `http://<host>:8842`. The server opens `/review/setup` to create your initial administrator account. Alternatively, set `REVIEW_USERNAME` and `REVIEW_PASSWORD` (or `REVIEW_PASSWORD_FILE`) in `compose.yaml` to seed the admin account once on first boot.
+
+**Sign in and roles.** Sign in with your username and password at `http://<host>:8842/review`.
+
+- **admin:** manages accounts, changes settings, tests connections, and rotates the admin API key.
+- **user:** reviews episodes, submits verdicts, and changes their own password.
+- Read and write routes both require authentication.
+
+**Manage user accounts.** Signed in as an administrator, open **Settings > General** (`#/settings/general`) and scroll to **Accounts**. You can create accounts, promote or demote users between `admin` and `user`, reset passwords, or delete accounts. The server refuses to delete or demote the last remaining administrator.
+
+**Change your password.** Click your username in the navigation bar and select **Change Password**.
+
+**Automate with the admin API key.** External scripts send the `X-Api-Key` header instead of browser cookies. The key is stored in `/config/apikey`. You can view, copy, or reset it under **Settings > General > Security**.
+
+**Disable authentication.** Set `REVIEW_AUTH=off` in your container environment only if you run DubTitlerr on an isolated, trusted network.
+
+---
+
+## Recover an administrator account
+
+**Problem:** you forgot your administrator password or got locked out of the web UI.
+
+**Run the recovery tool inside the container.** Execute `review_users.py reset-admin` with your administrator username:
 
 ```sh
-docker exec <container> cat /config/review_token
+docker compose exec dubtitlerr python3 review_users.py reset-admin <username>
 ```
 
-Write routes require it in an `X-Review-Token` header. **Read routes never require it** — a
-GET can enumerate your library.
+The command generates a new 16-character password that stays until changed, prints it to your terminal, and clears existing sessions for that account. Sign in with the new password and update it when you are ready.
 
-To set your own:
+If `users.json` is unreadable or corrupt, the tool moves the file aside as `users.json.corrupt-<timestamp>` and creates a fresh administrator account with `<username>`.
+
+---
+
+## Point a show at its wiki
+
+**Problem:** automatic wiki detection picks the wrong wiki or you want to set a custom MediaWiki API endpoint for a show.
+
+**Requirement:** the show must already have a glossary file in `GLOSSARY_DIR`. Shows without a glossary cannot set a wiki URL here yet.
+
+**1. Open the Glossary page.** In the web UI, open **Glossary** (`#/glossary`) and select your show.
+
+**2. Enter the wiki URL.** In the **Wiki** field above the term tables, enter the MediaWiki site or API URL (for example `https://naruto.fandom.com` or `https://naruto.fandom.com/api.php`). Leaving the field empty clears the override and restores automatic detection.
+
+**3. Test the URL.** Click **Test** to verify the endpoint before saving. DubTitlerr queries the siteinfo API and displays the confirmed site name.
+
+**4. Respect URL constraints.** URLs must use `https` unless `WIKI_ALLOW_HTTP=1` is set in the container environment. The server refuses loopback addresses, private network IPs, link-local addresses, and embedded credentials.
+
+**5. Save the glossary.** Click **Save** to write the wiki URL to the show's glossary JSON file.
+
+---
+
+## Run only what you queue
+
+**Problem:** you want DubTitlerr to process only episodes you explicitly queue, instead of sweeping your entire media library continuously.
+
+**1. Turn off library sweep.** In the web UI, open **Settings > Schedule** and set **Sweep the whole library** (`LIBRARY_SWEEP`) to **Off**. You can also set `LIBRARY_SWEEP: "false"` in `compose.yaml`.
+
+**2. Know what changes.**
+
+- The generation loop disables root library walks and only processes requests waiting in the run queue.
+- The merge pass only checks show directories with requests that are pending, running, or finished in the last 7 days, leaving the rest of the library untouched.
+
+**3. Queue episodes.** Open the **Runs** page (`#/runs`) to queue a show, season, or episode regex, or trigger runs automatically through Sonarr and Radarr webhooks.
+
+---
+
+## Connect Sonarr and Radarr
+
+**Problem:** you want newly downloaded episodes queued automatically when Sonarr or Radarr imports them.
+
+**1. Set the webhook token.** In `compose.yaml` (or in Settings > Connect > Webhook), set `WEBHOOK_TOKEN`:
 
 ```yaml
-REVIEW_TOKEN: "a-long-random-string"
+WEBHOOK_TOKEN: your-secret-webhook-token
 ```
 
-To **disable authentication entirely**, set it to the empty string. Only an explicit empty
-value does this, and it is a decision about your own network:
+When this variable is unset, webhook routes return 404.
+
+**2. Map remote paths if needed.** If Sonarr or Radarr runs with different mount paths, set `REMOTE_PATH_MAPPINGS`:
 
 ```yaml
-REVIEW_TOKEN: ""
+REMOTE_PATH_MAPPINGS: "/data/anime=/media/Anime Library;/downloads=/media/downloads"
 ```
 
-Do not expose port 8842 to the internet either way.
+**3. Add the webhook notification in Sonarr or Radarr.**
+Go to **Settings > Connect > Add Notification > Webhook**:
+
+- **URL:** `http://<host>:8842/api/webhook/sonarr` (or `/api/webhook/radarr`)
+- **Method:** `POST`
+- **Headers:** add `X-Webhook-Token: your-secret-webhook-token` (or append `?token=your-secret-webhook-token` to the URL)
+- **Triggers:** enable **On Download** and **On Upgrade**.
+
+Click **Test** in Sonarr or Radarr to confirm the connection.
+
+---
+
+## Configure LLM connections
+
+**Problem:** you want to use local or remote LLM backends without restarting the container or editing Compose files.
+
+**1. Open Connections.** In the web UI, go to **Settings > Connections** (`#/settings/connections`).
+
+**2. Add a connection.**
+
+- Enter a name and select a kind (`llama.cpp`, `Ollama`, or `OpenAI-compatible`).
+- Set the endpoint URL and model name.
+- For OpenAI-compatible providers, enter the API key in the write-only key field. Keys are stored in `secrets.json` (mode 0600) and never returned to the browser.
+- Click **Test** to send a probe completion and verify the endpoint.
+
+**3. Assign stages.** Pick which connection runs each stage (Repair, Restore, Verify, Decision, and Acquire). Stages without an assigned connection keep their container environment defaults.
+
+---
+
+## Restart the container from the web UI
+
+**Problem:** you changed a setting marked "Restart required" and want to apply it without terminal access.
+
+**1. Save your changes.** When you save a restart-required setting (such as port, bind address, or webhook paths), DubTitlerr prompts you with two choices:
+
+- **Restart Now:** asks the builder to finish the current episode in flight and exit cleanly. Docker brings the container back up automatically under `restart: unless-stopped`.
+- **Restart Later:** keeps running the current process and displays a "Restart pending" banner until the next container restart.
+
+**2. Reconnection.** While the builder restarts, the web UI displays a reconnecting overlay and resumes your session once the new instance answers.
 
 ---
 
@@ -357,14 +654,14 @@ Do not expose port 8842 to the internet either way.
 **Problem:** curated glossaries and reviewed seasons are trapped on one machine.
 
 `GLOSSARY_DIR` and `DECISIONS_DIR` are plain directories of JSON, one file per show, designed
-to be committed to git. A `git pull` on the host is what makes them current — the container
+to be committed to git. A `git pull` on the host is what makes them current: the container
 reads whatever is in the mount.
 
 ```sh
 cd ~/dubtitlerr/glossaries && git init && git add . && git commit -m "glossaries"
 ```
 
-The review token is deliberately stored **beside** `DECISIONS_DIR`, never inside it, so a
+The admin API key is deliberately stored **beside** `DECISIONS_DIR` (at `/config/apikey`), never inside it, so a
 credential never rides along with a directory you publish.
 
 Community glossaries live in their own repository with a pull-request path for contributions.

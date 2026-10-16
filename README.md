@@ -52,7 +52,10 @@ show with an **English dub**, runs a full pipeline per episode:
    before they're spoken).
 2. **Name correction** — fix proper nouns against a **per-show glossary** (curated `hard_fixes` +
    a guarded fuzzy that won't touch real English words). The glossary is **auto-built by mining**
-   the embedded subs and **wiki-verified** (canonical, dub-preferred spellings — see below).
+   the embedded subs and **wiki-verified** (canonical, dub-preferred spellings, see below). Verification only writes a longer name (`Zoro` → `Roronoa Zoro`) when the term is a whole word of it and not an
+   ordinary English word, and a decision model can make the wiki pick instead of a chat model
+   (`VERIFY_BACKEND=decision`, opt-in). Shows with no arc names get their wiki lookup scoped by
+   season, episode range or the whole wiki ([how to](https://github.com/xenarathon/DubTitlerr/wiki/How-To-Guides#give-a-show-without-arc-names-a-wiki-scope)).
 3. **LLM repair** — a local model (`qwen3-4b-instruct` by default) fixes mid-/low-confidence and name-suspect lines,
    anchored on the embedded fansub dialogue when present. **If your copies of a show have no
    English subtitles for the Japanese audio there is nothing to anchor on, and by default every
@@ -87,6 +90,9 @@ satisfied with stale work); a failed run leaves the old track alone (no sidecar 
 the mux never fires).
 
 ## Quick start
+
+> Setting this up with an AI agent? Point it at [`docs/AGENT-GUIDE.md`](docs/AGENT-GUIDE.md).
+> It covers setup, troubleshooting and contributing in a form an agent can act on.
 
 The full pipeline (transcribe → repair → merge → mux) is published as
 `ghcr.io/xenarathon/dubtitlerr` and also builds from `Dockerfile.builder`
@@ -195,66 +201,43 @@ Everything is an env var, so nothing host-specific is baked in:
 
 ## Reviewing what the repair stage changed
 
-The LLM repair pass fixes real ASR errors, and it also produces changes that pass every
-mechanical gate while destroying the meaning — `We're looking for a factory.` became
-`a needle.`, `It's a VIVRA card?` became `a Vivi card?`. Nothing in the pipeline can
-detect those, so accepted repairs are queued for a human instead.
+**Web UI workspace:** Source builds and container releases include an arr-style interface at `http://<host>:8842/review`, with episode search, risk filters, word diffs, keyboard controls, authenticated audio previews, staged batch saves, and shared-line review. The classic page stays available at `/`.
 
-The page is at `http://<host>:8842`. On first start the container logs a token; paste it
-into the box at the top once and the browser remembers it. `REVIEW_TOKEN` sets it
-explicitly; leaving it _unset_ generates one (the server runs as root and its write routes
-rewrite subtitles, so "unset" cannot mean "no auth"). An **explicitly empty**
-`REVIEW_TOKEN` no longer disables auth — a stray blank env line or an unset Compose
-variable used to open a root-owned write endpoint by accident. Set `REVIEW_AUTH=off`
-instead — only do this on a network you fully trust; the server logs a warning at startup
-if you do this while also bound to `0.0.0.0` (the default), since that combination means
-anything on the LAN can rewrite your subtitles. See [SECURITY.md](SECURITY.md) for the
-full auth model.
+### First-run setup and accounts
 
-The index groups episodes by show and season and leads with the ones holding **admitted**
-repairs — changes that already shipped with nothing checking their meaning. Refusals, where
-the guard blocked the repair and the ASR text shipped, are the safe outcome and are hidden
-behind a toggle.
+On first start without accounts, browse to `http://<host>:8842` to open the setup page (`/review/setup`) and create your initial administrator account. You can also provide `REVIEW_USERNAME` and `REVIEW_PASSWORD` (or `REVIEW_PASSWORD_FILE`) in the container environment. The server imports them once at first boot to seed the admin account automatically.
 
-An episode's queue is ordered worst first, because most of what the stage does is harmless.
-Measured over the 682 admitted repairs of one 48-episode run: 78% changed no word at all,
-only punctuation or capitalisation. So each entry is classified by what the repair actually
-did — **a word added or dropped**, **a word swapped**, or **punctuation only** — and shown
-in that order, admitted repairs before refusals. Every regression found in a hand-read of
-45 lines changed a word; none of the punctuation-only ones could.
+Authentication uses scrypt-hashed passwords in `CONFIG_DIR/users.json` and session cookies:
 
-Each entry carries the start time of the card it is on, so you can seek to the line and
-hear what was actually said. Times are derived from the transcript, so they are as accurate
-as the ASR word timings — close enough to find the line, not frame-accurate.
+- **Roles:** `admin` and `user`. Administrators manage accounts under Settings > General (`#/settings/general`), edit settings, test connections, and rotate the admin API key. Users can review episodes, submit verdicts, and change their own password.
+- **Admin API key:** Scripts and external tools authenticate with the `X-Api-Key` header. The key lives in `CONFIG_DIR/apikey` and you can copy or reset it under Settings > General > Security.
+- **Disabling auth:** Set `REVIEW_AUTH=off` only if the container runs on an isolated, trusted network.
 
-Verdicts are `accept`, `reject`, `correct` (supply your own text) and `force` (apply a
-repair the guard refused); each entry offers only the ones that make sense for it. Pick them
-with the radio buttons as you read — nothing is submitted until you hit **Save**, which
-hands the whole episode back in one request. Verdicts are stored per show, so the same
-decision applies the next time that line is transcribed.
+### Settings in the web UI
 
-A verdict settles the **line**, show-wide — not the one queue row that raised it. Judge the
-opening song on the first episode and it disappears from every other episode's queue, and
-the page says how many it hid. The **shared lines** link lists every repair that appears in
-more than one episode, once, with its episode count, so the repeated ones can be cleared in
-a single pass before you touch anything episode-specific. Measured on one 48-episode run:
-665 open questions, 487 distinct lines — 27% of the reading was a question already answered.
+Every setting the pipeline reads is listed under Settings (`#/settings`), organized into nine categories: General, Library, Transcription, Glossary, Repair, Connections, Output, Schedule, and Connect. First-wave settings are editable in place. Saved values are stored in `CONFIG_DIR/settings.json` and `CONFIG_DIR/secrets.json` (mode 0600). When you change a setting that needs a restart, the interface offers **Restart Now** (triggering a soft stop that finishes the episode in flight) and **Restart Later**.
 
-Grouping is on the exact text pair, which is the same identity the decision store uses. The
-same sung line transcribed two ways stays two decisions; that is deliberate, since a
-reviewer who read one has not read the other.
+Under **Connections**, you can register named LLM endpoints (llama.cpp, Ollama, OpenAI-compatible) with write-only keys, test them with a probe, and assign them per pipeline stage.
 
-The page walks the whole media tree to find episodes and reads each one's queue. On a large
-library over a network mount that is slow — measured at 297s for the walk alone across 989
-episodes — so the container does it at startup, on a background thread, and logs
-`cache warm — N episodes in Ns` when it finishes. The port opens immediately; a page opened
-before the warm completes waits for it.
+### Why review is needed
 
-Both the episode list and the per-episode queues are then held until the next walk, whose
-timing is a multiple of what the last one cost (`REVIEW_STEMS_TTL` is the floor,
-`REVIEW_STEMS_TTL_FACTOR` the multiplier). Nothing is re-checked per request — on a mount
-like this, a stat costs what a read costs, so validating a cache is not cheaper than filling
-it. A newly generated episode therefore appears at the next walk, or immediately on restart.
+The LLM repair pass fixes real ASR errors, and it also produces changes that pass every mechanical gate while destroying the meaning: `We're looking for a factory.` became `a needle.`, `It's a VIVRA card?` became `a Vivi card?`. Nothing in the pipeline can detect those, so accepted repairs are queued for a human instead.
+
+The index groups episodes by show and season and leads with the ones holding **admitted** repairs, changes that already shipped with nothing checking their meaning. Refusals, where the guard blocked the repair and the ASR text shipped, are the safe outcome and are hidden behind a toggle.
+
+An episode's queue is ordered worst first, because most of what the stage does is harmless. Measured over the 682 admitted repairs of one 48-episode run: 78% changed no word at all, only punctuation or capitalisation. So each entry is classified by what the repair actually did (**a word added or dropped**, **a word swapped**, or **punctuation only**) and shown in that order, admitted repairs before refusals. Every regression found in a hand-read of 45 lines changed a word; none of the punctuation-only ones could.
+
+Each entry carries the start time of the card it is on, so you can seek to the line and hear what was actually said. Times are derived from the transcript, so they are as accurate as the ASR word timings: close enough to find the line, not frame-accurate.
+
+Verdicts are `accept`, `reject`, `correct` (supply your own text) and `force` (apply a repair the guard refused); each entry offers only the ones that make sense for it. Pick them with the radio buttons as you read: nothing is submitted until you hit **Save**, which hands the whole episode back in one request. Verdicts are stored per show, so the same decision applies the next time that line is transcribed.
+
+A verdict settles the **line**, show-wide, not the one queue row that raised it. Judge the opening song on the first episode and it disappears from every other episode's queue, and the page says how many it hid. The **shared lines** link lists every repair that appears in more than one episode, once, with its episode count, so the repeated ones can be cleared in a single pass before you touch anything episode-specific. Measured on one 48-episode run: 665 open questions, 487 distinct lines: 27% of the reading was a question already answered.
+
+Grouping is on the exact text pair, which is the same identity the decision store uses. The same sung line transcribed two ways stays two decisions; that is deliberate, since a reviewer who read one has not read the other.
+
+The page walks the whole media tree to find episodes and reads each one's queue. On a large library over a network mount that is slow, measured at 297s for the walk alone across 989 episodes, so the container does it at startup, on a background thread, and logs `cache warm: N episodes in Ns` when it finishes. The port opens immediately; a page opened before the warm completes waits for it.
+
+Both the episode list and the per-episode queues are then held until the next walk, whose timing is a multiple of what the last one cost (`REVIEW_STEMS_TTL` is the floor, `REVIEW_STEMS_TTL_FACTOR` the multiplier). Nothing is re-checked per request: on a mount like this, a stat costs what a read costs, so validating a cache is not cheaper than filling it. A newly generated episode therefore appears at the next walk, or immediately on restart.
 
 Verdicts are never cached. The decision store is one small file read on every request, so a
 decision shows up on every other episode the moment it is saved, and saving re-reads only
@@ -265,24 +248,45 @@ subtitle and drops the stamp so the merge loop re-muxes the file. Only an episod
 already been muxed needs it — for anything still queued, saving the verdicts is enough,
 because the next repair run reads them.
 
+### Keeping the queue short
+
+A review queue only helps while someone reads it, so entries have to carry a decision. Terms the
+wiki has no candidate for are recorded without being queued, and a rejected repair that changed
+more than six words is kept in the file but hidden from the default view. On a rebuild of the One
+Pace glossary that removed 578 of 687 glossary flags. In a blind sample of 100 real rejected
+repairs about four in five rejections were right, so nothing is accepted automatically. The numbers
+and the settings are in [Why the queues are smaller](https://github.com/xenarathon/DubTitlerr/wiki/Why-It-Works-This-Way#why-the-queues-are-smaller)
+and [Triage the review queue](https://github.com/xenarathon/DubTitlerr/wiki/How-To-Guides#triage-the-review-queue).
+
 ## Requirements
 
 `ffmpeg`/`ffprobe`, [`pysubs2`](https://pypi.org/project/pysubs2/), and
-[`jellyfish`](https://pypi.org/project/jellyfish/) — all baked into `Dockerfile.builder`,
+[`jellyfish`](https://pypi.org/project/jellyfish/): all baked into `Dockerfile.builder`,
 the image the Quick start above builds. The deprecated `Dockerfile` only needs
-`ffmpeg`/`pysubs2`, since it doesn't run the phonetic name-matching that `jellyfish` backs.
+`ffmpeg`/`pysubs2`, since it does not run the phonetic name-matching that `jellyfish` backs.
 
 ## Roadmap
 
-- **Web UI** — a small dashboard to watch the rollout (per-show / per-episode progress, GPU
-  status, live logs), queue or reorder shows, kick off a re-scan, and edit per-show glossaries
-  — instead of tailing logs over SSH.
-- **Per-show glossary editor** — manage the name/spelling glossaries from the UI.
-- **Community glossary repo** — [XenaRathon/DubTitlerr-glossaries](https://github.com/XenaRathon/DubTitlerr-glossaries)
-  is the shared repository of per-show glossaries; what is still on the roadmap is the pipeline
-  fetching it on startup and submitting mined dictionaries back automatically. Today it is a
-  `git clone` into your `GLOSSARY_DIR` and a `git pull` to update, which `decisions.py` already
-  documents as the intended flow.
+- **Arr API and poster library view** - connect directly to Sonarr and Radarr APIs to present a poster grid with status bars, replacing filesystem walks and letting you set a show's wiki URL before its glossary exists.
+- **Run a show again from the Runs page** - a show that already ran is skipped. Queueing it again
+  will ask whether you want to run it again or cancel, so you don't redo one by mistake. Run again
+  redoes only that show and season. This helps after a new version changes the output.
+- **Wiki scope for more shows** - the scoped wiki lookup is built and tested live against Naruto,
+  Pokémon and two one-season shows. What is left is trying it on each show's real library and
+  writing the `wiki_scope` block for the shows people actually run.
+- **Reference lines from a published subtitle file** - repair anchors on the English subtitle track
+  embedded in the video. Dub re-cuts made from another release carry none, so repair works from the
+  glossary alone. The idea is to match each dub line, by its words, to a published English subtitle
+  file for the same scene, allowing the timing offset to change partway through an episode. A
+  first blind test on three episodes of one arc preferred the referenced output over the
+  glossary-only output on 34 of 65 contested lines, against 7 the other way. It needs a wider test
+  and a spot-check before it is built.
+- **Community glossary repo** - [XenaRathon/DubTitlerr-glossaries](https://github.com/XenaRathon/DubTitlerr-glossaries)
+  is the shared repository of per-show glossaries. Planned for v1.0.0 or a later 1.x release:
+  downloading glossaries from it and uploading yours back, from inside the app. Downloads will
+  never overwrite your own fixes or a wiki you set. Today it is a `git clone` into your
+  `GLOSSARY_DIR` and a `git pull` to update, which `decisions.py` already documents as the
+  intended flow.
 
   **This repository's `glossaries/` directory is a snapshot**, used by the tests and by the
   examples in these docs. The pipeline reads whatever is mounted at `GLOSSARY_DIR` and never
@@ -290,7 +294,7 @@ the image the Quick start above builds. The deprecated `Dockerfile` only needs
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE).
+GPL-3.0; see [LICENSE](LICENSE).
 
 ---
 

@@ -2,7 +2,7 @@
 #
 # This is the Compose equivalent of the README's `docker pull` + `docker run`
 # Quick start, and mirrors the tested example in the wiki's "Your first show"
-# tutorial (docs/wiki/Your-First-Show.md — read that for the full walkthrough,
+# tutorial (docs/wiki/Your-First-Show.md: read that for the full walkthrough,
 # including serving the repair model). Only the variables set below reach the
 # container: this file is an explicit allowlist, not a pass-through. The
 # optional flags (docs/wiki/Reference.md and CHANGELOG.md, "Optional flags")
@@ -16,7 +16,7 @@
 # Copy .env.example to .env and edit it before starting.
 #
 # The repair stage calls an OpenAI-compatible chat-completions endpoint (e.g.
-# llama.cpp serving a GGUF) that you run yourself — it is not part of this
+# llama.cpp serving a GGUF) that you run yourself: it is not part of this
 # container. `host.docker.internal` below reaches a server on the Docker host.
 #
 # GPU access uses the nvidia device spec (the Compose equivalent of
@@ -53,7 +53,7 @@ services:
       COMPUTE_TYPE: int8
       REQUIRE_ENG: "1"
 
-      # --- repair model — point this at a server you run yourself (see the
+      # --- repair model: point this at a server you run yourself (see the
       # wiki's "Your first show", Step 1, for a llama.cpp example) ---
       REPAIR_BACKEND: llamacpp
       REPAIR_MODEL: qwen3-4b-instruct
@@ -90,18 +90,16 @@ services:
       # ACQUIRE_BACKEND: "" # unset: local when VERIFY_BACKEND is decision; llamacpp|ollama|openai|decision to force
       # VERIFY_BACKEND: decision
 
-      # --- Plex refresh (optional — blank skips it) ---
+      # --- Plex refresh (optional: blank skips it) ---
       PLEX_URL: ${PLEX_URL:-}
       PLEX_TOKEN: ${PLEX_TOKEN:-}
       PLEX_SECTION: ${PLEX_SECTION:-}
 
-      # --- repair-review web UI auth — leave unset to auto-generate a token
-      # at startup (printed to the log, also readable at /config/review_token) ---
+      # --- repair-review web UI auth: accounts live in users.json; visit /review/setup on first start ---
       REVIEW_TOKEN: ${REVIEW_TOKEN:-}
       REVIEW_AUTH: ${REVIEW_AUTH:-}
-      # Optional human login in front of the token (the token stays the credential; it needs
-      # both a username and a password, and over plain http the password travels in clear
-      # text: trusted LAN or TLS only). Uncomment to enable.
+      # Optional one-time automated seed for the initial admin account when users.json is empty.
+      # If unset, create the first administrator on the /review/setup page in your browser.
       # REVIEW_USERNAME: ${REVIEW_USERNAME:-}
       # REVIEW_PASSWORD_FILE: /config/review_password # read once at start; or REVIEW_PASSWORD
 
@@ -130,15 +128,10 @@ services:
       # LONGCATAI_API_KEY: ${LONGCATAI_API_KEY:-}
       # REPAIR_EXTRA_BODY: ${REPAIR_EXTRA_BODY:-}
 
-      # --- optional: repair profiles the web UI Settings page may switch between (with REVIEW_ADMIN_TOKEN set) ---
-      # One JSON map of profile name -> {backend, url, key_env}. The page can only pick a NAME from this map; it
-      # never accepts a URL or a key variable name. key_env names the variable that holds the key (leave it out
-      # for llamacpp). Example shape, one line:
-      # REPAIR_PROFILES: '{"local": {"backend": "llamacpp", "url": "http://host.docker.internal:8090/v1/chat/completions"}}'
-      # What the Settings page may select for glossary verification is opt-in too (names only; leave unset for the
-      # defaults: the local backends llamacpp and ollama, and no decision model):
-      # RUNTIME_VERIFY_BACKENDS: ${RUNTIME_VERIFY_BACKENDS:-}
-      # RUNTIME_DECISION_MODELS: ${RUNTIME_DECISION_MODELS:-}
+      # Settings live in the web UI (Settings, in the review workspace) and are stored in the config volume. The old
+      # REPAIR_PROFILES, RUNTIME_VERIFY_BACKENDS and RUNTIME_DECISION_MODELS variables are retired: the first start
+      # imports REPAIR_PROFILES as Connections and nothing reads these variables afterwards. The restart policy above
+      # is what lets the page's Restart Now bring the builder back.
 
       # --- ownership of what it writes ---
       MEDIA_UID: ${MEDIA_UID:-1000}

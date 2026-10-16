@@ -17,13 +17,14 @@ It runs as one container, per episode, incrementally.
 
 ## Start here
 
-| I want to…                                  | Go to                                                 |
-| ------------------------------------------- | ----------------------------------------------------- |
-| Get it running on one show, start to finish | **[Your first show](Your-First-Show.md)**             |
-| Solve one specific problem                  | **[How-to guides](How-To-Guides.md)**                 |
-| Look up a variable, a filename, a schema    | **[Reference](Reference.md)**                         |
-| Understand why it behaves the way it does   | **[Why it works this way](Why-It-Works-This-Way.md)** |
-| Pick a transcription model for your GPU     | **[Choosing an ASR model](Choosing-an-ASR-Model.md)** |
+| I want to…                                  | Go to                                                                                     |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Get it running on one show, start to finish | **[Your first show](Your-First-Show.md)**                                                 |
+| Solve one specific problem                  | **[How-to guides](How-To-Guides.md)**                                                     |
+| Look up a variable, a filename, a schema    | **[Reference](Reference.md)**                                                             |
+| Understand why it behaves the way it does   | **[Why it works this way](Why-It-Works-This-Way.md)**                                     |
+| Pick a transcription model for your GPU     | **[Choosing an ASR model](Choosing-an-ASR-Model.md)**                                     |
+| Point an AI agent at the project            | **[Agent guide](https://github.com/xenarathon/DubTitlerr/blob/main/docs/AGENT-GUIDE.md)** |
 
 ---
 

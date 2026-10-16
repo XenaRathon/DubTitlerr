@@ -8,6 +8,47 @@ that shipped since.
 
 ## [Unreleased]
 
+### Settings in the web UI
+
+- Every setting the pipeline reads is listed under Settings, in nine category pages, with where its value comes from. The first-wave settings are editable; the rest are read-only until a later release.
+- Saved values are stored in `settings.json` and `secrets.json` in the config volume and reach the builder at its existing boundaries; a reset takes effect without a restart. Settings that need one say "Restart required" and offer Restart Now.
+- Connections: named LLM servers (llama.cpp, Ollama, OpenAI-compatible) with write-only API keys, picked per stage, with a Test button.
+- Migration on first start: `runtime.env` becomes `runtime.env.migrated`, `REPAIR_PROFILES` entries become Connections, and `REPAIR_PROFILES`, `RUNTIME_VERIFY_BACKENDS` and `RUNTIME_DECISION_MODELS` are retired.
+- The generate step now loads Whisper on `ASR_DEVICE` (default `cuda`).
+
+### Added
+
+- **Web UI authentication and user accounts:** Role-based authentication (`admin` and `user`) using scrypt password hashes in `users.json`, server-side sessions in `sessions.json`, HttpOnly SameSite=Strict cookies, and `X-DubTitlerr-Request: 1` CSRF validation. Includes self-service password changes (`PUT /api/me/password`) and user administration under Settings > General (`#/settings/general`) (`GET/POST /api/users`, `PUT/DELETE /api/users/<name>`).
+- **First-run setup wizard:** Initial administrator account setup flow at `/review/setup` (`POST /api/setup`) with optional one-time automated seed from `REVIEW_USERNAME` and `REVIEW_PASSWORD` (or `REVIEW_PASSWORD_FILE`).
+- **Admin API key:** Administrator API key stored with mode 0600 at `CONFIG_DIR/apikey` and passed via `X-Api-Key` header (with deprecated `X-Review-Token` alias). You can copy or reset it under Settings > General > Security.
+- **Administrator recovery CLI:** `review_users.py reset-admin <name>` to reset passwords, generate temporary one-time credentials, and revoke sessions for locked-out administrators.
+- **Full Settings UI:** Nine settings categories (`#/settings`, `#/settings/<category>`) covering General, Library, Transcription, Glossary, Repair, Connections, Output, Schedule, and Connect. Includes editable first-wave settings, provenance badges ("Set here", "From the container", "Default"), write-only secret fields for API tokens, and a Show Advanced toolbar toggle stored in browser `localStorage`.
+- **Settings persistence store:** Atomic writes to `CONFIG_DIR/settings.json` and mode 0600 `CONFIG_DIR/secrets.json` with `.prev` backups. Setting precedence: UI store > container environment > code defaults.
+- **Container soft restart:** Soft restart prompt on saving restart-required settings with Restart Now (`POST /api/system/restart`) and Restart Later options, a pending restart banner, and a reconnect overlay polling container `boot_id`.
+- **LLM Connections:** Named LLM server configurations (llama.cpp, Ollama, OpenAI-compatible) with SSRF protection, write-only keys, connection testing probes, and stage pickers for repair, restore, verify, decision, and acquire.
+- **Run requests and scheduling:** Request queue (`CONFIG_DIR/requests/`), schedule window (`CONFIG_DIR/schedule.json`, `PUT /api/schedule`), priority ordering, and Runs page (`#/runs`).
+- **Sonarr and Radarr webhook receiver:** Webhook routes at `POST /api/webhook/sonarr` and `POST /api/webhook/radarr` using `WEBHOOK_TOKEN` (`X-Webhook-Token` header or `?token=` query) and path translation through `REMOTE_PATH_MAPPINGS`.
+- **Review workspace:** Interactive review interface at `/review` with audio dialogue clip playback (`GET /api/audio`), sortable episode queue and library show picker (`GET /api/shows`), staged batch saves, and stale-tab collision protection.
+- **Duration QC detector:** Subtitle duration issue detection in `qc.py` (schema version 5 in `.dubtitles.qc.json`) recording overlong cards and drip chains (`REASON_OVERLONG`, `REASON_DRIP_CHAIN`).
+- **Glossary Wiki override and test probe:** Per-show MediaWiki API URL override on the Glossary page with an admin-only Test button (`POST /api/glossary/wiki-test`) enforcing https (unless `WIKI_ALLOW_HTTP=1`) and blocking internal network addresses.
+- **Audit logging:** Audit log lines explicitly naming the acting user or API key principal on settings updates, settings reset, container restart, user account administration, and glossary term/wiki edits.
+
+### Changed
+
+- **Default proper noun acquisition (`ACQUIRE_APPLY`):** `ACQUIRE_APPLY` now defaults to `True`. Acquisition writes discovered names by default; only explicit `0`, `false`, `no`, `off`, or `dry-run` enables dry-run mode.
+- **Configurable Whisper device (`ASR_DEVICE`):** The generate step loads Faster-Whisper on `ASR_DEVICE` (default `cuda`), configurable under Settings > Transcription.
+- **Library sweep control (`LIBRARY_SWEEP`):** Added `LIBRARY_SWEEP` setting (default `True` under Schedule). When set to `false`, the periodic generate loop disables root library walks and processes only queued requests; merge passes cover only shows with requests that are pending, running, or finished in the last 7 days.
+- **Startup settings migration:** Existing `runtime.env` files are imported to `settings.json` and renamed to `runtime.env.migrated`. `REPAIR_PROFILES` entries are migrated to Connections under `profiles.migrated`.
+
+### Fixed
+
+- **Run request scoping regex:** `derive_generate_only_re` matches file basenames without prepending show folder names, preventing folder tags like `{tvdb-76894}` from filtering out all episodes.
+- **Hallucination 1-token loop suppression:** Filter runs of single-token loop cards in `hallucination.py` unless the token is a registered glossary name.
+
+### Removed
+
+- **Retired environment variables:** `REVIEW_ADMIN_TOKEN`, `REPAIR_PROFILES`, `RUNTIME_VERIFY_BACKENDS`, and `RUNTIME_DECISION_MODELS` are retired in favor of web UI accounts, Connections, and settings. Legacy `REVIEW_TOKEN` is retired for web UI sessions.
+
 ### Optional flags (the one list; every default read from the code)
 
 With all of them unset, the defaults decided on 2026-10-09 apply (below); setting a variable to its old value restores the old behaviour. Variables are read per call unless noted.
@@ -50,9 +91,9 @@ With all of them unset, the defaults decided on 2026-10-09 apply (below); settin
 | `REPAIR_OPENAI_RETRIES`           | `2` (0 to 5)                                                                             | Retries after HTTP 429 or 5xx (and transport retries) per line                                                                                               | default                             | `0` also disables transport retries                                                                                                                                                                                                                         |
 | `GLOSSARY_LOCK_WAIT`              | `5` s                                                                                    | How long an unattended stage waits for a busy glossary before skipping it (`glossary busy: <stage> skipped`, exit 0)                                         | default                             |                                                                                                                                                                                                                                                             |
 | `GLOSSARY_LOCK_WAIT_INTERACTIVE`  | `600` s                                                                                  | How long a human's `--review`, `--revert` or `--prune-no-match` waits for the final write                                                                    | default                             | `--review` answers are saved to `<glossary>.json.review-pending` on timeout                                                                                                                                                                                 |
-| `SIGNS_CROSS_TRACK_DEDUP`         | `1`                                                                                      | Multi-fansub signs/songs de-duplication: drop secondary-track events matching primary track; `0` restores byte-identical-only dedup                         | default                             | Stacked intra-track events and secondary-only signs are preserved                                                                                                                                                                                            |
-| `DUB_FANSUB_FONT`                 | `1`                                                                                      | Match generated Dubtitles dialogue font to fansub's dialogue style if attached in video or in safe set; `0` forces Trebuchet MS (was Arial)                 | default                             | Safe set without attachment: Arial, Arial Black, Verdana, Tahoma, Trebuchet MS, Georgia, Times New Roman, Calibri, Segoe UI, Open Sans, Roboto                                                                                                             |
-| `GENERATE_ONLY_RE`                | unset                                                                                    | Filter video files during `generate.py --root` walk by regex match on basename; invalid regex fails closed (exit non-zero)   | unset                               | Applies only to `--root` sweeps; explicit file args are not filtered                                                                                                                                                                                        |
+| `SIGNS_CROSS_TRACK_DEDUP`         | `1`                                                                                      | Multi-fansub signs/songs de-duplication: drop secondary-track events matching primary track; `0` restores byte-identical-only dedup                          | default                             | Stacked intra-track events and secondary-only signs are preserved                                                                                                                                                                                           |
+| `DUB_FANSUB_FONT`                 | `1`                                                                                      | Match generated Dubtitles dialogue font to fansub's dialogue style if attached in video or in safe set; `0` forces Trebuchet MS (was Arial)                  | default                             | Safe set without attachment: Arial, Arial Black, Verdana, Tahoma, Trebuchet MS, Georgia, Times New Roman, Calibri, Segoe UI, Open Sans, Roboto                                                                                                              |
+| `GENERATE_ONLY_RE`                | unset                                                                                    | Filter video files during `generate.py --root` walk by regex match on basename; invalid regex fails closed (exit non-zero)                                   | unset                               | Applies only to `--root` sweeps; explicit file args are not filtered                                                                                                                                                                                        |
 
 **Decided defaults (2026-10-09).** Three guards are ON unless set to `0`: `VERIFY_WRITE_WHOLE_WORD`, `VERIFY_SKIP_COMMON_WORDS` and
 `REPAIR_KEEP_NAME_PARTS`. Three defaults changed: `VERIFY_QUEUE_NO_MATCH` is `0` (a term with no candidate is not queued),
