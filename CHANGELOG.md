@@ -8,6 +8,12 @@ that shipped since.
 
 ## [Unreleased]
 
+## 0.3.0 - 2026-10-16
+
+The web UI release. Sign-in with admin and user accounts replaces the shared token, every setting the pipeline
+reads is listed in the web UI (the first wave editable), and run requests and a per-show wiki override join the
+Runs and Glossary pages.
+
 ### Settings in the web UI
 
 - Every setting the pipeline reads is listed under Settings, in nine category pages, with where its value comes from. The first-wave settings are editable; the rest are read-only until a later release.
@@ -44,6 +50,7 @@ that shipped since.
 
 - **Run request scoping regex:** `derive_generate_only_re` matches file basenames without prepending show folder names, preventing folder tags like `{tvdb-76894}` from filtering out all episodes.
 - **Hallucination 1-token loop suppression:** Filter runs of single-token loop cards in `hallucination.py` unless the token is a registered glossary name.
+- **Review inbox on narrow screens:** under 960px wide the episode list is capped in height and choosing an episode scrolls its repairs into view, instead of the editor rendering below every episode row.
 
 ### Removed
 
@@ -753,4 +760,6 @@ episode already in your library is stale.
 
 [0.2.1]: https://github.com/XenaRathon/DubTitlerr/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/XenaRathon/DubTitlerr/compare/v0.1.0...v0.2.0
-[Unreleased]: https://github.com/XenaRathon/DubTitlerr/compare/v0.2.1...HEAD
+[0.3.0]: https://github.com/XenaRathon/DubTitlerr/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/XenaRathon/DubTitlerr/compare/v0.2.1...v0.2.2
+[Unreleased]: https://github.com/XenaRathon/DubTitlerr/compare/v0.3.0...HEAD

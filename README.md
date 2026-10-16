@@ -113,7 +113,7 @@ docker run --rm -u 0 --gpus all -v "/path/to/your/media:/media" -v "/path/to/con
   -e ANIME_ROOT="/media/Anime Library" ghcr.io/xenarathon/dubtitlerr:latest
 ```
 
-**Beta status:** pin a release tag (for example `ghcr.io/xenarathon/dubtitlerr:v0.2.2`; the
+**Beta status:** pin a release tag (for example `ghcr.io/xenarathon/dubtitlerr:v0.3.0`; the
 tags are listed under [Releases](https://github.com/xenarathon/DubTitlerr/releases)) instead of
 `:latest` if you want reproducible version stamps. See the callout above.
 
