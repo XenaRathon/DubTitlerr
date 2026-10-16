@@ -28,6 +28,8 @@ You need:
    `Season 01/` and files tagged `S01E01`.
 4. **A place to run a small language model.** The repair stage needs one. Step 1 sets it up.
 
+Use it on media you own, for personal viewing. The pipeline transcribes dub audio and merges signs and song typography from files you already have. It does not fetch, host, or distribute video, audio, or subtitles for anyone else.
+
 ---
 
 ## Step 1 — Serve the repair model
@@ -146,6 +148,8 @@ Change the two `volumes` lines and `ANIME_ROOT` to match your library. Then:
 docker compose up -d
 docker compose logs -f
 ```
+
+To build the image from source instead of pulling it, use `docker compose up -d --build` (it builds `Dockerfile.builder`).
 
 **`ANIME_ROOT` and `MERGE_ROOTS` have different built-in defaults**, which is why the
 compose file sets all three roots explicitly. Do not remove them.

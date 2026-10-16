@@ -91,6 +91,10 @@ When you move further along, bump the number and restart the container.
 
 ## Redo an episode from scratch
 
+The pipeline never reads its own previous output here: stages that look at embedded subtitles skip the track named `Dubtitles`, and the mux replaces the old `Dubtitles` track in the same pass that adds the new one, so re-running needs no separate strip step for the old track.
+
+Library-wide regeneration follows the pipeline's version stamps, `TRANSCRIBE_VERSION` and `TEXT_VERSION` in `common.py`. When a release raises one, episodes whose stamp records an older version are redone on later sweeps and their track is replaced in place; a failed run leaves the old track untouched. The [CHANGELOG](https://github.com/XenaRathon/DubTitlerr/blob/main/CHANGELOG.md) says which releases changed them.
+
 Delete its sidecars and completion stamp:
 
 ```sh
