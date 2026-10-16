@@ -117,3 +117,20 @@ test('setup that loses the race lands on the sign-in form with a sentence', asyn
   await expect(page.getByRole('heading', { name: 'Open your review workspace' })).toBeVisible();
   await expect(page.getByRole('alert')).toContainText('An account was created while this page was open');
 });
+
+test('a reset forgets earlier failed sign-ins, so a lockout never leaks into the next test', async ({
+  page,
+  request,
+}) => {
+  for (let i = 0; i < 5; i++) {
+    const res = await request.post('/api/login', { data: { username: USERNAME, password: 'wrong' } });
+    expect(res.status()).toBe(401);
+  }
+  expect(
+    (await request.post('/api/login', { data: { username: USERNAME, password: 'wrong' } })).status(),
+  ).toBe(429);
+  await reset(request);
+  await page.goto('/review');
+  await signIn(page);
+  await expect(page.getByRole('heading', { name: 'Review inbox', level: 1 })).toBeVisible();
+});

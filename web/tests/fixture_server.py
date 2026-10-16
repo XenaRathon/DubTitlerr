@@ -152,6 +152,7 @@ def main():
                             record["resolved"] = False
                         file.write_text("".join(json.dumps(r) + "\n" for r in records))
                     rs._QUEUE_CACHE.clear()
+                    rs._THROTTLE = rs.LoginThrottle()  # every test signs in from 127.0.0.1; no lockout may leak across tests
                     for file in (base / "requests").glob("*") if (base / "requests").is_dir() else []:
                         file.unlink()
                     for stale in ("settings.json", "settings.json.prev", "secrets.json", "secrets.json.prev"):
