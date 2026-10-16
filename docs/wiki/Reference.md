@@ -42,13 +42,13 @@ default), so set `-t` above your longest single unit of work. Inside the glossar
 episodes, terms and escalation pairs. Releases up to 0.2.2 check it only before a glossary step
 starts, so an acquire step runs to its end or to `ACQUIRE_TIMEOUT`.
 
-The container runs as **root**, so `generate.py` can chown into the media tree.
+The container runs as **root**, so `generate.py` can chown into the media tree. `Dockerfile` builds a merge-only image (signs and dub merge, no transcribe or repair) and is deprecated. `Dockerfile.builder` is the recommended image.
 
 ---
 
 ## Per-episode files
 
-All are written beside the video, sharing its basename.
+All are written beside the video, sharing its basename. The merged `.ass` keeps the same `...eng.dubtitles.*` name, so it still shows up as the Dubtitles track with signs included. If the sidecar came from subgen with `SKIP_IF_EXTERNAL_SUBTITLES_EXIST`, replacing the `.srt` with the merged `.ass` does not trigger a re-transcribe loop.
 
 | Suffix                           | Written by                                                   | Read by                                      | Contents                                                                                                            |
 | -------------------------------- | ------------------------------------------------------------ | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -69,7 +69,7 @@ All are written beside the video, sharing its basename.
 | `.dubtitles.mux.log`             | `mux.py`                                                     | -                                            | Tracks dropped, defaults set                                                                                        |
 
 A `.stale` suffix is appended to prior-version output during a version upgrade, e.g.
-`.eng.dubtitles.srt.stale`.
+`.eng.dubtitles.srt.stale`. The `.dubtitles.done` stamp is the only already-done signal: an embedded Dubtitles track alone does not count, so episodes muxed before stamps existed regenerate on the first sweep. Run `scripts/migrate_write_v1_stamps.py` first (dry run by default, `--apply` to write); it writes sidecar stamps only, never touches media, and never overwrites an existing stamp.
 
 Per **show** rather than per episode: `.lastrun.json` and the glossary's
 `.acquire-cache.json`.
@@ -347,6 +347,8 @@ Every wiki fetch is https-only. A redirect to another scheme is refused before t
 | `REVIEW_GATE_STALE_DAYS`  | `7`                      | A hold older than this is reported loudly and **stays held**. It buys a log line, never a release |
 | `MEDIA_UID` / `MEDIA_GID` | `1000` / `100`           | Ownership set on written files                                                                    |
 
+The muxed `Dubtitles` track is appended last and flagged default, so the relative order of the other subtitle tracks is unchanged while players pick it up through the default flag. An MP4 or M4V source is removed only after the remuxed MKV verifies and the stamp writes. If the stamp write itself fails, the new MKV is rolled back and the original file is left untouched, so a failed run always leaves something complete on disk. Plex reads `.ass` sidecars and renders styling and positioning on direct-play clients; transcoding clients burn them in.
+
 ### Review server
 
 | Var                     | Default                | Meaning                                                                                                                                           |
@@ -430,7 +432,7 @@ The first start after the upgrade imports the keys an existing `runtime.env` car
 
 ## Glossary file
 
-`$GLOSSARY_DIR/<Show folder name>.json`. Keys not listed here are ignored on load.
+`$GLOSSARY_DIR/<Show folder name>.json`. Keys not listed here are ignored on load. The wiki-verifier is reusable on its own: it makes any mined or community-submitted glossary as accurate as a hand-curated one.
 
 ```json
 {
