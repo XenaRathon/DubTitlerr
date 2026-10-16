@@ -1351,8 +1351,9 @@ textarea {
   .workspace {
     grid-template-columns: 1fr;
   }
+  /* One column: keep the long list scrolling inside itself so the editor below it stays reachable. */
   .episode-list {
-    max-height: none;
+    max-height: max(240px, 40vh);
   }
   .episode-panel .panel-footer {
     display: none;

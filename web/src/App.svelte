@@ -94,6 +94,7 @@
   let occurrence = $state(0);
   let player = $state<HTMLAudioElement>();
   let correction = $state<HTMLTextAreaElement>();
+  let reviewPanel = $state<HTMLElement>();
   let helpDialog = $state<HTMLDialogElement>();
   $effect(() => {
     if (showHelp && helpDialog && !helpDialog.open) helpDialog.showModal();
@@ -364,6 +365,15 @@
     selected = ep;
     activeId = entries[0]?.id ?? '';
   }
+  // Single-column layout (same breakpoint as app.css): the editor sits below the list, so bring it into view.
+  async function revealReviewPanel() {
+    if (!matchMedia('(max-width: 960px)').matches) return;
+    await tick();
+    if (!reviewPanel) return;
+    const calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    reviewPanel.scrollIntoView({ block: 'start', behavior: calm ? 'auto' : 'smooth' });
+    reviewPanel.focus({ preventScroll: true });
+  }
   async function selectEpisode(ep: Episode) {
     if (saving || loading || !discardOK()) return;
     loading = true;
@@ -376,6 +386,7 @@
       order = storedLineSort();
       lineQuery = '';
       risk = 'all';
+      void revealReviewPanel();
     } catch (exc) {
       report(exc);
     } finally {
@@ -787,7 +798,7 @@
               </div>
             </section>
           {/if}
-          <section class="review-panel" aria-label="Review editor">
+          <section class="review-panel" aria-label="Review editor" tabindex="-1" bind:this={reviewPanel}>
             <div class="review-title">
               <h2>
                 {view === 'shared' ? 'Repeated changes' : (selected?.name ?? 'Choose an episode')}
