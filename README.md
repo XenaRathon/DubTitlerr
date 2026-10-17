@@ -29,7 +29,7 @@ flowchart LR
     A[English dub audio] --> B[Transcribe<br/>Whisper]
     B --> C[Reflow<br/>into cards]
     C --> D[Fix names<br/>per-show glossary]
-    D --> E[Repair<br/>local LLM]
+    D --> E[Repair<br/>LLM]
     E --> F[Hallucination<br/>gate]
     F --> G[Merge signs<br/>and songs]
     G --> H[Mux into file<br/>+ Plex refresh]
@@ -38,7 +38,7 @@ flowchart LR
 
 - Transcribe the English dub audio with Whisper (large-v3-turbo by default), then reflow words into clean cards (at most 2 lines, 42 chars, about 17 cps, never shown before spoken).
 - Correct names against a per-show glossary (curated hard_fixes plus a guarded fuzzy match, mined from your files and wiki-verified).
-- Repair low-confidence and name-suspect lines with a local model (qwen3-4b-instruct by default), anchored on the embedded fansub dialogue when present.
+- Repair low-confidence and name-suspect lines with an LLM over any OpenAI-compatible endpoint (your own llama.cpp or Ollama with qwen3-4b-instruct by default, or a hosted API), anchored on the embedded fansub dialogue when present.
 - Drop hallucinated music, silence, and blocklist lines, collapse runaway repeats, and flag the uncertain for review.
 - Merge the on-screen signs and song lyrics into the same subtitle.
 - Mux the result into the file (mp4 episodes are remuxed to mkv) as a default Dubtitles track with the MKV fonts; English audio set default.
@@ -64,13 +64,13 @@ curl -L -o .env https://raw.githubusercontent.com/XenaRathon/DubTitlerr/main/.en
 docker compose up -d
 ```
 
-Then open `http://<host>:8842/review/setup` to create the admin account. You also need a repair model server running; the full setup, from model server to your first muxed show, is in [Your first show](https://github.com/XenaRathon/DubTitlerr/wiki/Your-First-Show).
+Then open `http://<host>:8842/review/setup` to create the admin account. Repair also needs a model endpoint, either one you run or a hosted API; the full setup, from model server to your first muxed show, is in [Your first show](https://github.com/XenaRathon/DubTitlerr/wiki/Your-First-Show).
 
 ## Requirements
 
-- An NVIDIA GPU with CUDA; 6 GB is enough for either Whisper model at the default int8.
+- An NVIDIA GPU with CUDA for transcription; 6 GB is enough for either Whisper model at the default int8.
 - Docker with the NVIDIA container runtime (install nvidia-container-toolkit on the host, or transcription falls back to CPU).
-- A repair model server with an OpenAI-compatible endpoint; the default is llama.cpp serving qwen3-4b-instruct.
+- An OpenAI-compatible endpoint for repair: llama.cpp serving qwen3-4b-instruct is the default, or use a hosted API with a key ([Repair with a hosted model](https://github.com/XenaRathon/DubTitlerr/wiki/How-To-Guides#repair-with-a-hosted-model)). A hosted API receives the lines it repairs.
 - Everything else (ffmpeg, Python packages) is baked into the image, so there is nothing else to install.
 
 ## Documentation
@@ -87,7 +87,7 @@ Then open `http://<host>:8842/review/setup` to create the admin account. You als
 
 ## Status
 
-Beta: One Pace is the only configuration validated so far. Version stamps may be invalidated without notice during the beta, so pin your image tag (for example `ghcr.io/xenarathon/dubtitlerr:v0.3.0`) instead of `:latest`.
+Beta: validated end to end on One Pace, Sword Art Online and Digimon. Version stamps may be invalidated without notice during the beta, so pin your image tag (for example `ghcr.io/xenarathon/dubtitlerr:v0.3.0`) instead of `:latest`.
 
 ## Roadmap
 

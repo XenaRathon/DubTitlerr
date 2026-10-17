@@ -9,7 +9,7 @@ and writes the result back into the file as a subtitle track your player picks u
 
 It runs as one container, per episode, incrementally.
 
-> **This is a beta.** One Pace is the only configuration validated end to end. Other shows
+> **This is a beta.** It is validated end to end on One Pace, Sword Art Online and Digimon. Other shows
 > work and are also where the bugs are found. Version stamps may be invalidated without
 > notice: pin your image tag.
 > If you have pulled a newer image but are not ready to re-transcribe, stop the container until you are.
@@ -35,7 +35,7 @@ It runs as one container, per episode, incrementally.
    sentence-split, at most two lines, timed to the spoken onset.
 2. **Correct names** against a per-show glossary that is mined from your own files and
    checked against the show's wiki.
-3. **Repair** the low-confidence and name-suspect lines with a small local language model,
+3. **Repair** the low-confidence and name-suspect lines with a small language model, local or a hosted API,
    anchored on the existing subtitle track where you have one.
 4. **Gate** the result — drop hallucinated music and silence lines, collapse runaway
    repetition, and flag what it is unsure about for you to read.
@@ -61,10 +61,11 @@ the show.
 
 ## Requirements
 
-- An NVIDIA card with CUDA. 6 GB works; see
+- An NVIDIA card with CUDA for transcription. 6 GB works; see
   [choosing a quantisation](How-To-Guides.md#choose-a-quantisation-for-your-card).
 - Docker with the NVIDIA container runtime.
-- Somewhere to serve a small GGUF language model over an OpenAI-compatible endpoint.
+- An OpenAI-compatible endpoint for repair: a small GGUF model you serve yourself, or a hosted
+  API with a key (see [Repair with a hosted model](How-To-Guides.md#repair-with-a-hosted-model)).
 - A library with English dub audio, laid out as `Show Name (Year)/Season 01/…S01E01…`.
 
 **Image:** `ghcr.io/xenarathon/dubtitlerr`

@@ -7,9 +7,9 @@ season, defaults everywhere — so that when something goes wrong you know where
 Budget about **20 minutes of your attention** and a few hours of the machine's. A 24-minute
 episode takes roughly 5–15 minutes to transcribe depending on your card.
 
-> This is a beta. One Pace is the only configuration that has been validated end to end.
+> This is a beta. It has been validated end to end on One Pace, Sword Art Online and Digimon.
 > Other shows work, and are also where the bugs are. See
-> [Why it works this way](Why-It-Works-This-Way.md#why-one-pace-is-the-only-supported-configuration).
+> [Why it works this way](Why-It-Works-This-Way.md#why-validation-names-three-shows).
 
 ---
 
@@ -26,7 +26,9 @@ You need:
    If that prints your card, you are ready.
 3. **A show with an English dub**, in a folder named like `Show Name (Year)` containing
    `Season 01/` and files tagged `S01E01`.
-4. **A place to run a small language model.** The repair stage needs one. Step 1 sets it up.
+4. **A place to run a small language model.** The repair stage needs one. Step 1 sets it up. To use a
+   hosted API instead, follow [Repair with a hosted model](How-To-Guides.md#repair-with-a-hosted-model)
+   in place of Step 1.
 
 Use it on media you own, for personal viewing. The pipeline transcribes dub audio and merges signs and song typography from files you already have. It does not fetch, host, or distribute video, audio, or subtitles for anyone else.
 
