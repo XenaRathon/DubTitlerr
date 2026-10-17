@@ -21,14 +21,14 @@ import glossary_verify as gv
     ],
 )
 def test_a_non_string_field_is_malformed_not_coerced(reply):
-    cleaned, bad = gv.clean_adjudication(gv.parse_adjudication(reply))
+    cleaned, bad = gv.clean_adjudication(gv.parse_adjudication_checked(reply)[0])
     assert bad is True
     assert cleaned["confidence"] in ("none", "low") and cleaned["canonical"] in ("", "Roronoa Zoro")
     assert "[" not in cleaned["canonical"] and "{" not in cleaned["canonical"]
 
 
 def test_a_well_formed_reply_is_unchanged():
-    got = gv.parse_adjudication('prose {"canonical": "Roronoa Zoro", "confidence": "HIGH", "dub_note": "dub"} more')
+    got = gv.parse_adjudication_checked('prose {"canonical": "Roronoa Zoro", "confidence": "HIGH", "dub_note": "dub"} more')[0]
     assert got == {"canonical": "Roronoa Zoro", "confidence": "high", "dub_note": "dub"}
     assert gv.clean_adjudication(got) == ({"canonical": "Roronoa Zoro", "confidence": "high"}, False)
 

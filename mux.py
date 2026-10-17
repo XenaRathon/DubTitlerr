@@ -727,9 +727,9 @@ def process(orig, apply):
                     f"  ERROR: could not write recovery marker {marker} ({me}) — "
                     "the next sweep will re-mux from a possibly damaged original and overwrite it"
                 )
-            # Move it aside: the next sweep rebuilds `out`, and the window-close sweep
-            # deletes orphan *.muxtmp.mkv. ".recovered" is not an .mkv, so neither mux's
-            # walk, Plex nor that sweep will touch it.
+            # Move it aside: the next sweep rebuilds `out`, and cleanup_old_temps() deletes
+            # orphan *.muxtmp.mkv. ".recovered" is not an .mkv, so neither mux's walk, Plex
+            # nor that cleanup will touch it.
             try:
                 os.replace(out, kept)
             except OSError:

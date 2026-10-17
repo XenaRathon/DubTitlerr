@@ -31,7 +31,7 @@ def test_get_requests_needs_the_review_token_only(env):
     assert rs.route("GET", "/api/requests", {}, None)[0] == 401
     assert rs.route("GET", "/api/requests", {}, "wrong")[0] == 401
     assert rs.route("GET", "/api/requests", {}, TOKEN) == (200, [])
-    assert rs.route("GET", "/api/requests", {}, TOKEN, admin_token="nope")[0] == 200, "reads ignore the admin token"
+    assert rs.route("GET", "/api/requests", {}, TOKEN)[0] == 200, "reads ignore the admin token"
 
 
 def test_post_requests_auth_matrix(env):
@@ -43,12 +43,12 @@ def test_post_requests_auth_matrix(env):
 
 
 def test_a_created_request_is_listed_and_uses_anime_root_from_the_environment(env):
-    _, made = rs.route("POST", "/api/requests", BODY, TOKEN, admin_token=ADMIN)
+    _, made = rs.route("POST", "/api/requests", BODY, TOKEN)
     _, listed = rs.route("GET", "/api/requests", {}, TOKEN)
     assert [r["id"] for r in listed] == [made["id"]]
     assert listed[0]["show"] == "One Pace"
     # a show that is not under ANIME_ROOT is refused by the module, and the route passes its answer through
-    status, payload = rs.route("POST", "/api/requests", {"show": "Nope"}, TOKEN, admin_token=ADMIN)
+    status, payload = rs.route("POST", "/api/requests", {"show": "Nope"}, TOKEN)
     assert status == 400 and "show directory not found" in payload["error"]
 
 

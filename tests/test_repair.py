@@ -1334,7 +1334,7 @@ def test_process_still_anchors_a_plausible_window(tmp_path, monkeypatch):
     assert summary["rules"]["rule_source_window_evaluated"] == 1
 
 
-# --- phonetic name guard (ISSUE-phonetic-name-guard.md) -------------------------
+# --- phonetic name guard (docs/ISSUE-phonetic-name-guard.md) --------------------
 #
 # glossary.correct(new, gloss) already ran on every LLM output before accept_repair sees
 # it (repair.py:449), snapping any token the deterministic tiers can match to a glossary

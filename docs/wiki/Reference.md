@@ -42,7 +42,7 @@ default), so set `-t` above your longest single unit of work. Inside the glossar
 episodes, terms and escalation pairs. Releases up to 0.2.2 check it only before a glossary step
 starts, so an acquire step runs to its end or to `ACQUIRE_TIMEOUT`.
 
-The container runs as **root**, so `generate.py` can chown into the media tree. `Dockerfile` builds a merge-only image (signs and dub merge, no transcribe or repair) and is deprecated. `Dockerfile.builder` is the recommended image.
+The container runs as **root**, so `generate.py` can chown into the media tree. `Dockerfile.builder` is the image; build from it and only from it.
 
 ---
 
@@ -59,7 +59,7 @@ All are written beside the video, sharing its basename. The merged `.ass` keeps 
 | `.dubtitles.done`                | `common.py`, `mux.py`                                        | `generate.py`, `mux.py`                      | Completion stamp: muxed size, mtime, tier versions                                                                  |
 | `.dubtitles.fail`                | `generate.py`                                                | `generate.py`                                | Poison marker after a hard crash. Delete it to retry. Stopping the container no longer leaves one (0.2.2 and later) |
 | `.dubtitles.stages.json`         | `repair.py`, `dub_signs_merge.py`, `mux.py`, `merge_pass.sh` | `merge_pass.sh`, `mux.py`                    | One outcome per stage (repair, signs, mux). See [Stage outcomes](#stage-outcomes)                                   |
-| `.dubtitles.mux-recovery`        | `mux.py`                                                     | `mux.py`, the `deploy/` close unit           | Written when a failed cross-device copy may have damaged the episode. While it exists, mux refuses that episode     |
+| `.dubtitles.mux-recovery`        | `mux.py`                                                     | `mux.py`                                     | Written when a failed cross-device copy may have damaged the episode. While it exists, mux refuses that episode     |
 | `.muxtmp.mkv.recovered`          | `mux.py`                                                     | you                                          | The complete muxed file that failed copy kept. The marker names its path                                            |
 | `.dubtitles.crash.json`          | `generate.py`                                                | -                                            | Exception type, message and time from that crash                                                                    |
 | `.dubtitles.qc.json`             | `generate.py`                                                | `mux.py`                                     | Quality counters, cps quantiles, layout violations, and duration flags (schema version 5: overlong and drip_chain)  |

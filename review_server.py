@@ -44,7 +44,6 @@ Env:
 import datetime
 import hashlib
 import html
-import http.cookies
 import http.server
 import json
 import math
@@ -132,26 +131,6 @@ CONF_SUFFIX = ".dubtitles.conf.json"
 TOKEN_HEADER = "X-Review-Token"
 
 
-def _cookie_token(headers):
-    """The token from the Cookie header's dubtitlerr_token entry, or None.
-
-    A fallback for the PAGE routes only (/, /index.html, /shared): a plain page
-    navigation cannot attach a custom X-Review-Token header, so the token the page's
-    own JS already stores has nowhere to travel except a cookie. /api/* callers
-    (curl, the page's own fetch() calls) keep sending the header; this fallback
-    widens what authorised() will accept, it narrows nothing."""
-    raw = headers.get("Cookie") if hasattr(headers, "get") else None
-    if not raw:
-        return None
-    jar = http.cookies.SimpleCookie()
-    try:
-        jar.load(raw)
-    except http.cookies.CookieError:
-        return None
-    morsel = jar.get("dubtitlerr_token")
-    return morsel.value if morsel else None
-
-
 # 0.0.0.0 because the container is the point -- the operator reaches this from their LAN.
 # That is exactly why an unset REVIEW_TOKEN generates one instead of meaning "open".
 REVIEW_BIND = os.environ.get("REVIEW_BIND", "0.0.0.0")
@@ -161,7 +140,7 @@ REVIEW_BIND = os.environ.get("REVIEW_BIND", "0.0.0.0")
 # opens many at once and each dies after the deadline rather than never -- an indefinite pin
 # becomes a sustained churn. A review is one person clicking buttons; 16 is generous.
 MAX_CONCURRENT = int(os.environ.get("REVIEW_MAX_CONCURRENT", "16"))
-# The token minted this process. authorised() calls resolve_token() per request, so without
+# The token minted this process. review_auth.key_matches() calls resolve_token() per request, so without
 # this a persistence failure would mint a FRESH random token every time -- none of them the
 # one printed at startup -- and every write would 401 forever, including for the operator
 # holding the logged token. Failing closed is right; failing closed against yourself is not.
@@ -298,13 +277,6 @@ ADMIN_ROUTES[("POST", "/api/glossary/wiki-test")] = review_glossary.wiki_test
 ADMIN_ROUTES[("PUT", "/api/schedule")] = lambda body: review_requests.handle(
     "PUT", "/api/schedule", body, anime_root=_anime_root()
 )
-
-
-def authorised(method: str, presented, path: str = "") -> bool:
-    """All routes require the token when auth is enabled."""
-    if not auth_required():
-        return True
-    return review_auth.key_matches(presented)  # the classic pages' token box: the API key by its old name
 
 
 def _stems_ttl(elapsed: float) -> float:
@@ -1011,24 +983,16 @@ def preview_audio(body: dict) -> tuple:
         _AUDIO_SLOTS.release()
 
 
-# debt: ``admin_token`` is accepted and ignored (the admin token is retired); drop the parameter in v0.4.0. It stays until then
-# because tests and older callers still pass it as a keyword.
-def route(
-    method: str, path: str, body: dict, token, client: str = "", admin_token: str = "", headers: dict | None = None
-) -> tuple:
+def route(method: str, path: str, body: dict, token, client: str = "", headers: dict | None = None) -> tuple:
     """(status, payload) for one request; route_full is the same call with the response headers (a Set-Cookie) as a third item."""
-    return route_full(method, path, body, token, client, admin_token, headers)[:2]
+    return route_full(method, path, body, token, client, headers)[:2]
 
 
-# debt: ``admin_token`` is accepted and ignored (the admin token is retired); drop the parameter in v0.4.0. It stays until then
-# because tests and older callers still pass it as a keyword.
-def route_full(
-    method: str, path: str, body: dict, token, client: str = "", admin_token: str = "", headers: dict | None = None
-) -> tuple:
+def route_full(method: str, path: str, body: dict, token, client: str = "", headers: dict | None = None) -> tuple:
     """(status, payload, extra_headers). ``token`` is the pre-accounts calling convention and counts as X-Review-Token;
     ``headers`` carry the Cookie, X-Api-Key and CSRF header. review_auth.decide runs first, on the bare path (no query
-    string): no handler is reached by a caller its route's role does not allow. ``admin_token`` is accepted and ignored (the
-    admin token is retired). ``client`` is the peer address, used only to throttle /api/login."""
+    string): no handler is reached by a caller its route's role does not allow. ``client`` is the peer address,
+    used only to throttle /api/login."""
     bare = path.partition("?")[0]
     hdrs = dict(headers or {})
     if token and not (review_auth.header(hdrs, review_auth.API_KEY_HEADER) or review_auth.header(hdrs, review_auth.ALIAS_HEADER)):
@@ -1036,7 +1000,7 @@ def route_full(
     decision = review_auth.decide(method, bare, hdrs)
     if decision.status is not None:
         return decision.status, {"error": decision.error}, {}
-    result = _route(method, path, bare, body, decision, client, admin_token, hdrs)
+    result = _route(method, path, bare, body, decision, client, hdrs)
     status, payload, extra = result if len(result) == 3 else (*result, {})
     p = decision.principal
     if p is not None and p.kind == "session" and p.refresh and status < 400 and "Set-Cookie" not in extra:
@@ -1048,9 +1012,7 @@ def route_full(
     return status, payload, extra
 
 
-# debt: ``admin_token`` is accepted and ignored (the admin token is retired); drop the parameter in v0.4.0. It stays until then
-# because tests and older callers still pass it as a keyword.
-def _route(method: str, path: str, bare: str, body: dict, decision, client: str, admin_token: str, headers: dict | None) -> tuple:
+def _route(method: str, path: str, bare: str, body: dict, decision, client: str, headers: dict | None) -> tuple:
     """The old route() body: (status, payload) or (status, payload, extra_headers). ``headers`` are read by the webhook
     routes (their own X-Webhook-Token)."""
     if method == "GET" and (path == "/review" or path.startswith("/review/")):
@@ -1517,7 +1479,7 @@ def render_page(stem: str = "") -> str:
 
 
 def render_locked(page_kind: str, setup: bool = False) -> str:
-    """The shell shown instead of render_page()/render_shared() when authorised()
+    """The shell shown instead of render_page()/render_shared() when review_auth.decide()
     refuses the GET -- same chrome (title, CSS, the token box and its JS) as the real
     page, but the episode/shared list is never built: handle_index()/handle_episode()/
     handle_shared() walk MERGE_ROOTS and the decision stores and return every stem and
@@ -1578,7 +1540,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # only calls connection.settimeout() when it is not None -- so without this rfile.read()
     # blocks with no deadline. The 1MB cap bounds MEMORY per request and nothing else: a
     # client declaring a legal length and dripping a byte a minute pins a worker thread
-    # BEFORE authorised() is reached, and ThreadingHTTPServer spawns those threads uncapped.
+    # BEFORE review_auth.decide() is reached, and ThreadingHTTPServer spawns those threads uncapped.
     # 30s is long for a review POST (a verdict is a few hundred bytes) and short for a drip.
     timeout = 30
 
@@ -1662,7 +1624,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._with_body("DELETE")
 
     def _with_body(self, method: str):
-        # The body is read BEFORE authorised() runs, so this bound is what stands between an
+        # The body is read BEFORE review_auth.decide() runs, so this bound is what stands between an
         # unauthenticated caller and this root process's memory. int("-1") does NOT raise, so
         # a declared length of -1 slipped past a `> cap` test and rfile.read(-1) then read to
         # EOF -- unbounded, which is exactly what the check existed to prevent. Anything not

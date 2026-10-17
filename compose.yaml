@@ -25,7 +25,7 @@
 
 services:
   dubtitlerr:
-    # Beta status: pin a release tag (e.g. DUBTITLERR_TAG=v0.1.0-beta in .env)
+    # Beta status: pin a release tag (e.g. DUBTITLERR_TAG=v0.3.0 in .env)
     # instead of :latest if you want reproducible version stamps.
     image: ghcr.io/xenarathon/dubtitlerr:${DUBTITLERR_TAG:-latest}
     # Only used by `docker compose up --build` / `docker compose build`;
