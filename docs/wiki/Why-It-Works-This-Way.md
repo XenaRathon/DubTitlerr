@@ -314,18 +314,27 @@ that failed keep their transcript text.
 
 ---
 
-## Why One Pace is the only supported configuration
+## Why validation names three shows
 
-The code is general. It has no One Pace special cases.
+The code is general. It has no special cases for any show.
 
-But "general" and "validated" are different claims, and only one of them is honest here.
-One Pace is what the pipeline has been measured against, episode by episode, for months. It
-is the show whose glossary is complete, whose failure modes are catalogued, and whose output
-has been watched.
+But "general" and "validated" are different claims. One Pace is the show the pipeline was
+built for and has been measured against, episode by episode, for months: its glossary is
+complete, its failure modes are catalogued, and its output has been watched. Sword Art Online
+and Digimon were added because one show hides whole classes of bug, and each found problems
+One Pace could not:
 
-Other shows work. They are also where the bugs are found — the audio-offset defect that
-shifted every cue in an episode was found on Sword Art Online, not One Pace. That is why
-this version emits loud, non-fatal warnings when it meets a configuration it has not been
-validated on, formatted so you can paste them into an issue.
+- **Sword Art Online** carries real fansub tracks, so repair runs anchored there, while One
+  Pace's S31 has no anchor at all. It found the audio-offset defect that shifted every cue in
+  an episode. It also showed that the glossary miner had never worked: it passed `ffprobe` a
+  flag `ffprobe` does not have and read nothing from any file, which One Pace's hand-curated
+  glossary had hidden. Fixing that exposed an unguarded timeout that killed a whole run, and
+  fixing that exposed the miner reading a signs-and-songs track as if it were dialogue.
+- **Digimon** files carry the official English dub subtitles as an image track, which makes
+  them an answer key. Over episodes 1 to 27, about 91% of the output's words matched it (88 to
+  94% per episode, measured October 2026). Most misses were names: Etemon written as
+  "Edamon", Gennai heard as "Jedi". The official track leaves out shouts and attack calls, so
+  lines with no counterpart there are not counted as errors.
 
-Point it at your library. Expect to file something.
+Other shows work. They are also where the bugs are found. Point it at your library, and expect
+to file something.

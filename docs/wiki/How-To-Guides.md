@@ -676,8 +676,7 @@ Community glossaries live in their own repository with a pull-request path for c
 
 Include:
 
-1. The **log lines around the failure**. Unvalidated-configuration warnings are formatted to
-   be pasted directly.
+1. The **log lines around the failure**.
 2. `.dubtitles.repair-summary.json` — it names the model, the rules and the counts.
 3. `.dubtitles.crash.json`, if there is one.
 4. Whether the show is **anchored or unanchored**, plus the `ffprobe` track listing from the
