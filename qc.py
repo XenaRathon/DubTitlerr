@@ -142,6 +142,7 @@ def detect_duration_flags(cards):
         w = count_words(text)
         if DRIP_MIN_WORDS <= w <= DRIP_MAX_WORDS:
             chain = [c]
+            total_words = w
             j = i + 1
             while j < n:
                 if j in overlong_card_indices:
@@ -157,6 +158,7 @@ def detect_duration_flags(cards):
                 if gap >= DRIP_MAX_GAP:
                     break
                 chain.append(next_c)
+                total_words += next_w
                 j += 1
 
             if len(chain) >= DRIP_MIN_CARDS:
@@ -164,7 +166,6 @@ def detect_duration_flags(cards):
                 latest_end = max(round(float(x.get("end", 0.0)), 3) for x in chain)
                 span = round(latest_end - chain_start, 3)
                 if span > DRIP_MIN_SPAN:
-                    total_words = sum(count_words(x.get("text")) for x in chain)
                     joined_text = " ".join((x.get("text") or "").replace("\n", " ").strip() for x in chain)
                     flags.append(
                         {
