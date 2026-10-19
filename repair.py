@@ -690,7 +690,7 @@ def invents_name(orig, new, gloss):
     # (`that's` is doubly exposed: _read_words drops every wordlist entry containing an
     # apostrophe, so is_english() can never be True for a contraction.)
     proper_cores = _proper_cores
-    orig_all = {m.group(2).lower() for m in (glossary._TOKEN_RE.match(t) for t in (orig or "").split()) if m}
+    orig_all = {m.group(2).lower() for t in (orig or "").split() if (m := glossary._TOKEN_RE.match(t))}
     known = {n.lower() for n in gloss["names"]} | {v.lower() for v in gloss["token_fixes"].values()}
     known |= _phrase_tokens_in(new, gloss.get("phrases") or [])
     return any(c.lower() not in orig_all and c.lower() not in known for c in proper_cores(new))
@@ -698,7 +698,7 @@ def invents_name(orig, new, gloss):
 
 def _core_tokens(text):
     """The lower-cased bare cores (glossary._TOKEN_RE strips surrounding punctuation) of ``text``'s whitespace tokens."""
-    return [m.group(2).lower() for m in (glossary._TOKEN_RE.match(t) for t in (text or "").split()) if m]
+    return [m.group(2).lower() for t in (text or "").split() if (m := glossary._TOKEN_RE.match(t))]
 
 
 def _phrase_tokens_in(text, phrases):
@@ -772,7 +772,7 @@ def _keep_name_parts():
 
 def _name_tokens(text):
     """Lower-cased bare cores of the tokens of ``text`` (punctuation stripped, as the name guards compare them)."""
-    cores = [m.group(2).lower() for m in (glossary._TOKEN_RE.match(t) for t in (text or "").split()) if m]
+    cores = [m.group(2).lower() for t in (text or "").split() if (m := glossary._TOKEN_RE.match(t))]
     # a possessive is the same name: "Momonosuke's" -> "momonosuke"
     return [re.sub(r"(?:['\u2019]s|['\u2019])$", "", c) or c for c in cores]
 
