@@ -259,6 +259,32 @@ def _apply(run_words: list[dict], new_text: str) -> int:
     return changed
 
 
+def _count(rec, name: str, n: int = 1) -> None:
+    if rec is not None and n:
+        rec.count(name, n)
+
+
+def _handle_rejection(orig: str, new: str, a: int, b: int, n_words: int, stem, rec, rejected_events: int) -> int:
+    _count(rec, "restore_rejected_guard")
+    if stem:
+        unresolved.record(
+            stem,
+            "punctuation",
+            "rejected_guard",
+            original_text=orig[:300],
+            proposed_text=new[:300],
+            segments=[a, b],
+            words=n_words,
+            **unresolved.dismissal(orig, new),
+        )
+    if rec is not None and rejected_events < MAX_REJECT_EVENTS:
+        rejected_events += 1
+        rec.event(
+            reason="restore_rejected", segments=[a, b], words=n_words, sent=orig[:200], got=new.replace("\n", " ")[:200]
+        )
+    return rejected_events
+
+
 def restore(words: list[dict], segments: list[dict], rec=None, stem=None) -> None:
     """Restore sentence punctuation in place, before reflow() sees the words.
 
@@ -268,10 +294,6 @@ def restore(words: list[dict], segments: list[dict], rec=None, stem=None) -> Non
     it a dead endpoint is indistinguishable from "nothing needed changing". Never raises: an
     episode that cannot reach the model is an episode that generates exactly as it did
     before this pass existed."""
-
-    def count(name, n=1):
-        if rec is not None and n:
-            rec.count(name, n)
 
     if RESTORE_PUNCTUATION == "0" or not words or not segments:
         return
@@ -283,7 +305,7 @@ def restore(words: list[dict], segments: list[dict], rec=None, stem=None) -> Non
         return  # the episode generates exactly as it did before this pass existed
     texts = segment_texts(words, len(segments))
     sent = find_runs(texts, RESTORE_MIN_RUN)
-    count("restore_runs_seen", len(find_runs(texts, 2)))  # every run; sent may be fewer
+    _count(rec, "restore_runs_seen", len(find_runs(texts, 2)))  # every run; sent may be fewer
     if not sent:
         return
     by_seg: dict[int, list[dict]] = {}
@@ -298,33 +320,17 @@ def restore(words: list[dict], segments: list[dict], rec=None, stem=None) -> Non
         n_words = len(normalise(orig))
         if not n_words:
             continue
-        count("restore_runs_sent")
+        _count(rec, "restore_runs_sent")
         new = _ask(build_prompt(texts[a:b]), n_words)
         if not new:
-            count("restore_empty")
+            _count(rec, "restore_empty")
             # llm_chat() returns "" on EVERY transport failure, so a dead endpoint looks
             # exactly like "no change needed". This is what tells the two apart.
             if stem:
                 unresolved.record(stem, "punctuation", "llm_empty", original_text=orig[:300], segments=[a, b], words=n_words)
             continue
         if not accept_restoration(orig, new):
-            count("restore_rejected_guard")
-            if stem:
-                unresolved.record(
-                    stem,
-                    "punctuation",
-                    "rejected_guard",
-                    original_text=orig[:300],
-                    proposed_text=new[:300],
-                    segments=[a, b],
-                    words=n_words,
-                    **unresolved.dismissal(orig, new),
-                )
-            if rec is not None and rejected_events < MAX_REJECT_EVENTS:
-                rejected_events += 1
-                rec.event(
-                    reason="restore_rejected", segments=[a, b], words=n_words, sent=orig[:200], got=new.replace("\n", " ")[:200]
-                )
+            rejected_events = _handle_rejection(orig, new, a, b, n_words, stem, rec, rejected_events)
             continue
-        count("restore_accepted")
-        count("restore_words_repunctuated", _apply(run_words, new))
+        _count(rec, "restore_accepted")
+        _count(rec, "restore_words_repunctuated", _apply(run_words, new))
