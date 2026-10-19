@@ -275,12 +275,14 @@ def candidates(term: str, titles: list[str], k: int = TOPK) -> list[str]:
 def pending_terms(gloss: dict) -> list[str]:
     """Names + phrases not yet in `verified` (incremental: skip already-verified terms)."""
     verified = set(gloss.get("verified", []))
-    seen, out = set(), []
-    for t in list(gloss.get("names", [])) + list(gloss.get("phrases", [])):
-        if t not in verified and t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out
+    out: dict[str, None] = {}
+    for t in gloss.get("names", []):
+        if t not in verified:
+            out[t] = None
+    for t in gloss.get("phrases", []):
+        if t not in verified:
+            out[t] = None
+    return list(out)
 
 
 def build_adjudication_prompt(term: str, cands: list[str], show: str) -> str:
