@@ -130,6 +130,55 @@ def import_profiles(environ, notes):
     return out
 
 
+def _migrate_values(state, values, notes):
+    imported = []
+    for key in ("REQUIRE_ENG", "ACQUIRE_APPLY"):
+        if key in values and key not in state.values and _flag(values[key]) is not None:
+            state.values[key] = _flag(values[key])
+            imported.append(key)
+    for key in ("REPAIR_MODEL", "VERIFY_BACKEND", "VERIFY_DECISION_MODEL"):
+        if key in values and key not in state.values:
+            try:
+                state.values[key] = reg.validate(key, values[key])
+                imported.append(key)
+            except reg.Invalid:
+                notes.append(f"runtime.env {key} skipped: not a valid value")
+    return imported
+
+
+def _migrate_profiles(state, environ, runtime, imported, imported_keys, notes):
+    defer_profiles = False
+    names = {c["name"] for c in state.connections}
+    profile_notes = []
+    profiles = import_profiles(environ, profile_notes)
+    if state.secrets_error and any(key for _, key in profiles):
+        # save() leaves an unusable secrets.json alone, so a connection created now would lose its key for good: a
+        # rerun skips connections that already exist. Defer the whole import (no connections, no marker) until fixed.
+        defer_profiles = True
+        profiles = []
+        notes.append(
+            f"profile import deferred: {state.secrets_error}; fix or reset secrets.json and the profiles "
+            "(with their keys) are imported at the next start"
+        )
+    else:
+        notes.extend(profile_notes)
+    for conn, key in profiles:
+        if conn["name"] not in names:
+            state.connections.append(conn)
+            names.add(conn["name"])
+            imported.append(f"connection:{conn['name']}")
+            if key:
+                state.conn_keys[conn["name"]] = key
+                imported_keys.append(f"connection:{conn['name']}.api_key")
+    chosen = None if defer_profiles else runtime.get("REPAIR_PROFILE")
+    if chosen and chosen not in names:
+        notes.append(f"REPAIR_PROFILE {chosen!r} is not an imported profile; the repair stage is left unset")
+    elif chosen and "repair" not in state.stages:
+        state.stages["repair"] = chosen
+        imported.append("stages")
+    return defer_profiles
+
+
 def migrate(environ=None):
     """Run the migration. Returns the notes (empty when it did nothing or everything was clean). Never raises."""
     environ = os.environ if environ is None else environ
@@ -154,49 +203,11 @@ def migrate(environ=None):
             state = store.load(environ)
             if state.error:  # secrets are never written here, so an unusable secrets.json must not hold the import back
                 return notes + [state.error]
-            imported = []
-            for key in ("REQUIRE_ENG", "ACQUIRE_APPLY"):
-                if key in values and key not in state.values and _flag(values[key]) is not None:
-                    state.values[key] = _flag(values[key])
-                    imported.append(key)
-            for key in ("REPAIR_MODEL", "VERIFY_BACKEND", "VERIFY_DECISION_MODEL"):
-                if key in values and key not in state.values:
-                    try:
-                        state.values[key] = reg.validate(key, values[key])
-                        imported.append(key)
-                    except reg.Invalid:
-                        notes.append(f"runtime.env {key} skipped: not a valid value")
+            imported = _migrate_values(state, values, notes)
             imported_keys = []
             defer_profiles = False
             if not profiles_done:
-                names = {c["name"] for c in state.connections}
-                profile_notes = []
-                profiles = import_profiles(environ, profile_notes)
-                if state.secrets_error and any(key for _, key in profiles):
-                    # save() leaves an unusable secrets.json alone, so a connection created now would lose its key for good: a
-                    # rerun skips connections that already exist. Defer the whole import (no connections, no marker) until fixed.
-                    defer_profiles = True
-                    profiles = []
-                    notes.append(
-                        f"profile import deferred: {state.secrets_error}; fix or reset secrets.json and the profiles "
-                        "(with their keys) are imported at the next start"
-                    )
-                else:
-                    notes.extend(profile_notes)
-                for conn, key in profiles:
-                    if conn["name"] not in names:
-                        state.connections.append(conn)
-                        names.add(conn["name"])
-                        imported.append(f"connection:{conn['name']}")
-                        if key:
-                            state.conn_keys[conn["name"]] = key
-                            imported_keys.append(f"connection:{conn['name']}.api_key")
-                chosen = None if defer_profiles else runtime.get("REPAIR_PROFILE")
-                if chosen and chosen not in names:
-                    notes.append(f"REPAIR_PROFILE {chosen!r} is not an imported profile; the repair stage is left unset")
-                elif chosen and "repair" not in state.stages:
-                    state.stages["repair"] = chosen
-                    imported.append("stages")
+                defer_profiles = _migrate_profiles(state, environ, runtime, imported, imported_keys, notes)
             if imported:
                 store.save(state, environ)
                 store.audit("migration from runtime.env", imported, imported_keys)

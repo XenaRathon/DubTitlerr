@@ -1,0 +1,10 @@
+pysubs2>=1.7
+faster-whisper>=1.2
+jellyfish>=1.0
+
+[analysis]
+webrtcvad>=2.0
+
+[dev]
+pytest
+ruff
