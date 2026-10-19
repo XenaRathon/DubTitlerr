@@ -892,6 +892,20 @@ def text_stages(stem, words, segments, audio_duration, rec, fail):
     return "ok"
 
 
+def _tier_for_file(v):
+    stem = os.path.splitext(v)[0]
+    if os.path.exists(stem + ".dubtitles.fail"):
+        return None  # poison marker wins, exactly as in needs_work()
+    stale = stale_tiers(read_stamp(stem + STAMP_SUFFIX), v)
+    if not stale:
+        return None
+    if "transcribe" in stale:
+        return "transcribe"
+    if read_words(stem, expect=decoder_identity()) is not None:
+        return "text"
+    return "transcribe"
+
+
 def partition_todo(files):
     """Split outstanding work by TIER: ``(transcribe_todo, text_todo)``.
 
@@ -906,18 +920,11 @@ def partition_todo(files):
     it is far better than being skipped forever for want of a cache."""
     transcribe_todo, text_todo = [], []
     for v in files:
-        stem = os.path.splitext(v)[0]
-        if os.path.exists(stem + ".dubtitles.fail"):
-            continue  # poison marker wins, exactly as in needs_work()
-        stale = stale_tiers(read_stamp(stem + STAMP_SUFFIX), v)
-        if not stale:
-            continue
-        if "transcribe" in stale:
+        tier = _tier_for_file(v)
+        if tier == "transcribe":
             transcribe_todo.append(v)
-        elif read_words(stem, expect=decoder_identity()) is not None:
+        elif tier == "text":
             text_todo.append(v)
-        else:
-            transcribe_todo.append(v)
     return transcribe_todo, text_todo
 
 
