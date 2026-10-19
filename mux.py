@@ -281,9 +281,9 @@ def original_langs(info):
     """Original-language audio = the default audio track's language (fallback: first
     audio track). Anime -> jpn, but adapts to whatever the content actually is."""
     auds = [t for t in info.get("tracks", []) if t["type"] == "audio"]
-    defs = [t for t in auds if (t.get("properties") or {}).get("default_track")]
+    defs = [t for t in auds if (p := t.get("properties")) and p.get("default_track")]
     src = defs or auds[:1]
-    return {((t.get("properties") or {}).get("language") or "").lower() for t in src} - {""}
+    return {lang.lower() for t in src if (p := t.get("properties")) and (lang := p.get("language"))}
 
 
 def _stages_ran(stem: str, src: str) -> dict:
