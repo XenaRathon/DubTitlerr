@@ -14,7 +14,7 @@ export async function reset(request: APIRequestContext) {
 /** Fill the sign-in form that is already on screen and submit it. */
 export async function signIn(page: Page, username = USERNAME, password = PASSWORD) {
   await page.getByLabel('Username').fill(username);
-  await page.getByLabel('Password').fill(password);
+  await page.getByLabel('Password', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Sign in' }).click();
 }
 
