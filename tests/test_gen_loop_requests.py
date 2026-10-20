@@ -1018,9 +1018,3 @@ else:
     done_file = requests_dir / "done" / "20261012T100000Z-88888888.json"
     assert done_file.exists()
     assert json.loads(done_file.read_text())["status"] == "done"
-
-
-
-
-
-

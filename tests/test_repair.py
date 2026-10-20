@@ -3933,3 +3933,17 @@ def test_the_secondary_model_is_not_called_once_the_episode_deadline_has_passed(
     monkeypatch.setenv("REPAIR_EPISODE_DEADLINE", "50")
     assert repair.process(conf_path) == "repaired"
     assert models == [None]  # the first pass pushed the clock past the deadline: no second request
+
+def test_glossary_terms_episode_and_arc_order():
+    gloss = {
+        "names": ["Luffy", "Zoro", "Nami", "Usopp", "Sanji", "Robin"],
+        "phrases": [],
+        "token_fixes": {},
+        "phrase_fixes": {},
+        "episode_tags": {"zoro": ["E1"], "nami": ["E1"]},
+        "arc_tags": {"usopp": ["A1"], "sanji": ["A1"], "robin": ["A2"]}
+    }
+    result = repair._glossary_terms(gloss, episode="E1", arc="A1")
+    # Expected order: episode tags first, then arc tags (including untagged names like Luffy), then rest (Robin from A2)
+    # Order inside groups is preserved from original list: "Zoro, Nami, Luffy, Usopp, Sanji, Robin"
+    assert result == "Zoro, Nami, Luffy, Usopp, Sanji, Robin"

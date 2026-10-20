@@ -1597,9 +1597,3 @@ def test_source_unchanged_same_size_same_mtime_replacement_is_accepted_blind_spo
 
     # Inode/device are dropped, so this is an accepted blind spot (considered unchanged)
     assert mux._source_unchanged(str(f), st0) is True
-
-
-
-
-
-

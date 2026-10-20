@@ -310,6 +310,3 @@ def test_glossary_bakeoff_score_policy_flag(monkeypatch, tmp_path):
     # Explicit production policy
     gb.main(["score", "--items", str(items_f), "--results", str(res_f), "--policy", "production"])
     assert called_policy[-1] == "production"
-
-
-

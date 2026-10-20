@@ -81,4 +81,3 @@ def test_the_report_is_mode_0640_whatever_the_umask(tmp_path):
     finally:
         os.umask(old)
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o640
-

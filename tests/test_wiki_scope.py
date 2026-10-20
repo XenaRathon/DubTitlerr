@@ -867,5 +867,3 @@ def test_range_last_episode_included():
     res = wiki_scope.resolve_scope(cfg, None, [19], fake_http)
     assert res.complete is True
     assert "Zabuza Momochi" in res.titles
-
-

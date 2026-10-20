@@ -438,6 +438,3 @@ def test_chain_span_uses_latest_end_seen():
     assert flags[0]["start"] == 10.0
     assert flags[0]["end"] == 17.5
     assert flags[0]["duration"] == 7.5
-
-
-

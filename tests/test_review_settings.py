@@ -252,4 +252,3 @@ def test_test_backend_redirect_reports_302_and_does_not_leak_auth_to_second_serv
     assert result["ok"] is False
     assert result["error"] == "HTTP 302"
     assert server2_seen == []
-
