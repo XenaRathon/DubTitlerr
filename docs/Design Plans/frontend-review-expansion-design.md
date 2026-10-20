@@ -56,7 +56,7 @@ Requirements that follow from it, regardless of anything else in this document:
   range-request media. No server rendering, no templates carrying UI logic — that is the
   one architecture the rewrite would drag behind it.
 - The UI speaks **documented HTTP JSON**. Stems are opaque IDs. Auth rides
-  `X-Review-Token` for API calls and cookies for sessions/media (below).
+  `X-Api-Key` for API calls and cookies for sessions/media (below).
 - Static assets are embeddable by any backend: Go `embed`, Rust `include_dir`, Python
   `serve_directory` today — the same artifact, three hosts.
 - Nothing client-side imports or assumes Python.

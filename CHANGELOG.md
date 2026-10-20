@@ -8,6 +8,9 @@ that shipped since.
 
 ## [Unreleased]
 
+### Removed
+- The `X-Review-Token` header alias is completely removed; send `X-Api-Key` instead. Note that the audit-log operator for callers passing a key changes from `alias:<name>` to `key:<name>`.
+
 ## 0.3.0 - 2026-10-16
 
 The web UI release. Sign-in with admin and user accounts replaces the shared token, every setting the pipeline
@@ -26,7 +29,7 @@ Runs and Glossary pages.
 
 - **Web UI authentication and user accounts:** Role-based authentication (`admin` and `user`) using scrypt password hashes in `users.json`, server-side sessions in `sessions.json`, HttpOnly SameSite=Strict cookies, and `X-DubTitlerr-Request: 1` CSRF validation. Includes self-service password changes (`PUT /api/me/password`) and user administration under Settings > General (`#/settings/general`) (`GET/POST /api/users`, `PUT/DELETE /api/users/<name>`).
 - **First-run setup wizard:** Initial administrator account setup flow at `/review/setup` (`POST /api/setup`) with optional one-time automated seed from `REVIEW_USERNAME` and `REVIEW_PASSWORD` (or `REVIEW_PASSWORD_FILE`).
-- **Admin API key:** Administrator API key stored with mode 0600 at `CONFIG_DIR/apikey` and passed via `X-Api-Key` header (with deprecated `X-Review-Token` alias). You can copy or reset it under Settings > General > Security.
+- **Admin API key:** Administrator API key stored with mode 0600 at `CONFIG_DIR/apikey` and passed via `X-Api-Key` header. You can copy or reset it under Settings > General > Security.
 - **Administrator recovery CLI:** `review_users.py reset-admin <name>` to reset passwords, generate temporary one-time credentials, and revoke sessions for locked-out administrators.
 - **Full Settings UI:** Nine settings categories (`#/settings`, `#/settings/<category>`) covering General, Library, Transcription, Glossary, Repair, Connections, Output, Schedule, and Connect. Includes editable first-wave settings, provenance badges ("Set here", "From the container", "Default"), write-only secret fields for API tokens, and a Show Advanced toolbar toggle stored in browser `localStorage`.
 - **Settings persistence store:** Atomic writes to `CONFIG_DIR/settings.json` and mode 0600 `CONFIG_DIR/secrets.json` with `.prev` backups. Setting precedence: UI store > container environment > code defaults.

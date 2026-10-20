@@ -115,6 +115,10 @@ def test_the_api_key_decides_when_a_cookie_is_also_present(people):
     assert review_auth.role_for("PUT", "/api/settings", {**people["alice"], "X-Api-Key": KEY}) == ("admin", None)
 
 
+def test_request_carrying_only_review_token_alias_gets_401_even_with_valid_key(people):
+    assert review_auth.role_for("PUT", "/api/settings", {"X-Review-Token": KEY}) == (None, 401)
+
+
 def test_header_names_are_case_insensitive(people):
     assert review_auth.role_for("GET", "/api/episodes", {"x-api-key": KEY}) == ("admin", None)
     cookie = people["alice"]["Cookie"]
@@ -137,10 +141,6 @@ def test_a_valid_session_beats_a_legacy_cookie_and_a_stale_token(people):
         "the legacy cookie does not raise a user to admin"
     )
     assert review_auth.role_for("GET", "/api/me", with_cookie) == ("user", None)
-    stale = {**alice, "X-Review-Token": "token-from-before-a-reset"}
-    assert review_auth.role_for("GET", "/api/episodes", stale) == ("user", None), (
-        "a stale token does not lock a signed-in browser out"
-    )
 
 
 def test_review_auth_off_opens_every_route(env, monkeypatch):

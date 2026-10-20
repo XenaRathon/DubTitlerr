@@ -392,7 +392,6 @@ def test_the_token_is_never_placed_in_a_url(tmp_path, monkeypatch):
     page = review_server.render_page(stem)
 
     assert tok not in page, "the operator pastes the token; the page must never embed it"
-    assert review_server.TOKEN_HEADER.lower() == "x-review-token"
 
 
 def test_a_show_with_an_ampersand_in_its_name_is_still_usable(tmp_path, monkeypatch):
@@ -1997,7 +1996,7 @@ def test_get_api_episodes_without_token_is_401_with_the_literal_body(tmp_path, m
     assert json.loads(wire.wfile.getvalue()) == {"error": "login required"}
 
     wire2 = _Wire()
-    wire2.headers[review_server.TOKEN_HEADER] = tok
+    wire2.headers[review_server.review_auth.API_KEY_HEADER] = tok
     h2 = wire2.as_handler("/api/episodes")
     h2.do_GET()
     assert wire2.status == 200

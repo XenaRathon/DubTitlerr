@@ -101,7 +101,6 @@ def test_the_http_layer_serves_put_with_the_admin_header(env):
             return out
 
         assert put({})[0] == 401
-        assert put({rs.TOKEN_HEADER: TOKEN})[0] != 403
         assert put({"X-Api-Key": TOKEN})[0] != 403
     finally:
         srv.shutdown()

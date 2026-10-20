@@ -47,7 +47,7 @@ def send(srv, method, path, raw, headers=None):
     return r.status, (json.loads(body) if body else {})
 
 
-AUTH = {rs.TOKEN_HEADER: TOKEN, "X-Review-Admin-Token": ADMIN}
+AUTH = {rs.review_auth.API_KEY_HEADER: TOKEN, "X-Review-Admin-Token": ADMIN}
 
 
 @pytest.mark.parametrize("method, path, _admin", NEW_ROUTES)
@@ -68,5 +68,5 @@ def test_no_token_still_gets_401_before_the_body_is_judged(server, method, path,
 
 
 def test_the_old_inbox_routes_keep_treating_garbage_as_an_empty_body(server):
-    status, payload = send(server, "POST", "/api/decide", b"{not json", {rs.TOKEN_HEADER: TOKEN})
+    status, payload = send(server, "POST", "/api/decide", b"{not json", {rs.review_auth.API_KEY_HEADER: TOKEN})
     assert payload != {"error": "invalid JSON"}
