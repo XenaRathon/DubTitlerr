@@ -155,11 +155,7 @@ def _validate_episode_re_grammar(pattern: str) -> None:
 
             total_zero_star_count += 1
             # At most one 0* in the whole pattern, unless it matches the specials anchor ([Ss]0*...[Ee]0*)
-            specials_two = (
-                total_zero_star_count == 2
-                and zero_star_after_s == 1
-                and zero_star_after_e == 1
-            )
+            specials_two = total_zero_star_count == 2 and zero_star_after_s == 1 and zero_star_after_e == 1
             if total_zero_star_count > 2 or (total_zero_star_count == 2 and not specials_two):
                 raise Refused(400, "0* is allowed at most once in episode_re")
 
@@ -259,7 +255,6 @@ def _validate_episode_re_grammar(pattern: str) -> None:
 
     if not branch_stack[-1]["has_substantive_tokens"]:
         raise Refused(400, "empty or quantifier-only branch in episode_re")
-
 
 
 def validate(body: dict, anime_root: str | None = None) -> dict:
@@ -374,21 +369,20 @@ def derive_generate_only_re(show: str, season: int | None = None, episode_re: st
 
     if season is not None and ep:
         if ep.endswith(r"(?!\d)"):
-            ep = ep[:-len(r"(?!\d)")]
+            ep = ep[: -len(r"(?!\d)")]
         branch = f"(?:^|[\\W_])[Ss]0*{season}(?:[\\W_Ee]|(?=[Ee])).*(?:{ep})(?!\\d)"
     elif season is not None:
         # Season-only branch: do NOT append (?!\d) because [Ss]0*1(?=[Ee]|[\W_]|$) already bounds the number
         branch = f"(?:^|[\\W_])[Ss]0*{season}(?=[Ee]|[\\W_]|$)"
     else:
         if ep and ep.endswith(r"(?!\d)"):
-            ep = ep[:-len(r"(?!\d)")]
+            ep = ep[: -len(r"(?!\d)")]
         branch = f"(?:{ep})(?!\\d)"
 
     if not (branch.startswith("(?:") and branch.endswith(")")):
         branch = f"(?:{branch})"
 
     return branch
-
 
 
 def create(
@@ -834,18 +828,20 @@ def is_window_open(schedule_file: str | None = None, now: datetime.datetime | No
 
 
 EFFECTIVE_ENV_ALLOW_PREFIXES = ("REPAIR_", "VERIFY_")
-EFFECTIVE_ENV_ALLOW_EXACT = frozenset((
-    "REQUIRE_ENG",
-    "GLOSSARY_ARC_TAGS",
-    "RESCAN_INTERVAL",
-    "MERGE_WINDOW",
-    "ANIME_ORDER",
-    "ACQUIRE_BACKEND",
-    "WHISPER_MODEL",
-    "COMPUTE_TYPE",
-    "MERGE_ROOTS",
-    "ACQUIRE_APPLY",
-))
+EFFECTIVE_ENV_ALLOW_EXACT = frozenset(
+    (
+        "REQUIRE_ENG",
+        "GLOSSARY_ARC_TAGS",
+        "RESCAN_INTERVAL",
+        "MERGE_WINDOW",
+        "ANIME_ORDER",
+        "ACQUIRE_BACKEND",
+        "WHISPER_MODEL",
+        "COMPUTE_TYPE",
+        "MERGE_ROOTS",
+        "ACQUIRE_APPLY",
+    )
+)
 EFFECTIVE_ENV_SKIP_SUBSTRINGS = ("KEY", "TOKEN", "PASSWORD", "SECRET")
 _SECRET_VALUE_RE = re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{16,}|\bBearer\b")
 _MIN_SECRET_LEN = 8  # shorter values are too common to match against other lines

@@ -60,6 +60,7 @@ def dumped(payload):
 
 # ---- masking: the secret value never appears anywhere ---------------------------------------------------------------
 
+
 def test_backend_errors_cannot_carry_the_key():
     e = env(
         REPAIR_BACKEND="openai",
@@ -76,16 +77,11 @@ def test_backend_errors_cannot_carry_the_key():
 
 # ---- effective.env parsing and precedence ----------------------------------------------------------------------------
 
+
 def test_effective_env_parses_pairs_ignores_comments_and_bad_lines(tmp_path):
     f = tmp_path / "effective.env"
     f.write_text(
-        "# builder snapshot\n"
-        "REPAIR_MODEL=qwen\n"
-        "export QUOTED='spaced value'\n"
-        "EMPTY=\n"
-        "no-equals-here\n"
-        "=no-key\n"
-        "\n",
+        "# builder snapshot\nREPAIR_MODEL=qwen\nexport QUOTED='spaced value'\nEMPTY=\nno-equals-here\n=no-key\n\n",
         encoding="utf-8",
     )
     assert st.read_effective_env(str(f)) == {
@@ -100,6 +96,7 @@ def test_missing_effective_env_is_empty_dict(tmp_path):
 
 
 # ---- backend probes ---------------------------------------------------------------------------------------------------
+
 
 def test_openai_probe_hits_models_with_bearer_key():
     e = env(
@@ -157,7 +154,9 @@ def test_unknown_backend_name_is_unsupported():
 def test_timeout_refused_and_http_statuses_map_to_ok_false():
     e = env()
     assert st.test_backend("repair", e, opener=FakeOpener(error=TimeoutError())) == {
-        "ok": False, "latency_ms": 0, "error": "timed out",
+        "ok": False,
+        "latency_ms": 0,
+        "error": "timed out",
     }
     refused = st.test_backend("repair", e, opener=FakeOpener(error=ConnectionRefusedError()))
     assert refused == {"ok": False, "latency_ms": 0, "error": "connection refused"}
@@ -177,12 +176,11 @@ def test_unconfigured_endpoint_is_a_clean_failure():
 
 # ---- handle dispatch ---------------------------------------------------------------------------------------------------
 
+
 def test_handle_test_round_trips_the_probe(monkeypatch):
     monkeypatch.setattr(st, "EFFECTIVE_ENV_PATH", "/nonexistent-effective.env")
     opener = FakeOpener()
-    status, payload = st.handle(
-        "POST", "/api/settings/test", {"backend": "repair"}, environ=env(), opener=opener
-    )
+    status, payload = st.handle("POST", "/api/settings/test", {"backend": "repair"}, environ=env(), opener=opener)
     assert (status, payload["ok"]) == (200, True)
     assert isinstance(payload["latency_ms"], int)
 
@@ -190,7 +188,8 @@ def test_handle_test_round_trips_the_probe(monkeypatch):
 def test_handle_unknown_backend_is_400(monkeypatch):
     monkeypatch.setattr(st, "EFFECTIVE_ENV_PATH", "/nonexistent-effective.env")
     assert st.handle("POST", "/api/settings/test", {"backend": "bogus"}, environ=env()) == (
-        400, {"error": "unsupported backend"},
+        400,
+        {"error": "unsupported backend"},
     )
     assert st.handle("POST", "/api/settings/test", {}, environ=env())[0] == 400
 
@@ -252,4 +251,3 @@ def test_test_backend_redirect_reports_302_and_does_not_leak_auth_to_second_serv
     assert result["ok"] is False
     assert result["error"] == "HTTP 302"
     assert server2_seen == []
-

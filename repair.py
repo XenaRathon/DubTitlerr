@@ -357,11 +357,10 @@ def _glossary_terms(gloss, arc=None, episode=None):
         if t not in seen:
             seen.add(t)
             out.append(t)
-    lower_map = {t: t.lower() for t in out}
     episode_tags = gloss.get("episode_tags") or {}
     episode_first = []
     if episode and episode_tags:
-        episode_first = [t for t in out if episode in (episode_tags.get(lower_map[t]) or ())]
+        episode_first = [t for t in out if episode in (episode_tags.get(t.lower()) or ())]
     episode_first_set = set(episode_first)
     remaining = [t for t in out if t not in episode_first_set]
     tags = gloss.get("arc_tags") or {}
@@ -372,7 +371,7 @@ def _glossary_terms(gloss, arc=None, episode=None):
         # glossary behind a handful of newly tagged ones, making the first weighted run a
         # strict subset of what the model already had. Only a name KNOWN to belong to other
         # arcs is demoted.
-        in_arc = [t for t in remaining if arc in (tags.get(lower_map[t]) or (arc,))]
+        in_arc = [t for t in remaining if arc in (tags.get(t.lower()) or (arc,))]
         arc_first = in_arc
     else:
         arc_first = []

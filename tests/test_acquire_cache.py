@@ -90,8 +90,7 @@ def test_an_unavailable_result_is_not_memoised():
     `escalate`'s `if not adj` would never ask the LLM again -- one transient outage
     stranding the pair permanently."""
     cache = {}
-    ac.remember_escalation(cache, "Dothamingo", "Doflamingo",
-                                      {"same_entity": False, "confidence": "none", "unavailable": True})
+    ac.remember_escalation(cache, "Dothamingo", "Doflamingo", {"same_entity": False, "confidence": "none", "unavailable": True})
     assert cache == {}, "nothing stored"
     assert ac.escalation_for(cache, "Dothamingo", "Doflamingo") is None, "so the next run retries"
 
@@ -101,11 +100,8 @@ def test_a_genuine_none_confidence_answer_is_still_cached():
     the model looked and was unsure -- and is worth not paying for twice. Only the
     unavailable marker is dropped."""
     cache = {}
-    ac.remember_escalation(cache, "Dothamingo", "Doflamingo",
-                                      {"same_entity": False, "confidence": "none"})
-    assert ac.escalation_for(cache, "Dothamingo", "Doflamingo") == {
-        "same_entity": False, "confidence": "none"
-    }
+    ac.remember_escalation(cache, "Dothamingo", "Doflamingo", {"same_entity": False, "confidence": "none"})
+    assert ac.escalation_for(cache, "Dothamingo", "Doflamingo") == {"same_entity": False, "confidence": "none"}
 
 
 def test_the_unavailable_marker_never_reaches_the_stored_entry():

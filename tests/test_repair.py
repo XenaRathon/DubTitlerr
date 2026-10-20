@@ -2450,7 +2450,7 @@ def test_repair_outputs_have_the_sidecar_mode_and_unchanged_rendering(tmp_path, 
         assert os.stat(stem + suffix).st_mode & 0o777 == common.SIDECAR_MODE, suffix
     assert open(srt_path).read().startswith("1\n00:00:00,000 --> 00:00:01,500\n")
     assert open(stem + ".dubtitles.repair.csv", newline="").read().startswith("orig,repaired,ref,latency_ms\r\n")
-    assert open(stem + ".dubtitles.repair-summary.json").read().startswith("{\n  \"targets\"")
+    assert open(stem + ".dubtitles.repair-summary.json").read().startswith('{\n  "targets"')
 
 
 def test_the_refusal_is_narrow_and_a_quiet_episode_still_rewrites(tmp_path, monkeypatch):
@@ -3933,3 +3933,18 @@ def test_the_secondary_model_is_not_called_once_the_episode_deadline_has_passed(
     monkeypatch.setenv("REPAIR_EPISODE_DEADLINE", "50")
     assert repair.process(conf_path) == "repaired"
     assert models == [None]  # the first pass pushed the clock past the deadline: no second request
+
+
+def test_glossary_terms_episode_and_arc_order():
+    gloss = {
+        "names": ["Luffy", "Zoro", "Nami", "Usopp", "Sanji"],
+        "phrases": [],
+        "token_fixes": {},
+        "phrase_fixes": {},
+        "episode_tags": {"zoro": ["E1"], "nami": ["E1"]},
+        "arc_tags": {"usopp": ["A1"], "sanji": ["A1"]},
+    }
+    result = repair._glossary_terms(gloss, episode="E1", arc="A1")
+    # Expected order: episode tags first (Zoro, Nami), then arc tags (Usopp, Sanji), then rest (Luffy)
+    # Order inside groups is preserved from original list: "Zoro, Nami, Luffy, Usopp, Sanji"
+    assert result == "Zoro, Nami, Luffy, Usopp, Sanji"

@@ -106,7 +106,7 @@ def test_a_saved_token_appears_in_no_response_log_or_report(env, tmp_path, capsy
             "extra_body": {},
             "timeout_connect": 10.0,
             "timeout_read": 120.0,
-        }
+        },
     ]
     st.conn_keys = {"cloud": "sk-conn-key-12345678"}
     store.save(st, env)

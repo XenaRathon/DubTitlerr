@@ -49,7 +49,7 @@ def map_path(path, mappings):
         if path == remote:
             return local
         if path.startswith(remote + "/"):
-            return local + path[len(remote):]
+            return local + path[len(remote) :]
     return path
 
 
@@ -99,7 +99,7 @@ def _path_episodes(text):
         return None, []
     season = int(match.group(1))
     episodes = [int(match.group(2))]
-    episodes.extend(int(n) for n in re.findall(r"[Ee](\d+)", text[match.end():]))
+    episodes.extend(int(n) for n in re.findall(r"[Ee](\d+)", text[match.end() :]))
     return season, episodes
 
 
@@ -133,10 +133,7 @@ def episodes_from_payload(payload):
     if isinstance(numbers, list) and numbers:
         first = numbers[0] if isinstance(numbers[0], dict) else {}
         season = first.get("seasonNumber") if isinstance(first.get("seasonNumber"), int) else None
-        episodes = [
-            e["episodeNumber"] for e in numbers
-            if isinstance(e, dict) and isinstance(e.get("episodeNumber"), int)
-        ]
+        episodes = [e["episodeNumber"] for e in numbers if isinstance(e, dict) and isinstance(e.get("episodeNumber"), int)]
         return season, episodes
     return None, []
 

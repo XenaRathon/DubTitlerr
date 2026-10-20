@@ -227,8 +227,6 @@ pathlib.Path(os.environ["STOP_FLAG"]).touch()
         assert not (root / "PWNED").exists()
 
 
-
-
 # --- stored settings (settings.json) reach the loop at its boundaries -----------------------------------------------------
 
 
@@ -394,8 +392,6 @@ def test_a_saved_acquire_apply_true_applies_and_an_empty_store_means_apply(tmp_p
     env, log_file, _ = _prep_env(tmp_path, "Frieren\n", {"generate": "pathlib.Path(os.environ['STOP_FLAG']).touch()"})
     _run_gen_loop(env)
     assert "acquire Frieren apply" in log_file.read_text()
-
-
 
 
 def test_the_sweep_exits_zero_on_a_soft_stop_with_stored_settings(tmp_path):

@@ -1877,6 +1877,7 @@ def test_a_human_accepting_a_conflict_flag_overrides_the_curated_fix():  # guard
     assert "Edimon" not in g.get("flagged", {})
     assert "Edimon" not in g.get("known", [])
 
+
 # --- round 2: case-insensitive keys, human-approved fixes, both-states, hand edits ---------
 
 

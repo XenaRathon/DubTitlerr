@@ -154,6 +154,7 @@ def test_arc_index_overlapping_two_seasons():
 
 def test_arc_index_season_offsets_mapping():
     """season_offsets maps season-relative episodes to absolute episode numbers."""
+
     def fake_http(url):
         if "action=query" in url and "redirects=1" in url:
             return {"query": {"redirects": []}}
@@ -322,6 +323,7 @@ def test_arc_index_multiple_comma_separated_ranges():
 | Pursuit.
 |}
 """
+
     def fake_http(url):
         if "action=query" in url and "redirects=1" in url:
             return {"query": {"redirects": []}}
@@ -358,6 +360,7 @@ def test_arc_index_drops_smw_double_colon_properties():
 [[Arc number::1]]
 [[Anime::Naruto: Shippūden]]
 """
+
     def fake_http(url):
         if "action=query" in url and "redirects=1" in url:
             return {"query": {"redirects": []}}
@@ -385,6 +388,7 @@ def test_season_page_drops_smw_double_colon_properties():
         {"ns": 0, "*": "Anime::Boruto"},
         {"ns": 0, "*": "Arc number::1"},
     ]
+
     def fake_http(url):
         if "action=query" in url and "redirects=1" in url:
             return {"query": {"redirects": []}}
@@ -410,6 +414,7 @@ def test_season_page_drops_titles_ending_with_ep_code():
         {"ns": 0, "*": "Anthony (EP029)"},
         {"ns": 0, "*": "A.J. (EP009)"},
     ]
+
     def fake_http(url):
         if "action=query" in url and "redirects=1" in url:
             return {"query": {"redirects": []}}
@@ -445,6 +450,7 @@ def test_season_page_drops_titles_from_episode_table_cells():
         {"ns": 0, "*": "Snow Way Out!"},
         {"ns": 0, "*": "Pikachu (Pokémon)"},
     ]
+
     def fake_http(url):
         if "action=query" in url and "redirects=1" in url:
             return {"query": {"redirects": []}}
@@ -478,6 +484,7 @@ def test_season_page_with_explicit_episode_list_page_cfg():
         {"ns": 0, "*": "The First Adventure"},
         {"ns": 0, "*": "Sidekick"},
     ]
+
     def fake_http(url):
         if "action=query" in url and "redirects=1" in url:
             return {"query": {"redirects": []}}
@@ -563,6 +570,7 @@ def test_season_page_episode_list_page_failure_or_error_complete_false():
         "season_page": "S{season:02d}",
         "episode_list_page": "List of episodes S{season:02d}",
     }
+
     # Failure (exception)
     def fake_fail(url):
         if "List%20of%20episodes" in url or "List_of_episodes" in url:
@@ -588,6 +596,7 @@ def test_arc_page_failure_or_error_keeps_complete_false():
         "wiki": "https://naruto.fandom.com/api.php",
         "index_page": "Plot of Naruto",
     }
+
     # Arc page fetch raises exception
     def fake_fail(url):
         if "Plot" in url:
@@ -617,6 +626,7 @@ def test_whole_wiki_page_cap_sets_complete_false():
             "query": {"allpages": [{"title": "Page"}]},
             "continue": {"apcontinue": "TOKEN"},
         }
+
     cfg = {"rung": "whole_wiki", "wiki": "https://naruto.fandom.com/api.php"}
     res = wiki_scope.resolve_scope(cfg, None, None, fake_allpages)
     assert res.complete is False
@@ -705,11 +715,7 @@ def test_redirect_resolution_for_arc_and_season_rungs():
         if "Prologue" in url:
             return {"parse": {"wikitext": {"*": "[[Zabuza]] fought [[Kakashi Hatake]]"}}}
         if "action=query" in url and "redirects=1" in url:
-            return {
-                "query": {
-                    "redirects": [{"from": "Zabuza", "to": "Zabuza Momochi"}]
-                }
-            }
+            return {"query": {"redirects": [{"from": "Zabuza", "to": "Zabuza Momochi"}]}}
         return {"error": {"code": "missingtitle"}}
 
     cfg = {
@@ -725,11 +731,7 @@ def test_redirect_resolution_for_arc_and_season_rungs():
         if "page=S01" in url:
             return {"parse": {"links": [{"ns": 0, "*": "Ash"}, {"ns": 0, "*": "Pikachu"}]}}
         if "action=query" in url and "redirects=1" in url:
-            return {
-                "query": {
-                    "redirects": [{"from": "Ash", "to": "Ash Ketchum"}]
-                }
-            }
+            return {"query": {"redirects": [{"from": "Ash", "to": "Ash Ketchum"}]}}
         return {"error": {"code": "missingtitle"}}
 
     scfg = {
@@ -762,25 +764,23 @@ def test_redirect_resolution_failure_sets_complete_false():
 
 def test_host_safety_rejects_insecure_or_disallowed_hosts(monkeypatch):
     # Insecure scheme http://
-    res_http = wiki_scope.resolve_scope(
-        {"rung": "arc_index", "wiki": "http://naruto.fandom.com/api.php"}, 1, [1], lambda u: {}
-    )
+    res_http = wiki_scope.resolve_scope({"rung": "arc_index", "wiki": "http://naruto.fandom.com/api.php"}, 1, [1], lambda u: {})
     assert res_http.rung == "none"
     assert res_http.complete is False
 
     # Disallowed host
-    res_bad = wiki_scope.resolve_scope(
-        {"rung": "arc_index", "wiki": "https://169.254.169.254/latest"}, 1, [1], lambda u: {}
-    )
+    res_bad = wiki_scope.resolve_scope({"rung": "arc_index", "wiki": "https://169.254.169.254/latest"}, 1, [1], lambda u: {})
     assert res_bad.rung == "none"
     assert res_bad.complete is False
 
     # Allowed via WIKI_HOST_ALLOW
     monkeypatch.setenv("WIKI_HOST_ALLOW", "custom.wiki.org,another.org")
     calls = []
+
     def fake_custom(url):
         calls.append(url)
         return {"error": {"code": "missingtitle"}}
+
     res_allow = wiki_scope.resolve_scope(
         {"rung": "arc_index", "wiki": "https://custom.wiki.org/api.php", "index_page": "Index"}, 1, [1], fake_custom
     )
@@ -789,6 +789,7 @@ def test_host_safety_rejects_insecure_or_disallowed_hosts(monkeypatch):
 
 def test_season_page_plain_replace_instead_of_str_format():
     calls = []
+
     def fake(url):
         calls.append(url)
         return {"parse": {"links": []}}
@@ -812,6 +813,7 @@ def test_default_deny_list_additions():
         {"ns": 0, "*": "Season 1"},
         {"ns": 0, "*": "Series 2"},
     ]
+
     def fake(url):
         return {"parse": {"links": links}}
 
@@ -834,6 +836,7 @@ def test_season_page_drops_non_ns0_links():
         {"ns": 10, "*": "Template:Season"},
         {"ns": 14, "*": "Category:Anime"},
     ]
+
     def fake(url):
         return {"parse": {"links": links}}
 
@@ -867,5 +870,3 @@ def test_range_last_episode_included():
     res = wiki_scope.resolve_scope(cfg, None, [19], fake_http)
     assert res.complete is True
     assert "Zabuza Momochi" in res.titles
-
-

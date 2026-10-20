@@ -532,9 +532,7 @@ def build_report(items, rows, baseline="qwen-local", tau_step=0.05, judged=None,
             policy=policy,
         )
     for floor_name, floor_picks in floors.items():
-        arms[floor_name] = _arm_metrics(
-            floor_name, items_by_id, classes, floor_picks, {}, [], tau_step, order, policy=policy
-        )
+        arms[floor_name] = _arm_metrics(floor_name, items_by_id, classes, floor_picks, {}, [], tau_step, order, policy=policy)
     fwd_all = {a: picks[a]["fwd"] for a in picks} | floors
 
     names = list(arms)

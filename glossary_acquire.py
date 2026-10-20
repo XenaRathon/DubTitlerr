@@ -1404,9 +1404,7 @@ def _acquire(gloss_path: str, show_dir: str, apply: bool = False, override: str 
         try:
             cands_b = glossary_verify.candidates(term, titles)
             # acquire may run on a different backend than verify (ACQUIRE_BACKEND, or local under decision verify)
-            adj = glossary_verify.adjudicate_journaled(
-                term, cands_b, show, journal, backend=glossary_verify.acquire_backend()
-            )
+            adj = glossary_verify.adjudicate_journaled(term, cands_b, show, journal, backend=glossary_verify.acquire_backend())
         except Exception as e:
             log("acquire: adjudicate failed:", term, e)
             continue
@@ -1683,7 +1681,7 @@ def main():
             if item["canonical"]:
                 effect = accept_effect(item["term"], item)
                 if effect == "hard_fix":
-                    log(f"  y rewrites every \"{item['term']}\" in this show")
+                    log(f'  y rewrites every "{item["term"]}" in this show')
                 elif effect == "additive":
                     log("  y adds it as a name only")
                 ans = input("  accept this fix? [y/N/q] ").strip().lower()

@@ -123,4 +123,3 @@ def test_the_same_spelling_is_still_applied(tmp_path):
     Path(str(path) + ".review-pending").write_text(json.dumps({"answers": [["Lufy", True, "Luffy", "respelling-needs-review"]]}))
     ga._commit_answers(str(path), [])
     assert json.loads(path.read_text())["hard_fixes"] == {"Lufy": "Luffy"}
-
