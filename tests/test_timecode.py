@@ -7,7 +7,6 @@ Covers:
 """
 
 import pysubs2
-import pytest
 
 import common
 
@@ -24,7 +23,7 @@ Standard comma separator cue
     assert len(subs) == 1
     ev = subs[0]
     assert ev.start == 62345  # 1m 2s 345ms = 62,345 ms
-    assert ev.end == 65678    # 1m 5s 678ms = 65,678 ms
+    assert ev.end == 65678  # 1m 5s 678ms = 65,678 ms
     assert ev.text == "Standard comma separator cue"
 
 
@@ -139,7 +138,6 @@ def test_ts_srt_formatting_standard_and_edge_values():
     assert common.ts_srt(3661.005) == "01:01:01,005"
 
 
-@pytest.mark.xfail(strict=True, reason="ts_srt does not handle negative input yet")
 def test_ts_srt_negative_timecode_behavior():
     """Document ts_srt behavior on negative inputs (e.g. before zero)."""
     assert common.ts_srt(-0.5) == "00:00:00,000"
