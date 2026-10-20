@@ -247,6 +247,8 @@ def out_for(p):
 
 def ts_srt(t):
     """Format a float number-of-seconds as an SRT timestamp (HH:MM:SS,mmm)."""
+    if t < 0:
+        t = 0
     h = int(t // 3600)
     m = int((t % 3600) // 60)
     s = t % 60
