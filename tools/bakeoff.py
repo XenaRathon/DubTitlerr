@@ -941,7 +941,7 @@ def main():
     ap.add_argument(
         "--openai-url",
         default="",
-        help='send the --models names (as the request\'s "model") to this OpenAI-compatible '
+        help="send the --models names (as the request's \"model\") to this OpenAI-compatible "
         "chat/completions URL instead of Ollama (OpenRouter, Kilo, CommandCode, NVIDIA, ...); "
         "names also listed in --llamacpp / --llamacpp-chat go there instead. Needs --models and --key-env",
     )
@@ -1069,7 +1069,9 @@ def main():
                 f"{len(entries) - len(targets)} target(s) skipped: no fansub reference, and production skips those "
                 "(--include-unanchored, or unanchored_repair in the glossary, judges them)"
             )
-        prompts = [build_prompt(t["text"], t["_ref"], gloss, t["_prev"], t["_next"], t["_arc"], t["_episode"]) for t in targets]
+        prompts = [
+            build_prompt(t["text"], t["_ref"], gloss, t["_prev"], t["_next"], t["_arc"], t["_episode"]) for t in targets
+        ]
         print(
             f"cards={len(cards)} targets={len(targets)} of {len(entries)} in {a.refs} "
             f"({len(entries) - len(targets)} skipped for no ref)  models={a.models}{variant_note}\n"

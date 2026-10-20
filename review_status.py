@@ -134,7 +134,12 @@ def _inspect_episode(stem: str, open_entries, stores: dict) -> dict:
         tv = common._tier_version(stamp, "transcribe_version")
         xv = common._tier_version(stamp, "text_version")
         text_version = xv
-        is_stale = tv is None or tv < common.TRANSCRIBE_VERSION or xv is None or xv < common.TEXT_VERSION
+        is_stale = (
+            tv is None
+            or tv < common.TRANSCRIBE_VERSION
+            or xv is None
+            or xv < common.TEXT_VERSION
+        )
         mtime = _num(stamp.get("mtime"))
         is_muxed = bool(stamp.get("muxed"))
 
@@ -145,7 +150,11 @@ def _inspect_episode(stem: str, open_entries, stores: dict) -> dict:
             stages_raw = json.load(f)
     except (OSError, ValueError):
         stages_raw = {}
-    stages = {k: v for k, v in stages_raw.items() if isinstance(v, dict)} if isinstance(stages_raw, dict) else {}
+    stages = (
+        {k: v for k, v in stages_raw.items() if isinstance(v, dict)}
+        if isinstance(stages_raw, dict)
+        else {}
+    )
 
     # 4. Repair summary (.dubtitles.repair-summary.json) - open directly
     repair_model = _read_repair_summary(stem)

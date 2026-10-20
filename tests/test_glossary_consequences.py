@@ -223,8 +223,8 @@ def test_production_policy_per_outcome_counts_and_legacy_label():
     item_neg = _item("Nilo", ["Nilox"], negative=True)
     pairs = [
         (item_exp, high("Roronoa Zoro"), "expansion_independent"),  # WRITTEN (right)
-        (item_sub, high("Usopp"), "expansion_independent"),  # QUEUED (right candidate held for review)
-        (item_neg, NONE, "negative"),  # RECORDED-NOT-QUEUED (right, none on neg)
+        (item_sub, high("Usopp"), "expansion_independent"),         # QUEUED (right candidate held for review)
+        (item_neg, NONE, "negative"),                               # RECORDED-NOT-QUEUED (right, none on neg)
     ]
     t_prod = gc.tally(pairs, policy="production")
     assert t_prod["mode"] == "PRODUCTION"

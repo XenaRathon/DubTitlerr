@@ -139,7 +139,9 @@ def test_close_service_timeout_exceeds_stop_grace_plus_sweep():
     assert stop_grace >= 600, f"docker stop grace {stop_grace}s is below the 600s floor"
 
     timeout = parse_seconds(unit["keys"]["TimeoutStartSec"])
-    assert timeout > stop_grace + 60, f"TimeoutStartSec {timeout}s must exceed stop grace {stop_grace}s + 60s"
+    assert timeout > stop_grace + 60, (
+        f"TimeoutStartSec {timeout}s must exceed stop grace {stop_grace}s + 60s"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -150,7 +152,9 @@ def test_close_service_escapes_dollars_and_has_no_specifiers():
     for entry in unit["exec_start"]:
         value = entry["value"]
         stripped = re.sub(r"\$\$", "", value)
-        assert "$" not in stripped, f"a single (expanding) $ remains in ExecStart: {value!r}"
+        assert "$" not in stripped, (
+            f"a single (expanding) $ remains in ExecStart: {value!r}"
+        )
 
 
 def test_no_unit_has_a_bare_percent_in_exec_start():
@@ -207,7 +211,9 @@ def test_sweep_removes_orphan_muxtmp_and_keeps_recovery(tmp_path):
     for p in (orphan, orphan_new, kept, kept_new, recovery, recovered, recovered_new, normal, unrelated):
         touch(p)
 
-    proc = subprocess.run(["sh", "-c", script], shell=False, capture_output=True, text=True)
+    proc = subprocess.run(
+        ["sh", "-c", script], shell=False, capture_output=True, text=True
+    )
     assert proc.returncode == 0, f"exit {proc.returncode}: {proc.stderr}"
 
     assert not orphan.exists(), "orphan .muxtmp.mkv should have been removed"

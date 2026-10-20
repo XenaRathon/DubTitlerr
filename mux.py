@@ -532,7 +532,10 @@ def _source_unchanged(orig: str, st: os.stat_result) -> bool:
         curr = os.stat(orig)
     except OSError:
         return False
-    return curr.st_size == st.st_size and abs(curr.st_mtime - st.st_mtime) <= 1.0
+    return (
+        curr.st_size == st.st_size
+        and abs(curr.st_mtime - st.st_mtime) <= 1.0
+    )
 
 
 def cleanup_old_temps(stem: str, now: float | None = None) -> None:
@@ -732,7 +735,8 @@ def process(orig, apply):
             except OSError:
                 kept = out
             damaged = (
-                f"the partial new {os.path.basename(final)} may be damaged and the original {os.path.basename(orig)} is intact"
+                f"the partial new {os.path.basename(final)} may be damaged and the original "
+                f"{os.path.basename(orig)} is intact"
                 if os.path.abspath(orig) != os.path.abspath(final)
                 else "the original may be damaged"
             )

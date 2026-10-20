@@ -258,7 +258,9 @@ def mine_text(text, bare, poss, midsentence, forms=None, lower=None):
                 midsentence.add(core)
 
 
-def admit(bare, poss, midsentence, min_count=None, common=None, existing: Collection = frozenset(), lower=None, dropped=None):
+def admit(
+    bare, poss, midsentence, min_count=None, common=None, existing: Collection = frozenset(), lower=None, dropped=None
+):
     """Two-lane admission -> (new_names, review_queue).
 
         bare >= min_count                              -> auto-append (unchanged behaviour)

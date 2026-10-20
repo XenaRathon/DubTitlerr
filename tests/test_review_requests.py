@@ -162,7 +162,6 @@ def test_derive_generate_only_re():
 
     # Matches 'Show - S01E05' and not S01E50 for episode 5; show name not required in basename
     import re
-
     re5 = derive_generate_only_re("Show", 1, "E05")
     rx5 = re.compile(re5)
     assert rx5.search("Show - S01E05") is not None
@@ -180,17 +179,18 @@ def test_derive_generate_only_re():
 
 def test_derive_generate_only_re_yugioh_regression():
     import re
-
     show = "Yu-Gi-Oh! Duel Monsters (2000) {tvdb-76894}"
     s01e01 = "Yu-Gi-Oh! Duel Monsters (2000) - S01E01 - The Heart of the Cards [SDTV][10bit][Opus 2.0][x265].mkv"
     s00e01 = (
-        "Yu-Gi-Oh! Duel Monsters (2000) - S00E01 - Yu-Gi-Oh! The Movie Pyramid of Light [Bluray-1080p][10bit][Opus 5.1][AV1].mkv"
+        "Yu-Gi-Oh! Duel Monsters (2000) - S00E01 - "
+        "Yu-Gi-Oh! The Movie Pyramid of Light [Bluray-1080p][10bit][Opus 5.1][AV1].mkv"
     )
 
     pattern = derive_generate_only_re(show, 1, None)
     rx = re.compile(pattern)
     assert rx.search(s01e01) is not None
     assert rx.search(s00e01) is None
+
 
 
 def test_create_atomic_permissions_and_schema(tmp_path):
@@ -368,9 +368,13 @@ def test_list_requests_never_walks_and_skips_malformed(tmp_path):
     failed_dir.mkdir(parents=True)
 
     # Valid pending file
-    (req_dir / "20261012T100000Z-11111111.json").write_text(json.dumps({"id": "20261012T100000Z-11111111", "status": "pending"}))
+    (req_dir / "20261012T100000Z-11111111.json").write_text(
+        json.dumps({"id": "20261012T100000Z-11111111", "status": "pending"})
+    )
     # Valid done file
-    (done_dir / "20261012T090000Z-22222222.json").write_text(json.dumps({"id": "20261012T090000Z-22222222", "status": "done"}))
+    (done_dir / "20261012T090000Z-22222222.json").write_text(
+        json.dumps({"id": "20261012T090000Z-22222222", "status": "done"})
+    )
     # Malformed file (invalid json)
     (failed_dir / "20261012T080000Z-33333333.json").write_text("{broken json")
 
@@ -431,15 +435,13 @@ def test_cli_interface(tmp_path, capsys):
     req_id = "20261012T100000Z-12345678"
     req_file = req_dir / f"{req_id}.json"
     req_file.write_text(
-        json.dumps(
-            {
-                "id": req_id,
-                "show": "Frieren",
-                "generate_only_re": r"Frieren.*S01",
-                "require_eng": 1,
-                "status": "pending",
-            }
-        )
+        json.dumps({
+            "id": req_id,
+            "show": "Frieren",
+            "generate_only_re": r"Frieren.*S01",
+            "require_eng": 1,
+            "status": "pending",
+        })
     )
 
     empty_dir = tmp_path / "empty_requests"
@@ -486,29 +488,21 @@ def test_cli_next_skips_bad_file_and_moves_to_failed(tmp_path, capsys):
 
     # Place a hand-crafted bad request file with newline in generate_only_re
     bad_file = req_dir / "20261012T010000Z-bad11111.json"
-    bad_file.write_text(
-        json.dumps(
-            {
-                "id": "20261012T010000Z-bad11111",
-                "show": "Frieren",
-                "generate_only_re": "Frieren\nPATH=/evil\nSHOW=Injected",
-                "status": "pending",
-            }
-        )
-    )
+    bad_file.write_text(json.dumps({
+        "id": "20261012T010000Z-bad11111",
+        "show": "Frieren",
+        "generate_only_re": "Frieren\nPATH=/evil\nSHOW=Injected",
+        "status": "pending",
+    }))
 
     # Place a valid pending request file behind it
     good_file = req_dir / "20261012T020000Z-good2222.json"
-    good_file.write_text(
-        json.dumps(
-            {
-                "id": "20261012T020000Z-good2222",
-                "show": "Frieren",
-                "generate_only_re": r"Frieren.*S01E01",
-                "status": "pending",
-            }
-        )
-    )
+    good_file.write_text(json.dumps({
+        "id": "20261012T020000Z-good2222",
+        "show": "Frieren",
+        "generate_only_re": r"Frieren.*S01E01",
+        "status": "pending",
+    }))
 
     # Invoking CLI next should skip the bad file and return the good file!
     with patch.object(sys, "argv", ["review_requests.py", "next", str(req_dir)]):
@@ -640,6 +634,7 @@ def test_write_effective_env_and_cli(tmp_path, capsys):
     assert "REPAIR_MODEL=qwen3-4b-instruct\n" in cli_out.read_text()
 
 
+
 def test_schedule_api_defaults_and_validation(tmp_path):
     sfile = tmp_path / "schedule.json"
 
@@ -741,6 +736,7 @@ def test_handle_schedule_routes(tmp_path):
     assert status == 405
 
 
+
 def test_h1_validate_rejects_cc_and_cf_in_string_fields():
     # Cc: \x00, \n, \x1f, \x7f
     # Cf: \u200b (zero-width space), \u200e (left-to-right mark)
@@ -771,7 +767,6 @@ def test_h1_finish_and_mark_running_refuse_path_outside_requests_dir(tmp_path, m
 
 def test_h2_redos_alternation_refused_under_one_second():
     import time
-
     start = time.monotonic()
     with pytest.raises(Refused) as exc:
         validate({"show": "Frieren", "episode_re": "(a|aa)*c"}, anime_root=None)
@@ -782,7 +777,6 @@ def test_h2_redos_alternation_refused_under_one_second():
 
 def test_m1_season_only_matches_real_filenames():
     import re
-
     re_s1 = derive_generate_only_re("Show A", 1)
     # Must NOT have trailing (?!\d)
     assert not re_s1.endswith(r"(?!\d)")
@@ -800,6 +794,9 @@ def test_m1_season_only_matches_real_filenames():
     assert rx.search("Show A - S00E01.mkv") is None
     assert rx.search("Show A - S10E01.mkv") is None
     assert rx.search("Show A - S11E01.mkv") is None
+
+
+
 
 
 def test_m3_show_containment_accepts_pokemon_and_rezero(tmp_path):
@@ -892,14 +889,12 @@ def test_l8_same_second_requests_keep_arrival_order(tmp_path):
 
 
 def test_cli_unpack(capsys):
-    raw_json = json.dumps(
-        {
-            "path": "/config/requests/test.json",
-            "show": "Frieren",
-            "generate_only_re": r"Frieren.*S01E01",
-            "require_eng": "1",
-        }
-    )
+    raw_json = json.dumps({
+        "path": "/config/requests/test.json",
+        "show": "Frieren",
+        "generate_only_re": r"Frieren.*S01E01",
+        "require_eng": "1",
+    })
     with patch.object(sys, "argv", ["review_requests.py", "unpack", raw_json]):
         review_requests.main()
 
@@ -1024,13 +1019,11 @@ def test_requeue_atomic_and_status(tmp_path, monkeypatch):
 
     req_file = requests_dir / "20261012T100000Z-11111111.json"
     req_file.write_text(
-        json.dumps(
-            {
-                "id": "20261012T100000Z-11111111",
-                "show": "Frieren",
-                "status": "pending",
-            }
-        )
+        json.dumps({
+            "id": "20261012T100000Z-11111111",
+            "show": "Frieren",
+            "status": "pending",
+        })
     )
 
     running_path = review_requests.mark_running(str(req_file))
@@ -1113,6 +1106,7 @@ def test_h1_empty_or_quantifier_only_branch_refused():
     assert exc2.value.status == 400
 
 
+
 def test_h1_safe_grammar_property_random_walk_timing():
     import random
     import re
@@ -1148,7 +1142,7 @@ def test_h1_safe_grammar_property_random_walk_timing():
 
     def _gen_branch(rng, depth, max_depth):
         parts = []
-        zero_star_allowed = depth <= 1
+        zero_star_allowed = (depth <= 1)
         prefix = rng.choice(["none", "s", "e", "plain"])
         if prefix == "s":
             parts.append(rng.choice(["[Ss]", "S", "s"]))
@@ -1225,6 +1219,13 @@ def test_h1_safe_grammar_property_random_walk_timing():
                 assert dur < 0.020, f"matching {pat} with season={season} on {name} took {dur:.4f}s >= 0.020s"
 
     print(f"Worst case per file: {worst_per_file * 1000:.3f} ms")
+
+
+
+
+
+
+
 
 
 def test_write_effective_env_reports_acquire_apply(tmp_path):

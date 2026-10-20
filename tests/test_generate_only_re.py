@@ -99,7 +99,9 @@ def test_generate_only_re_invalid_fails_closed(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         ordering, "order_files", lambda *a: pytest.fail("ordering.order_files must not be reached on invalid regex")
     )
-    monkeypatch.setattr(generate, "load_glossary", lambda: pytest.fail("load_glossary must not be reached on invalid regex"))
+    monkeypatch.setattr(
+        generate, "load_glossary", lambda: pytest.fail("load_glossary must not be reached on invalid regex")
+    )
     monkeypatch.setattr(generate, "process", lambda v: pytest.fail("process must not be reached on invalid regex"))
 
     with pytest.raises(SystemExit) as exc_info:
