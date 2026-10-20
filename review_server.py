@@ -1031,8 +1031,8 @@ def route_full(
     admin token is retired). ``client`` is the peer address, used only to throttle /api/login."""
     bare = path.partition("?")[0]
     hdrs = dict(headers or {})
-    if token and not (review_auth.header(hdrs, review_auth.API_KEY_HEADER) or review_auth.header(hdrs, review_auth.ALIAS_HEADER)):
-        hdrs[review_auth.ALIAS_HEADER] = token
+    if token and not review_auth.header(hdrs, review_auth.API_KEY_HEADER):
+        hdrs[review_auth.API_KEY_HEADER] = token
     decision = review_auth.decide(method, bare, hdrs)
     if decision.status is not None:
         return decision.status, {"error": decision.error}, {}

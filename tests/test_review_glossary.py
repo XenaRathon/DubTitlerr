@@ -581,8 +581,8 @@ def test_audit_operator_is_token_when_auth_on_and_anonymous_when_off(gdir, tmp_p
         headers={"X-DubTitlerr-Request": "1"},
     )
     lines = [ln for ln in capsys.readouterr().out.splitlines() if "glossary edit" in ln]
-    # the operator names the principal: the API key (here the alias for the review token); nobody with auth off
-    assert "operator=alias:api key" in lines[0] and "operator=anonymous" in lines[1]
+    # the operator names the principal: the API key; nobody with auth off
+    assert "operator=key:api key" in lines[0] and "operator=anonymous" in lines[1]
 
 
 def test_open_routes_is_unchanged():

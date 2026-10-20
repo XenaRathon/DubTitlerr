@@ -18,7 +18,6 @@ def env(tmp_path, monkeypatch):
     for name in ("REVIEW_AUTH", "REVIEW_USERNAME", "REVIEW_PASSWORD", "REVIEW_PASSWORD_FILE"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(review_auth, "SCRYPT_N", 2**4)
-    monkeypatch.setattr(review_auth, "_ALIAS_LOGGED", False)
     monkeypatch.setattr(rs, "ROOTS", [str(tmp_path / "media")])
     monkeypatch.setattr(rs, "_STEMS_CACHE", None)
     monkeypatch.setattr(rs, "_QUEUE_CACHE", {})
@@ -69,13 +68,6 @@ def test_the_key_appears_nowhere_but_the_admin_key_route(env, capsys):
     assert OLD not in json.dumps([settings, me, mode], default=str)
     assert OLD not in capsys.readouterr().out
     assert OLD not in json.dumps(review_auth.read_users())
-
-
-def test_the_alias_works_for_this_release_and_logs_once_per_start(env, capsys):
-    for _ in range(3):
-        assert rs.route("GET", "/api/episodes", {}, None, headers={"X-Review-Token": OLD})[0] == 200
-    lines = [ln for ln in capsys.readouterr().out.splitlines() if "X-Review-Token is deprecated" in ln]
-    assert len(lines) == 1 and OLD not in lines[0]
 
 
 @pytest.mark.parametrize(

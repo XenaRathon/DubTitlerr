@@ -1907,7 +1907,7 @@ def test_get_index_with_the_header_also_shows_the_real_queue(tmp_path, monkeypat
     tok = review_server.resolve_token(str(tmp_path))
 
     wire = _Wire()
-    wire.headers[review_server.TOKEN_HEADER] = tok
+    wire.headers[review_server.review_auth.API_KEY_HEADER] = tok
     h = wire.as_handler("/")
     h.do_GET()
     body = wire.wfile.getvalue().decode()
