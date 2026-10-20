@@ -7,6 +7,7 @@ Covers:
 """
 
 import pysubs2
+import pytest
 
 import common
 
@@ -95,7 +96,8 @@ def test_zero_duration_cue_dialogue_intervals(monkeypatch):
 
 
 def test_out_of_order_start_end_timecodes_in_cue():
-    """Cue where start time is greater than end time (start > end)."""
+    """Records that pysubs2 passes an inverted cue (start > end) through unchanged,
+    and that DubTitlerr does not reject such cues yet."""
     srt_data = """1
 00:00:10,000 --> 00:00:05,000
 Inverted timecode cue
@@ -137,15 +139,10 @@ def test_ts_srt_formatting_standard_and_edge_values():
     assert common.ts_srt(3661.005) == "01:01:01,005"
 
 
+@pytest.mark.xfail(strict=True, reason="ts_srt does not handle negative input yet")
 def test_ts_srt_negative_timecode_behavior():
     """Document ts_srt behavior on negative inputs (e.g. before zero)."""
-    # Negative values use Python integer floor division:
-    # -0.5 // 3600 = -1 (hours = -1 -> "-1")
-    # (-0.5 % 3600) // 60 = 3599 // 60 = 59 (minutes = 59 -> "59")
-    # -0.5 % 60 = 59.5 (seconds = 59.500)
-    formatted = common.ts_srt(-0.5)
-    assert formatted.startswith("-") or "59" in formatted
-    assert common.ts_srt(-0.5) == "-1:59:59,500"
+    assert common.ts_srt(-0.5) == "00:00:00,000"
 
 
 def test_ass_timecode_parsing():
