@@ -127,16 +127,13 @@ _QUEUE_CACHE: dict = {}
 # on every index call is exactly the touch that cache exists to avoid.
 _QUEUE_MTIME: dict = {}
 CONF_SUFFIX = ".dubtitles.conf.json"
-# A HEADER, never a query parameter: a token in a URL lands in proxy logs, browser history
-# and any Referer the page emits.
-TOKEN_HEADER = "X-Review-Token"
 
 
 def _cookie_token(headers):
     """The token from the Cookie header's dubtitlerr_token entry, or None.
 
     A fallback for the PAGE routes only (/, /index.html, /shared): a plain page
-    navigation cannot attach a custom X-Review-Token header, so the token the page's
+    navigation cannot attach a custom X-Api-Key header, so the token the page's
     own JS already stores has nowhere to travel except a cookie. /api/* callers
     (curl, the page's own fetch() calls) keep sending the header; this fallback
     widens what authorised() will accept, it narrows nothing."""
@@ -1025,14 +1022,14 @@ def route(
 def route_full(
     method: str, path: str, body: dict, token, client: str = "", admin_token: str = "", headers: dict | None = None
 ) -> tuple:
-    """(status, payload, extra_headers). ``token`` is the pre-accounts calling convention and counts as X-Review-Token;
+    """(status, payload, extra_headers). ``token`` is the pre-accounts calling convention and counts as X-Api-Key;
     ``headers`` carry the Cookie, X-Api-Key and CSRF header. review_auth.decide runs first, on the bare path (no query
     string): no handler is reached by a caller its route's role does not allow. ``admin_token`` is accepted and ignored (the
     admin token is retired). ``client`` is the peer address, used only to throttle /api/login."""
     bare = path.partition("?")[0]
     hdrs = dict(headers or {})
-    if token and not (review_auth.header(hdrs, review_auth.API_KEY_HEADER) or review_auth.header(hdrs, review_auth.ALIAS_HEADER)):
-        hdrs[review_auth.ALIAS_HEADER] = token
+    if token and not review_auth.header(hdrs, review_auth.API_KEY_HEADER):
+        hdrs[review_auth.API_KEY_HEADER] = token
     decision = review_auth.decide(method, bare, hdrs)
     if decision.status is not None:
         return decision.status, {"error": decision.error}, {}
@@ -1638,7 +1635,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "GET",
             u.path,
             q,
-            self.headers.get(TOKEN_HEADER),
+            None,
             client=self._client(),
             headers=dict(self.headers.items()),
         )
@@ -1704,7 +1701,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             method,
             self.path,
             body,
-            self.headers.get(TOKEN_HEADER),
+            None,
             client=self._client(),
             headers=dict(self.headers.items()),
         )

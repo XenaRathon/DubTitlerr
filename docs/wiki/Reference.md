@@ -606,7 +606,7 @@ Authentication uses role-based access control with two roles: `admin` and `user`
 
 - **User sessions:** Browsers authenticate against scrypt password hashes in `$CONFIG_DIR/users.json`. A successful login sets an HttpOnly, SameSite=Strict session cookie backed by `$CONFIG_DIR/sessions.json`.
 - **CSRF protection:** Browser state-changing requests (POST, PUT, DELETE) must provide an `X-DubTitlerr-Request: 1` header. Origin headers are validated against Host and X-Forwarded-Host headers.
-- **Admin API key:** Automation scripts send the `X-Api-Key` header instead of browser cookies. The key is stored with mode 0600 at `$CONFIG_DIR/apikey`. `X-Review-Token` is accepted as a deprecated alias for the API key.
+- **Admin API key:** Automation scripts send the `X-Api-Key` header instead of browser cookies. The key is stored with mode 0600 at `$CONFIG_DIR/apikey`.
 - **First-run setup:** When no accounts exist, unauthenticated requests to protected routes return 409, directing browsers to `/review/setup`. Setting `REVIEW_USERNAME` and `REVIEW_PASSWORD` (or `REVIEW_PASSWORD_FILE`) automatically creates the initial admin account at first boot.
 - **Disabling authentication:** Setting `REVIEW_AUTH=off` disables role checks on all routes and treats all requests as administrator. Only use this on a private, trusted network.
 - **Audit logging:** Actions that modify settings, connections, accounts, glossaries, or trigger container restarts write log lines that explicitly name the acting user or API key principal.

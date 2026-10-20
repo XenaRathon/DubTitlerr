@@ -23,7 +23,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.delenv("REVIEW_AUTH", raising=False)
     monkeypatch.setattr(review_auth, "SCRYPT_N", 2**4)
     monkeypatch.setattr(review_auth, "_TOKEN_FALLBACK", lambda: KEY)
-    monkeypatch.setattr(review_auth, "_ALIAS_LOGGED", False)
     clock = Clock()
     monkeypatch.setattr(review_auth, "CLOCK", clock)
     return types.SimpleNamespace(dir=tmp_path, clock=clock)
@@ -116,12 +115,8 @@ def test_the_api_key_decides_when_a_cookie_is_also_present(people):
     assert review_auth.role_for("PUT", "/api/settings", {**people["alice"], "X-Api-Key": KEY}) == ("admin", None)
 
 
-def test_the_review_token_header_is_an_alias_of_the_key_and_logs_once(people, capsys):
-    assert review_auth.role_for("GET", "/api/episodes", {"X-Review-Token": KEY}) == ("admin", None)
-    assert review_auth.role_for("PUT", "/api/settings", {"x-review-token": KEY}) == ("admin", None)
-    assert review_auth.role_for("GET", "/api/episodes", {"X-Review-Token": "wrong"}) == (None, 401)
-    lines = [ln for ln in capsys.readouterr().out.splitlines() if "X-Review-Token is deprecated" in ln]
-    assert len(lines) == 1 and KEY not in lines[0]
+def test_request_carrying_only_review_token_alias_gets_401_even_with_valid_key(people):
+    assert review_auth.role_for("PUT", "/api/settings", {"X-Review-Token": KEY}) == (None, 401)
 
 
 def test_header_names_are_case_insensitive(people):
@@ -146,10 +141,6 @@ def test_a_valid_session_beats_a_legacy_cookie_and_a_stale_token(people):
         "the legacy cookie does not raise a user to admin"
     )
     assert review_auth.role_for("GET", "/api/me", with_cookie) == ("user", None)
-    stale = {**alice, "X-Review-Token": "token-from-before-a-reset"}
-    assert review_auth.role_for("GET", "/api/episodes", stale) == ("user", None), (
-        "a stale token does not lock a signed-in browser out"
-    )
 
 
 def test_review_auth_off_opens_every_route(env, monkeypatch):

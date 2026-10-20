@@ -6,7 +6,7 @@ Clients must not construct paths or infer filesystem access from a stem.
 
 ## Authorization and response handling
 
-Send `X-Review-Token: <token>` on every `/api/*` request except the open routes below.
+Send `X-Api-Key: <token>` on every `/api/*` request except the open routes below.
 Existing cookie authorization also remains supported by the Python handler. Missing/invalid
 credentials return HTTP 401 with `{"error":"a token is required"}` unless `REVIEW_AUTH=off`
 was explicitly configured. Tokens do not belong in URLs. All responses carry

@@ -569,7 +569,6 @@ def reset_api_key() -> str:
 SESSION_COOKIE = "dubtitlerr_session"
 LEGACY_COOKIE = "dubtitlerr_token"
 API_KEY_HEADER = "X-Api-Key"
-ALIAS_HEADER = "X-Review-Token"
 CSRF_HEADER = "X-DubTitlerr-Request"
 
 ROUTE_ROLES: dict[tuple[str, str], str] = {}
@@ -697,16 +696,6 @@ class Decision:
     principal: Principal | None
 
 
-_ALIAS_LOGGED = False
-
-
-def _note_alias() -> None:
-    global _ALIAS_LOGGED
-    if not _ALIAS_LOGGED:
-        _ALIAS_LOGGED = True
-        log("review server: X-Review-Token is deprecated; it works as an alias of X-Api-Key for this release only")
-
-
 _PAGE_PATHS = ("/", "/index.html", "/shared")
 
 
@@ -734,16 +723,9 @@ def authenticate(headers, method: str = "GET", path: str = "") -> Principal | No
     principal = _session_principal(headers)
     if principal is not None:
         return principal
-    presented = header(headers, ALIAS_HEADER)
-    if presented:
-        if not key_matches(presented):
-            return None
-        _note_alias()
-        return Principal("alias", "api key", "admin")
     if method in ("GET", "HEAD") and path in _PAGE_PATHS:
         legacy = _cookie(headers, LEGACY_COOKIE)
         if legacy and key_matches(legacy):
-            _note_alias()
             return Principal("alias", "api key", "admin")
     return None
 
@@ -801,7 +783,7 @@ def decide(method: str, path: str, headers) -> Decision:
     if required == "public":
         return Decision(principal.role if principal else "public", None, "", required, known, principal)
     if principal is None:
-        if header(headers, API_KEY_HEADER) or header(headers, ALIAS_HEADER):
+        if header(headers, API_KEY_HEADER):
             return _refuse(401, required, known)
         return _refuse(409 if setup_required() else 401, required, known)
     if principal.kind == "session" and _csrf_refusal(method, headers):

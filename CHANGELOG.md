@@ -8,6 +8,9 @@ that shipped since.
 
 ## [Unreleased]
 
+### Removed
+- The `X-Review-Token` header alias is completely removed; send `X-Api-Key` instead. Note that the audit-log operator for callers passing a key changes from `alias:<name>` to `key:<name>`.
+
 ## 0.3.0 - 2026-10-16
 
 The web UI release. Sign-in with admin and user accounts replaces the shared token, every setting the pipeline

@@ -84,13 +84,20 @@ def test_a_real_socket_get_api_episodes_gated_by_token(monkeypatch, tmp_path):
 
         # With token → 200
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2.0)
-        conn.request("GET", "/api/episodes", headers={"X-Review-Token": token})
+        conn.request("GET", "/api/episodes", headers={"X-Api-Key": token})
         resp = conn.getresponse()
         body = resp.read()
         assert resp.status == 200
         data = json.loads(body.decode("utf-8"))
         assert isinstance(data, dict)
         assert isinstance(data.get("episodes"), list)
+        conn.close()
+
+        # With deprecated alias → 401
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2.0)
+        conn.request("GET", "/api/episodes", headers={"X-Review-Token": token})
+        resp = conn.getresponse()
+        assert resp.status == 401
         conn.close()
 
     finally:
