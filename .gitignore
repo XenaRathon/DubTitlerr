@@ -5,6 +5,8 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+# setuptools metadata written by `pip install -e .`; build output, never committed
+*.egg-info/
 
 # Svelte review workspace build and browser-test output
 web/node_modules/
