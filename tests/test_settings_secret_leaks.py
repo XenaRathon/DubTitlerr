@@ -14,7 +14,7 @@ import review_server as rs
 import settings_api as api
 import settings_store as store
 
-TOKEN = "plex-tok-7f3a91c2d8e54b60"
+TOKEN = "plex-tok-7f3a91c2d8e54b60"  # gitleaks:allow -- test fixture, not a real credential
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -44,7 +44,7 @@ def exported_environment(scope, tmp_path):
     return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
 
 
-CONN_SECRET = "sk-conn-body-leak-987654321"
+CONN_SECRET = "sk-conn-body-leak-987654321"  # gitleaks:allow -- test fixture, not a real credential
 URL_PW = "hunter2-conn-secret"
 
 

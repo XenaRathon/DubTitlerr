@@ -13,11 +13,11 @@ import glossary_decision as gd
 import glossary_verify as gv
 
 HOSTED_ENV = {
-    "TEST_DECISION_KEY": "sk-test-0123456789",
+    "TEST_DECISION_KEY": "sk-test-0123456789",  # gitleaks:allow -- test fixture, not a real credential
     "VERIFY_DECISION_KEY_ENV": "TEST_DECISION_KEY",
     "VERIFY_OPENAI_URL": "https://api.example.test/v1/chat/completions",
     "VERIFY_OPENAI_KEY_ENV": "TEST_OPENAI_KEY",
-    "TEST_OPENAI_KEY": "sk-test-0123456789",
+    "TEST_OPENAI_KEY": "sk-test-0123456789",  # gitleaks:allow -- test fixture, not a real credential
     "VERIFY_MODEL": "some-model",
 }
 

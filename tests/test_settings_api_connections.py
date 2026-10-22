@@ -14,7 +14,7 @@ import pytest
 import settings_api as api
 import settings_store as store
 
-KEY = "sk-conn-key-0123456789abcdef"
+KEY = "sk-conn-key-0123456789abcdef"  # gitleaks:allow -- test fixture, not a real credential
 LOCAL = {"name": "local", "kind": "llamacpp", "url": "http://192.168.1.20:8090/v1/chat/completions", "model": "qwen3-4b-instruct"}
 CLOUD = {
     "name": "cloud",

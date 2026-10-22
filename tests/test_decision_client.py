@@ -7,7 +7,7 @@ import pytest
 import decision_client as dc
 import repair
 
-KEY = "sk-SENTINEL-KEY-12345"
+KEY = "sk-SENTINEL-KEY-12345"  # gitleaks:allow -- test fixture, not a real credential
 MODEL = "inception/mercury-decide:free"
 CHOICE_Q = {
     "pick": {"type": "choice", "instructions": "Which?", "criteria": {"c1": "Zoro", "c2": "Luffy", "none": "no candidate"}}

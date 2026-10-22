@@ -9,7 +9,7 @@ import settings_api as api
 import settings_registry as reg
 import settings_store as store
 
-SECRET = "plex-secret-7c1e9a52b8d4"
+SECRET = "plex-secret-7c1e9a52b8d4"  # gitleaks:allow -- test fixture, not a real credential
 
 
 @pytest.fixture

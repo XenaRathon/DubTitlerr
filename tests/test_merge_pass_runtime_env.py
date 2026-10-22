@@ -224,7 +224,7 @@ def test_a_hostile_key_in_settings_json_creates_no_file_through_merge_pass(harne
 def test_the_merge_report_is_0640_and_holds_neither_a_secret_nor_url_user_info(harness):
     seen, res = harness(
         {"REPAIR_LLAMACPP_URL": "http://reporter:hunter22@gpu.lan:8090/v1", "PLEX_URL": "http://plex.lan:32400"},
-        secrets={"PLEX_TOKEN": "tok-merge-0123456789"},
+        secrets={"PLEX_TOKEN": "tok-merge-0123456789"},  # gitleaks:allow -- test fixture, not a real credential
         values={"WHISPER_BEAM_SIZE": 5},
     )
     assert seen is not None, res.stdout + res.stderr
@@ -272,7 +272,7 @@ class _Backend:
 
 def test_the_repair_stage_connection_and_its_key_reach_the_backend_in_the_next_pass(harness):
     backend = _Backend()
-    key = "sk-merge-pass-key-0123456789"
+    key = "sk-merge-pass-key-0123456789"  # gitleaks:allow -- test fixture, not a real credential
     try:
         conn = {
             "name": "fixture",
