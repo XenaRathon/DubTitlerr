@@ -17,7 +17,7 @@ OK = {"choices": [{"message": {"content": "fixed line"}}]}
 def env(monkeypatch):
     monkeypatch.setattr(repair, "OPENAI_URL", "https://api.example.test/v1/chat/completions")
     monkeypatch.setattr(repair, "OPENAI_KEY_ENV", "TEST_REPAIR_KEY")
-    monkeypatch.setenv("TEST_REPAIR_KEY", "sk-test-0123456789")
+    monkeypatch.setenv("TEST_REPAIR_KEY", "sk-test-0123456789")  # gitleaks:allow -- test fixture, not a real credential
     monkeypatch.setenv("REPAIR_EXTRA_BODY", "")
     monkeypatch.delenv("REPAIR_OPENAI_RETRIES", raising=False)
     monkeypatch.delenv("REPAIR_TRANSPORT_RETRIES", raising=False)

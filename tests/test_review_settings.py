@@ -246,7 +246,7 @@ def test_test_backend_redirect_reports_302_and_does_not_leak_auth_to_second_serv
         REPAIR_BACKEND="openai",
         REPAIR_OPENAI_URL=f"http://127.0.0.1:{s1_port}",
         REPAIR_OPENAI_KEY_ENV="TEST_KEY",
-        TEST_KEY="sk-PROBEKEY123",
+        TEST_KEY="sk-PROBEKEY123",  # gitleaks:allow -- test fixture, not a real credential
     )
     result = st.test_backend("repair", e)  # opener is None
     assert result["ok"] is False

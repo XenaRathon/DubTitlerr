@@ -12,7 +12,7 @@ import glossary_acquire as ga
 import glossary_decision as gd
 import glossary_verify as gv
 
-KEY = "sk-or-SECRET-key-0123456789"
+KEY = "sk-or-SECRET-key-0123456789"  # gitleaks:allow -- test fixture, not a real credential
 MODEL = "inception/mercury-decide:free"
 TITLES = ["Roronoa Zoro", "Zorro"]
 

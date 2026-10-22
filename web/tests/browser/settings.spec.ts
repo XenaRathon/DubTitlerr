@@ -550,7 +550,7 @@ test('a connection is created, picked for the repair stage, saved and tested wit
 test('a key is write-only, and changing the URL says that the stored key will be cleared', async ({
   page,
 }) => {
-  const key = 'sk-conn-key-0123456789abcdef';
+  const key = 'sk-conn-key-0123456789abcdef';  // gitleaks:allow -- test fixture, not a real credential
   await openSignedIn(page, '#/settings/connections');
   const card = await addConnection(page, {
     name: 'hosted',
@@ -641,7 +641,7 @@ test('an extra body is write-only: shown as set, kept across saves, replaced onl
     kind: 'openai',
     url: HOSTED_URL,
     model: 'gpt-x',
-    key: 'sk-conn-key-0123456789abcdef',
+    key: 'sk-conn-key-0123456789abcdef',  // gitleaks:allow -- test fixture, not a real credential
   });
   await card.getByLabel('Replace body', { exact: true }).fill('{"tag": "zz-private-91"}');
   await page.getByRole('button', { name: 'Save Changes' }).click();

@@ -9,7 +9,7 @@ import common
 import glossary_acquire as ga
 import glossary_verify as gv
 
-KEY = "sk-test-SECRET-0123456789"
+KEY = "sk-test-SECRET-0123456789"  # gitleaks:allow -- test fixture, not a real credential
 
 # ---- the VERIFY_BACKEND rule ------------------------------------------------------------------------------------------------
 

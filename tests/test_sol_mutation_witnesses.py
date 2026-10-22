@@ -64,7 +64,7 @@ def test_a_configured_openai_url_with_a_query_reaches_the_request_and_is_accepte
     assert common.openai_endpoint_problem(url) in ("", None)
     monkeypatch.setattr(repair, "OPENAI_URL", url)
     monkeypatch.setattr(repair, "OPENAI_KEY_ENV", "TEST_REPAIR_KEY")
-    monkeypatch.setenv("TEST_REPAIR_KEY", "sk-test-0123456789")
+    monkeypatch.setenv("TEST_REPAIR_KEY", "sk-test-0123456789")  # gitleaks:allow -- test fixture, not a real credential
     monkeypatch.setenv("REPAIR_EXTRA_BODY", "")
     monkeypatch.setattr(repair.http.client, "HTTPSConnection", _recording_conn(paths))
     assert repair.llm_openai("P", None) == "fixed line"

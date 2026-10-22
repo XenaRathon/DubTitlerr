@@ -577,7 +577,7 @@ def test_write_effective_env_and_cli(tmp_path, capsys):
         "REPAIR_BACKEND": "llamacpp\nextra_line",
         "REPAIR_MODEL": "qwen3-4b-instruct",
         "REPAIR_LLAMACPP_URL": "http://desk-gpu:8090/v1",
-        "REPAIR_OPENAI_API_KEY": "sk-secret-1234567890abcdef",
+        "REPAIR_OPENAI_API_KEY": "sk-secret-1234567890abcdef",  # gitleaks:allow -- test fixture, not a real credential
         "REPAIR_EXTRA_BODY": '{"headers":{"Authorization":"Bearer secret"}}',
         "REPAIR_PROMPT": "Bearer token123",
         "REPAIR_USERINFO": "https://user:pass@host/v1",

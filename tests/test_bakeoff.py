@@ -634,7 +634,7 @@ def test_comparison_marks_which_answers_would_ship():
 
 import urllib.error  # noqa: E402
 
-_KEY = "sk-bakeoff-SECRET-456"
+_KEY = "sk-bakeoff-SECRET-456"  # gitleaks:allow -- test fixture, not a real credential
 
 
 def _http_error(code, retry_after=None):

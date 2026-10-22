@@ -30,7 +30,7 @@ def test_registry_secrets_and_key_holders_are_never_reported(tmp_path):
         tmp_path,
         {
             "PLEX_TOKEN": TOKEN,
-            "WATCHSTATE_API_KEY": "ws-api-key-abcdef123456",
+            "WATCHSTATE_API_KEY": "ws-api-key-abcdef123456",  # gitleaks:allow -- test fixture, not a real credential
             "DT_CONN_KEY_REPAIR": KEY,
             "GITHUB_PAT": "ghp_abcdefghijklmnop",
             "WHISPER_BEAM_SIZE": "5",
