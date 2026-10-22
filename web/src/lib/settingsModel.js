@@ -127,7 +127,11 @@ function coerce(entry, draft) {
  * @param {unknown} stages
  */
 export function isDirty(values, connections, stages) {
-  return Object.keys(values).length > 0 || (connections !== null && connections !== undefined) || (stages !== null && stages !== undefined);
+  return (
+    Object.keys(values).length > 0 ||
+    (connections !== null && connections !== undefined) ||
+    (stages !== null && stages !== undefined)
+  );
 }
 
 /** @param {boolean} dirty */
