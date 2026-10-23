@@ -1,6 +1,6 @@
 # chore(backlog): close runtime-toggles, add runtime-kill-switches (PR #37)
 
-Status: open (reviewer + critic PASS at 81d7f8c, 2026-10-23)
+Status: closed 2026-10-23 (reviewer + critic PASS at 81d7f8c, 2026-10-23)
 Created: 2026-10-23
 Type: code
 Assigned: code-coder (fix round; first version by lead)
