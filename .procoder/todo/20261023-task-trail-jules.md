@@ -1,6 +1,6 @@
 # docs: land the task-file trail for the Jules jobs (#32, #35)
 
-Status: in review (reviewer PASS, critic next, 2026-10-23)
+Status: open (reviewer + critic PASS at 472e9de, 2026-10-23)
 Created: 2026-10-23
 Type: code
 Assigned: code-coder
@@ -22,11 +22,11 @@ Two Jules jobs ran with their procoder task files on local branches. Jules opene
 
 ## Acceptance criteria
 
-- [ ] `git diff --stat origin/main HEAD` lists only the two task files, plus this task file.
-- [ ] Each file is byte-identical to its source branch: `git diff task/jules-debt-cleanup HEAD -- .procoder/todo/20261022-gate-debt-cleanup.md` and `git diff task/jules-pre-1.0-redo HEAD -- .procoder/todo/20261023-pre-1-0-cleanup-redo.md` are both empty.
-- [ ] Both files read `Status: closed`.
-- [ ] `procoder check` on the two files reports 0 BLOCKING.
-- [ ] Neither file contains a secret value, credential or personal data (escalate if unsure).
+- [x] `git diff --stat origin/main HEAD` lists only the two task files, plus this task file.
+- [x] Each file is byte-identical to its source branch: `git diff task/jules-debt-cleanup HEAD -- .procoder/todo/20261022-gate-debt-cleanup.md` and `git diff task/jules-pre-1.0-redo HEAD -- .procoder/todo/20261023-pre-1-0-cleanup-redo.md` are both empty.
+- [x] Both files read `Status: closed`.
+- [x] `procoder check` on the two files reports 0 BLOCKING.
+- [x] Neither file contains a secret value, credential or personal data (escalate if unsure).
 
 ## Review
 
@@ -37,6 +37,7 @@ Reviewed checkout /home/xena/work/code/scratch-dt-trail at REVIEW_SHA 472e9de94b
 Summary: All Acceptance criteria are satisfied. The two closed task files from jobs #32 and #35 are brought onto `main` byte-identical to their source branches, with zero edits and no untracked or unrelated files. Public-repo inspection confirms no secrets, credentials, or personal data are exposed.
 
 Verification:
+
 - File set: `git diff --stat origin/main 472e9de` (and `HEAD`) lists only `.procoder/todo/20261022-gate-debt-cleanup.md`, `.procoder/todo/20261023-pre-1-0-cleanup-redo.md`, and this task file `.procoder/todo/20261023-task-trail-jules.md`. Untracked symlinks (`.venv`, `web/node_modules`) are excluded from git.
 - Byte-identity: `git diff task/jules-debt-cleanup HEAD -- .procoder/todo/20261022-gate-debt-cleanup.md` and `git diff task/jules-pre-1.0-redo HEAD -- .procoder/todo/20261023-pre-1-0-cleanup-redo.md` are both completely empty.
 - Closed status: Both files read `Status: closed 2026-10-23` on line 3.
@@ -51,6 +52,7 @@ Findings: none.
 SHA: `git-ro ... rev-parse HEAD` = 2fc61ed, not the REVIEW_SHA. That is expected under the brief: `git diff 472e9de HEAD` touches only this task file (its Status line and the reviewer's verdict), and `git diff --quiet 472e9de HEAD` on the two trail files exits 0. I reviewed 472e9de, the head the reviewer also checked.
 
 ### Independent checks
+
 - **File set:** `git diff --stat origin/main 472e9de` lists the two trail files plus this task file, 3 files, +459. The worktree is clean apart from the untracked symlinks.
 - **Byte-identity:** `git diff --quiet task/jules-debt-cleanup 472e9de -- .procoder/todo/20261022-gate-debt-cleanup.md` and the same check for `task/jules-pre-1.0-redo` on `20261023-pre-1-0-cleanup-redo.md` both exit 0.
 - **Status:** line 3 of each file reads `Status: closed 2026-10-23`.
@@ -65,23 +67,36 @@ SHA: `git-ro ... rev-parse HEAD` = 2fc61ed, not the REVIEW_SHA. That is expected
   - No secret value, credential or personal data.
 
 ### Reviewer's 472e9de PASS
+
 **CONFIRMED** on all five points (file set, byte-identity, Status, gate, public read): I re-ran each one above. The reviewer reported no findings, so nothing needed refuting.
 
 ### Attempts to break it
+
 1. **Content drift since review:** the two files are unchanged from 472e9de to HEAD.
 2. **A secret hiding in prose:** the full read and pattern scan above found none, including the PAT name in the gate-debt Description and my old `with-secret` command line, which names the variable only.
 3. **Paths outside Owns:** none. The diff covers exactly 3 files.
 
 ### New findings (info only; byte-identity forbids fixing them in this PR)
+
 - **I1, `.procoder/todo/20261022-gate-debt-cleanup.md:75`:** my own 60250be critic verdict sits below `## Result` instead of under `## Review` (line 48). My first run appended it to the end of the file. Anyone reading the closed file finds the critic verdict in an unexpected section. Nothing else breaks. The boss can move it in a later trail edit or leave it as historical.
 - **I2, `.procoder/todo/20261023-pre-1-0-cleanup-redo.md` (Result, opening lines):** stale status lines ("Jules AWAITING_USER_FEEDBACK ... No PR. Boss: read the session and decide.", twice) sit next to "PR: .../pull/35". This is a historical log and the lines below it explain the sequence, so no action is needed.
 
 ## Evidence
 
+At 472e9de, in `~/work/code/scratch-dt-trail`:
+
+- **File set:** `git diff --stat origin/main HEAD` lists the two trail files and this task file (boss).
+- **Byte-identity:** `git diff task/jules-debt-cleanup HEAD -- .procoder/todo/20261022-gate-debt-cleanup.md` and `git diff task/jules-pre-1.0-redo HEAD -- .procoder/todo/20261023-pre-1-0-cleanup-redo.md` print 0 lines each (boss).
+- **Status:** both files read `Status: closed 2026-10-23` (coder, reviewer, critic).
+- **procoder check** on the two files reports 0 blocking. One file is unformatted and stays that way to keep byte-identity (coder, reviewer, critic).
+- **Public read:** reviewer and critic read both files in full and found no secret value, credential or personal data. The critic's notes I1 and I2 are historical and left as they are.
+
 ## Result
+
 Outcome: done on `chore/task-trail-jules` (not pushed). Commit ff1f04e adds the two closed task files, taken unedited from their branches with `git checkout <branch> -- <path>`.
 
 Evidence (verified):
+
 - `git diff --stat origin/main HEAD`: `.procoder/todo/20261022-gate-debt-cleanup.md` (+108), `.procoder/todo/20261023-pre-1-0-cleanup-redo.md` (+306), `.procoder/todo/20261023-task-trail-jules.md` (+35, this file as dispatched). Nothing else; `.venv` and `web/node_modules` stay untracked.
 - Byte-identical: `git diff task/jules-debt-cleanup HEAD -- .procoder/todo/20261022-gate-debt-cleanup.md` and `git diff task/jules-pre-1.0-redo HEAD -- .procoder/todo/20261023-pre-1-0-cleanup-redo.md` both print nothing.
 - Status: line 3 of each reads `Status: closed 2026-10-23` (the pre-1-0 file continues `(reviewer + critic PASS at 8f7ecf1; pushed to #35 at d19b94e, 2026-10-23)`).
