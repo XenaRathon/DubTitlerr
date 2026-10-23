@@ -1,6 +1,6 @@
 # feat(web): settings rows say when a change takes effect
 
-Status: open
+Status: closed 2026-10-23
 Created: 2026-10-22
 Type: code
 Assigned: coder@claude-sonnet+opus-advisor
