@@ -56,7 +56,7 @@ Requirements that follow from it, regardless of anything else in this document:
   range-request media. No server rendering, no templates carrying UI logic — that is the
   one architecture the rewrite would drag behind it.
 - The UI speaks **documented HTTP JSON**. Stems are opaque IDs. Auth rides
-  `X-Api-Key` for API calls and cookies for sessions/media (below).
+  `X-Review-Token` for API calls and cookies for sessions/media (below).
 - Static assets are embeddable by any backend: Go `embed`, Rust `include_dir`, Python
   `serve_directory` today — the same artifact, three hosts.
 - Nothing client-side imports or assumes Python.
@@ -70,8 +70,8 @@ model pays for, and because the investment now belongs in the surviving layer. T
 toolchain tax lands entirely in the Docker build (node stage → copy static output →
 final Python image), which the Go/Rust build replicates with the same two artifacts.
 Concretely, this is a new stage in `Dockerfile.builder` (the container that already runs
-`review_server.py` via `container_run.sh`) — not the top-level `Dockerfile`, which is a
-separate, deprecated single-purpose image running only `dub_signs_merge.py`.
+`review_server.py` via `container_run.sh`) — not a separate single-purpose image; the legacy
+top-level `Dockerfile` that ran only `dub_signs_merge.py` was removed in the 1.0 cleanup.
 
 ## 2. The edit store (decision 3)
 
