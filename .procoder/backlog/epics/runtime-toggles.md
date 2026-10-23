@@ -1,6 +1,6 @@
 # runtime-toggles
 
-Status: roadmap, not started
+Status: done 2026-10-23
 Created: 2026-10-14
 
 ## Why
@@ -17,3 +17,9 @@ User request: acquire on/off (`ACQUIRE_APPLY`) must be togglable in the web UI s
 
 - Depends on the acquire fix that protects curated hard fixes; do not expose the toggle before that is deployed.
 - README Roadmap line goes in the release docs pass (docs are frozen until the release).
+
+## Outcome (2026-10-23)
+
+- **[T-1] Done in v0.3.0:** `ACQUIRE_APPLY` is an editable, admin-only runtime setting.
+- **[T-2] Done in #33 (707ed9a):** each settings row says when a saved change takes effect (`describeRow` `takesEffect` in `web/src/lib/settingsModel.js`).
+- **[T-3] Dropped from this epic** by the user's scope decision on 2026-10-22 ("(a) only"). It is kept as a separate roadmap epic, `runtime-kill-switches`.
