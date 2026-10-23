@@ -1,6 +1,6 @@
 # chore(backlog): close runtime-toggles, add runtime-kill-switches (PR #37)
 
-Status: open (critic REJECT 1 of 2 at 9079a1f; fix to code-coder, 2026-10-23)
+Status: open (F1+F2 fixed at 076409e; re-review, 2026-10-23)
 Created: 2026-10-23
 Type: code
 Assigned: code-coder (fix round; first version by lead)
