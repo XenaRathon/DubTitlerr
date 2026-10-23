@@ -32,13 +32,13 @@ Out of scope: new settings or toggles (verify/repair kill switches were explicit
 
 ## Acceptance criteria
 
-- [ ] `describeRow` returns the four strings above for `next_show`, `next_episode`, `next_merge_pass` and `next_sweep`. It returns empty text and warns once for an unknown or missing `applies`. A `restart` row keeps `restart: true` with empty takes-effect text. The new tests in `web/tests/settingsRows.test.mjs` cover all of this and fail on `main` (show the failing run).
-- [ ] A `managed_by: 'bootstrap'` entry with `applies: 'next_show'` gets empty takes-effect text and no warning. A test covers it and fails without the change.
-- [ ] `SettingRow.svelte` renders the note for both editable and read-only rows. The existing badges are unchanged.
-- [ ] In `web/`: `npx prettier --check src/lib/settingsModel.js src/pages/settings/SettingRow.svelte tests/settingsRows.test.mjs && npm run check && npm test && npm run build` all pass. The full `npm run format:check` (CI, `.github/workflows/ci.yml:70`) is already red on `main` because of `web/tests/browser/settings.spec.ts`, which PR #32 fixes. Leave that file alone.
-- [ ] `procoder check` on the three changed files reports 0 BLOCKING, with one known exception: the eqeqeq at `settingsModel.js:130` (`isDirty`), which PR #32 fixes. Don't touch that line, so the two PRs don't conflict. procoder reports the .js/.svelte files as UNCHECKED, because its prettier can't load prettier-plugin-svelte from the repo root. That is a known tooling gap; the scoped prettier check above covers it.
-- [ ] The Python suite still passes: `python -m pytest -q` with `/home/xena/work/code/DubTitlerr/.venv/bin` first on PATH.
-- [ ] `git diff --stat main...HEAD` lists only the three Owns files plus this task file.
+- [x] `describeRow` returns the four strings above for `next_show`, `next_episode`, `next_merge_pass` and `next_sweep`. It returns empty text and warns once for an unknown or missing `applies`. A `restart` row keeps `restart: true` with empty takes-effect text. The new tests in `web/tests/settingsRows.test.mjs` cover all of this and fail on `main` (show the failing run).
+- [x] A `managed_by: 'bootstrap'` entry with `applies: 'next_show'` gets empty takes-effect text and no warning. A test covers it and fails without the change.
+- [x] `SettingRow.svelte` renders the note for both editable and read-only rows. The existing badges are unchanged.
+- [x] In `web/`: `npx prettier --check src/lib/settingsModel.js src/pages/settings/SettingRow.svelte tests/settingsRows.test.mjs && npm run check && npm test && npm run build` all pass. The full `npm run format:check` (CI, `.github/workflows/ci.yml:70`) is already red on `main` because of `web/tests/browser/settings.spec.ts`, which PR #32 fixes. Leave that file alone.
+- [x] `procoder check` on the three changed files reports 0 BLOCKING, with one known exception: the eqeqeq at `settingsModel.js:130` (`isDirty`), which PR #32 fixes. Don't touch that line, so the two PRs don't conflict. procoder reports the .js/.svelte files as UNCHECKED, because its prettier can't load prettier-plugin-svelte from the repo root. That is a known tooling gap; the scoped prettier check above covers it.
+- [x] The Python suite still passes: `python -m pytest -q` with `/home/xena/work/code/DubTitlerr/.venv/bin` first on PATH.
+- [x] `git diff --stat main...HEAD` lists only the three Owns files plus this task file.
 
 ## Review
 
@@ -120,6 +120,15 @@ None.
 4. **Conflict with PR #32:** `git merge-tree --write-tree --name-only HEAD 60250be` gives `337bbfb...`, no conflicted files.
 
 ## Evidence
+
+Verified by the lead on `feat/settings-takes-effect` at 714a3fe (code: e041411, 9f6608e, fe06033).
+
+1. describeRow / bootstrap / tests fail on main: the branch's `web/tests/settingsRows.test.mjs` run against `main:web/src/lib/settingsModel.js` gives `tests 13 / pass 9 / fail 4`. On the branch, `npm test` gives `tests 110 / pass 110 / fail 0`.
+2. SettingRow note: `SettingRow.svelte:115`, outside the editable/read-only branch (reviewer and critic confirmed). The look in a browser is **unverified**: no component test exists.
+3. Web: scoped `npx prettier --check` (3 files) is clean, `npm run check` gives 0 errors / 0 warnings, and `npm run build` built in 1.04s.
+4. `procoder check` (3 files): the only BLOCKING findings are the known eqeqeq at `settingsModel.js:130`, which PR #32 fixes. The .js/.svelte files are UNCHECKED (procoder's prettier-plugin-svelte gap).
+5. `PATH=.venv/bin:$PATH python -m pytest -q` → exit 0.
+6. `git diff --name-only main...HEAD` → the task file plus the 3 Owns files.
 
 ## Result
 
