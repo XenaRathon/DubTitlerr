@@ -1,6 +1,6 @@
 # chore(backlog): close runtime-toggles, add runtime-kill-switches (PR #37)
 
-Status: open (reviewer PASS at 81d7f8c; critic next, 2026-10-23)
+Status: open (reviewer + critic PASS at 81d7f8c, 2026-10-23)
 Created: 2026-10-23
 Type: code
 Assigned: code-coder (fix round; first version by lead)
@@ -22,14 +22,14 @@ These are planning files only, with no code or docs change. The repo is public, 
 
 ## Acceptance criteria
 
-- [ ] `git diff --stat origin/main <REVIEW_SHA>` lists only the two epic files and this task file.
-- [ ] Every Outcome claim in `runtime-toggles.md` holds against the repo:
+- [x] `git diff --stat origin/main <REVIEW_SHA>` lists only the two epic files and this task file.
+- [x] Every Outcome claim in `runtime-toggles.md` holds against the repo:
   - T-1: `ACQUIRE_APPLY` is editable and admin-only in the settings registry and schema on `main`.
   - T-2: #33 / 707ed9a added `takesEffect` in `web/src/lib/settingsModel.js`.
   - T-3: T-3 is really not built. No verify, repair or unanchored-repair runtime switch exists.
-- [ ] `runtime-kill-switches.md` describes T-3 accurately and doesn't promise a schedule.
-- [ ] `procoder check` on the two epic files reports 0 BLOCKING, and `procoder backlog list` shows `runtime-toggles` done and `runtime-kill-switches` on the roadmap.
-- [ ] Neither file contains a secret value, credential or personal data.
+- [x] `runtime-kill-switches.md` describes T-3 accurately and doesn't promise a schedule.
+- [x] `procoder check` on the two epic files reports 0 BLOCKING, and `procoder backlog list` shows `runtime-toggles` done and `runtime-kill-switches` on the roadmap.
+- [x] Neither file contains a secret value, credential or personal data.
 
 ## Fix brief (code-coder)
 
@@ -108,6 +108,7 @@ Reviewed checkout /home/xena/work/code/scratch-dt-backlog at REVIEW_SHA 81d7f8c0
 Summary: Critic findings F1 and F2 are resolved cleanly in 076409e / 81d7f8c. The inventory in both epic files now accurately distinguishes unbuilt stage switches (verify, repair) from the pre-existing unanchored repair switch (`REPAIR_UNANCHORED`), and correctly notes `next_show` / `next_merge_pass` timing. All Acceptance criteria remain met.
 
 Verification of F1 and F2 (git diff 9079a1f 81d7f8c):
+
 - F1 resolution:
   - In `runtime-kill-switches.md`: The epic scope is clarified to whole-stage verify and repair switches. A dedicated note explains that unanchored repair already has an admin-editable runtime switch (`REPAIR_UNANCHORED` at `settings_registry.py:98`, `applies='next_merge_pass'`) and is excluded from scope.
   - In `runtime-toggles.md` (Outcome line for T-3): Updated to state that verify and repair on/off switches were not built and moved to the roadmap, while unanchored repair already had `REPAIR_UNANCHORED` in the registry.
@@ -115,6 +116,7 @@ Verification of F1 and F2 (git diff 9079a1f 81d7f8c):
 - Diff check: `git diff 9079a1f 81d7f8c` touches only the two planning files (+6/-2 lines total outside this task file).
 
 Acceptance criteria re-confirmation at 81d7f8c:
+
 - File set: `git diff --stat origin/main 81d7f8c` lists only `.procoder/backlog/epics/runtime-kill-switches.md`, `.procoder/backlog/epics/runtime-toggles.md`, and this task file.
 - T-1 Outcome claim: `ACQUIRE_APPLY` is editable (`first_wave=True`) and admin-only (`review_auth.py:623`, `settings_api.py:26`) in `settings_registry.py:91`.
 - T-2 Outcome claim: PR #33 (`707ed9a`) added `takesEffect` in `web/src/lib/settingsModel.js:211-251`.
@@ -130,6 +132,7 @@ Findings: none.
 SHA: `git-ro ... rev-parse HEAD` = cde1d97, not the REVIEW_SHA. That is expected under the brief: `git diff --stat 81d7f8c HEAD` shows only this task file. I reviewed 81d7f8c, the head the reviewer also checked. The fix commit is 076409e.
 
 ### Independent checks
+
 - **F1: fixed.**
   - `runtime-kill-switches.md:8` now scopes the epic to "the whole verify stage and the whole repair stage". `:10` says unanchored repair already has `REPAIR_UNANCHORED` (`settings_registry.py:98`), admin-editable, taking effect at the next merge pass, and puts it out of scope.
   - The T-3 Outcome at `runtime-toggles.md:25` says the same.
@@ -144,27 +147,43 @@ SHA: `git-ro ... rev-parse HEAD` = cde1d97, not the REVIEW_SHA. That is expected
   - The new text adds only a key name and a file:line reference: no secret value, credential or personal data.
 
 ### Reviewer's 81d7f8c PASS
+
 **CONFIRMED.** The claims on F1 and F2, the file set, T-1, T-2, T-3, Status, the gate and the public read all match my runs. One trivial miscount: the reviewer says "+6/-2 lines total outside this task file", but the epic diff is +4/-2 (kill-switches +3/-1, toggles +1/-1). It changes no conclusion.
 
 ### Attempts to break it
+
 1. **Another existing stage switch missing from the new inventory:** none. The registry is unchanged since my 9079a1f sweep: the `VERIFY_*`/`REPAIR_*` bools tune behaviour inside a stage, and `gen_loop.sh`/`merge_pass.sh` have no enable gate.
 2. **The `settings_registry.py:98` reference pointing at the wrong line:** it holds `REPAIR_UNANCHORED` at 81d7f8c.
 3. **Fix commits touching anything else:** they don't. Only the two epic paragraphs and this task file changed.
 
 ### New findings
+
 None.
 
 ## Evidence
+
+At 81d7f8c, in `~/work/code/scratch-dt-backlog`:
+
+- **File set:** `git diff --name-only origin/main 81d7f8c` lists the two epic files and this task file (critic, reviewer).
+- **Outcome claims:**
+  - T-1: `settings_registry.py:91` `_wave('ACQUIRE_APPLY', ...)`, with PUT `/api/settings` admin-only at `settings_api.py:26` (critic, reviewer).
+  - T-2: 707ed9a, the #33 merge, adds `takesEffect` (critic).
+  - T-3: no whole-stage verify or repair switch exists, and `REPAIR_UNANCHORED` sits at `settings_registry.py:98` (boss read line 98; critic, reviewer).
+- **procoder:** `procoder check` on both epic files: `2 clean, 0 blocking` (critic, reviewer, coder). `procoder backlog list`: `[done 2026-10-23] runtime-toggles`, `[roadmap, not started] runtime-kill-switches` (coder).
+- **Public read:** no secret value, credential or personal data (critic, reviewer).
+- **Review route:** reviewer PASS at 9079a1f, critic REJECT (F1, F2), coder fix 076409e, then reviewer and critic PASS at 81d7f8c.
 
 ## Result
 
 Boss: 0df5c24 written by the boss. `procoder backlog close epic runtime-toggles` printed "epic runtime-toggles closed — every story done". `procoder check` on both epic files: 2 clean, 0 blocking. PR: https://github.com/XenaRathon/DubTitlerr/pull/37
 
 Code-coder, 2026-10-23: F1 and F2 fixed in 076409e on `chore/close-runtime-toggles` (not pushed). Planning text only.
+
 - `runtime-kill-switches.md`: scoped to whole-stage verify and repair on/off switches. Added a line that unanchored repair already has `REPAIR_UNANCHORED` (`settings_registry.py:98`, admin-editable, next merge pass) and is out of scope. F2: "the loop reads at each sweep" replaced with wording matching the registry (`ACQUIRE_APPLY` is `next_show`, repair-side keys are `next_merge_pass`, so a switch applies per show or per merge pass).
 - `runtime-toggles.md`: only the T-3 Outcome line changed; it says the verify and repair switches were not built and that unanchored repair already had `REPAIR_UNANCHORED`. Original Scope and Why text untouched (`git diff` shows 1 line changed in that file's Outcome).
 
 Evidence (verified):
+
 - `settings_registry.py:98` read in this checkout: `_wave('REPAIR_UNANCHORED', 'repair', ..., 'bool', False, 'merge', 'next_merge_pass')`; `settings_registry.py:97` `DECISIONS_APPLY` and `:99` `RESTORE_PUNCTUATION` are the same `merge`/`next_merge_pass` kind.
 - `procoder format` on each epic file: "already formatted". `procoder check` on both: `2 clean, 0 unformatted, 0 unchecked, 0 out of scope, 2 hygiene finding(s) (0 blocking)`.
 - `procoder backlog list`: `[done 2026-10-23] epic runtime-toggles` and `[roadmap, not started] epic runtime-kill-switches`.
