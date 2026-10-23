@@ -51,6 +51,35 @@ Findings: None. All acceptance criteria and five review axes (correctness, reada
 - `procoder check` on changed files reports 0 blocking findings other than the two known inherited baseline `eqeqeq` findings on `settingsModel.js:130` deliberately deferred to PR #32.
 - `git diff --stat main...HEAD` is strictly confined to the three `Owns:` files and the task file.
 
+critic @ claude-opus-5-5: PASS (code commits e041411 and 9f6608e. Two minor findings, neither blocks.)
+
+Head reviewed: c4edadb on `feat/settings-takes-effect`, the branch checked out in `~/work/code/DubTitlerr`. The reviewer checked af17a9f. That is fine: `git diff --stat af17a9f HEAD` shows only this task file (+12), and `git diff --stat 9f6608e HEAD -- web` is empty, so the reviewer saw the same code.
+
+### Reviewer findings
+The reviewer reported none. Their claims, checked one by one:
+- **describeRow behaviour: CONFIRMED.** `web/src/lib/settingsModel.js:207-227` maps the four values. `restart` returns `''`. A missing or unknown value warns and returns `''`, and the `Object.hasOwn` guard means values like `toString` or `__proto__` can't pick up prototype text. The `restart` line itself is unchanged (`:245`).
+- **Note shown on both row kinds: CONFIRMED.** `web/src/pages/settings/SettingRow.svelte:115` sits after the editable/read-only `{#if}` block closes, and the badges are untouched.
+- **"109 passed": CONFIRMED.** My own `npm test` gave `tests 109 / pass 109 / fail 0 / skipped 0`. The coder's "108 pass / 1 skipped" was a skip that depends on the environment, not a gap.
+- **Tests fail on main: CONFIRMED.** I ran the branch's test file against `main:web/src/lib/settingsModel.js` in a scratch copy: `tests 12 / pass 9 / fail 3`.
+- **Gates: CONFIRMED.**
+  - Scoped prettier: "All matched files use Prettier code style!".
+  - `npm run check`: 0 errors, 0 warnings.
+  - `npm run build`: built in 1.09s.
+  - pytest: rc 0.
+  - `procoder check` on the 3 files: 2 BLOCKING, both the known eqeqeq at `settingsModel.js:130`, nothing else.
+  - Diff scope: the 3 `Owns:` files plus the task file.
+
+### New findings
+- **N1, minor, escalate (registry data is outside `Owns:`).** `SettingRow.svelte:115` together with `settings_registry.py:256-258`. Three bootstrap rows will show "Takes effect from the next show": `OPENROUTER_JEV_API_KEY`, `COMMANDCODE_API_KEY` and `LONGCATAI_API_KEY`, all `managed_by=bootstrap`, `applies=next_show`. They appear in the Bootstrap section (`web/src/pages/Settings.svelte:344-353`), whose heading says "These values are fixed by the container before it can read the settings store", and each row's own help text says the key is "read by name from the container environment". An admin reads "from the next show", but no change made on this page reaches those rows, and changing the container env needs a recreate. The PR does what the spec asked (show the note on every row), so this isn't a defect in the PR. The lead or user decides: correct `applies` for those three keys in the registry, or have `describeRow` skip the note for `managed_by === 'bootstrap'`. The other 32 bootstrap rows are `restart` and show nothing new.
+- **N2, nit (repo rule).** `AGENTS.md` asks for Conventional Commits. e041411 and 9f6608e use the task-id prefix (`20261022-settings-takes-effect: ...`), not `feat(web): ...` / `test(web): ...`. If the merge is a squash, the PR title (`feat(web): settings rows say when a change takes effect`) fixes this. A merge commit would not.
+
+### Attempts to break it
+1. **Real data reaches the code.** `settings_registry.py:53` asserts every `applies` is in `APPLIES`, and `public()` (`:305`) keeps `applies` in `/api/settings` schema. So on today's registry the warn path never fires. Counts: next_show 77, next_merge_pass 45, next_sweep 11, restart 50, next_episode 0. `ACQUIRE_APPLY` is `next_show` with scope `gen`, which matches the Description.
+2. **Repeated warnings.** `describeRow` runs inside `$derived` (`Settings.svelte:84-89`), so if the frontend and registry ever drift, the warning repeats every time the rows are recomputed, not once per session. Given point 1 this is acceptable, and the unit test asserts one warning per call, which matches the spec wording. Info only.
+3. **Conflict with PR #32.** `git merge-tree --write-tree --name-only HEAD 60250be` → `fc50340...`, rc 0, no conflicted files. The two PRs touch separate parts of `settingsModel.js`.
+4. **Prototype keys and missing values.** `Object.hasOwn(TAKES_EFFECT, entry.applies ?? '')` returns false for `undefined`, `'toString'` and `'__proto__'`, so all three take the warn path with empty text. The test covers `'someday'` and a missing value.
+5. **Unverified:** how the note looks in a browser. No component or browser test covers it, as the coder's Result also says.
+
 ## Evidence
 
 ## Result
