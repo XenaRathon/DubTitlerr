@@ -24,14 +24,16 @@ Work in `/home/xena/work/code/DubTitlerr` on the branch `feat/settings-takes-eff
 2. In `SettingRow.svelte`, show the text as a muted note in the row (under the value or control, next to `setting-reason`), for editable and read-only rows alike. Leave secret handling, the badges and the controls untouched.
 3. Extend `web/tests/settingsRows.test.mjs`: one case per `applies` value, the unknown/missing case (no throw, empty text, warns), and the restart row still has `restart: true` and no takes-effect text. Use an `ACQUIRE_APPLY`-shaped entry (`applies: 'next_show'`) for the next_show case.
 
+House rules for this task: commit on `feat/settings-takes-effect` only, never push or switch branches. Commit messages carry no `Co-Authored-By` or other AI-attribution trailer, because the repo's procoder gate blocks them. Write only under `## Result`: leave the criteria boxes and `## Evidence` to the lead.
+
 Out of scope: new settings or toggles (verify/repair kill switches were explicitly not chosen), Python and API changes, README/CHANGELOG (docs are frozen until the release pass), and every other file.
 
 ## Acceptance criteria
 
 - [ ] `describeRow` returns the four strings above for `next_show`, `next_episode`, `next_merge_pass` and `next_sweep`. It returns empty text and warns once for an unknown or missing `applies`. A `restart` row keeps `restart: true` with empty takes-effect text. The new tests in `web/tests/settingsRows.test.mjs` cover all of this and fail on `main` (show the failing run).
 - [ ] `SettingRow.svelte` renders the note for both editable and read-only rows. The existing badges are unchanged.
-- [ ] In `web/`: `npm run format:check && npm run check && npm test && npm run build` all pass. This is the CI line in `.github/workflows/ci.yml:70`.
-- [ ] `procoder check` on the three changed files reports 0 BLOCKING. Prettier must actually run, not report UNCHECKED: `web/node_modules` is installed in this checkout.
+- [ ] In `web/`: `npx prettier --check src/lib/settingsModel.js src/pages/settings/SettingRow.svelte tests/settingsRows.test.mjs && npm run check && npm test && npm run build` all pass. The full `npm run format:check` (CI, `.github/workflows/ci.yml:70`) is already red on `main` because of `web/tests/browser/settings.spec.ts`, which PR #32 fixes. Leave that file alone.
+- [ ] `procoder check` on the three changed files reports 0 BLOCKING, with one known exception: the eqeqeq at `settingsModel.js:130` (`isDirty`), which PR #32 fixes. Don't touch that line, so the two PRs don't conflict. procoder reports the .js/.svelte files as UNCHECKED, because its prettier can't load prettier-plugin-svelte from the repo root. That is a known tooling gap; the scoped prettier check above covers it.
 - [ ] The Python suite still passes: `python -m pytest -q` with `/home/xena/work/code/DubTitlerr/.venv/bin` first on PATH.
 - [ ] `git diff --stat main...HEAD` lists only the three Owns files plus this task file.
 
