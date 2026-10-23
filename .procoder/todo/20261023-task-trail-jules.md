@@ -1,6 +1,6 @@
 # docs: land the task-file trail for the Jules jobs (#32, #35)
 
-Status: open (reviewer + critic PASS at 472e9de, 2026-10-23)
+Status: closed 2026-10-23 (reviewer + critic PASS at 472e9de, 2026-10-23)
 Created: 2026-10-23
 Type: code
 Assigned: code-coder
