@@ -83,6 +83,16 @@ The reviewer reported none. Their claims, checked one by one:
 4. **Prototype keys and missing values.** `Object.hasOwn(TAKES_EFFECT, entry.applies ?? '')` returns false for `undefined`, `'toString'` and `'__proto__'`, so all three take the warn path with empty text. The test covers `'someday'` and a missing value.
 5. **Unverified:** how the note looks in a browser. No component or browser test covers it, as the coder's Result also says.
 
+reviewer @ agy Gemini 3.8 Flash high (item 4): PASS
+
+Code commit fe06033 (diff c94a825..fe06033); branch head 00a92ca (adds Item 4 Result in task file).
+
+Findings: None.
+- Criterion 2 verified: `describeRow` returns empty `takesEffect` text and emits no warning when `entry.managed_by === 'bootstrap'`, even when `applies === 'next_show'`. `settings_registry.py` is untouched.
+- Unit test in `web/tests/settingsRows.test.mjs` verifies bootstrap row behavior and fails without the fix.
+- Suite and gates pass: `npm test` in `web/` passes 110/110 tests; Python suite passes 100%; `procoder check` reports only the two known baseline `eqeqeq` findings on line 130; Conventional Commit used (`fix(web): ...`) with no AI trailers.
+- Diffstat `main...HEAD` remains strictly confined to the three `Owns:` files and the task file.
+
 ## Evidence
 
 ## Result
