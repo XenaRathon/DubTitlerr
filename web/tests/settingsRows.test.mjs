@@ -249,7 +249,8 @@ test('describeRow warns once and returns empty text for a missing or unknown app
     assert.match(warnings[0], /ACQUIRE_APPLY/);
     assert.match(warnings[0], /someday/);
 
-    const { applies: _omit, ...noApplies } = APPLY_ENTRY;
+    const noApplies = { ...APPLY_ENTRY };
+    delete noApplies.applies;
     const missing = describeRow(noApplies, { value: true }, {});
     assert.equal(missing.takesEffect, '');
     assert.equal(warnings.length, 2);
