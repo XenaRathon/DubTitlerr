@@ -39,6 +39,18 @@ Out of scope: new settings or toggles (verify/repair kill switches were explicit
 
 ## Review
 
+reviewer @ agy Gemini 3.8 Flash high: PASS
+
+Branch head is commit af17a9f (adds coder Result in task file), parent 9f6608e; reviewed diff main...HEAD.
+
+Findings: None. All acceptance criteria and five review axes (correctness, readability, architecture, security, performance) are satisfied. Verified that:
+- `describeRow` correctly translates all schema `applies` values (`next_show`, `next_episode`, `next_merge_pass`, `next_sweep`) into user-facing text, leaves `restart` with empty text while preserving `restart: true`, and falls back to empty text while warning once via `console.warn` on unknown or missing `applies` values without throwing.
+- `SettingRow.svelte` renders `.setting-effect` note for both editable and read-only rows.
+- Web unit test suite passes (109 passed, 0 failed via `npm test` in `web/`, including 3 new tests in `web/tests/settingsRows.test.mjs` covering all `applies` variants).
+- Python test suite passes (100% passed via `python3 -m pytest -q`).
+- `procoder check` on changed files reports 0 blocking findings other than the two known inherited baseline `eqeqeq` findings on `settingsModel.js:130` deliberately deferred to PR #32.
+- `git diff --stat main...HEAD` is strictly confined to the three `Owns:` files and the task file.
+
 ## Evidence
 
 ## Result
