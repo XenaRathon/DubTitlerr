@@ -146,7 +146,7 @@ def _title_index(titles: list) -> list[tuple[str, str, str, str]]:
     before -- fewer entries to scan, identical winners and scores. Duplicate normalised
     titles (a name appearing as several disambiguated articles) are likewise collapsed to
     one entry: every occurrence would have produced the same score, so only the first is
-    kept, in title order, matching best_title's original first-wins tie-break."""
+    kept, in title order, matching the original first-wins tie-break."""
     out, seen = [], set()
     for t in titles:
         norm = normalize_title(t)
@@ -635,7 +635,7 @@ def _resolve_tokens(counts: dict, titles: list) -> dict:
 
     This is the module's dominant cost -- 8202 tokens x 8109 titles on One Pace -- so it is
     computed once per acquire() run and shared: propose() and unmatched() both need it, and
-    used to each run best_title() over every token independently, doubling the join for no
+    used to each run a per-token title search over every token independently, doubling the join for no
     reason (unmatched's tokens are a subset of counts, already resolved or not by propose's
     pass). No count/mid-sentence pre-filtering happens here: R6's floor gate compares
     variant_count + canonical_count, not variant_count alone (see
@@ -1067,7 +1067,7 @@ def record_decision(gloss: dict, term: str, accept: bool) -> dict:
     a yes on a flag for a curated term replaces the curated value, as a human decision (run == "review").
     Keys of `flagged` match case-insensitively.
 
-    C1 defence in depth: this cannot see `titles` (best_title's normalised set), so it
+    C1 defence in depth: this cannot see `titles` (the normalised title set), so it
     cannot repeat R1's membership check. It CAN repeat the other two structural checks --
     not an expansion, and the canonical is already in normalised form -- and does, before
     ever writing to hard_fixes. A canonical failing either is free-form model/human-typo

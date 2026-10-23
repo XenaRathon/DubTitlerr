@@ -682,7 +682,7 @@ def clean_adjudication(adj) -> tuple[dict, bool]:
 
     A backend, a monkeypatch or a future parser can hand apply_results a list, a string, None, or a dict whose canonical is not
     a string. None of that may write a name or crash the run: it becomes a no-match (and is counted). An unknown confidence word
-    becomes 'low', as parse_adjudication does. dub_note and other fields are dropped; nothing downstream reads them."""
+    becomes 'low', as parse_adjudication_checked does. dub_note and other fields are dropped; nothing downstream reads them."""
     if not isinstance(adj, dict):
         return {"canonical": "", "confidence": "none"}, adj is not None
     canon, conf = adj.get("canonical", ""), adj.get("confidence", "none")
@@ -951,7 +951,7 @@ _LINK_NAMESPACES = frozenset(
 def _extract_links(wt: str, normalise: bool = False) -> set[str]:
     """[[...]] links from wikitext, templates/refs stripped, non-entity links dropped
     (Category:/File:/Image:/w: namespaces, lowercase-first, bare Chapter/Episode/Volume
-    N). Shared by arc_page_links (whole page) and plot_section_links (one section) so
+    N). Shared by arc_page_links_checked (whole page) and plot_section_links (one section) so
     the filter cannot drift between them.
 
     ``normalise`` (the ARC stage only; plot_section_links keeps the old filter so acquire's per-episode admission is

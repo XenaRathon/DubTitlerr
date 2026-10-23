@@ -138,7 +138,7 @@ REVIEW_BIND = os.environ.get("REVIEW_BIND", "0.0.0.0")
 # opens many at once and each dies after the deadline rather than never -- an indefinite pin
 # becomes a sustained churn. A review is one person clicking buttons; 16 is generous.
 MAX_CONCURRENT = int(os.environ.get("REVIEW_MAX_CONCURRENT", "16"))
-# The token minted this process. authorised() calls resolve_token() per request, so without
+# The token minted this process. review_auth.key_matches() calls resolve_token() per request, so without
 # this a persistence failure would mint a FRESH random token every time -- none of them the
 # one printed at startup -- and every write would 401 forever, including for the operator
 # holding the logged token. Failing closed is right; failing closed against yourself is not.
@@ -1481,7 +1481,7 @@ def render_page(stem: str = "") -> str:
 
 
 def render_locked(page_kind: str, setup: bool = False) -> str:
-    """The shell shown instead of render_page()/render_shared() when authorised()
+    """The shell shown instead of render_page()/render_shared() when review_auth.decide()
     refuses the GET -- same chrome (title, CSS, the token box and its JS) as the real
     page, but the episode/shared list is never built: handle_index()/handle_episode()/
     handle_shared() walk MERGE_ROOTS and the decision stores and return every stem and
@@ -1542,7 +1542,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # only calls connection.settimeout() when it is not None -- so without this rfile.read()
     # blocks with no deadline. The 1MB cap bounds MEMORY per request and nothing else: a
     # client declaring a legal length and dripping a byte a minute pins a worker thread
-    # BEFORE authorised() is reached, and ThreadingHTTPServer spawns those threads uncapped.
+    # BEFORE review_auth.decide() is reached, and ThreadingHTTPServer spawns those threads uncapped.
     # 30s is long for a review POST (a verdict is a few hundred bytes) and short for a drip.
     timeout = 30
 
@@ -1626,7 +1626,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._with_body("DELETE")
 
     def _with_body(self, method: str):
-        # The body is read BEFORE authorised() runs, so this bound is what stands between an
+        # The body is read BEFORE review_auth.decide() runs, so this bound is what stands between an
         # unauthenticated caller and this root process's memory. int("-1") does NOT raise, so
         # a declared length of -1 slipped past a `> cap` test and rfile.read(-1) then read to
         # EOF -- unbounded, which is exactly what the check existed to prevent. Anything not

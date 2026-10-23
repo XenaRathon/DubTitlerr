@@ -110,24 +110,25 @@ def test_similarity_rejects_unrelated_names():
     assert ga.similarity("Monet", "Momonosuke") < ga.MIN_SIM
 
 
-# --- perf refactor: the precomputed title index must agree with best_title's original
-# per-call implementation byte-for-byte, since propose()/unmatched() now always go
-# through it. These pin that equivalence directly rather than only through propose().
-
-
-@pytest.mark.parametrize(
-    "token,titles",
-    [
-        ("Syrahose", ["Shirahoshi", "Hody Jones", "Neptune (character)", "Van der Decken"]),
-        ("Neptune", ["Neptune (character)"]),
-        ("Surrender", ["Shirahoshi", "Hody Jones"]),
-        ("Deccan", ["Decken", "Shirahoshi"]),
-        ("Vanderdecken", ["Van der Decken", "Shirahoshi"]),
-    ],
-)
-def test_best_title_indexed_matches_itself_without_the_word_index(token, titles):
+def _best_title(token, titles):
     index = ga._title_index(titles)
-    assert ga._best_title_indexed(token, index) == ga._best_title_indexed(token, index, {})
+    return ga._best_title_indexed(token, index, ga._word_index(index))
+
+
+def test_best_title_picks_the_closest_normalised_title():
+    titles = ["Shirahoshi", "Hody Jones", "Neptune (character)", "Van der Decken"]
+    name, score = _best_title("Syrahose", titles)
+    assert name == "Shirahoshi" and score >= ga.MIN_SIM
+
+
+def test_best_title_strips_the_disambiguator_from_what_it_returns():
+    name, _score = _best_title("Neptune", ["Neptune (character)"])
+    assert name == "Neptune"
+
+
+def test_best_title_returns_empty_when_nothing_is_close():
+    name, score = _best_title("Surrender", ["Shirahoshi", "Hody Jones"])
+    assert name == "" and score == 0.0
 
 
 def test_title_index_drops_titles_whose_reduced_form_is_empty():
@@ -136,6 +137,8 @@ def test_title_index_drops_titles_whose_reduced_form_is_empty():
     titles = ["-", "Shirahoshi"]
     index = ga._title_index(titles)
     assert [n for n, *_ in index] == ["Shirahoshi"]
+    name, score = ga._best_title_indexed("Syrahose", index)
+    assert name == "Shirahoshi" and score >= ga.MIN_SIM
 
 
 def test_title_index_collapses_duplicate_normalised_titles():
@@ -144,6 +147,7 @@ def test_title_index_collapses_duplicate_normalised_titles():
     titles = ["Neptune (character)", "Neptune (anime)", "Shirahoshi"]
     index = ga._title_index(titles)
     assert [n for n, *_ in index] == ["Neptune", "Shirahoshi"]
+    assert ga._best_title_indexed("Surrender", index) == ("", 0.0)
 
 
 def test_decide_applies_a_lopsided_mishearing():
@@ -295,7 +299,7 @@ def test_propose_ignores_tokens_that_match_no_title():
 
 
 # --- Fix 2 (2026-08-19 dry run): a correctly-spelled given name is a WHOLE WORD of its own
-# full-name wiki title ('Zoro' of 'Roronoa Zoro'), which best_title's plain highest-similarity
+# full-name wiki title ('Zoro' of 'Roronoa Zoro'), which a plain highest-similarity
 # pick was losing to a short, unrelated, phonetically-closer decoy article -- exactly the
 # five real corruptions below (see test_decide_holds_every_real_corruption... for the other
 # five, which Fix 1's similarity bar catches instead since they have no containing title).
@@ -315,7 +319,7 @@ def test_propose_prefers_a_containing_title_over_a_closer_fuzzy_decoy(monkeypatc
     # Confirmed against the unindexed fuzzy path (no word_index) that each decoy really is
     # the higher-scoring pick pre-fix: Zoro/Zoryu 0.868, Doflamingo/Domino 0.893,
     # Momonosuke/Momoo 0.900, Wano/Wany 0.903, Kung/Kuni 0.883 -- all above MIN_SIM, all
-    # picked over the correct containing title by best_title's old highest-score-wins rule.
+    # picked over the correct containing title by the old highest-score-wins rule.
     monkeypatch.setattr(ga.glossary, "is_english", lambda w: False)
     props = ga.propose({variant: 20}, {variant}, titles)
     assert len(props) == 1
@@ -324,11 +328,15 @@ def test_propose_prefers_a_containing_title_over_a_closer_fuzzy_decoy(monkeypatc
     assert p["verdict"] == "known" and p["reason"] == "short-form"
 
 
+def test_best_title_prefers_a_whole_word_containing_title_over_the_fuzzy_winner():
+    name, score = _best_title("Zoro", ["Roronoa Zoro", "Zoryu"])
+    assert name == "Roronoa Zoro" and score == 1.0
+
+
 def test_word_index_does_not_override_a_genuine_respelling():
     # 'Vargo' is not a whole word of anything here -- Fix 2 must not touch a real tier-C
     # fix; it should still resolve through the ordinary fuzzy path untouched.
-    index = ga._title_index(["Vergo", "Roronoa Zoro"])
-    name, score = ga._best_title_indexed("Vargo", index, ga._word_index(index))
+    name, score = _best_title("Vargo", ["Vergo", "Roronoa Zoro"])
     assert name == "Vergo" and score == pytest.approx(ga.similarity("Vargo", "Vergo"))
 
 
