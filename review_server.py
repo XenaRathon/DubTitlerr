@@ -981,16 +981,12 @@ def preview_audio(body: dict) -> tuple:
         _AUDIO_SLOTS.release()
 
 
-def route(
-    method: str, path: str, body: dict, token, client: str = "", headers: dict | None = None
-) -> tuple:
+def route(method: str, path: str, body: dict, token, client: str = "", headers: dict | None = None) -> tuple:
     """(status, payload) for one request; route_full is the same call with the response headers (a Set-Cookie) as a third item."""
     return route_full(method, path, body, token, client, headers)[:2]
 
 
-def route_full(
-    method: str, path: str, body: dict, token, client: str = "", headers: dict | None = None
-) -> tuple:
+def route_full(method: str, path: str, body: dict, token, client: str = "", headers: dict | None = None) -> tuple:
     """(status, payload, extra_headers). ``token`` is the pre-accounts calling convention and counts as X-Api-Key;
     ``headers`` carry the Cookie, X-Api-Key and CSRF header. review_auth.decide runs first, on the bare path (no query
     string): no handler is reached by a caller its route's role does not allow. ``client`` is the peer address,
