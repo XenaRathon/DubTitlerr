@@ -93,6 +93,32 @@ Findings: None.
 - Suite and gates pass: `npm test` in `web/` passes 110/110 tests; Python suite passes 100%; `procoder check` reports only the two known baseline `eqeqeq` findings on line 130; Conventional Commit used (`fix(web): ...`) with no AI trailers.
 - Diffstat `main...HEAD` remains strictly confined to the three `Owns:` files and the task file.
 
+critic @ claude-opus-5-5 (item 4): PASS
+
+Head checked: ac37763 on `feat/settings-takes-effect`. The code commit is fe06033 (`git diff c94a825..fe06033`). The commits after fe06033 (00a92ca, ac37763) touch only this task file: `git diff --stat c94a825..HEAD` shows the task file plus the two code files from fe06033. The reviewer looked at 00a92ca, which has the same code.
+
+### Reviewer item-4 findings
+- **Bootstrap row: empty text, no warning, registry untouched. CONFIRMED.** At `web/src/lib/settingsModel.js:216-217`, `managed_by === 'bootstrap'` returns `''` before the lookup and before the warning. `settings_registry.py` isn't in the diff. The `restart` flag (`:246`) is unchanged, so the 32 bootstrap `restart` rows keep their "Restart required" badge.
+- **The test fails without the fix. CONFIRMED.** I ran the branch's test file against `c94a825:web/src/lib/settingsModel.js` in a scratch copy: `tests 13 / pass 12 / fail 1`. The one failure is the new bootstrap test.
+- **Gates pass. CONFIRMED.**
+  - Scoped prettier: clean.
+  - `npm run check`: 0 errors, 0 warnings.
+  - `npm test`: `tests 110 / pass 110 / fail 0`.
+  - `npm run build`: built in 1.05s.
+  - pytest: rc 0.
+  - `procoder check`: only the two known eqeqeq findings at `:130`. Of the info-only findings, one new one: a 76-char commit subject on the lead's commit ac37763, not the coder's.
+- **Conventional Commit, no trailer. CONFIRMED.** The full message of fe06033 is `fix(web): hide the takes-effect note on bootstrap-managed rows`.
+- **Diff scope. CONFIRMED.** `git diff --stat main...HEAD` lists the 3 `Owns:` files plus this task file.
+
+### New findings
+None.
+
+### Attempts to break it
+1. **Real data:** `schema()['settings']` carries `managed_by` on every entry. All 35 bootstrap entries have `applies` of `next_show` or `restart`, so the guard catches all three keys from N1 and changes nothing else.
+2. **Bootstrap entry with no `applies`:** returns `''` without warning, which is what item 4 asks for ("don't warn for them"). The test asserts it.
+3. **Non-bootstrap behaviour:** the 12 earlier cases still pass, including the warning for an unknown value on a row with no `managed_by`.
+4. **Conflict with PR #32:** `git merge-tree --write-tree --name-only HEAD 60250be` gives `337bbfb...`, no conflicted files.
+
 ## Evidence
 
 ## Result
