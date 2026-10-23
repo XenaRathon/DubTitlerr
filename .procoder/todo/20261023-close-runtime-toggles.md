@@ -106,3 +106,16 @@ SHA: `git-ro ... rev-parse HEAD` = 5aa8e80, not the REVIEW_SHA. That is expected
 ## Result
 
 Boss: 0df5c24 written by the boss. `procoder backlog close epic runtime-toggles` printed "epic runtime-toggles closed — every story done". `procoder check` on both epic files: 2 clean, 0 blocking. PR: https://github.com/XenaRathon/DubTitlerr/pull/37
+
+Code-coder, 2026-10-23: F1 and F2 fixed in 076409e on `chore/close-runtime-toggles` (not pushed). Planning text only.
+- `runtime-kill-switches.md`: scoped to whole-stage verify and repair on/off switches. Added a line that unanchored repair already has `REPAIR_UNANCHORED` (`settings_registry.py:98`, admin-editable, next merge pass) and is out of scope. F2: "the loop reads at each sweep" replaced with wording matching the registry (`ACQUIRE_APPLY` is `next_show`, repair-side keys are `next_merge_pass`, so a switch applies per show or per merge pass).
+- `runtime-toggles.md`: only the T-3 Outcome line changed; it says the verify and repair switches were not built and that unanchored repair already had `REPAIR_UNANCHORED`. Original Scope and Why text untouched (`git diff` shows 1 line changed in that file's Outcome).
+
+Evidence (verified):
+- `settings_registry.py:98` read in this checkout: `_wave('REPAIR_UNANCHORED', 'repair', ..., 'bool', False, 'merge', 'next_merge_pass')`; `settings_registry.py:97` `DECISIONS_APPLY` and `:99` `RESTORE_PUNCTUATION` are the same `merge`/`next_merge_pass` kind.
+- `procoder format` on each epic file: "already formatted". `procoder check` on both: `2 clean, 0 unformatted, 0 unchecked, 0 out of scope, 2 hygiene finding(s) (0 blocking)`.
+- `procoder backlog list`: `[done 2026-10-23] epic runtime-toggles` and `[roadmap, not started] epic runtime-kill-switches`.
+- `git diff --stat origin/main HEAD`: the two epic files and this task file only.
+- Public content: the new text names only `REPAIR_UNANCHORED`, a registry path and release terms; no secret, credential or personal data.
+
+Escalations: none.
