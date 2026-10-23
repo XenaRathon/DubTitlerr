@@ -110,6 +110,25 @@ def test_similarity_rejects_unrelated_names():
     assert ga.similarity("Monet", "Momonosuke") < ga.MIN_SIM
 
 
+def test_best_title_picks_the_closest_normalised_title():
+    titles = ["Shirahoshi", "Hody Jones", "Neptune (character)", "Van der Decken"]
+    index = ga._title_index(titles)
+    name, score = ga._best_title_indexed("Syrahose", index)
+    assert name == "Shirahoshi" and score >= ga.MIN_SIM
+
+
+def test_best_title_strips_the_disambiguator_from_what_it_returns():
+    index = ga._title_index(["Neptune (character)"])
+    name, _score = ga._best_title_indexed("Neptune", index)
+    assert name == "Neptune"
+
+
+def test_best_title_returns_empty_when_nothing_is_close():
+    index = ga._title_index(["Shirahoshi", "Hody Jones"])
+    name, score = ga._best_title_indexed("Surrender", index)
+    assert name == "" and score == 0.0
+
+
 # --- perf refactor: the precomputed title index must agree with best_title's original
 # per-call implementation byte-for-byte, since propose()/unmatched() now always go
 # through it. These pin that equivalence directly rather than only through propose().
@@ -322,6 +341,12 @@ def test_propose_prefers_a_containing_title_over_a_closer_fuzzy_decoy(monkeypatc
     p = props[0]
     assert p["canonical"] != decoy
     assert p["verdict"] == "known" and p["reason"] == "short-form"
+
+
+def test_best_title_prefers_a_whole_word_containing_title_over_the_fuzzy_winner():
+    index = ga._title_index(["Roronoa Zoro", "Zoryu"])
+    name, score = ga._best_title_indexed("Zoro", index, ga._word_index(index))
+    assert name == "Roronoa Zoro" and score == 1.0
 
 
 def test_word_index_does_not_override_a_genuine_respelling():

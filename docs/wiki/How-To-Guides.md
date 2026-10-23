@@ -166,7 +166,10 @@ softly: it starts no new work, lets the unit already running finish, and exits 0
    docker inspect -f '{{.State.ExitCode}}' dubtitle-builder
    ```
 
-To run a nightly schedule, set up `DUBTITLERR_START` and `DUBTITLERR_END` in your `compose.yaml` (e.g., `00:00` to `10:00`). The container will sleep during the day and start processing at night. It wakes automatically; you do not need host-level cron or systemd units.
+If you want the container to run only inside a nightly window, set that up in the web UI: the
+**Runs** page has a **Schedule** section (switch, open time, close time, timezone) that opens and
+soft-closes the builder on that window. This replaced the `dubtitlerr-window-open`/`-close` systemd
+units, which are no longer shipped — there is nothing to install on the host.
 
 Releases up to 0.2.2 check the stop flag only before a glossary step starts, so an acquire step
 that is already running ends at its own end or at `ACQUIRE_TIMEOUT`. Set the grace period
