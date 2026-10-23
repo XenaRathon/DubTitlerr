@@ -211,9 +211,10 @@ const TAKES_EFFECT = {
   next_sweep: 'Takes effect at the next library sweep',
 };
 
-/** @param {{ key: string, applies?: string }} entry */
+/** @param {{ key: string, applies?: string, managed_by?: string }} entry */
 function takesEffectText(entry) {
-  if (entry.applies === 'restart') return '';
+  // Bootstrap rows are fixed by the container environment, so a saved change never applies to them.
+  if (entry.managed_by === 'bootstrap' || entry.applies === 'restart') return '';
   const text = Object.hasOwn(TAKES_EFFECT, entry.applies ?? '')
     ? TAKES_EFFECT[/** @type {keyof typeof TAKES_EFFECT} */ (entry.applies)]
     : undefined;

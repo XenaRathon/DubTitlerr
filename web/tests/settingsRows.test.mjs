@@ -259,3 +259,24 @@ test('describeRow warns once and returns empty text for a missing or unknown app
     console.warn = original;
   }
 });
+
+test('describeRow gives a bootstrap-managed row no takes-effect text and no warning', () => {
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    const entry = {
+      key: 'LONGCATAI_API_KEY',
+      type: 'secret',
+      secret: true,
+      editable: false,
+      managed_by: 'bootstrap',
+      applies: 'next_show',
+    };
+    assert.equal(describeRow(entry, { set: true }, {}).takesEffect, '');
+    assert.equal(describeRow({ ...entry, applies: undefined }, { set: true }, {}).takesEffect, '');
+    assert.deepEqual(warnings, []);
+  } finally {
+    console.warn = original;
+  }
+});
