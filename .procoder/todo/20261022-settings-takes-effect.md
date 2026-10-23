@@ -24,6 +24,8 @@ Work in `/home/xena/work/code/DubTitlerr` on the branch `feat/settings-takes-eff
 2. In `SettingRow.svelte`, show the text as a muted note in the row (under the value or control, next to `setting-reason`), for editable and read-only rows alike. Leave secret handling, the badges and the controls untouched.
 3. Extend `web/tests/settingsRows.test.mjs`: one case per `applies` value, the unknown/missing case (no throw, empty text, warns), and the restart row still has `restart: true` and no takes-effect text. Use an `ACQUIRE_APPLY`-shaped entry (`applies: 'next_show'`) for the next_show case.
 
+4. **Follow-up, from critic N1 (user decision 2026-10-22):** `describeRow` returns empty takes-effect text when `entry.managed_by === 'bootstrap'`. Those rows are fixed by the container environment, and three of them (`OPENROUTER_JEV_API_KEY`, `COMMANDCODE_API_KEY`, `LONGCATAI_API_KEY`) have `applies: 'next_show'`. Don't warn for them, and don't change `settings_registry.py`. Add a test with a bootstrap entry whose `applies` is `next_show`. Use Conventional Commit messages for new commits (e.g. `fix(web): ...`), per AGENTS.md.
+
 House rules for this task: commit on `feat/settings-takes-effect` only, never push or switch branches. Commit messages carry no `Co-Authored-By` or other AI-attribution trailer, because the repo's procoder gate blocks them. Write only under `## Result`: leave the criteria boxes and `## Evidence` to the lead.
 
 Out of scope: new settings or toggles (verify/repair kill switches were explicitly not chosen), Python and API changes, README/CHANGELOG (docs are frozen until the release pass), and every other file.
@@ -31,6 +33,7 @@ Out of scope: new settings or toggles (verify/repair kill switches were explicit
 ## Acceptance criteria
 
 - [ ] `describeRow` returns the four strings above for `next_show`, `next_episode`, `next_merge_pass` and `next_sweep`. It returns empty text and warns once for an unknown or missing `applies`. A `restart` row keeps `restart: true` with empty takes-effect text. The new tests in `web/tests/settingsRows.test.mjs` cover all of this and fail on `main` (show the failing run).
+- [ ] A `managed_by: 'bootstrap'` entry with `applies: 'next_show'` gets empty takes-effect text and no warning. A test covers it and fails without the change.
 - [ ] `SettingRow.svelte` renders the note for both editable and read-only rows. The existing badges are unchanged.
 - [ ] In `web/`: `npx prettier --check src/lib/settingsModel.js src/pages/settings/SettingRow.svelte tests/settingsRows.test.mjs && npm run check && npm test && npm run build` all pass. The full `npm run format:check` (CI, `.github/workflows/ci.yml:70`) is already red on `main` because of `web/tests/browser/settings.spec.ts`, which PR #32 fixes. Leave that file alone.
 - [ ] `procoder check` on the three changed files reports 0 BLOCKING, with one known exception: the eqeqeq at `settingsModel.js:130` (`isDirty`), which PR #32 fixes. Don't touch that line, so the two PRs don't conflict. procoder reports the .js/.svelte files as UNCHECKED, because its prettier can't load prettier-plugin-svelte from the repo root. That is a known tooling gap; the scoped prettier check above covers it.
