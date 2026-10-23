@@ -125,6 +125,35 @@ Acceptance criteria re-confirmation at 81d7f8c:
 
 Findings: none.
 
+81d7f8c: critic @ claude-opus-5-5: PASS
+
+SHA: `git-ro ... rev-parse HEAD` = cde1d97, not the REVIEW_SHA. That is expected under the brief: `git diff --stat 81d7f8c HEAD` shows only this task file. I reviewed 81d7f8c, the head the reviewer also checked. The fix commit is 076409e.
+
+### Independent checks
+- **F1: fixed.**
+  - `runtime-kill-switches.md:8` now scopes the epic to "the whole verify stage and the whole repair stage". `:10` says unanchored repair already has `REPAIR_UNANCHORED` (`settings_registry.py:98`), admin-editable, taking effect at the next merge pass, and puts it out of scope.
+  - The T-3 Outcome at `runtime-toggles.md:25` says the same.
+  - Against the registry at 81d7f8c, line 98 is still `_wave('REPAIR_UNANCHORED', ...)`. No whole-stage verify or repair enable key exists, as I checked at 9079a1f; no file outside `.procoder/` changed between 9079a1f and 81d7f8c. So the inventory in both files now matches the repo.
+- **F2: fixed.** "reads at each sweep" is gone. The timing is now `next_show` for `ACQUIRE_APPLY` and `next_merge_pass` for repair-side keys, which matches `settings_registry.py:91,98`. The remaining "safe to change mid-sweep" is about changing a value while a sweep runs, not about when it applies, and is accurate.
+- **No regressions:**
+  - `git diff 9079a1f 81d7f8c -- .procoder/backlog` touches only those two paragraphs.
+  - `git diff --name-only origin/main 81d7f8c` lists the two epic files plus this task file.
+  - Status lines are unchanged: `done 2026-10-23` and `roadmap, not started`. Still no schedule promise.
+  - `review-run procoder check` on both files: `2 clean, 0 unformatted, 0 unchecked, 0 out of scope, 2 hygiene finding(s) (0 blocking)`.
+  - No AI trailers in 9079a1f..81d7f8c.
+  - The new text adds only a key name and a file:line reference: no secret value, credential or personal data.
+
+### Reviewer's 81d7f8c PASS
+**CONFIRMED.** The claims on F1 and F2, the file set, T-1, T-2, T-3, Status, the gate and the public read all match my runs. One trivial miscount: the reviewer says "+6/-2 lines total outside this task file", but the epic diff is +4/-2 (kill-switches +3/-1, toggles +1/-1). It changes no conclusion.
+
+### Attempts to break it
+1. **Another existing stage switch missing from the new inventory:** none. The registry is unchanged since my 9079a1f sweep: the `VERIFY_*`/`REPAIR_*` bools tune behaviour inside a stage, and `gen_loop.sh`/`merge_pass.sh` have no enable gate.
+2. **The `settings_registry.py:98` reference pointing at the wrong line:** it holds `REPAIR_UNANCHORED` at 81d7f8c.
+3. **Fix commits touching anything else:** they don't. Only the two epic paragraphs and this task file changed.
+
+### New findings
+None.
+
 ## Evidence
 
 ## Result
