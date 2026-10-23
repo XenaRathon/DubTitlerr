@@ -126,11 +126,12 @@ def test_a_write_route_without_the_token_is_refused_and_a_read_route_is_not(tmp_
     stem = _episode(tmp_path)
     monkeypatch.setattr(review_server, "known_stems", lambda: [stem])
 
-    assert review_server.authorised("POST", None) is False
-    assert review_server.authorised("POST", "wrong-token") is False
-    assert review_server.authorised("POST", review_server.resolve_token(str(tmp_path))) is True
-    assert review_server.authorised("GET", None, "") is False, "rendered pages are gated"
-    assert review_server.authorised("GET", None, "/api/episodes") is False, "/api/ reads require token"
+    tok = review_server.resolve_token(str(tmp_path))
+    assert review_server.route("POST", "/api/decide", {}, None)[0] == 401
+    assert review_server.route("POST", "/api/decide", {}, "wrong-token")[0] == 401
+    assert review_server.route("POST", "/api/decide", {}, tok)[0] != 401
+    assert review_server.route("GET", "/api/episodes", {}, None)[0] == 401, "/api/ reads require token"
+    assert review_server.route("GET", "/api/episodes", {}, tok)[0] == 200
 
 
 def test_an_unknown_stem_is_refused_by_every_route(tmp_path, monkeypatch):
@@ -510,7 +511,7 @@ class _Wire:
 def test_a_negative_content_length_cannot_defeat_the_body_cap(tmp_path, monkeypatch):
     """`int("-1")` does not raise, so a declared length of -1 slips past `n > 1<<20`, and
     `rfile.read(-1)` reads to EOF rather than to the cap. The body is read BEFORE
-    authorised() runs, so any unauthenticated caller on the LAN could stream until this root
+    review_auth.decide() runs, so any unauthenticated caller on the LAN could stream until this root
     process ran out of memory -- while the docstring claimed the read was bounded."""
     monkeypatch.setattr(review_server, "known_stems", lambda: [])
     wire = _Wire(b'{"stem":"x"}' + b" " * 4096, declared=-1)
@@ -550,7 +551,7 @@ def test_a_generated_token_is_stable_when_it_cannot_be_persisted(tmp_path, monke
     second = review_server.resolve_token(unwritable)
 
     assert first and first == second, "the token must survive for the life of the process"
-    assert review_server.authorised("POST", first) is True, "the token that was logged must still work"
+    assert review_server.route("GET", "/api/episodes", {}, first)[0] == 200, "the token that was logged must still work"
 
 
 def test_the_stem_walk_is_cached_so_an_unauthenticated_get_cannot_thrash_the_disk(tmp_path, monkeypatch):
@@ -632,7 +633,7 @@ def test_the_handler_has_a_socket_deadline():
     `socketserver.StreamRequestHandler.setup()` only calls `connection.settimeout()` when it
     is not None -- so `rfile.read(n)` blocks with no deadline. The 1MB cap bounds MEMORY per
     request and nothing else: a client declaring a legal length and dripping one byte a
-    minute holds a thread, before `authorised()` is ever reached, and `ThreadingHTTPServer`
+    minute holds a thread, before `review_auth.decide()` is ever reached, and `ThreadingHTTPServer`
     spawns those threads without a cap.
 
     This asserts the attribute because the attribute IS the mechanism -- setup() reads it
@@ -1842,19 +1843,6 @@ def test_get_healthz_is_open_without_a_token(tmp_path, monkeypatch):
     assert wire.status == 200
 
 
-def test_cookie_token_parses_the_dubtitlerr_token_cookie_among_others():
-    headers = {"Cookie": "foo=bar; dubtitlerr_token=abc123; baz=qux"}
-    assert review_server._cookie_token(headers) == "abc123"
-
-
-def test_cookie_token_missing_cookie_header_returns_none():
-    assert review_server._cookie_token({}) is None
-
-
-def test_cookie_token_malformed_cookie_header_returns_none():
-    assert review_server._cookie_token({"Cookie": ";;;=== not a cookie"}) is None
-
-
 def test_render_locked_shared_uses_the_shared_title():
     out = review_server.render_locked("shared")
     assert "Shared lines" in out
@@ -1980,7 +1968,7 @@ def test_review_auth_off_keeps_every_page_open_with_no_token(tmp_path, monkeypat
 
 
 def test_get_api_episodes_without_token_is_401_with_the_literal_body(tmp_path, monkeypatch):
-    """authorised() now gates GET the same as POST for every /api/* route -- route()
+    """review_auth.decide() gates GET the same as POST for every /api/* route -- route()
     is reached only from api paths (verified: do_GET serves /, /index.html and
     /shared directly, before route() is ever called), so this cannot affect those
     three paths or /healthz (Task 16)."""
@@ -2004,10 +1992,10 @@ def test_get_api_episodes_without_token_is_401_with_the_literal_body(tmp_path, m
 
 def test_head_on_api_paths_is_gated_the_same_as_get():
     """No do_HEAD is defined (verified: Handler defines only do_GET and do_POST), so
-    HEAD is exercised against authorised() directly -- the one function route()
-    consults for every method. A future do_HEAD inherits the same gate for free."""
-    assert review_server.authorised("HEAD", None) is False
-    assert review_server.authorised("HEAD", "wrong") is False
+    HEAD is exercised against route() directly -- the one function every method goes
+    through. A future do_HEAD inherits the same gate for free."""
+    assert review_server.route("HEAD", "/api/episodes", {}, None)[0] == 401
+    assert review_server.route("HEAD", "/api/episodes", {}, "wrong")[0] == 401
 
 
 def test_get_index_page_stays_open_without_a_token(tmp_path, monkeypatch):

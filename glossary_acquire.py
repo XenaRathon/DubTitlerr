@@ -190,15 +190,6 @@ def _best_title_indexed(token: str, index: list, word_index: dict | None = None)
     return (best, best_score) if best_score >= MIN_SIM else ("", 0.0)
 
 
-def best_title(token: str, titles: list) -> tuple[str, float]:
-    """(normalised title, score) of the closest title above MIN_SIM, else ('', 0.0).
-
-    Not the hot path (see _resolve_tokens) -- a one-off convenience that builds its own
-    title/word index per call, fine for a single token against a single title list."""
-    index = _title_index(titles)
-    return _best_title_indexed(token, index, _word_index(index))
-
-
 CONF_SUFFIX = ".dubtitles.conf.json"
 SRT_SUFFIX = ".eng.dubtitles.srt"
 

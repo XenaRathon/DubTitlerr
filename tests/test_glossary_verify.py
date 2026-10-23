@@ -156,21 +156,21 @@ def test_allpages_url_and_parse():
 
 
 def test_parse_adjudication_clean_json():
-    d = gv.parse_adjudication('{"canonical": "Spandam", "confidence": "high", "dub_note": ""}')
+    d = gv.parse_adjudication_checked('{"canonical": "Spandam", "confidence": "high", "dub_note": ""}')[0]
     assert d["canonical"] == "Spandam" and d["confidence"] == "high"
 
 
 def test_parse_adjudication_json_with_prose():
-    d = gv.parse_adjudication('Sure!\n{"canonical":"Water 7","confidence":"high","dub_note":"numeral"}\nDone')
+    d = gv.parse_adjudication_checked('Sure!\n{"canonical":"Water 7","confidence":"high","dub_note":"numeral"}\nDone')[0]
     assert d["canonical"] == "Water 7" and d["dub_note"] == "numeral"
 
 
 def test_parse_adjudication_garbage_is_none():
-    assert gv.parse_adjudication("no json here")["confidence"] == "none"
+    assert gv.parse_adjudication_checked("no json here")[0]["confidence"] == "none"
 
 
 def test_parse_adjudication_bad_confidence_defaults_low():
-    d = gv.parse_adjudication('{"canonical":"X","confidence":"pretty sure"}')
+    d = gv.parse_adjudication_checked('{"canonical":"X","confidence":"pretty sure"}')[0]
     assert d["confidence"] == "low"
 
 
@@ -250,7 +250,7 @@ def test_arc_categories_are_discovered_by_search(monkeypatch):
         }
 
     monkeypatch.setattr(gv, "_http_json", fake)
-    cats = gv.arc_categories("https://x/api.php", "Dressrosa")
+    cats = gv.arc_categories_checked("https://x/api.php", "Dressrosa")[0]
     assert "Category:Dressrosa Residents" in cats
     assert "Category:Dressrosa Locations" in cats
     # non-canon material must not become canonical spellings
@@ -272,7 +272,7 @@ def test_arc_titles_unions_the_categories_and_follows_continuation(monkeypatch):
 
     monkeypatch.setattr(gv, "_http_json", fake)
     monkeypatch.setattr(gv, "arc_categories_checked", lambda a, b: (["Category:Dressrosa Residents"], True))
-    titles = gv.fetch_arc_titles("https://x/api.php", "Dressrosa")
+    titles = gv.fetch_arc_titles_checked("https://x/api.php", "Dressrosa")[0]
     assert titles == {"Kyros", "Pica", "Rebecca"}
 
 
@@ -280,7 +280,7 @@ def test_arc_titles_is_empty_when_discovery_finds_nothing(monkeypatch):
     """[S-7] A season.nfo title that is not an arc -- `Gaimon` is a character -- must yield
     NOTHING rather than some other page's cast. Emptiness is the fallback trigger."""
     monkeypatch.setattr(gv, "arc_categories_checked", lambda a, b: ([], True))
-    assert gv.fetch_arc_titles("https://x/api.php", "Gaimon") == set()
+    assert gv.fetch_arc_titles_checked("https://x/api.php", "Gaimon")[0] == set()
 
 
 def test_arc_titles_survives_an_unreachable_wiki(monkeypatch):
@@ -290,7 +290,7 @@ def test_arc_titles_survives_an_unreachable_wiki(monkeypatch):
         raise OSError("network down")
 
     monkeypatch.setattr(gv, "_http_json", boom)
-    assert gv.fetch_arc_titles("https://x/api.php", "Dressrosa") == set()
+    assert gv.fetch_arc_titles_checked("https://x/api.php", "Dressrosa")[0] == set()
 
 
 def test_arc_categories_exclude_episode_and_chapter_listings(monkeypatch):
@@ -312,7 +312,7 @@ def test_arc_categories_exclude_episode_and_chapter_listings(monkeypatch):
             }
         },
     )
-    cats = gv.arc_categories("https://x/api.php", "Dressrosa")
+    cats = gv.arc_categories_checked("https://x/api.php", "Dressrosa")[0]
     assert "Category:Dressrosa Residents" in cats
     assert "Category:Dressrosa Saga Antagonists" in cats
     assert not any("Episodes" in c or "Chapters" in c for c in cats)
@@ -402,7 +402,7 @@ def test_arc_page_links_supply_the_names_categories_miss(monkeypatch):
         "<ref>[[Reference Junk]]</ref>\n"
     )
     monkeypatch.setattr(gv, "_http_json", lambda url: {"parse": {"wikitext": {"*": wikitext}}})
-    names = gv.arc_page_links("https://x/api.php", "Dressrosa")
+    names = gv.arc_page_links_checked("https://x/api.php", "Dressrosa")[0]
     assert {"Rebecca", "Kyros", "Straw Hat Pirates"} <= names
     # templates and refs are stripped: navbox pollution made prop=links unusable
     assert "Navbox Junk" not in names
@@ -414,7 +414,7 @@ def test_arc_page_links_is_empty_when_the_page_is_missing(monkeypatch):
         raise OSError("no such page")
 
     monkeypatch.setattr(gv, "_http_json", boom)
-    assert gv.arc_page_links("https://x/api.php", "Nonesuch") == set()
+    assert gv.arc_page_links_checked("https://x/api.php", "Nonesuch")[0] == set()
 
 
 def test_resolve_redirects_follows_an_input_redirect_to_its_target(monkeypatch):
@@ -557,5 +557,5 @@ def test_a_character_named_season_resolves_to_nothing(monkeypatch):
         raise AssertionError("must not fall back to the bare title")
 
     monkeypatch.setattr(gv, "_http_json", fake)
-    assert gv.arc_page_links("https://x/api.php", "Gaimon") == set()
+    assert gv.arc_page_links_checked("https://x/api.php", "Gaimon")[0] == set()
     assert len(seen) == 1

@@ -34,7 +34,7 @@ Invariants to keep:
 
 ### Prerequisites and config
 
-Docker with NVIDIA container GPU support (Whisper), an anime library with English-dub audio, and a repair-model server: llama.cpp or an OpenAI-compatible API (both `/v1/chat/completions`), or Ollama (`/api/generate`). The published image is `ghcr.io/xenarathon/dubtitlerr`. Build from `Dockerfile.builder`; `Dockerfile` is the legacy signs-merge image.
+Docker with NVIDIA container GPU support (Whisper), an anime library with English-dub audio, and a repair-model server: llama.cpp or an OpenAI-compatible API (both `/v1/chat/completions`), or Ollama (`/api/generate`). The published image is `ghcr.io/xenarathon/dubtitlerr`. Build from `Dockerfile.builder`.
 
 Minimum config directory, mounted at `/config`:
 

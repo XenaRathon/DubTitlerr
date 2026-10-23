@@ -327,11 +327,6 @@ def parse_adjudication_checked(text: str) -> tuple[dict, bool]:
     return {"canonical": d.get("canonical", "") or "", "confidence": conf, "dub_note": str(d.get("dub_note", "") or "")}, True
 
 
-def parse_adjudication(text: str) -> dict:
-    """Parse the LLM's JSON reply (tolerating surrounding prose) into an adjudication; see parse_adjudication_checked."""
-    return parse_adjudication_checked(text)[0]
-
-
 # ---- the journal (adjudication_journal.py): what an answer depended on, and the call that remembers it
 # -----------------------------
 
@@ -948,11 +943,6 @@ def arc_categories_checked(wiki_api: str, arc: str) -> tuple[list[str], bool]:
     return out, True
 
 
-def arc_categories(wiki_api: str, arc: str) -> list[str]:
-    """arc_categories_checked without the success flag: [] on any failure (and for a non-arc title, [S-7])."""
-    return arc_categories_checked(wiki_api, arc)[0]
-
-
 _LINK_NAMESPACES = frozenset(
     "category file image media template help special user talk project portal forum blog thread board w wikipedia wikia c".split()
 )
@@ -1139,11 +1129,6 @@ def arc_page_links_checked(wiki_api: str, arc: str) -> tuple[set[str], bool]:
     return _extract_links(wt, normalise=True), True
 
 
-def arc_page_links(wiki_api: str, arc: str) -> set[str]:
-    """arc_page_links_checked without the success flag: an empty set on any failure."""
-    return arc_page_links_checked(wiki_api, arc)[0]
-
-
 CATEGORY_PAGE_CAP = 6  # pages of 500 per category (3,000 titles), far above the 96 measured for Dressrosa
 
 
@@ -1181,11 +1166,6 @@ def fetch_arc_titles_checked(wiki_api: str, arc: str) -> tuple[set[str], bool]:
             if page == CATEGORY_PAGE_CAP - 1:
                 complete = False  # still more to list: truncated
     return titles, complete
-
-
-def fetch_arc_titles(wiki_api: str, arc: str) -> set[str]:
-    """fetch_arc_titles_checked without the flag: an empty set on any failure, including an unreachable wiki."""
-    return fetch_arc_titles_checked(wiki_api, arc)[0]
 
 
 REDIRECT_MAX_CHUNKS = 20  # 50 titles per call: an arc beyond 1,000 links leaves the rest unresolved rather than looping

@@ -490,7 +490,6 @@ def test_a_category_listing_that_hits_the_page_cap_is_incomplete(tmp_path, raw, 
 def test_a_missing_arc_page_is_a_complete_empty_result_for_the_page_not_a_failure(raw):
     raw.text, raw.categories = None, []  # "Gaimon Arc" does not exist and no category matches: [S-7], nothing to store
     assert gv.fetch_arc_titles_checked("https://x.fandom.com/api.php", "Gaimon") == (set(), True)
-    assert gv.fetch_arc_titles("https://x.fandom.com/api.php", "Gaimon") == set()
 
 
 def test_a_complete_fetch_reports_complete(raw):

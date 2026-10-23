@@ -110,22 +110,6 @@ def test_similarity_rejects_unrelated_names():
     assert ga.similarity("Monet", "Momonosuke") < ga.MIN_SIM
 
 
-def test_best_title_picks_the_closest_normalised_title():
-    titles = ["Shirahoshi", "Hody Jones", "Neptune (character)", "Van der Decken"]
-    name, score = ga.best_title("Syrahose", titles)
-    assert name == "Shirahoshi" and score >= ga.MIN_SIM
-
-
-def test_best_title_strips_the_disambiguator_from_what_it_returns():
-    name, _score = ga.best_title("Neptune", ["Neptune (character)"])
-    assert name == "Neptune"
-
-
-def test_best_title_returns_empty_when_nothing_is_close():
-    name, score = ga.best_title("Surrender", ["Shirahoshi", "Hody Jones"])
-    assert name == "" and score == 0.0
-
-
 # --- perf refactor: the precomputed title index must agree with best_title's original
 # per-call implementation byte-for-byte, since propose()/unmatched() now always go
 # through it. These pin that equivalence directly rather than only through propose().
@@ -141,9 +125,9 @@ def test_best_title_returns_empty_when_nothing_is_close():
         ("Vanderdecken", ["Van der Decken", "Shirahoshi"]),
     ],
 )
-def test_best_title_indexed_agrees_with_best_title_on_a_fixture(token, titles):
+def test_best_title_indexed_matches_itself_without_the_word_index(token, titles):
     index = ga._title_index(titles)
-    assert ga._best_title_indexed(token, index) == ga.best_title(token, titles)
+    assert ga._best_title_indexed(token, index) == ga._best_title_indexed(token, index, {})
 
 
 def test_title_index_drops_titles_whose_reduced_form_is_empty():
@@ -152,7 +136,6 @@ def test_title_index_drops_titles_whose_reduced_form_is_empty():
     titles = ["-", "Shirahoshi"]
     index = ga._title_index(titles)
     assert [n for n, *_ in index] == ["Shirahoshi"]
-    assert ga._best_title_indexed("Syrahose", index) == ga.best_title("Syrahose", titles)
 
 
 def test_title_index_collapses_duplicate_normalised_titles():
@@ -161,7 +144,6 @@ def test_title_index_collapses_duplicate_normalised_titles():
     titles = ["Neptune (character)", "Neptune (anime)", "Shirahoshi"]
     index = ga._title_index(titles)
     assert [n for n, *_ in index] == ["Neptune", "Shirahoshi"]
-    assert ga._best_title_indexed("Surrender", index) == ga.best_title("Surrender", titles)
 
 
 def test_decide_applies_a_lopsided_mishearing():
@@ -342,15 +324,11 @@ def test_propose_prefers_a_containing_title_over_a_closer_fuzzy_decoy(monkeypatc
     assert p["verdict"] == "known" and p["reason"] == "short-form"
 
 
-def test_best_title_prefers_a_whole_word_containing_title_over_the_fuzzy_winner():
-    name, score = ga.best_title("Zoro", ["Roronoa Zoro", "Zoryu"])
-    assert name == "Roronoa Zoro" and score == 1.0
-
-
 def test_word_index_does_not_override_a_genuine_respelling():
     # 'Vargo' is not a whole word of anything here -- Fix 2 must not touch a real tier-C
     # fix; it should still resolve through the ordinary fuzzy path untouched.
-    name, score = ga.best_title("Vargo", ["Vergo", "Roronoa Zoro"])
+    index = ga._title_index(["Vergo", "Roronoa Zoro"])
+    name, score = ga._best_title_indexed("Vargo", index, ga._word_index(index))
     assert name == "Vergo" and score == pytest.approx(ga.similarity("Vargo", "Vergo"))
 
 

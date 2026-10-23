@@ -166,12 +166,7 @@ softly: it starts no new work, lets the unit already running finish, and exits 0
    docker inspect -f '{{.State.ExitCode}}' dubtitle-builder
    ```
 
-If you run a nightly window, `deploy/` has the systemd units for it. `dubtitlerr-window-open`
-runs `docker start` at 00:00 and `dubtitlerr-window-close` runs `docker stop -t 900` at 10:00
-(America/New_York), each from its own timer. The close unit logs the exit code, prints a warning
-when it is not 0, and deletes orphan `*.muxtmp.mkv` files. It skips any episode that has a
-`.dubtitles.mux-recovery` marker. The units use the author's container name and library path, so
-edit those and the times before you install them.
+To run a nightly schedule, set up `DUBTITLERR_START` and `DUBTITLERR_END` in your `compose.yaml` (e.g., `00:00` to `10:00`). The container will sleep during the day and start processing at night. It wakes automatically; you do not need host-level cron or systemd units.
 
 Releases up to 0.2.2 check the stop flag only before a glossary step starts, so an acquire step
 that is already running ends at its own end or at `ACQUIRE_TIMEOUT`. Set the grace period

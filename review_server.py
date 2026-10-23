@@ -129,26 +129,6 @@ _QUEUE_MTIME: dict = {}
 CONF_SUFFIX = ".dubtitles.conf.json"
 
 
-def _cookie_token(headers):
-    """The token from the Cookie header's dubtitlerr_token entry, or None.
-
-    A fallback for the PAGE routes only (/, /index.html, /shared): a plain page
-    navigation cannot attach a custom X-Api-Key header, so the token the page's
-    own JS already stores has nowhere to travel except a cookie. /api/* callers
-    (curl, the page's own fetch() calls) keep sending the header; this fallback
-    widens what authorised() will accept, it narrows nothing."""
-    raw = headers.get("Cookie") if hasattr(headers, "get") else None
-    if not raw:
-        return None
-    jar = http.cookies.SimpleCookie()
-    try:
-        jar.load(raw)
-    except http.cookies.CookieError:
-        return None
-    morsel = jar.get("dubtitlerr_token")
-    return morsel.value if morsel else None
-
-
 # 0.0.0.0 because the container is the point -- the operator reaches this from their LAN.
 # That is exactly why an unset REVIEW_TOKEN generates one instead of meaning "open".
 REVIEW_BIND = os.environ.get("REVIEW_BIND", "0.0.0.0")
@@ -295,13 +275,6 @@ ADMIN_ROUTES[("POST", "/api/glossary/wiki-test")] = review_glossary.wiki_test
 ADMIN_ROUTES[("PUT", "/api/schedule")] = lambda body: review_requests.handle(
     "PUT", "/api/schedule", body, anime_root=_anime_root()
 )
-
-
-def authorised(method: str, presented, path: str = "") -> bool:
-    """All routes require the token when auth is enabled."""
-    if not auth_required():
-        return True
-    return review_auth.key_matches(presented)  # the classic pages' token box: the API key by its old name
 
 
 def _stems_ttl(elapsed: float) -> float:
@@ -1008,24 +981,20 @@ def preview_audio(body: dict) -> tuple:
         _AUDIO_SLOTS.release()
 
 
-# debt: ``admin_token`` is accepted and ignored (the admin token is retired); drop the parameter in v0.4.0. It stays until then
-# because tests and older callers still pass it as a keyword.
 def route(
-    method: str, path: str, body: dict, token, client: str = "", admin_token: str = "", headers: dict | None = None
+    method: str, path: str, body: dict, token, client: str = "", headers: dict | None = None
 ) -> tuple:
     """(status, payload) for one request; route_full is the same call with the response headers (a Set-Cookie) as a third item."""
-    return route_full(method, path, body, token, client, admin_token, headers)[:2]
+    return route_full(method, path, body, token, client, headers)[:2]
 
 
-# debt: ``admin_token`` is accepted and ignored (the admin token is retired); drop the parameter in v0.4.0. It stays until then
-# because tests and older callers still pass it as a keyword.
 def route_full(
-    method: str, path: str, body: dict, token, client: str = "", admin_token: str = "", headers: dict | None = None
+    method: str, path: str, body: dict, token, client: str = "", headers: dict | None = None
 ) -> tuple:
     """(status, payload, extra_headers). ``token`` is the pre-accounts calling convention and counts as X-Api-Key;
     ``headers`` carry the Cookie, X-Api-Key and CSRF header. review_auth.decide runs first, on the bare path (no query
-    string): no handler is reached by a caller its route's role does not allow. ``admin_token`` is accepted and ignored (the
-    admin token is retired). ``client`` is the peer address, used only to throttle /api/login."""
+    string): no handler is reached by a caller its route's role does not allow. ``client`` is the peer address,
+    used only to throttle /api/login."""
     bare = path.partition("?")[0]
     hdrs = dict(headers or {})
     if token and not review_auth.header(hdrs, review_auth.API_KEY_HEADER):
@@ -1033,7 +1002,7 @@ def route_full(
     decision = review_auth.decide(method, bare, hdrs)
     if decision.status is not None:
         return decision.status, {"error": decision.error}, {}
-    result = _route(method, path, bare, body, decision, client, admin_token, hdrs)
+    result = _route(method, path, bare, body, decision, client, hdrs)
     status, payload, extra = result if len(result) == 3 else (*result, {})
     p = decision.principal
     if p is not None and p.kind == "session" and p.refresh and status < 400 and "Set-Cookie" not in extra:
@@ -1045,9 +1014,7 @@ def route_full(
     return status, payload, extra
 
 
-# debt: ``admin_token`` is accepted and ignored (the admin token is retired); drop the parameter in v0.4.0. It stays until then
-# because tests and older callers still pass it as a keyword.
-def _route(method: str, path: str, bare: str, body: dict, decision, client: str, admin_token: str, headers: dict | None) -> tuple:
+def _route(method: str, path: str, bare: str, body: dict, decision, client: str, headers: dict | None) -> tuple:
     """The old route() body: (status, payload) or (status, payload, extra_headers). ``headers`` are read by the webhook
     routes (their own X-Webhook-Token)."""
     if method == "GET" and (path == "/review" or path.startswith("/review/")):
