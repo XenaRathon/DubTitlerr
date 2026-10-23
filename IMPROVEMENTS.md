@@ -285,11 +285,12 @@ python3 tools/bakeoff.py \
 
 ### Repair (`repair.py`)
 
-| Env var                  | Current default                     | Candidate value              | Why                        |
-| :----------------------- | :---------------------------------- | :--------------------------- | :------------------------- |
-| `REPAIR_MODEL`           | `qwen3:8b`                          | `phi-4:14b-q3_K_M`          | Best GPU upgrade           |
-| `REPAIR_BACKEND`         | `ollama`                            | `ollama`                    | GPU primary                |
-| `REPAIR_LLAMACPP_URL`    | `http://192.168.1.209:8090/completion` | —                     | Points at Nanbeige on fasc |
+| Env var                  | Current default                     | Candidate value    | Why                   |
+| :----------------------- | :---------------------------------- | :----------------- | :-------------------- |
+| `REPAIR_MODEL`           | `qwen3:8b`                          | `phi-4:14b-q3_K_M` | Best GPU upgrade      |
+| `REPAIR_BACKEND`         | `ollama`                            | `ollama`           | GPU primary           |
+| `REPAIR_MODEL_SECONDARY` | (same as primary)                   | `qwen3.6:35b-a3b`  | CPU second opinion    |
+| `REPAIR_LLAMACPP_URL`    | `http://<llm-host>:8080/completion` | —                  | Points at Xeon server |
 
 ---
 
@@ -324,11 +325,3 @@ a separate task, not part of trying Jev on the merge call.
 
 **Caveat:** OpenRouter's $0 pricing on Jev looks like an early-access promo, not a permanent
 rate — don't make it load-bearing without keeping `VERIFY_MODEL`'s local fallback wired.
-=======
-| Env var                  | Current default                     | Candidate value    | Why                   |
-| :----------------------- | :---------------------------------- | :----------------- | :-------------------- |
-| `REPAIR_MODEL`           | `qwen3:8b`                          | `phi-4:14b-q3_K_M` | Best GPU upgrade      |
-| `REPAIR_BACKEND`         | `ollama`                            | `ollama`           | GPU primary           |
-| `REPAIR_MODEL_SECONDARY` | (same as primary)                   | `qwen3.6:35b-a3b`  | CPU second opinion    |
-| `REPAIR_LLAMACPP_URL`    | `http://<llm-host>:8080/completion` | —                  | Points at Xeon server |
->>>>>>> origin/fix/published-episode-titles

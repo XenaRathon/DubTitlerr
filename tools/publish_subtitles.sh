@@ -106,6 +106,7 @@ git -c user.name="dubtitlerr" -c user.email="dubtitlerr@localhost" \
 # it in `ps` output for every user on the box). Without it, `git push` uses whatever
 # credentials the environment already has -- an ssh remote, a helper, a mounted netrc.
 if [ -n "${GITHUB_PAT:-}" ]; then
+	# shellcheck disable=SC2016
 	git -c credential.helper='!f() { printf "username=%s\npassword=%s\n" "${GITHUB_USER:-x-access-token}" "$GITHUB_PAT"; }; f' push -q
 else
 	git push -q
