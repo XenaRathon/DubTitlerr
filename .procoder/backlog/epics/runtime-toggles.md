@@ -22,4 +22,4 @@ User request: acquire on/off (`ACQUIRE_APPLY`) must be togglable in the web UI s
 
 - **[T-1] Done in v0.3.0:** `ACQUIRE_APPLY` is an editable, admin-only runtime setting.
 - **[T-2] Done in #33 (707ed9a):** each settings row says when a saved change takes effect (`describeRow` `takesEffect` in `web/src/lib/settingsModel.js`).
-- **[T-3] Dropped from this epic** by the user's scope decision on 2026-10-22 ("(a) only"). It is kept as a separate roadmap epic, `runtime-kill-switches`.
+- **[T-3] Dropped from this epic** by the user's scope decision on 2026-10-22 ("(a) only"). The verify and repair on/off switches were not built; they are kept as a separate roadmap epic, `runtime-kill-switches`. The third switch in the T-3 list, unanchored repair, already had one: `REPAIR_UNANCHORED` (`settings_registry.py:98`), an admin-editable setting that takes effect at the next merge pass.
