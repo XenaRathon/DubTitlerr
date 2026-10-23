@@ -203,6 +203,29 @@ export function describeRestartWait(status) {
 
 const SOURCE_LABELS = { ui: 'Set here', env: 'From the container', default: 'Default' };
 
+/** When a saved change takes effect, by the schema's `applies` value. `restart` keeps its badge instead. */
+const TAKES_EFFECT = {
+  next_show: 'Takes effect from the next show',
+  next_episode: 'Takes effect from the next episode',
+  next_merge_pass: 'Takes effect at the next merge pass',
+  next_sweep: 'Takes effect at the next library sweep',
+};
+
+/** @param {{ key: string, applies?: string }} entry */
+function takesEffectText(entry) {
+  if (entry.applies === 'restart') return '';
+  const text = Object.hasOwn(TAKES_EFFECT, entry.applies ?? '')
+    ? TAKES_EFFECT[/** @type {keyof typeof TAKES_EFFECT} */ (entry.applies)]
+    : undefined;
+  if (text === undefined) {
+    console.warn(
+      `settings: ${entry.key} has unknown applies value ${JSON.stringify(entry.applies)}; showing no takes-effect note`,
+    );
+    return '';
+  }
+  return text;
+}
+
 /**
  * One row's display model from its schema entry and its GET /api/settings info.
  * @param {any} entry
@@ -220,6 +243,7 @@ export function describeRow(entry, info, ctx) {
     enum: entry.enum ?? [],
     secret: Boolean(entry.secret),
     restart: entry.applies === 'restart',
+    takesEffect: takesEffectText(entry),
     value: info?.value,
     isSet: Boolean(info?.set),
     source,
