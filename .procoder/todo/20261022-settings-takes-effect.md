@@ -107,3 +107,21 @@ Outcome: done on `feat/settings-takes-effect` (not pushed). Commits e041411 (fea
 ### Escalations
 - None blocking. The two eqeqeq BLOCKING lines at `settingsModel.js:130` remain until PR #32 lands.
 
+
+### Item 4 (critic N1: bootstrap rows)
+
+Outcome: done in fe06033 on `feat/settings-takes-effect` (not pushed).
+
+- `web/src/lib/settingsModel.js`: `takesEffectText` returns empty text, without warning, when `entry.managed_by === 'bootstrap'`, checked before the `applies` lookup. `settings_registry.py` untouched.
+- `web/tests/settingsRows.test.mjs`: one new test, a bootstrap secret entry (`LONGCATAI_API_KEY`-shaped) with `applies: 'next_show'` gets empty text and no warning; the same entry with `applies` missing also gets none.
+
+Evidence (verified):
+- Red first: before the code change `node --test tests/settingsRows.test.mjs` gave `tests 13 / pass 12 / fail 1`; the new test failed with actual `'Takes effect from the next show'`, expected `''`.
+- Green: same file `pass 13 / fail 0`. Full `npm test`: `tests 110 / pass 110 / fail 0`.
+- Scoped prettier on the three files: "All matched files use Prettier code style!". `npm run check`: `0 ERRORS 0 WARNINGS`. `npm run build`: `✓ built in 1.07s`.
+- Python: `PATH=.venv/bin:$PATH python -m pytest -q`: all dots to 100%, `exit=0` (this config prints no summary line, so no passed count).
+- `procoder check` on the three files: only the known eqeqeq at `settingsModel.js:130` (BLOCKING, PR #32); .js files UNCHECKED (known svelte-plugin gap).
+- `git diff --stat main...HEAD`: the task file, `settingsModel.js`, `SettingRow.svelte`, `settingsRows.test.mjs`. Nothing else.
+- Unverified: rendering in a browser, as before.
+
+Escalations: none.
