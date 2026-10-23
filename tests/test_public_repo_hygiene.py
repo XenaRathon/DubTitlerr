@@ -72,10 +72,10 @@ def test_the_wiki_discloses_when_repair_unanchored_was_deployed():
 
 
 def test_repair_backend_secondary_is_retired_not_referenced_outside_history():
-    """REPAIR_BACKEND_SECONDARY was proposed in IMPROVEMENTS.md, never implemented,
-    and retired 2026-09-22 (REVIEW.md's outstanding-issues list, `.procoder/specs/
+    """REPAIR_BACKEND_SECONDARY was proposed in docs/IMPROVEMENTS.md, never implemented,
+    and retired 2026-09-22 (docs/REVIEW.md's outstanding-issues list, `.procoder/specs/
     v0-2-0-hardening.md`'s S-13). A name that keeps reappearing in ACTIVE docs after
-    retirement is exactly the kind of drift IMPROVEMENTS.md and REVIEW.md used to
+    retirement is exactly the kind of drift docs/IMPROVEMENTS.md and docs/REVIEW.md used to
     carry themselves."""
     allowed_prefixes = (
         "docs/Adversarial Reviews/",

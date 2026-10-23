@@ -327,11 +327,6 @@ def parse_adjudication_checked(text: str) -> tuple[dict, bool]:
     return {"canonical": d.get("canonical", "") or "", "confidence": conf, "dub_note": str(d.get("dub_note", "") or "")}, True
 
 
-def parse_adjudication(text: str) -> dict:
-    """Parse the LLM's JSON reply (tolerating surrounding prose) into an adjudication; see parse_adjudication_checked."""
-    return parse_adjudication_checked(text)[0]
-
-
 # ---- the journal (adjudication_journal.py): what an answer depended on, and the call that remembers it
 # -----------------------------
 
@@ -687,7 +682,7 @@ def clean_adjudication(adj) -> tuple[dict, bool]:
 
     A backend, a monkeypatch or a future parser can hand apply_results a list, a string, None, or a dict whose canonical is not
     a string. None of that may write a name or crash the run: it becomes a no-match (and is counted). An unknown confidence word
-    becomes 'low', as parse_adjudication does. dub_note and other fields are dropped; nothing downstream reads them."""
+    becomes 'low', as parse_adjudication_checked does. dub_note and other fields are dropped; nothing downstream reads them."""
     if not isinstance(adj, dict):
         return {"canonical": "", "confidence": "none"}, adj is not None
     canon, conf = adj.get("canonical", ""), adj.get("confidence", "none")
@@ -948,11 +943,6 @@ def arc_categories_checked(wiki_api: str, arc: str) -> tuple[list[str], bool]:
     return out, True
 
 
-def arc_categories(wiki_api: str, arc: str) -> list[str]:
-    """arc_categories_checked without the success flag: [] on any failure (and for a non-arc title, [S-7])."""
-    return arc_categories_checked(wiki_api, arc)[0]
-
-
 _LINK_NAMESPACES = frozenset(
     "category file image media template help special user talk project portal forum blog thread board w wikipedia wikia c".split()
 )
@@ -961,7 +951,7 @@ _LINK_NAMESPACES = frozenset(
 def _extract_links(wt: str, normalise: bool = False) -> set[str]:
     """[[...]] links from wikitext, templates/refs stripped, non-entity links dropped
     (Category:/File:/Image:/w: namespaces, lowercase-first, bare Chapter/Episode/Volume
-    N). Shared by arc_page_links (whole page) and plot_section_links (one section) so
+    N). Shared by arc_page_links_checked (whole page) and plot_section_links (one section) so
     the filter cannot drift between them.
 
     ``normalise`` (the ARC stage only; plot_section_links keeps the old filter so acquire's per-episode admission is
@@ -1139,11 +1129,6 @@ def arc_page_links_checked(wiki_api: str, arc: str) -> tuple[set[str], bool]:
     return _extract_links(wt, normalise=True), True
 
 
-def arc_page_links(wiki_api: str, arc: str) -> set[str]:
-    """arc_page_links_checked without the success flag: an empty set on any failure."""
-    return arc_page_links_checked(wiki_api, arc)[0]
-
-
 CATEGORY_PAGE_CAP = 6  # pages of 500 per category (3,000 titles), far above the 96 measured for Dressrosa
 
 
@@ -1181,11 +1166,6 @@ def fetch_arc_titles_checked(wiki_api: str, arc: str) -> tuple[set[str], bool]:
             if page == CATEGORY_PAGE_CAP - 1:
                 complete = False  # still more to list: truncated
     return titles, complete
-
-
-def fetch_arc_titles(wiki_api: str, arc: str) -> set[str]:
-    """fetch_arc_titles_checked without the flag: an empty set on any failure, including an unreachable wiki."""
-    return fetch_arc_titles_checked(wiki_api, arc)[0]
 
 
 REDIRECT_MAX_CHUNKS = 20  # 50 titles per call: an arc beyond 1,000 links leaves the rest unresolved rather than looping

@@ -649,7 +649,7 @@ def invents_name(orig, new, gloss):
     a glossary name -- exact, hard-fix, or guarded-fuzzy/metaphone -- is already snapped to
     its canonical spelling. So ``Syrahose -> Shirahoshi`` is handled upstream and never
     reaches here. What this function judges is the residue prompt tuning could not close
-    (ISSUE-phonetic-name-guard.md, measured on One Pace S29E08, 40 targets, temperature 0):
+    (docs/ISSUE-phonetic-name-guard.md, measured on One Pace S29E08, 40 targets, temperature 0):
 
         Syrahose  -> Shyarros    (the SAME token got the right answer elsewhere in the
                                    same episode -- the model is guessing phonetically

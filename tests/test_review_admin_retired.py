@@ -33,8 +33,7 @@ def test_the_alias_and_the_key_reach_an_admin_route_with_no_second_secret(env):
 
 def test_a_configured_admin_token_changes_nothing(env):
     env.setenv("REVIEW_ADMIN_TOKEN", "old-admin")
-    assert rs.route("POST", "/api/_admin_probe", {}, TOKEN, admin_token="wrong") == (200, {"ok": True})
-    assert rs.route("POST", "/api/_admin_probe", {}, TOKEN, admin_token="old-admin") == (200, {"ok": True})
+    assert rs.route("POST", "/api/_admin_probe", {}, TOKEN) == (200, {"ok": True})
 
 
 def test_admin_routes_are_open_with_auth_off(env):
