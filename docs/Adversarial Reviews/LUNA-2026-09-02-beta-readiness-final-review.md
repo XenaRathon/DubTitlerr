@@ -16,8 +16,8 @@ the mixed live worktree.
 
 1. **P1 — Song-span policy is not propagated to already stamped output.**
 
-   **Location:** [common.py:143-162](../../common.py:143), [mux.py:455-479](../../mux.py:455),
-   [dub_signs_merge.py:123-129](../../dub_signs_merge.py:123).
+   **Location:** [common.py:143-162](../../common.py#L143), [mux.py:455-479](../../mux.py#L455),
+   [dub_signs_merge.py:123-129](../../dub_signs_merge.py#L123).
 
    `TEXT_VERSION` explicitly covers the merge stage, but it remains `8`, while the new
    song policy is implemented after the existing v8 output was produced. A v8 episode with
@@ -43,8 +43,8 @@ the mixed live worktree.
 2. **P1 — `review_apply` and `repair` do not implement the same word-window contract, and
    Apply can crash on a valid untimed word record.**
 
-   **Location:** [review_apply.py:121-137](../../review_apply.py:121),
-   [repair.py:401-415](../../repair.py:401).
+   **Location:** [review_apply.py:121-137](../../review_apply.py#L121),
+   [repair.py:401-415](../../repair.py#L401).
 
    `repair._card_words` deliberately excludes words unless both timestamps are present and
    applies `reflow.EPS` at both boundaries. `review_apply` independently filters with
@@ -73,9 +73,9 @@ the mixed live worktree.
 
 3. **P2 — The acquisition cache permanently memoises transient LLM failures as decisions.**
 
-   **Location:** [glossary_acquire.py:350-373](../../glossary_acquire.py:350),
-   [glossary_acquire.py:394-404](../../glossary_acquire.py:394),
-   [acquire_cache.py:89-108](../../acquire_cache.py:89).
+   **Location:** [glossary_acquire.py:350-373](../../glossary_acquire.py#L350),
+   [glossary_acquire.py:394-404](../../glossary_acquire.py#L394),
+   [acquire_cache.py:89-108](../../acquire_cache.py#L89).
 
    `adjudicate_merge` returns `{"same_entity": False, "confidence": "none"}` for an
    unavailable, empty, malformed, or unparseable LLM response. `escalate` then stores that
@@ -100,7 +100,7 @@ the mixed live worktree.
 
 4. **P2 — `--pin` can bypass the zero-match refusal by inserting a nonexistent directory.**
 
-   **Location:** [watch_queue.py:179-193](../../watch_queue.py:179).
+   **Location:** [watch_queue.py:179-193](../../watch_queue.py#L179).
 
    `match_dirs` returns only library directory names, but `build` inserts every pin after
    matching without validating it against `order` or the library directory list. Thus the
@@ -123,7 +123,7 @@ the mixed live worktree.
 
 5. **P2 — Applying a `reject` verdict needlessly reopens and re-muxes the episode.**
 
-   **Location:** [review_apply.py:121-145](../../review_apply.py:121).
+   **Location:** [review_apply.py:121-145](../../review_apply.py#L121).
 
    `changed` increments for any `decisions.for_orig` hit. That includes `reject`, which
    intentionally leaves the ASR text unchanged. `apply_episode` nevertheless writes a new
@@ -151,8 +151,8 @@ the mixed live worktree.
 6. **P2 — `review_apply` selects the first correction for an original line while `repair`
    selects the newest dated correction.**
 
-   **Location:** [review_apply.py:121-137](../../review_apply.py:121),
-   [decisions.py:160-185](../../decisions.py:160).
+   **Location:** [review_apply.py:121-137](../../review_apply.py#L121),
+   [decisions.py:160-185](../../decisions.py#L160).
 
    The decision store deliberately permits multiple corrections for one `orig` when the
    proposed sides differ, and `decisions.corrected_text` chooses the maximum `at` value.
@@ -180,7 +180,7 @@ the mixed live worktree.
 7. **SUSPECTED — the auth-disabled startup warning does not recognize every possible
    wildcard spelling.**
 
-   **Location:** [review_server.py:178-204](../../review_server.py:178).
+   **Location:** [review_server.py:178-204](../../review_server.py#L178).
 
    The warning fires only when the bind string is exactly `0.0.0.0`. It would not fire for
    `::` or a hostname that an operator believes resolves to all interfaces.
