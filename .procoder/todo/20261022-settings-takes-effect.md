@@ -42,3 +42,24 @@ Out of scope: new settings or toggles (verify/repair kill switches were explicit
 ## Evidence
 
 ## Result
+
+Outcome: done on `feat/settings-takes-effect` (not pushed). Commits e041411 (feature) and 9f6608e (drop an unused binding in my own test that procoder flagged). All criteria hold, with the known exceptions below.
+
+### What changed
+- `web/src/lib/settingsModel.js`: `describeRow` returns `takesEffect`: the four strings for `next_show`/`next_episode`/`next_merge_pass`/`next_sweep`; empty for `restart` (the `restart` flag is unchanged); empty plus one `console.warn` naming the key and value for a missing or unknown `applies`. No throw.
+- `web/src/pages/settings/SettingRow.svelte`: renders `row.takesEffect` as a muted `.setting-effect` note above the help text, outside the editable/read-only branch, so both row kinds show it. Badges, controls and secret handling are untouched.
+- `web/tests/settingsRows.test.mjs`: three new tests. One covers all four `applies` values (using an `ACQUIRE_APPLY`-shaped `next_show` entry); one covers `restart` (flag true, empty text); one covers unknown and missing `applies` (empty text, one warn each, key and value named, no throw).
+
+### Evidence (verified)
+- Fails on main: the new test file copied into a detached `main` worktree, then `node --test tests/settingsRows.test.mjs`: `ℹ tests 12 / pass 9 / fail 3`; failing: "turns each applies value into its takes-effect text", "gives a restart row no takes-effect text...", "warns once and returns empty text...". Same three failed before the implementation (`undefined !== ''`).
+- `npm test` in `web/`: `tests 109 / pass 108 / fail 0` (one test skipped by the suite, not by me: unverified which).
+- `npx prettier --check` on the three files: "All matched files use Prettier code style!" (re-run after the 9f6608e test edit on the test file: same).
+- `npm run check`: `COMPLETED 4201 FILES 0 ERRORS 0 WARNINGS`. `npm run build`: `✓ built in 1.08s`.
+- Python: `PATH=.venv/bin:$PATH python -m pytest -q`: all dots to 100%, `exit=0`. This pytest config prints no summary line, so I have no passed count.
+- `procoder check` on the three files: 2 BLOCKING, both the known eqeqeq at `settingsModel.js:130` (`isDirty`, left untouched, PR #32). The first run also flagged `_omit` unused in my test (BLOCKING); fixed in 9f6608e and re-run: only the eqeqeq remains. The .js files report UNCHECKED (prettier-plugin-svelte tooling gap, as the task said). Info-only: release.yml no timeout-minutes, Dockerfile.builder DL3025, and a 76-char commit subject (aim <=72), which I did not rewrite.
+- `git diff --stat main...HEAD` (run before 9f6608e, which only touches the test file): `.procoder/todo/20261022-settings-takes-effect.md`, `web/src/lib/settingsModel.js`, `web/src/pages/settings/SettingRow.svelte`, `web/tests/settingsRows.test.mjs`. Nothing else.
+- Unverified: the note's rendering in a browser (no component test exists; covered only by svelte-check and build).
+
+### Escalations
+- None blocking. The two eqeqeq BLOCKING lines at `settingsModel.js:130` remain until PR #32 lands.
+
