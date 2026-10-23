@@ -215,3 +215,68 @@ test('every bootstrap value lists under General, whatever category the registry 
   );
   assert.deepEqual(categoryRows(schema, 'connections', true), { rows: [], bootstrap: [] });
 });
+
+const APPLY_ENTRY = { key: 'ACQUIRE_APPLY', type: 'bool', editable: true, applies: 'next_show' };
+
+test('describeRow turns each applies value into its takes-effect text', () => {
+  const cases = {
+    next_show: 'Takes effect from the next show',
+    next_episode: 'Takes effect from the next episode',
+    next_merge_pass: 'Takes effect at the next merge pass',
+    next_sweep: 'Takes effect at the next library sweep',
+  };
+  for (const [applies, text] of Object.entries(cases)) {
+    const row = describeRow({ ...APPLY_ENTRY, applies }, { value: true }, { canEdit: true });
+    assert.equal(row.takesEffect, text, applies);
+    assert.equal(row.restart, false, applies);
+  }
+});
+
+test('describeRow gives a restart row no takes-effect text and keeps its restart flag', () => {
+  const row = describeRow({ ...APPLY_ENTRY, applies: 'restart' }, { value: true }, { canEdit: true });
+  assert.equal(row.restart, true);
+  assert.equal(row.takesEffect, '');
+});
+
+test('describeRow warns once and returns empty text for a missing or unknown applies', () => {
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    const unknown = describeRow({ ...APPLY_ENTRY, applies: 'someday' }, { value: true }, {});
+    assert.equal(unknown.takesEffect, '');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /ACQUIRE_APPLY/);
+    assert.match(warnings[0], /someday/);
+
+    const noApplies = { ...APPLY_ENTRY };
+    delete noApplies.applies;
+    const missing = describeRow(noApplies, { value: true }, {});
+    assert.equal(missing.takesEffect, '');
+    assert.equal(warnings.length, 2);
+    assert.match(warnings[1], /ACQUIRE_APPLY/);
+  } finally {
+    console.warn = original;
+  }
+});
+
+test('describeRow gives a bootstrap-managed row no takes-effect text and no warning', () => {
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    const entry = {
+      key: 'LONGCATAI_API_KEY',
+      type: 'secret',
+      secret: true,
+      editable: false,
+      managed_by: 'bootstrap',
+      applies: 'next_show',
+    };
+    assert.equal(describeRow(entry, { set: true }, {}).takesEffect, '');
+    assert.equal(describeRow({ ...entry, applies: undefined }, { set: true }, {}).takesEffect, '');
+    assert.deepEqual(warnings, []);
+  } finally {
+    console.warn = original;
+  }
+});

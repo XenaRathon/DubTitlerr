@@ -112,6 +112,7 @@
     </div>
     {#if row.envInvalid}<p class="setting-reason">The container value is not valid for this setting.</p>{/if}
   {/if}
+  {#if row.takesEffect}<p class="setting-effect">{row.takesEffect}</p>{/if}
   <p class="setting-help">{row.help}</p>
   {#if error}<p class="field-error" id={`${id}-error`} role="alert">{error}</p>{/if}
 </div>
@@ -152,6 +153,7 @@
     max-width: 28rem;
   }
   .setting-reason,
+  .setting-effect,
   .setting-help {
     margin: 0;
     color: var(--muted);
