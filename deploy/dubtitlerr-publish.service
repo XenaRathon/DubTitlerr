@@ -24,22 +24,22 @@ Environment=PUBLISH_APPLY=1
 # journal and `systemctl status` all show it. An empty value stays empty.
 Environment=GITHUB_USER=
 Environment=GITHUB_PAT=
+# A host overrides this in the EnvironmentFile below to match its local builder.
+Environment=DUBTITLERR_IMAGE=ghcr.io/xenarathon/dubtitlerr:latest
 EnvironmentFile=-/etc/default/dubtitlerr-publish
 ExecStart=/usr/bin/docker run --rm \
     --name dubtitlerr-publish \
-    -e APP_DIR=/app \
     -e "MEDIA_ROOT=/media/Anime Library" \
     -e DECISIONS_DIR=/config/decisions \
     -e SUBS_REPO=/subs \
     -e PUBLISH_APPLY=${PUBLISH_APPLY} \
     -e GITHUB_USER \
     -e GITHUB_PAT \
-    -v /home/claude/DubTitlerr:/app \
     -v "/mnt/r520-media-full/Anime Library:/media/Anime Library:ro" \
     -v /home/claude/dubtitle-config:/config:ro \
     -v /home/claude/DubTitlerr-subtitles:/subs \
     --entrypoint /bin/sh \
-    dubtitle-builder:0.1.0 /app/tools/publish_subtitles.sh
+    ${DUBTITLERR_IMAGE} /app/tools/publish_subtitles.sh
 
 [Install]
 WantedBy=multi-user.target
