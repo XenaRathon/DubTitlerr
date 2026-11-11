@@ -1024,13 +1024,13 @@ def test_gen_loop_skips_removed_request(tmp_path):
     record = tmp_path / "record.json"
 
     # Stub generate to just touch the record file
-    stub_generate = """\
+    stub_generate = f"""\
 import os, json, pathlib
-data = {
+data = {{
     "SHOW_NAME": os.environ.get("SHOW_NAME"),
-}
-pathlib.Path(r"%s").write_text(json.dumps(data))
-""" % record
+}}
+pathlib.Path(r"{record}").write_text(json.dumps(data))
+"""
     (app / "generate.py").write_text(stub_generate)
 
     anime = tmp_path / "anime"

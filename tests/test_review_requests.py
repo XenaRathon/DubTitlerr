@@ -1285,7 +1285,8 @@ def test_shows_cli_prints_one_show_per_line(tmp_path):
 
 
 def test_delete_request_api(tmp_path):
-    import os, json
+    import json
+    import os
     requests_dir = str(tmp_path)
     os.environ["REQUESTS_DIR"] = requests_dir
     os.makedirs(os.path.join(requests_dir, "failed"), exist_ok=True)
@@ -1318,9 +1319,10 @@ def test_delete_request_api(tmp_path):
     assert "finished_at" in data
 
 def test_request_claim_race_condition(tmp_path):
-    import os, json
-    from unittest.mock import patch
-    from review_requests import mark_running, remove
+    import json
+    import os
+
+    from review_requests import remove
 
     requests_dir = str(tmp_path)
     os.environ["REQUESTS_DIR"] = requests_dir

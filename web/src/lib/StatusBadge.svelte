@@ -34,7 +34,14 @@
     stale: 'muted',
     removed: 'muted',
   };
-  const ICONS = { pending: Clock, running: RefreshCw, done: CircleCheck, failed: CircleX, stale: History, removed: CircleX };
+  const ICONS = {
+    pending: Clock,
+    running: RefreshCw,
+    done: CircleCheck,
+    failed: CircleX,
+    stale: History,
+    removed: CircleX,
+  };
 
   const known = $derived(
     status && Object.prototype.hasOwnProperty.call(TONES, status) ? (status as Status) : null,

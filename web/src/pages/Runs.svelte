@@ -188,7 +188,7 @@
   }
 
   async function removeRequest(id: string) {
-    if (!confirm("Remove this queued request?")) return;
+    if (!confirm('Remove this queued request?')) return;
     try {
       await api('/api/requests/' + id, { method: 'DELETE' });
       await load();
@@ -319,7 +319,9 @@
               <td>
                 <StatusBadge status={req.status} />
                 {#if isAdmin(role) && req.status === 'pending'}
-                  <button type="button" class="btn btn-small" onclick={() => void removeRequest(req.id)}>Remove</button>
+                  <button type="button" class="btn btn-small" onclick={() => void removeRequest(req.id)}
+                    >Remove</button
+                  >
                 {/if}
               </td>
               <td>{formatWhen(req.created_at)}</td>
