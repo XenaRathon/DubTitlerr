@@ -1,6 +1,6 @@
 # buffy-release-review-fixes
 
-Status: open
+Status: done
 Created: 2026-09-24
 Source Review: `docs/Adversarial Reviews/BUFFY-2026-09-24-v0-2-0-release-review.md`
 Reviewed Commit: `6f6f0731ca55bde03c89d4a90d90a921e715ffa9` (main HEAD, reviewed tree)
@@ -229,3 +229,9 @@ already done.
 > **Unverified-evidence note:** Section D of the source review lists ten live-host claims that
 > the reviewer could not verify (SSH refused). This epic treats them as evidence to revalidate,
 > not as completed facts — see R-2 and H-2 actions.
+
+## Outcome
+
+- R-1: owner question decided: no tag changes
+- H-2 (publish unit pin) moves to task 20261105-publish-unit-image
+- 20260924-r-1-reusable-ci-gate-structural-evidence: keep it done

@@ -1,6 +1,6 @@
 # `tools/timing_compare.py` produces `docs/timing-compare/<date>-phase0-report.json` and `docs/timing-compare/<date>-phase0-go-no-go.md` for 3 named shows (one fansub dialogue, one signs-only, one One Pace); `in_gap_vad_error` is a separate field from offset/drift; no gate is wired into any script as a result.
 
-Status: open
+Status: superseded
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: -
@@ -23,3 +23,7 @@ Delivered by Task 18 and 19 of `.procoder/plans/v0-2-0-hardening.md` (sprint 014
 
 <!-- Filled at close time: the commands run and what their output proved,
      one line per criterion. Empty evidence keeps the story open. -->
+
+## Outcome
+
+2026-11-05, user decision: folded into the reference-lines real-media test (one run uses `tools/timing_compare.py`'s drift fit). Phase-1 timing gating is dropped as a separate goal.

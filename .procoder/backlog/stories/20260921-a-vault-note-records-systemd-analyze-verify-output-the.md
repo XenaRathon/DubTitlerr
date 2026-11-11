@@ -1,6 +1,6 @@
 # A vault note records `systemd-analyze verify` output, the publish timer's live status, a diff between the deployed order file and `watch_queue.py --dry-run`, and confirmation of the manifest/title policy.
 
-Status: open
+Status: superseded
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: -
@@ -23,3 +23,7 @@ Delivered by Task 20 of `.procoder/plans/v0-2-0-hardening.md` (sprint 014); the 
 
 <!-- Filled at close time: the commands run and what their output proved,
      one line per criterion. Empty evidence keeps the story open. -->
+
+## Outcome
+
+2026-11-05, user decision: moved. `systemd-analyze verify` and the timer status become the post-change check of the publish-unit task (20261105-publish-unit-image); the manifest/title policy becomes a design input of `community-glossary-sync`; the order-file drift check is dropped, because the arr library epic (A-7) retires the order file. The single-active-worker part was checked live on 2026-11-05 (one active worker).
