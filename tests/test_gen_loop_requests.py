@@ -1018,3 +1018,68 @@ else:
     done_file = requests_dir / "done" / "20261012T100000Z-88888888.json"
     assert done_file.exists()
     assert json.loads(done_file.read_text())["status"] == "done"
+
+def test_gen_loop_skips_removed_request(tmp_path):
+    app = _setup_app(tmp_path)
+    record = tmp_path / "record.json"
+
+    # Stub generate to just touch the record file
+    stub_generate = """\
+import os, json, pathlib
+data = {
+    "SHOW_NAME": os.environ.get("SHOW_NAME"),
+}
+pathlib.Path(r"%s").write_text(json.dumps(data))
+""" % record
+    (app / "generate.py").write_text(stub_generate)
+
+    anime = tmp_path / "anime"
+    (anime / "Frieren").mkdir(parents=True)
+    order = tmp_path / "order.txt"
+    order.write_text("Frieren\n")
+
+    requests_dir = tmp_path / "config" / "requests"
+    requests_dir.mkdir(parents=True)
+
+    # We add only ONE request
+    req_file_1 = requests_dir / "20261012T100000.000000Z-11111111.json"
+    req_file_1.write_text(
+        json.dumps({
+            "id": "20261012T100000.000000Z-11111111",
+            "show": "Frieren",
+            "status": "pending",
+        })
+    )
+
+    env = {k: v for k, v in os.environ.items() if k not in ("REQUIRE_ENG", "WATCH_QUEUE_WINDOW_DAYS")}
+    env.update({
+        "APP_DIR": str(app),
+        "ANIME_ROOT": str(anime),
+        "ANIME_ORDER": str(order),
+        "CONFIG_DIR": str(tmp_path / "config"),
+        "REQUESTS_DIR": str(requests_dir),
+        "NO_WATCH": "1",
+        "NO_PLEX": "1",
+        "STOP_FLAG": str(tmp_path / "stop"),
+    })
+
+    # Hook review_requests.py so `start` exits with 2
+    real_rr = REPO / "review_requests.py"
+    (app / "review_requests.py").write_text(f"""\
+import sys, subprocess, pathlib
+if len(sys.argv) > 1 and sys.argv[1] == "start":
+    # Let gen_loop skip it
+    pathlib.Path(r"{tmp_path / 'stop'}").touch()
+    sys.exit(2)
+# Otherwise pass through
+res = subprocess.run([sys.executable, "{real_rr}"] + sys.argv[1:], capture_output=True, text=True)
+sys.stdout.write(res.stdout)
+sys.stderr.write(res.stderr)
+sys.exit(res.returncode)
+""")
+
+    res = subprocess.run(["sh", str(REPO / "gen_loop.sh")], env=env, capture_output=True, text=True, timeout=30)
+    assert res.returncode == 0, res.stdout + res.stderr
+
+    # It should log the skip
+    assert "was removed before it started, skipping" in res.stdout

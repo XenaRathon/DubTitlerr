@@ -187,6 +187,18 @@
     document.getElementById('runs-schedule-result')?.focus();
   }
 
+  async function removeRequest(id: string) {
+    if (!confirm("Remove this queued request?")) return;
+    try {
+      await api('/api/requests/' + id, { method: 'DELETE' });
+      await load();
+    } catch (exc) {
+      if (exc instanceof ApiError)
+        errorMsg = describeError(exc.status, exc.payload as { error?: unknown; existing_id?: unknown });
+      else errorMsg = exc instanceof Error ? exc.message : 'Could not remove the request.';
+    }
+  }
+
   async function loadShows() {
     try {
       const data = (await api('/api/shows')) as { shows?: unknown };
@@ -304,7 +316,12 @@
               <td>{req.show}</td>
               <td>{req.season ?? '—'}</td>
               <td>{req.episode_re ?? '—'}</td>
-              <td><StatusBadge status={req.status} /></td>
+              <td>
+                <StatusBadge status={req.status} />
+                {#if isAdmin(role) && req.status === 'pending'}
+                  <button type="button" class="btn btn-small" onclick={() => void removeRequest(req.id)}>Remove</button>
+                {/if}
+              </td>
               <td>{formatWhen(req.created_at)}</td>
               <td>{formatWhen(req.finished_at)}</td>
               <td>{req.error ?? '—'}</td>
