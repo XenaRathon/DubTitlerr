@@ -98,12 +98,14 @@ def test_no_unprotected_standalone_timeout():
     is gen_loop.sh, so the container exits with 124 too.
     """
     src = _read()
-    unprotected = [(i, s) for i, s in _logical_statements(src) if not _is_protected(s)]
+    unprotected = [
+        (i, s) for i, s in _logical_statements(src) if not _is_protected(s)
+    ]
     assert not unprotected, (
         "Unprotected `timeout` in gen_loop.sh -- under set -e, the "
         "timeout's 124 will fire before the next line runs and take the "
         "container down. Wrap with `&& rc=0 || rc=$?` (matches generate.py "
-        'line 96) or `|| echo "..."` (matches the ACQUIRE call at line 64):\n'
+        "line 96) or `|| echo \"...\"` (matches the ACQUIRE call at line 64):\n"
         + "\n".join(f"  line {i}:\n{s}\n" for i, s in unprotected)
     )
 

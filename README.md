@@ -55,11 +55,6 @@ flowchart LR
 - Per-show glossary mined from your files and wiki-verified, with a per-show wiki override.
 - Per-episode Plex refresh as each episode finishes.
 
-## Sidecar output
-
-If you prefer external `.srt` or `.ass` sidecar files (for media players that handle them better or because you do not want to alter your video files), you can set `DUB_OUTPUT=sidecar`.
-DubTitlerr will run all processing and assembly stages normally but will leave the final assembled subtitle next to your video instead of muxing it into the file. It will not drop any tracks or rewrite the video.
-
 ## Quickstart
 
 ```sh

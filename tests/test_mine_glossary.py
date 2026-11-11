@@ -551,7 +551,9 @@ def test_dictionary_word_name_never_seen_lowercase_is_kept():
 
 def _gate(b, lo, p=0, min_count=1, word="Merry"):
     """admit() over hand-built counts, so each boundary is exact."""
-    return mine_glossary.admit({word: b}, {word: p} if p else {}, {word}, min_count, set(), set(), lower={word.lower(): lo})
+    return mine_glossary.admit(
+        {word: b}, {word: p} if p else {}, {word}, min_count, set(), set(), lower={word.lower(): lo}
+    )
 
 
 def test_evidence_guard_bites_when_share_is_over_threshold():
