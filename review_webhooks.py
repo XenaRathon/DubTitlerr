@@ -255,7 +255,7 @@ def _as_timestamp(value):
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, datetime.datetime):
-        dt = value if value.tzinfo is not None else value.replace(tzinfo=datetime.timezone.utc)
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=datetime.UTC)
         return dt.timestamp()
     if isinstance(value, str):
         try:
@@ -263,7 +263,7 @@ def _as_timestamp(value):
         except ValueError:
             return None
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=datetime.timezone.utc)
+            dt = dt.replace(tzinfo=datetime.UTC)
         return dt.timestamp()
     return None
 

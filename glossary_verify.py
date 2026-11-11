@@ -1076,7 +1076,7 @@ def fetch_episode_titles(wiki_api: str, show_key: str, page_title: str) -> list[
     titles = sorted(resolve_redirects(wiki_api, plot_section_links(wt)))
     if titles:
         pages[page_title] = {"fetched_at": time.time(), "titles": titles}
-        json.dump({"api": wiki_api, "pages": pages}, open(cache_path, "w"))
+        common.write_json_atomic(cache_path, {"api": wiki_api, "pages": pages})
     return titles
 
 
@@ -1220,7 +1220,7 @@ def fetch_titles(wiki_api: str, show_key: str) -> list[str]:
         if not cont:
             break
     if titles:
-        json.dump({"api": wiki_api, "fetched_at": time.time(), "titles": titles}, open(cache, "w"))
+        common.write_json_atomic(cache, {"api": wiki_api, "fetched_at": time.time(), "titles": titles})
     return titles
 
 
@@ -1333,7 +1333,7 @@ def fetch_arc_titles_cached(wiki_api: str, show_key: str, arc: str) -> tuple[set
         arcs[arc] = {"fetched_at": time.time(), "titles": sorted(titles)}
         try:
             os.makedirs(CACHE_DIR, exist_ok=True)
-            json.dump({"v": ARC_CACHE_VERSION, "api": wiki_api, "arcs": arcs}, open(path, "w"))
+            common.write_json_atomic(path, {"v": ARC_CACHE_VERSION, "api": wiki_api, "arcs": arcs})
         except OSError:
             pass  # a cache that cannot be written costs a refetch, nothing more
     return titles, "fetched", redirects_ok
@@ -1418,7 +1418,7 @@ def fetch_scope_cached(cfg: dict, scope: dict, show_key: str) -> tuple[set[str],
     arcs[ck] = {"fetched_at": time.time(), "titles": sorted(res.titles)}
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
-        json.dump({"v": ARC_CACHE_VERSION, "api": wiki, "arcs": arcs}, open(path, "w"))
+        common.write_json_atomic(path, {"v": ARC_CACHE_VERSION, "api": wiki, "arcs": arcs})
     except OSError:
         pass
     return res.titles, "fetched"
@@ -1638,7 +1638,7 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
     with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count()) as ex:
         adjudications = list(ex.map(_one, terms))
     # None = the decision backend could not answer (fallback none): that term stays pending like a stopped one, but is not a stop.
-    done = {t: a for t, a in zip(terms, adjudications) if a is not None and a is not _STOPPED}
+    done = {t: a for t, a in zip(terms, adjudications, strict=False) if a is not None and a is not _STOPPED}
     stopped = any(a is _STOPPED for a in adjudications)
     pending = sum(1 for a in adjudications if a is None)
     if stopped:

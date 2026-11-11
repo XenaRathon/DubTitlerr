@@ -22,7 +22,7 @@ from collections.abc import Collection
 
 import pysubs2
 
-from common import NON_DIALOGUE_STYLE, SIGNS_TITLE, is_our_track, load_extras, stop_requested, stream_title
+from common import NON_DIALOGUE_STYLE, SIGNS_TITLE, is_our_track, load_extras, stop_requested, stream_title, write_json_atomic
 
 EXTRA_DIRS = load_extras()  # data/extras.txt is the source (see common.load_extras)
 
@@ -397,9 +397,7 @@ def _mine(show_dir, show, gpath):
         title = re.sub(r"\s*\{tvdb-\d+\}|\s*\(\d{4}\)", "", show)
         cfg["initial_prompt"] = f"This is {title}, a Japanese anime (English dub). Spell names correctly: " + ", ".join(top) + "."
     os.makedirs(GLOSS_DIR, exist_ok=True)
-    with open(gpath, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
-        f.write("\n")  # POSIX line: prettier flags a glossary without it
+    write_json_atomic(gpath, cfg, append_newline=True, indent=2, ensure_ascii=False)
     review = f" | {len(queued)} queued for review: {queued[:5]}" if queued else ""
     print(f"mine[{show}]: +{len(new)} terms from {mined_eps} new ep(s) -> {new[:15]}{review}")
 

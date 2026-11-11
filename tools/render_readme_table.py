@@ -116,7 +116,7 @@ def main(argv=None):
     ap.add_argument("--readme", required=True)
     ap.add_argument("--today", default=None, help="YYYY-MM-DD (tests); default: today, UTC")
     a = ap.parse_args(argv)
-    today = a.today or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    today = a.today or datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     print("README table updated" if render(a.manifest_dir, a.readme, today) else "README table unchanged")
     return 0
 

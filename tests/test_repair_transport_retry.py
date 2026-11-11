@@ -82,7 +82,7 @@ def test_an_error_that_never_clears_gives_up_after_the_budget(env, monkeypatch, 
         ConnectionResetError("x"),
         ConnectionRefusedError("x"),
         urllib.error.URLError("x"),
-        socket.timeout("timed out"),
+        TimeoutError("timed out"),
         http.client.RemoteDisconnected("x"),
         http.client.IncompleteRead(b""),
     ],
@@ -189,7 +189,7 @@ def test_the_summary_reports_transport_retries_only_when_the_budget_is_set(tmp_p
 
 @pytest.mark.parametrize(
     "exc",
-    [socket.timeout("timed out"), http.client.RemoteDisconnected("closed"), http.client.IncompleteRead(b"par"), OSError("reset")],
+    [TimeoutError("timed out"), http.client.RemoteDisconnected("closed"), http.client.IncompleteRead(b"par"), OSError("reset")],
 )
 def test_a_failure_after_the_request_was_sent_is_never_retried(env, monkeypatch, exc):
     monkeypatch.setenv("REPAIR_TRANSPORT_RETRIES", "2")

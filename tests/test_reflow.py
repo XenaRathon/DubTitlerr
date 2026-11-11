@@ -653,7 +653,7 @@ def test_steal_absorbs_a_preexisting_overlap_not_just_the_deficit():
     """The 9 live overlaps: predecessor ends AFTER successor starts."""
     groups = _overlapping_pair(pred_end=0.083, succ_start=0.050)
     times, _ = reflow.time_cards(groups)
-    for (a, b), (c, _d) in zip(times, times[1:]):
+    for (a, b), (c, _d) in zip(times, times[1:], strict=False):
         assert a < b
         assert c - b >= reflow.MIN_GAP - reflow.EPS
     assert times[0][1] - times[0][0] >= reflow.MIN_DUR - reflow.EPS
@@ -691,7 +691,7 @@ def test_infeasible_cascade_raises_rather_than_emitting_junk():
 
 def test_dense_chain_is_feasible_when_the_audio_length_is_unknown():
     times, _ = reflow.time_cards(_dense_no_slack_chain())  # audio_duration=None
-    for (_a, b), (c, _d) in zip(times, times[1:]):
+    for (_a, b), (c, _d) in zip(times, times[1:], strict=False):
         assert c - b >= reflow.MIN_GAP - reflow.EPS
 
 
@@ -699,7 +699,7 @@ def test_steal_never_reveals_a_card_earlier_than_its_onset():
     """Late is acceptable, early is not -- an early caption spoils its own line."""
     groups = _runt_then_tight_chain(4)
     times, _ = reflow.time_cards(groups)
-    for (start, _end), g in zip(times, groups):
+    for (start, _end), g in zip(times, groups, strict=False):
         assert start >= g[0]["start"] - reflow.EPS
 
 
@@ -708,7 +708,7 @@ def test_the_whole_stream_satisfies_the_profile_after_stealing():
     for start, end in times:
         assert start < end
         assert end - start >= reflow.MIN_DUR - reflow.EPS
-    for (_a, b), (c, _d) in zip(times, times[1:]):
+    for (_a, b), (c, _d) in zip(times, times[1:], strict=False):
         assert c - b >= reflow.MIN_GAP - reflow.EPS
     assert records
     for r in records:

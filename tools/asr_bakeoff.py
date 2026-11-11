@@ -207,7 +207,7 @@ def summarise(nsps: list[float], lps: list[float], texts: list[str]) -> dict:
     decoders), so for NeMo entrants the acoustic-confidence half of this judge is empty
     and only blocklist hits remain."""
     blocklist_hits = sum(1 for t in texts if hallucination.BLOCKLIST.search(t))
-    both = sum(1 for nsp, lp in zip(nsps, lps) if nsp > HIST_NSP_DROP and lp < HIST_LP_DROP)
+    both = sum(1 for nsp, lp in zip(nsps, lps, strict=False) if nsp > HIST_NSP_DROP and lp < HIST_LP_DROP)
     silence = sum(1 for n in nsps if n > HIST_NSP_FLAG)
 
     def median(v: list[float]) -> float | None:

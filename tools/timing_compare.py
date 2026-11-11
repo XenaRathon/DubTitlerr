@@ -322,14 +322,14 @@ def _fit_line_ls(xs: list, ys: list):
     sxx = sum((x - mean_x) ** 2 for x in xs)
     if sxx == 0:
         return None
-    sxy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    sxy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys, strict=False))
     b = sxy / sxx
     a = mean_y - b * mean_x
     return a, b
 
 
 def _residuals(xs: list, ys: list, a: float, b: float) -> list:
-    return [y - (a + b * x) for x, y in zip(xs, ys)]
+    return [y - (a + b * x) for x, y in zip(xs, ys, strict=False)]
 
 
 def _iqr(sorted_values: list):

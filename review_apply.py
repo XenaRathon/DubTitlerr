@@ -74,7 +74,7 @@ def _write_srt(path: str, rows: list, texts: list) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             i = 0
-            for c, t in zip(rows, texts):
+            for c, t in zip(rows, texts, strict=False):
                 pieces = t if isinstance(t, tuple) else ({"start": c["start"], "end": c["end"], "text": t},)
                 for p in pieces:
                     i += 1

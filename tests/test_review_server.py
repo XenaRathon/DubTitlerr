@@ -975,7 +975,7 @@ def _triage_episode(tmp_path, name="triage"):
     stem = str(tmp_path / name)
     with open(stem + ".dubtitles.conf.json", "w") as f:
         json.dump([{"start": 60.0 + i * 30, "end": 62.0 + i * 30, "text": t} for i, t in enumerate(cards)], f)
-    for c, p in zip(cards, props):
+    for c, p in zip(cards, props, strict=False):
         unresolved.record(stem, "repair_applied", "accepted", original_text=c, proposed_text=p)
     return stem
 
@@ -2035,7 +2035,9 @@ def test_oldest_pending_at_is_the_earliest_entry_ts_among_the_undecided(tmp_path
 def test_oldest_pending_at_ignores_a_decided_entry(tmp_path, monkeypatch):
     stem = _episode(tmp_path, "busy")
     rows = unresolved.items(stem)
-    for e, ts in zip(rows, ("2026-01-05T00:00:00Z", "2026-01-01T00:00:00Z", "2026-01-06T00:00:00Z", "2026-01-07T00:00:00Z")):
+    for e, ts in zip(
+        rows, ("2026-01-05T00:00:00Z", "2026-01-01T00:00:00Z", "2026-01-06T00:00:00Z", "2026-01-07T00:00:00Z"), strict=False
+    ):
         e["ts"] = ts
     rows[1]["resolved"] = True  # the oldest is settled
     with open(unresolved.path_for(stem), "w") as f:

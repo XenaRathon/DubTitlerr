@@ -96,7 +96,7 @@ def summarise(nsps: list[float], lps: list[float], texts: list[str]) -> dict:
     # a perfectly live nsp and still never fire it, if the segments with high nsp are not
     # the same segments with terrible logprob. Counting each condition separately would
     # imply a revival that may not exist.
-    both = sum(1 for nsp, lp in zip(nsps, lps) if nsp > HIST_NSP_DROP and lp < HIST_LP_DROP)
+    both = sum(1 for nsp, lp in zip(nsps, lps, strict=False) if nsp > HIST_NSP_DROP and lp < HIST_LP_DROP)
     silence = sum(1 for n in nsps if n > HIST_NSP_FLAG)
     return {
         "music_rule_would_fire": both,

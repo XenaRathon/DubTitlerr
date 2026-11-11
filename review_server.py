@@ -363,7 +363,7 @@ def queue_written_at(stem: str):
     Cached per walk, like the entries it describes."""
     if stem not in _QUEUE_MTIME:
         try:
-            when = datetime.datetime.fromtimestamp(os.path.getmtime(unresolved.path_for(stem)), datetime.timezone.utc)
+            when = datetime.datetime.fromtimestamp(os.path.getmtime(unresolved.path_for(stem)), datetime.UTC)
             _QUEUE_MTIME[stem] = when.strftime("%Y-%m-%dT%H:%M:%SZ")
         except OSError:
             _QUEUE_MTIME[stem] = None

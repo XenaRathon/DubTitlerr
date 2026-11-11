@@ -158,7 +158,7 @@ def accept_restoration(orig: str, new: str) -> bool:
     a, b = _split_dashes(normalise(orig)), _split_dashes(normalise(new))
     if len(a) != len(b):
         return False
-    return all(x == y or _contraction_ok(x, y) for x, y in zip(a, b))
+    return all(x == y or _contraction_ok(x, y) for x, y in zip(a, b, strict=False))
 
 
 def is_candidate(text: str) -> bool:

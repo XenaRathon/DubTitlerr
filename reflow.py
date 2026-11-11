@@ -406,7 +406,7 @@ def time_cards(groups: list[list[dict]], audio_duration: float | None = None) ->
                     "unfixable": True,
                 }
             )
-    return list(zip(st, en)), records
+    return list(zip(st, en, strict=False)), records
 
 
 def card_confidence(words: list[dict], segments: list[dict]) -> tuple[float, float]:
@@ -609,7 +609,7 @@ def reflow(
     times, cascades = time_cards(groups, audio_duration)
     if cascade_log is not None:
         cascade_log.extend(cascades)
-    for (start, end), g, nxt, prv in zip(times, groups, nxts, prevs):
+    for (start, end), g, nxt, prv in zip(times, groups, nxts, prevs, strict=False):
         avg, nsp = card_confidence(g, segments)
         cards.append(
             {

@@ -1244,8 +1244,10 @@ def main():
             except OSError:
                 pass
             try:
-                with open(out_for(stem + ".dubtitles.crash.json"), "w") as f:
-                    json.dump({"path": v, "exc_type": type(e).__name__, "msg": str(e), "time": time.time()}, f)
+                common.write_json_atomic(
+                    out_for(stem + ".dubtitles.crash.json"),
+                    {"path": v, "exc_type": type(e).__name__, "msg": str(e), "time": time.time()},
+                )
             except OSError:
                 pass
     # V2 C1: per-show run summary (glossaries/<show>.lastrun.json) -- one file per --root
@@ -1254,8 +1256,7 @@ def main():
     lastrun = build_lastrun(show, round(time.monotonic() - t0, 1), len(todo), transcribed, totals, census)
     try:
         os.makedirs(GLOSS_DIR, exist_ok=True)
-        with open(os.path.join(GLOSS_DIR, show + ".lastrun.json"), "w") as f:
-            json.dump(lastrun, f, indent=2)
+        common.write_json_atomic(os.path.join(GLOSS_DIR, show + ".lastrun.json"), lastrun, indent=2)
     except OSError as e:
         log("  lastrun.json write failed:", e)
 

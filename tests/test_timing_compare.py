@@ -715,8 +715,8 @@ def test_build_episode_report_kept_in_gap_and_bucket_crosstabs():
     # keys derived, counts asserted -- pinning the key STRINGS here is what let the
     # production labels go stale unnoticed when NSP_DROP moved.
     nl, ll = tc.nsp_bucket_labels(), tc.lp_bucket_labels()
-    assert kig["by_nsp"] == dict(zip(nl, (6, 0, 2)))
-    assert kig["by_lp"] == dict(zip(ll, (6, 0, 2)))
+    assert kig["by_nsp"] == dict(zip(nl, (6, 0, 2), strict=False))
+    assert kig["by_lp"] == dict(zip(ll, (6, 0, 2), strict=False))
     assert kig["by_flag"] == {"maybe_silence": 5, "low_conf": 0, "none": 3}
 
     assert rep["false_in_gap_rate"] == pytest.approx(2 / 13)  # in_gap_speech / total kept cards
