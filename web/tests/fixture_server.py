@@ -1,14 +1,10 @@
-import json
 """Isolated browser-test server. Never discovers or processes a real media library."""
 
-import json
 import os
 import subprocess
 import sys
 import tempfile
 import time
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -112,6 +108,8 @@ def main():
             ),
         ]
         for show, ep, rows in fixtures:
+            import json
+
             (glossary_dir / f"{show}.json").write_text(json.dumps({"show": show}))
             season = "Season 01" if "S01" in ep else "Season 02"
             folder = media / show / season
@@ -160,7 +158,6 @@ def main():
                     rs._THROTTLE = rs.LoginThrottle()  # every test signs in from 127.0.0.1; no lockout may leak across tests
                     for file in (base / "requests").glob("*") if (base / "requests").is_dir() else []:
                         file.unlink()
-                    import json
                     import uuid
                     from datetime import datetime, timezone
 
