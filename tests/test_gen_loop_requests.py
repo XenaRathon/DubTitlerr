@@ -244,7 +244,7 @@ pathlib.Path(r"{call_log}").write_text("called")
     requests_dir.mkdir(parents=True)
 
     # Calculate open and closed windows relative to now in UTC
-    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    now_utc = datetime.datetime.now(datetime.UTC)
     closed_open = (now_utc + datetime.timedelta(hours=2)).strftime("%H:%M")
     closed_close = (now_utc + datetime.timedelta(hours=3)).strftime("%H:%M")
     open_open = (now_utc - datetime.timedelta(hours=2)).strftime("%H:%M")

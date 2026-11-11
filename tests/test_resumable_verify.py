@@ -15,7 +15,7 @@ import glossary_verify as gv
 ROOT = Path(__file__).resolve().parents[1]
 TITLES = ["Zorro", "Nami", "Usopp", "Sanjy", "Robyn"]
 TERMS = ["Zoro", "Nami", "Usop", "Sanji", "Robin"]
-ANSWERS = dict(zip(TERMS, TITLES))
+ANSWERS = dict(zip(TERMS, TITLES, strict=False))
 
 
 def reply(prompt):

@@ -190,7 +190,7 @@ def test_whole_list_invariants(seed):
     assert len(cards) == len(groups)
 
     # --- 1. temporal validity ---
-    for i, (c, g) in enumerate(zip(cards, groups)):
+    for i, (c, g) in enumerate(zip(cards, groups, strict=False)):
         onset, last_end = g[0]["start"], g[-1]["end"]
         assert c["start"] < c["end"]
         # C6: the source window is the spoken span, whatever timing did to the display.
@@ -200,7 +200,7 @@ def test_whole_list_invariants(seed):
         # is where time_cards() caps it, using the successor's PRE-shift onset).
         capped_by_next = i + 1 < len(groups) and c["end"] >= groups[i + 1][0]["start"] - reflow.MIN_GAP - reflow.EPS
         assert c["end"] >= min(last_end, onset + reflow.MAX_DUR) - reflow.EPS or capped_by_next
-    for a, b in zip(cards, cards[1:]):
+    for a, b in zip(cards, cards[1:], strict=False):
         assert b["start"] > a["start"], "starts must be strictly ordered"
         assert b["start"] - a["end"] >= reflow.MIN_GAP - reflow.EPS
 
@@ -218,7 +218,7 @@ def test_whole_list_invariants(seed):
     assert _tokens(c["text"].replace("\n", " ") for c in cards) == _tokens(w["text"] for w in words)
 
     # --- 4. causality: never reveal a line before it is spoken ---
-    for c, g in zip(cards, groups):
+    for c, g in zip(cards, groups, strict=False):
         assert c["start"] >= g[0]["start"] - reflow.EPS
 
 
@@ -229,7 +229,7 @@ def test_preprocessing_never_moves_a_word_earlier_than_spoken(seed):
     rng = random.Random(seed)
     words, segments = _random_episode(rng)
     prepped = reflow._dejitter(reflow._clamp_to_segments(reflow._normalize(words), segments))
-    for raw, out in zip(words, prepped):
+    for raw, out in zip(words, prepped, strict=False):
         if raw["start"] is None:
             continue
         seg = segments[raw["seg"]] if raw["seg"] < len(segments) else {}
@@ -279,7 +279,7 @@ def test_bounded_audio_keeps_the_invariants_or_raises_with_full_accounting(seed)
         return
     for s, en in times:
         assert s < en
-    for (s0, e0), (s1, _e1) in zip(times, times[1:]):
+    for (s0, e0), (s1, _e1) in zip(times, times[1:], strict=False):
         assert s1 - e0 >= reflow.MIN_GAP - reflow.EPS
         assert s1 > s0
     for i, (s, en) in enumerate(times):

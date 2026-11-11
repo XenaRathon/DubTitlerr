@@ -444,7 +444,7 @@ def _events_match(p, s, play_res=None):
         # word that is not merely a misspelling of its counterpart means a different line.
         words_p, words_s = _plain_words(p.text), _plain_words(s.text)
         if len(words_p) == len(words_s) >= 2:
-            return all(difflib.SequenceMatcher(None, a, b).ratio() >= 0.5 for a, b in zip(words_p, words_s))
+            return all(difflib.SequenceMatcher(None, a, b).ratio() >= 0.5 for a, b in zip(words_p, words_s, strict=False))
         return True
 
     draw_p = bool(DRAWING_TAG.search(p.text or ""))

@@ -621,7 +621,7 @@ def fits_card(text, dur, orig=None):
     # serve. Accept a repair that worsens NO dimension; reject one that worsens any.
     before = reflow.layout_metrics(reflow.wrap_balance((orig or "").replace("\n", " ")), dur)
     after = reflow.layout_metrics(wrapped, dur)
-    return all(a <= b + reflow.EPS for a, b in zip(after, before))
+    return all(a <= b + reflow.EPS for a, b in zip(after, before, strict=False))
 
 
 PHONETIC_MIN = float(os.environ.get("REPAIR_PHONETIC_MIN", "0.75"))
@@ -987,7 +987,7 @@ def is_punct_case_only(orig, new, gloss=None, prev_text=None) -> bool:
         edges = [0, *[x for m in words for x in (m.start(), m.end())], len(text)]
         return ["".join(text[edges[k] : edges[k + 1]].split()) for k in range(0, len(edges), 2)]
 
-    if not all(_punct_only_added(o, n) for o, n in zip(gaps(old_text, old_words), gaps(new_text, new_words))):
+    if not all(_punct_only_added(o, n) for o, n in zip(gaps(old_text, old_words), gaps(new_text, new_words), strict=False)):
         return False
     entries = [str(e) for e in list((gloss or {}).get("names") or []) + list((gloss or {}).get("phrases") or [])]
     single_names = {t[0] for e in entries if len(t := unresolved._WORD.findall(fold(e))) == 1}
@@ -999,7 +999,7 @@ def is_punct_case_only(orig, new, gloss=None, prev_text=None) -> bool:
             if len(parts) > 1 and tokens[at : at + len(parts)] == parts:
                 covered.update(range(at, at + len(parts)))
     prev_end = None
-    for k, (old, m) in enumerate(zip(old_words, new_words)):
+    for k, (old, m) in enumerate(zip(old_words, new_words, strict=False)):
         start = _card_starts_sentence(prev_text) if prev_end is None else _ends_sentence(new_text[prev_end : m.start()])
         if not _lenient_case_change(old.group(), m.group(), start, single_names, k in covered):
             return False
@@ -1024,7 +1024,7 @@ def _no_new_layout_fault(new, dur, orig):
         return False
     before, after = reflow.layout_metrics(original, dur), reflow.layout_metrics(wrapped, dur)
     slack = (0, LAYOUT_SLACK_CHARS, LAYOUT_SLACK_CHARS, LAYOUT_SLACK_CHARS / max(dur, reflow.EPS))
-    return all(a <= b + s + reflow.EPS for a, b, s in zip(after, before, slack))
+    return all(a <= b + s + reflow.EPS for a, b, s in zip(after, before, slack, strict=False))
 
 
 def rejecting_guard(orig, new, ref, dur, gloss, punct_case_ok=None, prev_text=None):

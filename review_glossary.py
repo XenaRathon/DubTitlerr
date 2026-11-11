@@ -256,7 +256,7 @@ def prune_backups(path, keep=KEEP_BACKUPS):
 
 def _write(path, new_bytes):
     """Back up the current file, then replace it atomically. Returns the backup's file name."""
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%S%fZ")
     backup = f"{path}.bak-{stamp}"
     n = 0
     while os.path.exists(backup):  # two writes in one clock tick must not overwrite the first undo point
@@ -325,7 +325,7 @@ def write_show(body, operator, role="user"):
                 return 500, {"error": "glossary write failed"}
     except _Refused as r:
         return r.reply
-    at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
     if term is not None:
         shown = "" if value is None else f" value={json.dumps(value, ensure_ascii=False)}"
         log(

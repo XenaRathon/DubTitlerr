@@ -199,7 +199,7 @@ def test_create_atomic_permissions_and_schema(tmp_path):
     (anime_root / "Bleach").mkdir()
     req_dir = tmp_path / "requests"
 
-    fixed_now = datetime.datetime(2026, 10, 12, 14, 0, 0, tzinfo=datetime.timezone.utc)
+    fixed_now = datetime.datetime(2026, 10, 12, 14, 0, 0, tzinfo=datetime.UTC)
     body = {
         "show": "Bleach",
         "season": 2,
@@ -542,18 +542,18 @@ def test_is_window_open_and_cli(tmp_path, capsys):
 
     # Normal window: 09:00 - 17:00 UTC
     schedule_file.write_text(json.dumps({"enabled": True, "open": "09:00", "close": "17:00", "tz": "UTC"}))
-    dt_inside = datetime.datetime(2026, 10, 12, 10, 30, tzinfo=datetime.timezone.utc)
-    dt_before = datetime.datetime(2026, 10, 12, 8, 30, tzinfo=datetime.timezone.utc)
-    dt_after = datetime.datetime(2026, 10, 12, 17, 30, tzinfo=datetime.timezone.utc)
+    dt_inside = datetime.datetime(2026, 10, 12, 10, 30, tzinfo=datetime.UTC)
+    dt_before = datetime.datetime(2026, 10, 12, 8, 30, tzinfo=datetime.UTC)
+    dt_after = datetime.datetime(2026, 10, 12, 17, 30, tzinfo=datetime.UTC)
     assert is_window_open(str(schedule_file), now=dt_inside) is True
     assert is_window_open(str(schedule_file), now=dt_before) is False
     assert is_window_open(str(schedule_file), now=dt_after) is False
 
     # Midnight crossing window: 22:00 - 06:00 UTC
     schedule_file.write_text(json.dumps({"enabled": True, "open": "22:00", "close": "06:00", "tz": "UTC"}))
-    dt_night = datetime.datetime(2026, 10, 12, 23, 0, tzinfo=datetime.timezone.utc)
-    dt_morning = datetime.datetime(2026, 10, 12, 5, 30, tzinfo=datetime.timezone.utc)
-    dt_day = datetime.datetime(2026, 10, 12, 12, 0, tzinfo=datetime.timezone.utc)
+    dt_night = datetime.datetime(2026, 10, 12, 23, 0, tzinfo=datetime.UTC)
+    dt_morning = datetime.datetime(2026, 10, 12, 5, 30, tzinfo=datetime.UTC)
+    dt_day = datetime.datetime(2026, 10, 12, 12, 0, tzinfo=datetime.UTC)
     assert is_window_open(str(schedule_file), now=dt_night) is True
     assert is_window_open(str(schedule_file), now=dt_morning) is True
     assert is_window_open(str(schedule_file), now=dt_day) is False
@@ -868,8 +868,8 @@ def test_l8_same_second_requests_keep_arrival_order(tmp_path):
     (anime_root / "ShowA").mkdir()
     req_dir = tmp_path / "requests"
 
-    t1 = datetime.datetime(2026, 10, 12, 14, 0, 0, 100000, tzinfo=datetime.timezone.utc)
-    t2 = datetime.datetime(2026, 10, 12, 14, 0, 0, 200000, tzinfo=datetime.timezone.utc)
+    t1 = datetime.datetime(2026, 10, 12, 14, 0, 0, 100000, tzinfo=datetime.UTC)
+    t2 = datetime.datetime(2026, 10, 12, 14, 0, 0, 200000, tzinfo=datetime.UTC)
 
     _, resp1 = create(
         {"show": "ShowA", "season": 1, "episode_re": "E01"},

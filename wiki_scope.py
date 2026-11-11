@@ -50,7 +50,8 @@ import html
 import os
 import re
 import urllib.parse
-from typing import Callable, NamedTuple
+from collections.abc import Callable
+from typing import NamedTuple
 
 import glossary_verify
 from glossary_verify import _extract_links, _http_json, redirect_targets

@@ -1113,7 +1113,7 @@ def main():
             # than only aggregated, because "is this change an improvement" is judged line by
             # line and a rate cannot be read back into one.
             rows = []
-            for i, (c, out) in enumerate(zip(targets, outs[m])):
+            for i, (c, out) in enumerate(zip(targets, outs[m], strict=False)):
                 dur = (c.get("end") or 0) - (c.get("start") or 0)
                 ref = c.get("_ref", "")  # anchored targets carry their own; glossary-only runs score with none
                 live = dur > 0 and not out.startswith(("<ERROR", "<EMPTY"))

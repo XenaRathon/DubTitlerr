@@ -436,13 +436,13 @@ def create(
 
         # Timestamp & ID with microsecond precision
         if now is None:
-            dt = datetime.datetime.now(datetime.timezone.utc)
+            dt = datetime.datetime.now(datetime.UTC)
         elif isinstance(now, (int, float)):
-            dt = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc)
+            dt = datetime.datetime.fromtimestamp(now, tz=datetime.UTC)
         elif isinstance(now, datetime.datetime):
-            dt = now if now.tzinfo is not None else now.replace(tzinfo=datetime.timezone.utc)
+            dt = now if now.tzinfo is not None else now.replace(tzinfo=datetime.UTC)
         else:
-            dt = datetime.datetime.now(datetime.timezone.utc)
+            dt = datetime.datetime.now(datetime.UTC)
 
         ts_str = dt.strftime("%Y%m%dT%H%M%S.%fZ")
         hex_id = uuid.uuid4().hex[:8]
@@ -731,13 +731,13 @@ def finish(
         data = json.load(f)
 
     if now is None:
-        dt = datetime.datetime.now(datetime.timezone.utc)
+        dt = datetime.datetime.now(datetime.UTC)
     elif isinstance(now, (int, float)):
-        dt = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc)
+        dt = datetime.datetime.fromtimestamp(now, tz=datetime.UTC)
     elif isinstance(now, datetime.datetime):
-        dt = now if now.tzinfo is not None else now.replace(tzinfo=datetime.timezone.utc)
+        dt = now if now.tzinfo is not None else now.replace(tzinfo=datetime.UTC)
     else:
-        dt = datetime.datetime.now(datetime.timezone.utc)
+        dt = datetime.datetime.now(datetime.UTC)
 
     req_id = data.get("id") or os.path.basename(actual_path).split(".")[0]
     data["status"] = "done" if ok else "failed"

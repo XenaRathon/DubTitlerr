@@ -72,7 +72,7 @@ def entry(req_id, show, remote, created_at, status="pending"):
 
 
 def iso(now, delta_seconds):
-    return datetime.datetime.fromtimestamp(now - delta_seconds, tz=datetime.timezone.utc).isoformat()
+    return datetime.datetime.fromtimestamp(now - delta_seconds, tz=datetime.UTC).isoformat()
 
 
 # ---- path mappings ---------------------------------------------------------------------------------------------------
