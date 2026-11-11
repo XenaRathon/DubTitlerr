@@ -89,6 +89,7 @@ has_record() {
 	python3 -c "import common,sys; sys.exit(0 if sys.argv[2] in common.read_stages(sys.argv[1]) else 1)" "$1" "$2" </dev/null >/dev/null 2>&1
 }
 
+_held_stems=$(mktemp)
 before=$(find "$@" -type f -name "*.dubtitles.done" | wc -l)
 # episodes with a sidecar (srt or ass) -> dedup to the stem
 find "$@" -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) |
@@ -102,7 +103,13 @@ find "$@" -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" 
 	fi
 	[ -f "$stem.dubtitles.fail" ] && continue # generate crashed on it -> skip
 	if [ ! -f "$stem.eng.dubtitles.ass" ] && [ -f "$stem.eng.dubtitles.srt" ]; then
+		if [ "${REPAIR:-1}" -eq 0 ]; then
+			echo "merge_pass: REPAIR off, holding $stem"
+			echo "$stem" >> "$_held_stems"
+			continue
+		fi
 		echo "### assemble $stem"
+
 		# Drop records from older runs so the crash fallbacks and the gates below only ever see
 		# THIS run's outcome (a stale "ok" would otherwise hide a repair that died silently).
 		python3 -c "import common,sys; common.clear_stage(sys.argv[1], 'repair', 'signs')" "$stem" </dev/null >/dev/null 2>&1 || true
@@ -154,6 +161,13 @@ find "$@" -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" 
 	done
 done
 after=$(find "$@" -type f -name "*.dubtitles.done" | wc -l)
+
+_held_count=$(wc -l < "$_held_stems")
+rm -f "$_held_stems"
+if [ "$_held_count" -gt 0 ]; then
+	echo "merge_pass: REPAIR off, held $_held_count episodes"
+fi
+
 
 if [ "$after" -gt "$before" ] && [ -n "${PLEX_TOKEN:-}" ]; then
 	echo "muxed $((after - before)) new episode(s) -> refreshing Plex"

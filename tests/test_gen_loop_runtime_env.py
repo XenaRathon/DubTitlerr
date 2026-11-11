@@ -227,8 +227,6 @@ pathlib.Path(os.environ["STOP_FLAG"]).touch()
         assert not (root / "PWNED").exists()
 
 
-
-
 # --- stored settings (settings.json) reach the loop at its boundaries -----------------------------------------------------
 
 
@@ -396,8 +394,6 @@ def test_a_saved_acquire_apply_true_applies_and_an_empty_store_means_apply(tmp_p
     assert "acquire Frieren apply" in log_file.read_text()
 
 
-
-
 def test_the_sweep_exits_zero_on_a_soft_stop_with_stored_settings(tmp_path):
     app = _setup_app(tmp_path)
     config = tmp_path / "config"
@@ -486,3 +482,11 @@ def test_a_verify_connection_and_its_key_reach_the_next_show_but_the_repair_endp
     )
     assert seen["REPAIR_MODEL"] == "m", "the repair model alone reaches it, as REPAIR_MODEL always did"
     assert "sk-gen-key" not in (config / "effective.env").read_text()
+
+
+def test_a_stored_verify_false_skips_the_verify_step(tmp_path):
+    env, log_file, _ = _prep_env(tmp_path, "Frieren\n", {"generate": "pathlib.Path(os.environ['STOP_FLAG']).touch()"})
+    _store(Path(env["CONFIG_DIR"]), {"VERIFY": False})
+    proc = subprocess.run(["sh", str(REPO / "gen_loop.sh")], env=env, capture_output=True, text=True, timeout=30)
+    assert "VERIFY off, skipping verify on Frieren" in proc.stdout
+    assert "#### VERIFY" not in proc.stdout

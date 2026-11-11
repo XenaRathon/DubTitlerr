@@ -155,22 +155,26 @@ prep_show() {
 			_prep_stopped=1
 			return 0
 		fi
-		echo "#### VERIFY $_ps_show $(date)"
-		# 300s was sized for INCREMENTAL verification -- pending_terms() skips anything
-		# already in `verified`, so a steady-state run adjudicates a handful of terms. A
-		# full re-adjudication (after `verified` is cleared, as on 2026-08-21) is 121 terms
-		# for One Pace and hit the wall at exactly 300s. `timeout` returns 124; anything
-		# else is a real failure, and collapsing the two into one "skipped" line is how a
-		# stage that never once completed still looked like a normal sweep.
-		# `&& rc=0 || rc=$?` (the generate.py pattern; rc is reassigned before every other use, so sharing the name is safe) so a `timeout`-killed
-		# verify -- exit 124 -- does not trip `set -e` and exit the container before the
-		# rc-classified message below ever runs. Verified on vm102 2026-09-05: every restart
-		# over the prior 14h exited with code 124, journal-confirmed, with VERIFY_TIMEOUT
-		# (1200s) firing on One Pace within ~2s of the restart in every measured instance.
-		timeout "${VERIFY_TIMEOUT:-1200}" python3 "$APP_DIR"/glossary_verify.py "$_ps_gloss" </dev/null 2>&1 && rc=0 || rc=$?
-		[ "$rc" -eq 0 ] || { [ "$rc" -eq 124 ] &&
-			echo "  verify TIMED OUT after ${VERIFY_TIMEOUT:-1200}s (continuing; terms stay unverified)" ||
-			echo "  verify failed rc=$rc (continuing)"; }
+		if [ "${VERIFY:-1}" -eq 0 ]; then
+			echo "gen_loop: VERIFY off, skipping verify on $_ps_show"
+		else
+			echo "#### VERIFY $_ps_show $(date)"
+			# 300s was sized for INCREMENTAL verification -- pending_terms() skips anything
+			# already in `verified`, so a steady-state run adjudicates a handful of terms. A
+			# full re-adjudication (after `verified` is cleared, as on 2026-08-21) is 121 terms
+			# for One Pace and hit the wall at exactly 300s. `timeout` returns 124; anything
+			# else is a real failure, and collapsing the two into one "skipped" line is how a
+			# stage that never once completed still looked like a normal sweep.
+			# `&& rc=0 || rc=$?` (the generate.py pattern; rc is reassigned before every other use, so sharing the name is safe) so a `timeout`-killed
+			# verify -- exit 124 -- does not trip `set -e` and exit the container before the
+			# rc-classified message below ever runs. Verified on vm102 2026-09-05: every restart
+			# over the prior 14h exited with code 124, journal-confirmed, with VERIFY_TIMEOUT
+			# (1200s) firing on One Pace within ~2s of the restart in every measured instance.
+			timeout "${VERIFY_TIMEOUT:-1200}" python3 "$APP_DIR"/glossary_verify.py "$_ps_gloss" </dev/null 2>&1 && rc=0 || rc=$?
+			[ "$rc" -eq 0 ] || { [ "$rc" -eq 124 ] &&
+				echo "  verify TIMED OUT after ${VERIFY_TIMEOUT:-1200}s (continuing; terms stay unverified)" ||
+				echo "  verify failed rc=$rc (continuing)"; }
+		fi
 	fi
 	_prep_gloss="$_ps_gloss"
 	return 0

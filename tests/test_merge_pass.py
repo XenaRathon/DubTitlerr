@@ -290,9 +290,7 @@ def test_a_failed_stage_scan_never_prints_complete(tmp_path, monkeypatch):
     common.write_stage(stem, "repair", "ok")
     _fake_bin(tmp_path, "ffmpeg")
     wrapper = tmp_path / "fakebin" / "python3"
-    wrapper.write_text(
-        f'#!/bin/sh\ncase "$2" in *failed_stage*) exit 1 ;;\nesac\nexec {shlex.quote(sys.executable)} "$@"\n'
-    )
+    wrapper.write_text(f'#!/bin/sh\ncase "$2" in *failed_stage*) exit 1 ;;\nesac\nexec {shlex.quote(sys.executable)} "$@"\n')
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     res = _run(tmp_path, root)
     assert "MERGE PASS COMPLETE" not in res.stdout, res.stdout + res.stderr
@@ -536,3 +534,24 @@ def test_sweep_on_still_merges_every_show(tmp_path):
     res, calls = _gated_run(tmp_path, root, extra_env={"LIBRARY_SWEEP": "true", "REQUESTS_DIR": str(rdir)})
     assert (root / "Requested" / "ep01.eng.dubtitles.ass").exists()
     assert (root / "Second" / "ep01.eng.dubtitles.ass").exists()
+
+
+def test_repair_off_holds_episodes(tmp_path):
+    root, stem = _episode(tmp_path)
+    res, calls = _gated_run(tmp_path, root, extra_env={"REPAIR": "0"})
+    assert calls == [], calls
+    assert "merge_pass: REPAIR off, holding " in res.stdout
+    assert "merge_pass: REPAIR off, held 1 episodes" in res.stdout
+    assert not (root / "Show" / "ep01.eng.dubtitles.ass").exists()
+
+
+def test_repair_back_on_processes_held_episodes(tmp_path):
+    root, stem = _episode(tmp_path)
+    # First pass: held
+    res1, calls1 = _gated_run(tmp_path, root, extra_env={"REPAIR": "0"})
+    assert calls1 == []
+
+    # Second pass: processes normally
+    res2, calls2 = _gated_run(tmp_path, root, extra_env={"REPAIR": "1"})
+    assert calls2 == ["repair ep01", "signs ep01", "mux ep01"], calls2
+    assert "MERGE PASS COMPLETE" in res2.stdout

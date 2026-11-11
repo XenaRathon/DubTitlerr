@@ -19,6 +19,7 @@ FIRST_WAVE = {
         "MINE_MIN_COUNT",
         "ACQUIRE_MIN_SIM",
         "VERIFY_DECISION_TAU",
+        "VERIFY",
     ],
     "repair": [
         "DECISIONS_APPLY",
@@ -27,6 +28,7 @@ FIRST_WAVE = {
         "REPAIR_AUTO_DISMISS_WORDS",
         "REPAIR_KEEP_NAME_PARTS",
         "REPAIR_EPISODE_DEADLINE",
+        "REPAIR",
     ],
     "output": ["DUB_FANSUB_FONT", "SIGNS_CROSS_TRACK_DEDUP", "REVIEW_GATE_SHOWS", "REVIEW_GATE_STALE_DAYS", "MERGE_INTERVAL"],
     "schedule": ["MERGE_WINDOW", "WATCH_QUEUE_WINDOW_DAYS", "WATCH_QUEUE_PIN", "LIBRARY_SWEEP"],
@@ -63,7 +65,7 @@ def test_the_categories_are_the_nine_in_the_spec_order():
 
 def test_only_the_three_spec_keys_are_advanced_in_the_first_wave():
     advanced = {k for k, e in reg.REGISTRY.items() if e["first_wave"] and e["advanced"]}
-    assert advanced == {"ACQUIRE_MIN_SIM", "VERIFY_DECISION_TAU", "REPAIR_EPISODE_DEADLINE"}
+    assert advanced == {"ACQUIRE_MIN_SIM", "VERIFY_DECISION_TAU", "VERIFY", "REPAIR", "REPAIR_EPISODE_DEADLINE"}
 
 
 def test_restart_means_a_server_or_container_scope_and_back():
