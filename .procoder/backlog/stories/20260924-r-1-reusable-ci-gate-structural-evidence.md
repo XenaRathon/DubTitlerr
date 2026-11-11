@@ -21,7 +21,7 @@ Establish and structurally verify a reusable CI gate workflow ensuring release i
 - Initial RED structural test failed: `ci.yml must declare workflow_call... found ['pull_request','push']`.
 - Focused workflow tests passed successfully after correction.
 - Final main-based full suite (`1776 passed`), Ruff, actionlint, bash, and uv checks pass cleanly.
-- Implementation resides on local branch `fix/buffy-release-review-remediation` based on main commit `6f6f073` (with no commit or push executed).
+- Implementation resides on local branch `fix/buffy-release-review-remediation` based on main commit `6f6f073` (landed on `main` as `787a0a7` (an ancestor of `v0.2.2` and `v0.3.0`)).
 
 ### Operational Proof (R-1):
 
@@ -35,3 +35,6 @@ Establish and structurally verify a reusable CI gate workflow ensuring release i
 ### Operational Caveat:
 
 **OPERATIONAL PROVED:** Real failed tag run executed against live infrastructure; image publishing is now authorized when CI gate passes.
+## Outcome
+
+2026-11-05, user decision: keep it done; correct its "no commit or push executed" wording to say the change landed on `main` as `787a0a7` (an ancestor of `v0.2.2` and `v0.3.0`).

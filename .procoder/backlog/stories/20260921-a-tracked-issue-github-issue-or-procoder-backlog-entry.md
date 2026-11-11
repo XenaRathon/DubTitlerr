@@ -1,6 +1,6 @@
 # A tracked issue (GitHub issue or `.procoder/backlog` entry) records the osv-scanner/`pyproject.toml` extractor gap, with a recorded decision on scanning `uv.lock` directly.
 
-Status: open
+Status: done
 Created: 2026-09-21
 Epic: v0-2-0-hardening
 Sprint: -
@@ -23,3 +23,7 @@ Delivered by Task 23 of `.procoder/plans/v0-2-0-hardening.md` (sprint 015); the 
 
 <!-- Filled at close time: the commands run and what their output proved,
      one line per criterion. Empty evidence keeps the story open. -->
+
+## Outcome
+
+2026-11-05, user decision: done. The upstream issue exists: azrtydxb/procoder#301 "procoder does not scan uv.lock for Python dependency security checks", now closed upstream. CI scans `uv.lock` directly (`.github/workflows/ci.yml:82-87`).

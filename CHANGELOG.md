@@ -490,6 +490,7 @@ COMPLETE`. It prints `MERGE PASS INCOMPLETE: failed-stage scan error`. Counts fr
   would simply keep working for the longer grace.
 
 ## 0.2.1 - 2026-09-24
+Not tagged; these fixes first shipped in v0.2.2. (Correction 2026-11-05)
 
 Release-integrity and fail-closed hardening driven by the v0.2.0 adversarial release review
 (findings B1–B9; the original review file is missing — a labeled reconstruction plus a
@@ -573,9 +574,9 @@ in `.procoder/plans/v0-2-0-hardening.md` (sprints 010-015).
   writes, and REQUIRE_TOKEN=1 hard-fails startup if auth ends up disabled anyway (S-14);
   a real-socket HTTP integration test covers auth, slow reads and the concurrency bound
   (S-15); a heartbeat file, a GET /healthz route and a Docker HEALTHCHECK let liveness be
-  checked without inferring it from an idle-looking container (S-16).
+  checked without inferring it from an idle-looking container (S-16) (Correction 2026-11-05: the heartbeat helper, `/healthz` route and HEALTHCHECK shipped, but no pipeline loop writes the heartbeat yet, so `/healthz` reports 503. Planned fix: the run-status and `/healthz` work in 0.5.0).
 - S-17 through S-20 (sprint 014, Measurement): tools/timing_compare.py's real-media
-  validation (T12) runs on 3 representative shows with a written go/no-go report, and
+  validation (T12) runs on 3 representative shows with a written go/no-go report (Correction 2026-11-05: the three-show T12 run and go/no-go report did not happen; it is folded into the reference-lines real-media test), and
   specs/timing-compare/tasks.md's stale checklist is reconciled with what already shipped
   on main (S-17); the queue/publish operational checklist (timers, order-file drift,
   manifest policy) is verified live (S-18); the storage/host checklist is closed and
