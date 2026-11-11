@@ -361,8 +361,14 @@ def test_gen_loop_without_a_stop_runs_the_whole_sequence_for_both_shows(tmp_path
     res, calls = _gen_loop_run(tmp_path, stop_after="generate:Show2")
     assert res.returncode == 0, (res.stdout, res.stderr)
     assert calls == [
-        "mine Show1", "acquire Show1", "verify Show1", "generate Show1",
-        "mine Show2", "acquire Show2", "verify Show2", "generate Show2",
+        "mine Show1",
+        "acquire Show1",
+        "verify Show1",
+        "generate Show1",
+        "mine Show2",
+        "acquire Show2",
+        "verify Show2",
+        "generate Show2",
     ], calls
 
 

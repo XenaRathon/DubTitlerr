@@ -70,6 +70,7 @@ from common import (
 from decisions import decisions_for, show_for
 
 ROOTS = os.environ.get("MUX_ROOTS", "/data/Media/Anime Library").split(":")
+DUB_OUTPUT = os.environ.get("DUB_OUTPUT", "mux")
 # [S-6] Shows whose episodes wait for a human before they are released. Colon list, the
 # MUX_ROOTS idiom. EMPTY BY DEFAULT: every install that has not opted in behaves exactly as
 # it did before this existed.
@@ -532,10 +533,7 @@ def _source_unchanged(orig: str, st: os.stat_result) -> bool:
         curr = os.stat(orig)
     except OSError:
         return False
-    return (
-        curr.st_size == st.st_size
-        and abs(curr.st_mtime - st.st_mtime) <= 1.0
-    )
+    return curr.st_size == st.st_size and abs(curr.st_mtime - st.st_mtime) <= 1.0
 
 
 def cleanup_old_temps(stem: str, now: float | None = None) -> None:
@@ -610,6 +608,21 @@ def process(orig, apply):
     # status the operator is meant to act on.
     if held_for_review(stem):
         return "held-for-review"
+
+    if DUB_OUTPUT == "sidecar":
+        if not apply:
+            log(f"  PLAN sidecar {os.path.basename(orig)} (keep {os.path.basename(src)})")
+            return "plan"
+        try:
+            write_stamp(stamp, orig, stages=_stages_ran(stem, src))
+            write_stage(stem, "mux", "ok")
+            log(f"  sidecar written: {os.path.basename(src)}")
+            return "sidecar-written"
+        except OSError as e:
+            log(f"  ERROR: sidecar mode stamp write FAILED ({e}) — {os.path.basename(orig)} left untouched")
+            write_stage(stem, "mux", "unwritable", str(e))
+            return "stamp-write-failed"
+
     if not has_room(_free_bytes(orig), os.path.getsize(orig)):
         log("  skip (low disk):", os.path.basename(orig))
         return "skip-no-room"
@@ -735,8 +748,7 @@ def process(orig, apply):
             except OSError:
                 kept = out
             damaged = (
-                f"the partial new {os.path.basename(final)} may be damaged and the original "
-                f"{os.path.basename(orig)} is intact"
+                f"the partial new {os.path.basename(final)} may be damaged and the original {os.path.basename(orig)} is intact"
                 if os.path.abspath(orig) != os.path.abspath(final)
                 else "the original may be damaged"
             )
