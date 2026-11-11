@@ -77,6 +77,7 @@ def iso(now, delta_seconds):
 
 # ---- path mappings ---------------------------------------------------------------------------------------------------
 
+
 def test_parse_mappings_splits_pairs_and_sorts_longest_first():
     assert wh.parse_mappings("/tv=/anime;/movies=/films") == [("/movies", "/films"), ("/tv", "/anime")]
     assert wh.parse_mappings("")[0:] == []
@@ -97,6 +98,7 @@ def test_map_path_longest_prefix_wins_on_component_boundary():
 
 
 # ---- token check --------------------------------------------------------------------------------------------------------
+
 
 def test_token_ok_missing_wrong_and_unset():
     assert wh.check_token(TOKEN, env()) is None
@@ -124,14 +126,20 @@ def test_token_comparison_is_constant_time_on_str(monkeypatch):
 def test_test_event_still_needs_the_token():
     q = Queue()
     status, payload = wh.handle(
-        "POST", "/api/webhook/sonarr", load("sonarr_test.json"), {},
-        env(), create=q.create, list_requests=q.list_requests,
+        "POST",
+        "/api/webhook/sonarr",
+        load("sonarr_test.json"),
+        {},
+        env(),
+        create=q.create,
+        list_requests=q.list_requests,
     )
     assert (status, payload) == (401, {"error": "a token is required"})
     assert q.created == []
 
 
 # ---- show resolution ------------------------------------------------------------------------------------------------------
+
 
 def test_resolve_show_returns_the_first_component(tmp_path):
     root = str(tmp_path / "anime")
@@ -158,6 +166,7 @@ def test_resolve_show_rejects_symlink_escape(tmp_path):
 
 
 # ---- episode parsing ---------------------------------------------------------------------------------------------------------
+
 
 def test_episodes_from_plural_files():
     season, episodes = wh.episodes_from_payload(load("sonarr_download.json"))
@@ -193,11 +202,14 @@ def test_episodes_fallback_to_episode_numbers_then_show_only():
 
 # ---- build_request ---------------------------------------------------------
 
+
 def test_sonarr_download_enqueues_with_season_and_regex(tmp_path):
     root = str(tmp_path / "anime")
     action, body = wh.build_request(
-        "sonarr", load("sonarr_download.json"),
-        env(REMOTE_PATH_MAPPINGS=f"/tv={root}"), root,
+        "sonarr",
+        load("sonarr_download.json"),
+        env(REMOTE_PATH_MAPPINGS=f"/tv={root}"),
+        root,
     )
     assert action == "enqueue"
     assert body["show"] == "One Pace"
@@ -214,8 +226,10 @@ def test_sonarr_download_enqueues_with_season_and_regex(tmp_path):
 def test_sonarr_upgrade_multi_episode_joins_branches(tmp_path):
     root = str(tmp_path / "anime")
     action, body = wh.build_request(
-        "sonarr", load("sonarr_upgrade.json"),
-        env(REMOTE_PATH_MAPPINGS=f"/tv={root}"), root,
+        "sonarr",
+        load("sonarr_upgrade.json"),
+        env(REMOTE_PATH_MAPPINGS=f"/tv={root}"),
+        root,
     )
     assert action == "enqueue"
     assert body["show"] == "Frieren"
@@ -245,8 +259,10 @@ def test_unmapped_path_outside_root_is_ignored(tmp_path):
 def test_radarr_download_enqueues_movies_with_null_season(tmp_path):
     root = str(tmp_path / "anime")
     action, body = wh.build_request(
-        "radarr", load("radarr_download.json"),
-        env(REMOTE_PATH_MAPPINGS=f"/movies={root}"), root,
+        "radarr",
+        load("radarr_download.json"),
+        env(REMOTE_PATH_MAPPINGS=f"/movies={root}"),
+        root,
     )
     assert action == "enqueue"
     assert body["show"] == "Akira (1988)"
@@ -265,6 +281,7 @@ def test_radarr_outside_root_and_other_events_are_ignored(tmp_path):
 
 # ---- handle dispatch --------------------------------------------------------
 
+
 def _hooked(tmp_path, show="One Pace"):
     root = str(tmp_path / "anime")
     os.makedirs(os.path.join(root, show), exist_ok=True)
@@ -276,8 +293,15 @@ def test_handle_sonarr_download_enqueues_and_returns_id(tmp_path):
     root, e = _hooked(tmp_path)
     q = Queue()
     status, payload = wh.handle(
-        "POST", "/api/webhook/sonarr", load("sonarr_download.json"), headers(),
-        e, create=q.create, list_requests=q.list_requests, anime_root=root, now=1700000000.0,
+        "POST",
+        "/api/webhook/sonarr",
+        load("sonarr_download.json"),
+        headers(),
+        e,
+        create=q.create,
+        list_requests=q.list_requests,
+        anime_root=root,
+        now=1700000000.0,
     )
     assert (status, payload) == (200, {"ok": True, "id": "new-id-1", "hint": "anime"})
     assert len(q.created) == 1 and q.created[0]["show"] == "One Pace"
@@ -291,8 +315,15 @@ def test_handle_isupgrade_download_and_upgrade_enqueue(tmp_path):
     upgrade["isUpgrade"] = True
     for payload in (upgrade, load("sonarr_upgrade.json")):
         status, payload_out = wh.handle(
-            "POST", "/api/webhook/sonarr", payload, headers(),
-            e, create=q.create, list_requests=q.list_requests, anime_root=root, now=1700000000.0,
+            "POST",
+            "/api/webhook/sonarr",
+            payload,
+            headers(),
+            e,
+            create=q.create,
+            list_requests=q.list_requests,
+            anime_root=root,
+            now=1700000000.0,
         )
         assert status == 200 and payload_out["ok"] is True
     assert len(q.created) == 2
@@ -301,16 +332,19 @@ def test_handle_isupgrade_download_and_upgrade_enqueue(tmp_path):
 def test_handle_test_rename_health_shapes(tmp_path):
     root, e = _hooked(tmp_path)
     q = Queue()
-    kw = {"headers": headers(), "environ": e, "create": q.create,
-          "list_requests": q.list_requests, "anime_root": root}
+    kw = {"headers": headers(), "environ": e, "create": q.create, "list_requests": q.list_requests, "anime_root": root}
     assert wh.handle("POST", "/api/webhook/sonarr", load("sonarr_test.json"), **kw) == (
-        200, {"ok": True, "message": "webhook works, nothing enqueued"})
+        200,
+        {"ok": True, "message": "webhook works, nothing enqueued"},
+    )
     status, payload = wh.handle("POST", "/api/webhook/sonarr", load("sonarr_rename.json"), **kw)
     assert status == 200 and payload["ignored"] is True and isinstance(payload["reason"], str)
     status, payload = wh.handle("POST", "/api/webhook/sonarr", load("sonarr_health.json"), **kw)
     assert status == 200 and payload["ignored"] is True
     assert wh.handle("POST", "/api/webhook/radarr", load("radarr_test.json"), **kw) == (
-        200, {"ok": True, "message": "webhook works, nothing enqueued"})
+        200,
+        {"ok": True, "message": "webhook works, nothing enqueued"},
+    )
     assert q.created == []
 
 
@@ -318,8 +352,7 @@ def test_handle_query_token_fallback_and_wrong_route(tmp_path):
     root, e = _hooked(tmp_path)
     q = Queue()
     kw = {"environ": e, "create": q.create, "list_requests": q.list_requests, "anime_root": root}
-    status, _ = wh.handle(
-        "POST", "/api/webhook/sonarr?token=" + TOKEN, load("sonarr_test.json"), {}, **kw)
+    status, _ = wh.handle("POST", "/api/webhook/sonarr?token=" + TOKEN, load("sonarr_test.json"), {}, **kw)
     assert status == 200
     assert wh.handle("POST", "/api/webhook/sonarr", load("sonarr_test.json"), headers("nope"), **kw)[0] == 403
     assert wh.handle("GET", "/api/webhook/sonarr", load("sonarr_test.json"), headers(), **kw)[0] == 404
@@ -331,8 +364,15 @@ def test_handle_unset_token_hides_both_routes(tmp_path):
     q = Queue()
     for route in ("sonarr", "radarr"):
         status, payload = wh.handle(
-            "POST", f"/api/webhook/{route}", load("sonarr_test.json"), headers("whatever"),
-            {}, create=q.create, list_requests=q.list_requests, anime_root=root)
+            "POST",
+            f"/api/webhook/{route}",
+            load("sonarr_test.json"),
+            headers("whatever"),
+            {},
+            create=q.create,
+            list_requests=q.list_requests,
+            anime_root=root,
+        )
         assert (status, payload) == (404, {"error": "no such route"})
         clean(payload)
 
@@ -340,8 +380,7 @@ def test_handle_unset_token_hides_both_routes(tmp_path):
 def test_handle_body_cap_and_bad_json(tmp_path):
     root, e = _hooked(tmp_path)
     q = Queue()
-    kw = {"headers": headers(), "environ": e, "create": q.create,
-          "list_requests": q.list_requests, "anime_root": root}
+    kw = {"headers": headers(), "environ": e, "create": q.create, "list_requests": q.list_requests, "anime_root": root}
     big = b'{"eventType": "Download", "pad": "' + b"x" * (256 * 1024) + b'"}'
     assert wh.handle("POST", "/api/webhook/sonarr", big, **kw)[0] == 413
     assert wh.handle("POST", "/api/webhook/sonarr", None, **kw) == (400, {"error": "invalid JSON"})
@@ -355,10 +394,17 @@ def test_handle_dedup_window_boundary(tmp_path):
     for delta, hits in ((23 * 3600 + 59 * 60, True), (24 * 3600 + 60, False)):
         q = Queue([entry("old-id", "One Pace", remote, iso(now, delta))])
         status, payload = wh.handle(
-            "POST", "/api/webhook/sonarr", load("sonarr_download.json"), headers(),
-            e, create=q.create, list_requests=q.list_requests, anime_root=root, now=now)
-        assert (status, payload) == (
-            200, {"ok": True, "id": "old-id" if hits else "new-id-1", "hint": "anime"})
+            "POST",
+            "/api/webhook/sonarr",
+            load("sonarr_download.json"),
+            headers(),
+            e,
+            create=q.create,
+            list_requests=q.list_requests,
+            anime_root=root,
+            now=now,
+        )
+        assert (status, payload) == (200, {"ok": True, "id": "old-id" if hits else "new-id-1", "hint": "anime"})
         assert len(q.created) == (0 if hits else 1)
         clean(payload)
 
@@ -369,13 +415,29 @@ def test_handle_failed_entries_do_not_block_but_done_ones_do(tmp_path):
     remote = "/tv/One Pace/Season 31/One Pace - S31E05.mkv"
     q = Queue([entry("failed-id", "One Pace", remote, iso(now, 3600), status="failed")])
     status, payload = wh.handle(
-        "POST", "/api/webhook/sonarr", load("sonarr_download.json"), headers(),
-        e, create=q.create, list_requests=q.list_requests, anime_root=root, now=now)
+        "POST",
+        "/api/webhook/sonarr",
+        load("sonarr_download.json"),
+        headers(),
+        e,
+        create=q.create,
+        list_requests=q.list_requests,
+        anime_root=root,
+        now=now,
+    )
     assert payload == {"ok": True, "id": "new-id-1", "hint": "anime"}
     q = Queue([entry("done-id", "One Pace", remote, iso(now, 3600), status="done")])
     status, payload = wh.handle(
-        "POST", "/api/webhook/sonarr", load("sonarr_download.json"), headers(),
-        e, create=q.create, list_requests=q.list_requests, anime_root=root, now=now)
+        "POST",
+        "/api/webhook/sonarr",
+        load("sonarr_download.json"),
+        headers(),
+        e,
+        create=q.create,
+        list_requests=q.list_requests,
+        anime_root=root,
+        now=now,
+    )
     assert payload == {"ok": True, "id": "done-id", "hint": "anime"}
     assert q.created == []
 
@@ -385,12 +447,21 @@ def test_handle_queue_conflict_returns_existing_id(tmp_path):
     q = Queue()
     q.conflict = "pending-id"
     status, payload = wh.handle(
-        "POST", "/api/webhook/sonarr", load("sonarr_download.json"), headers(),
-        e, create=q.create, list_requests=q.list_requests, anime_root=root, now=1700000000.0)
+        "POST",
+        "/api/webhook/sonarr",
+        load("sonarr_download.json"),
+        headers(),
+        e,
+        create=q.create,
+        list_requests=q.list_requests,
+        anime_root=root,
+        now=1700000000.0,
+    )
     assert (status, payload) == (200, {"ok": True, "id": "pending-id", "hint": "anime"})
 
 
 # ---- fix round: windows paths, trailing slashes, future stamps, real queue, specials -------------------------------
+
 
 def test_map_path_normalizes_windows_separators():
     mappings = wh.parse_mappings("C:/Anime=/anime")
@@ -418,8 +489,16 @@ def test_handle_future_dated_entries_do_not_block(tmp_path):
     remote = "/tv/One Pace/Season 31/One Pace - S31E05.mkv"
     q = Queue([entry("future-id", "One Pace", remote, iso(now, -3600))])
     status, payload = wh.handle(
-        "POST", "/api/webhook/sonarr", load("sonarr_download.json"), headers(),
-        e, create=q.create, list_requests=q.list_requests, anime_root=root, now=now)
+        "POST",
+        "/api/webhook/sonarr",
+        load("sonarr_download.json"),
+        headers(),
+        e,
+        create=q.create,
+        list_requests=q.list_requests,
+        anime_root=root,
+        now=now,
+    )
     assert (status, payload) == (200, {"ok": True, "id": "new-id-1", "hint": "anime"})
     assert len(q.created) == 1
 
@@ -428,9 +507,7 @@ def test_real_create_writes_a_matching_generate_only_re(tmp_path):
     root = str(tmp_path / "anime")
     rdir = str(tmp_path / "requests")
     os.makedirs(os.path.join(root, "One Pace"))
-    action, body = wh.build_request(
-        "sonarr", load("sonarr_download.json"),
-        env(REMOTE_PATH_MAPPINGS=f"/tv={root}"), root)
+    action, body = wh.build_request("sonarr", load("sonarr_download.json"), env(REMOTE_PATH_MAPPINGS=f"/tv={root}"), root)
     assert action == "enqueue"
     status, result = rr.create(body, anime_root=root, requests_dir=rdir, now=1700000000.0)
     assert status == 201
@@ -449,18 +526,22 @@ def test_season_zero_specials_become_season_none_with_episode_regex(tmp_path):
     payload = {
         "eventType": "Download",
         "series": {"title": "Specials Show", "path": "/tv/Specials Show"},
-        "episodeFiles": [{"relativePath": "Specials/Specials Show - S00E05.mkv",
-                          "path": "/tv/Specials Show/Specials/Specials Show - S00E05.mkv"}],
+        "episodeFiles": [
+            {
+                "relativePath": "Specials/Specials Show - S00E05.mkv",
+                "path": "/tv/Specials Show/Specials/Specials Show - S00E05.mkv",
+            }
+        ],
         "episodes": [{"seasonNumber": 0, "episodeNumber": 5}],
     }
-    action, body = wh.build_request(
-        "sonarr", payload, env(REMOTE_PATH_MAPPINGS=f"/tv={root}"), root)
+    action, body = wh.build_request("sonarr", payload, env(REMOTE_PATH_MAPPINGS=f"/tv={root}"), root)
     assert action == "enqueue"
     assert body["season"] is None and body["episode_re"] == "(?:[Ss]0*0[Ee]0*(?:5))(?!\\d)"
     rr.validate(body, root)
 
 
 # ---- second fix round: E-anchored episode regex, Refused mapping, long-list fallback -------------------------------
+
 
 def test_episode_two_scoping_with_real_derive():
     rx = re.compile(rr.derive_generate_only_re("Show", 1, wh._episode_re([2], 1)))
@@ -504,8 +585,16 @@ def test_refused_becomes_200_ignored_not_4xx(tmp_path):
                 raise rr.Refused(400, _text)
 
         status, payload = wh.handle(
-            "POST", "/api/webhook/sonarr", load("sonarr_download.json"), headers(),
-            e, create=BoomWithText(), list_requests=lambda: [], anime_root=root, now=1700000000.0)
+            "POST",
+            "/api/webhook/sonarr",
+            load("sonarr_download.json"),
+            headers(),
+            e,
+            create=BoomWithText(),
+            list_requests=lambda: [],
+            anime_root=root,
+            now=1700000000.0,
+        )
         assert (status, payload) == (200, {"ok": True, "ignored": True, "reason": refusal})
         assert TOKEN not in json.dumps(payload)
 
@@ -515,8 +604,16 @@ def test_real_create_missing_show_dir_is_ignored(tmp_path):
     os.makedirs(root)
     e = env(REMOTE_PATH_MAPPINGS=f"/tv={root}")
     status, payload = wh.handle(
-        "POST", "/api/webhook/sonarr", load("sonarr_download.json"), headers(),
-        e, create=rr.create, list_requests=lambda: [], anime_root=root, now=1700000000.0)
+        "POST",
+        "/api/webhook/sonarr",
+        load("sonarr_download.json"),
+        headers(),
+        e,
+        create=rr.create,
+        list_requests=lambda: [],
+        anime_root=root,
+        now=1700000000.0,
+    )
     assert status == 200 and payload["ignored"] is True
     assert "show directory not found" in payload["reason"]
 
@@ -526,10 +623,7 @@ def _absolute_pack(first, last, season=3):
     return {
         "eventType": "Download",
         "series": {"title": "One Pace", "path": "/tv/One Pace"},
-        "episodeFiles": [
-            {"relativePath": f"One Pace - {n}.mkv", "path": f"/tv/One Pace/One Pace - {n}.mkv"}
-            for n in numbers
-        ],
+        "episodeFiles": [{"relativePath": f"One Pace - {n}.mkv", "path": f"/tv/One Pace/One Pace - {n}.mkv"} for n in numbers],
         "episodes": [{"seasonNumber": season, "episodeNumber": n} for n in numbers],
     }
 
@@ -537,9 +631,7 @@ def _absolute_pack(first, last, season=3):
 def test_thirty_absolute_episodes_keep_the_full_regex(tmp_path):
     root = str(tmp_path / "anime")
     os.makedirs(os.path.join(root, "One Pace"))
-    action, body = wh.build_request(
-        "sonarr", _absolute_pack(1071, 1100),
-        env(REMOTE_PATH_MAPPINGS=f"/tv={root}"), root)
+    action, body = wh.build_request("sonarr", _absolute_pack(1071, 1100), env(REMOTE_PATH_MAPPINGS=f"/tv={root}"), root)
     assert action == "enqueue"
     assert body["season"] == 3 and body["episode_re"] is not None
     assert len(body["episode_re"]) <= 200
@@ -549,15 +641,14 @@ def test_thirty_absolute_episodes_keep_the_full_regex(tmp_path):
 def test_long_episode_list_falls_back_to_season_only(tmp_path):
     root = str(tmp_path / "anime")
     os.makedirs(os.path.join(root, "One Pace"))
-    action, body = wh.build_request(
-        "sonarr", _absolute_pack(1001, 1060),
-        env(REMOTE_PATH_MAPPINGS=f"/tv={root}"), root)
+    action, body = wh.build_request("sonarr", _absolute_pack(1001, 1060), env(REMOTE_PATH_MAPPINGS=f"/tv={root}"), root)
     assert action == "enqueue"
     assert body["season"] == 3 and body["episode_re"] is None
     rr.validate(body, root)
 
 
 # ---- newer payloads: v5/v6 extras, unknown fields, anime hint ---------------------------------------------------------
+
 
 def _mapped(tmp_path, show):
     root = str(tmp_path / "anime")
@@ -568,22 +659,25 @@ def _mapped(tmp_path, show):
 def test_v5_download_enqueues_exactly_like_v4(tmp_path):
     root = str(tmp_path / "anime")
     e = env(REMOTE_PATH_MAPPINGS=f"/tv={root}")
-    assert wh.build_request("sonarr", load("sonarr_v5_download.json"), e, root) == \
-        wh.build_request("sonarr", load("sonarr_download.json"), e, root)
+    assert wh.build_request("sonarr", load("sonarr_v5_download.json"), e, root) == wh.build_request(
+        "sonarr", load("sonarr_download.json"), e, root
+    )
 
 
 def test_v5_upgrade_enqueues_exactly_like_v4(tmp_path):
     root = str(tmp_path / "anime")
     e = env(REMOTE_PATH_MAPPINGS=f"/tv={root}")
-    assert wh.build_request("sonarr", load("sonarr_v5_upgrade.json"), e, root) == \
-        wh.build_request("sonarr", load("sonarr_upgrade.json"), e, root)
+    assert wh.build_request("sonarr", load("sonarr_v5_upgrade.json"), e, root) == wh.build_request(
+        "sonarr", load("sonarr_upgrade.json"), e, root
+    )
 
 
 def test_v6_radarr_enqueues_exactly_like_v5(tmp_path):
     root = str(tmp_path / "anime")
     e = env(REMOTE_PATH_MAPPINGS=f"/movies={root}")
-    assert wh.build_request("radarr", load("radarr_v6_download.json"), e, root) == \
-        wh.build_request("radarr", load("radarr_download.json"), e, root)
+    assert wh.build_request("radarr", load("radarr_v6_download.json"), e, root) == wh.build_request(
+        "radarr", load("radarr_download.json"), e, root
+    )
 
 
 def test_unknown_extra_fields_never_break_parsing(tmp_path):
@@ -595,8 +689,16 @@ def test_unknown_extra_fields_never_break_parsing(tmp_path):
     payload["release"]["futureReleaseField"] = 42
     q = Queue()
     status, out = wh.handle(
-        "POST", "/api/webhook/sonarr", payload, headers(),
-        e, create=q.create, list_requests=q.list_requests, anime_root=root, now=1700000000.0)
+        "POST",
+        "/api/webhook/sonarr",
+        payload,
+        headers(),
+        e,
+        create=q.create,
+        list_requests=q.list_requests,
+        anime_root=root,
+        now=1700000000.0,
+    )
     assert (status, out) == (200, {"ok": True, "id": "new-id-1", "hint": "anime"})
     assert q.created[0]["show"] == "One Pace"
     clean(out)
@@ -608,8 +710,16 @@ def test_unknown_event_type_is_ignored(tmp_path):
     payload = load("sonarr_v5_download.json")
     payload["eventType"] = "SeriesAdd"
     status, out = wh.handle(
-        "POST", "/api/webhook/sonarr", payload, headers(),
-        e, create=q.create, list_requests=q.list_requests, anime_root=root, now=1700000000.0)
+        "POST",
+        "/api/webhook/sonarr",
+        payload,
+        headers(),
+        e,
+        create=q.create,
+        list_requests=q.list_requests,
+        anime_root=root,
+        now=1700000000.0,
+    )
     assert status == 200 and out["ignored"] is True
     assert q.created == []
 
@@ -619,8 +729,7 @@ def test_string_or_null_id_lists_do_not_crash(tmp_path):
     e = env(REMOTE_PATH_MAPPINGS=f"/tv={root}")
     for ids in ({"malIds": "20", "aniListIds": None}, {"malIds": None, "aniListIds": "21"}, {}):
         payload = load("sonarr_v5_download.json")
-        payload["series"] = {k: v for k, v in payload["series"].items()
-                             if k not in ("malIds", "aniListIds", "type")}
+        payload["series"] = {k: v for k, v in payload["series"].items() if k not in ("malIds", "aniListIds", "type")}
         payload["series"].update(ids)
         action, body = wh.build_request("sonarr", payload, e, root)
         assert action == "enqueue" and body["show"] == "One Pace"
@@ -645,10 +754,12 @@ def _standard_download(show="Some Show"):
     return {
         "eventType": "Download",
         "series": {"title": show, "path": f"/tv/{show}", "type": "standard"},
-        "episodeFiles": [{
-            "relativePath": "Season 01/Some Show - S01E03.mkv",
-            "path": f"/tv/{show}/Season 01/Some Show - S01E03.mkv",
-        }],
+        "episodeFiles": [
+            {
+                "relativePath": "Season 01/Some Show - S01E03.mkv",
+                "path": f"/tv/{show}/Season 01/Some Show - S01E03.mkv",
+            }
+        ],
         "episodes": [{"seasonNumber": 1, "episodeNumber": 3}],
     }
 
@@ -657,8 +768,16 @@ def test_hint_is_informational_only_never_a_filter(tmp_path):
     root, e = _mapped(tmp_path, "Some Show")
     q = Queue()
     status, out = wh.handle(
-        "POST", "/api/webhook/sonarr", _standard_download(), headers(),
-        e, create=q.create, list_requests=q.list_requests, anime_root=root, now=1700000000.0)
+        "POST",
+        "/api/webhook/sonarr",
+        _standard_download(),
+        headers(),
+        e,
+        create=q.create,
+        list_requests=q.list_requests,
+        anime_root=root,
+        now=1700000000.0,
+    )
     assert (status, out) == (200, {"ok": True, "id": "new-id-1"})
     assert "hint" not in out, "non-anime payloads carry no hint"
     assert len(q.created) == 1, "path confinement stays the only gate"
