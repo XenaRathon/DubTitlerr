@@ -76,7 +76,7 @@ def test_a_sonarr_download_enqueues_one_request_and_a_repeat_returns_the_same_id
     _, again = post(SONARR, payload("sonarr_download.json"), HOOK)
     assert again["id"] == first["id"]
     status, listed = rs.route("GET", "/api/requests", {}, REVIEW)
-    assert len(listed) == 1 and listed[0]["season"] == 31
+    assert len(listed) == 1 and listed[0]["season_from"] == 31
 
 
 def test_radarr_and_unknown_events(env):

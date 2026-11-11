@@ -512,9 +512,17 @@ def test_a_force_entry_written_before_verbatim_storage_is_owed_not_mangled():
     """An entry from before `record` kept the verbatim wording has only the folded match
     key. Shipping that would lowercase the line into the subtitle, which is worse than the
     bug forced_text fixes -- so it refuses, and the caller reports it as still owed."""
-    legacy = {"decisions": [{"orig": "hammy rat network is online!",
-                             "proposed": "hammy-rat network is online!",
-                             "verdict": "force", "run": "review", "at": 1788356796.7}]}
+    legacy = {
+        "decisions": [
+            {
+                "orig": "hammy rat network is online!",
+                "proposed": "hammy-rat network is online!",
+                "verdict": "force",
+                "run": "review",
+                "at": 1788356796.7,
+            }
+        ]
+    }
     assert decisions.forced_text(legacy, "Hammy Rat Network is online!") is None
     assert decisions.for_orig(legacy, "Hammy Rat Network is online!"), "visible as owed"
 

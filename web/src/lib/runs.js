@@ -23,16 +23,28 @@ export function statusClass(status) {
 /**
  * The POST /api/requests body: trimmed, with blank optionals omitted.
  * A checked require-English box sends 1; anything else leaves the key out.
- * @param {{ show?: unknown, season?: unknown, episodeRe?: unknown, requireEng?: unknown }} form
- * @returns {{ show: string, season?: number, episode_re?: string, require_eng?: number }}
+ * @param {{ show?: unknown, season?: unknown, seasonTo?: unknown, episodeRe?: unknown, requireEng?: unknown }} form
+ * @returns {{ show: string, season?: number | {from: number, to: number}, episode_re?: string, require_eng?: number }}
  */
 export function buildRequestBody(form) {
-  /** @type {{ show: string, season?: number, episode_re?: string, require_eng?: number }} */
+  /** @type {{ show: string, season?: number | {from: number, to: number}, episode_re?: string, require_eng?: number }} */
   const body = { show: String(form.show ?? '').trim() };
   const seasonText = String(form.season ?? '').trim();
+  const seasonToText = String(form.seasonTo ?? '').trim();
   if (seasonText !== '') {
     const season = Number.parseInt(seasonText, 10);
-    if (!Number.isNaN(season)) body.season = season;
+    if (!Number.isNaN(season)) {
+      if (seasonToText !== '') {
+        const seasonTo = Number.parseInt(seasonToText, 10);
+        if (!Number.isNaN(seasonTo)) {
+          body.season = { from: season, to: seasonTo };
+        } else {
+          body.season = season;
+        }
+      } else {
+        body.season = season;
+      }
+    }
   }
   const reText = String(form.episodeRe ?? '').trim();
   if (reText !== '') body.episode_re = reText;
@@ -54,7 +66,7 @@ export function checkShowPick(show, shows) {
 
 /**
  * Mirror of the server limits; null when the form may be queued.
- * @param {{ show?: unknown, season?: unknown, episodeRe?: unknown }} form
+ * @param {{ show?: unknown, season?: unknown, seasonTo?: unknown, episodeRe?: unknown }} form
  * @returns {string | null}
  */
 export function validateForm(form) {
@@ -71,6 +83,14 @@ export function validateForm(form) {
   }
   const season = typeof form.season === 'string' ? form.season.trim() : '';
   if (season !== '' && !/^[1-9]\d*$/.test(season)) return 'Season must be a positive integer.';
+  const seasonTo = typeof form.seasonTo === 'string' ? form.seasonTo.trim() : '';
+  if (seasonTo !== '' && !/^[1-9]\d*$/.test(seasonTo)) return 'Season to must be a positive integer.';
+  if (season !== '' && seasonTo !== '') {
+    const f = parseInt(season, 10);
+    const t = parseInt(seasonTo, 10);
+    if (f > t) return 'Season from must be <= to.';
+    if (t - f > 49) return 'Season range span cannot exceed 50.';
+  }
   const episodeRe = typeof form.episodeRe === 'string' ? form.episodeRe.trim() : '';
   if (episodeRe.length > 200) return 'Episode filter must be 200 characters or fewer.';
   if (episodeRe !== '') {
