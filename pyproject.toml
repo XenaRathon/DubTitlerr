@@ -2,7 +2,13 @@
 name = "dubtitlerr"
 version = "0.3.0"
 requires-python = ">=3.11"
-dependencies = ["pysubs2>=1.7", "faster-whisper>=1.2", "jellyfish>=1.0"]
+dependencies = [
+    "pysubs2>=1.7",
+    "faster-whisper>=1.2",
+    "jellyfish>=1.0",
+    "filelock==4.2.1",
+    "setuptools==84.1.0",
+]
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
 # analysis: tools/ scripts only (timing_compare.py's --vad webrtcvad backend), never

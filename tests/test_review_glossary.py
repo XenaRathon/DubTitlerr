@@ -873,6 +873,7 @@ def test_two_writes_in_the_same_clock_tick_keep_distinct_backups(gdir, monkeypat
 
     class FrozenModule:
         datetime = FrozenDatetime
+        UTC = real_dt.UTC
         timezone = real_dt.timezone
 
     monkeypatch.setattr(review_glossary, "datetime", FrozenModule)

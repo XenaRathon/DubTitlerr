@@ -1638,7 +1638,7 @@ def _verify(gloss_path: str, override: str | None = None, force: bool = False) -
     with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count()) as ex:
         adjudications = list(ex.map(_one, terms))
     # None = the decision backend could not answer (fallback none): that term stays pending like a stopped one, but is not a stop.
-    done = {t: a for t, a in zip(terms, adjudications) if a is not None and a is not _STOPPED}
+    done = {t: a for t, a in zip(terms, adjudications, strict=False) if a is not None and a is not _STOPPED}
     stopped = any(a is _STOPPED for a in adjudications)
     pending = sum(1 for a in adjudications if a is None)
     if stopped:
