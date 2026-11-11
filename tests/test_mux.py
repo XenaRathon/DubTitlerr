@@ -372,7 +372,9 @@ def _stamp_failure_setup(tmp_path, monkeypatch, name):
     monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
     monkeypatch.setattr(mux, "verify", lambda orig, out: "ok")
     monkeypatch.setattr(mux.os, "chown", lambda *a, **kw: None)
-    monkeypatch.setattr(mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(b"muxed"))
+    monkeypatch.setattr(
+        mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(b"muxed")
+    )
 
     def boom(path, video, **_kw):
         raise OSError("read-only file system")
@@ -441,7 +443,9 @@ def _real_stamp_setup(tmp_path, monkeypatch, payload=b"muxed-complete-payload", 
     monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
     monkeypatch.setattr(mux, "verify", lambda orig, out: "ok")
     monkeypatch.setattr(mux.os, "chown", lambda *a, **kw: None)
-    monkeypatch.setattr(mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(payload))
+    monkeypatch.setattr(
+        mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(payload)
+    )
     return v, str(tmp_path / "ep")
 
 
@@ -546,7 +550,9 @@ def _heal_and_remux_differently(monkeypatch):
     re-mux of the damaged episode is detectable."""
     monkeypatch.setattr(mux.os, "replace", _REAL_REPLACE)
     monkeypatch.setattr(mux.shutil, "move", _REAL_MOVE)
-    monkeypatch.setattr(mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(b"SECOND-RUN"))
+    monkeypatch.setattr(
+        mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(b"SECOND-RUN")
+    )
 
 
 def test_failed_finalize_rename_fails_marker_blocks_next_sweep(tmp_path, monkeypatch):

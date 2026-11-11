@@ -271,7 +271,7 @@ class CountingServer:
         if self.mode == "hang":
             time.sleep(1.5)
         elif self.mode == "partial":
-            c.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n{"choices": [')
+            c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n{\"choices\": [")
         elif self.mode == "ok":
             payload = json.dumps(OK).encode()
             c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n" % len(payload) + payload)

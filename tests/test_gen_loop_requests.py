@@ -46,17 +46,15 @@ else:
     requests_dir.mkdir(parents=True)
     req_file = requests_dir / "20261012T100000Z-11111111.json"
     req_file.write_text(
-        json.dumps(
-            {
-                "id": "20261012T100000Z-11111111",
-                "show": "Frieren",
-                "season": 1,
-                "episode_re": "E01",
-                "generate_only_re": r"Frieren.*S01E01",
-                "require_eng": 0,
-                "status": "pending",
-            }
-        )
+        json.dumps({
+            "id": "20261012T100000Z-11111111",
+            "show": "Frieren",
+            "season": 1,
+            "episode_re": "E01",
+            "generate_only_re": r"Frieren.*S01E01",
+            "require_eng": 0,
+            "status": "pending",
+        })
     )
 
     env = {k: v for k, v in os.environ.items() if k not in ("REQUIRE_ENG", "WATCH_QUEUE_WINDOW_DAYS")}
@@ -115,17 +113,15 @@ pathlib.Path(os.environ["STOP_FLAG"]).touch()
     requests_dir.mkdir(parents=True)
     req_file = requests_dir / "20261012T100000Z-22222222.json"
     req_file.write_text(
-        json.dumps(
-            {
-                "id": "20261012T100000Z-22222222",
-                "show": "Frieren",
-                "season": 1,
-                "episode_re": "E01",
-                "generate_only_re": r"Frieren.*S01E01",
-                "require_eng": 1,
-                "status": "pending",
-            }
-        )
+        json.dumps({
+            "id": "20261012T100000Z-22222222",
+            "show": "Frieren",
+            "season": 1,
+            "episode_re": "E01",
+            "generate_only_re": r"Frieren.*S01E01",
+            "require_eng": 1,
+            "status": "pending",
+        })
     )
 
     env = {k: v for k, v in os.environ.items() if k not in ("REQUIRE_ENG", "WATCH_QUEUE_WINDOW_DAYS")}
@@ -177,27 +173,23 @@ pathlib.Path(os.environ["STOP_FLAG"]).touch()
     requests_dir.mkdir(parents=True)
     req_file = requests_dir / "20261012T100000Z-33333333.json"
     req_file.write_text(
-        json.dumps(
-            {
-                "id": "20261012T100000Z-33333333",
-                "show": "Frieren",
-                "generate_only_re": r"Frieren.*S01E01",
-                "status": "pending",
-            }
-        )
+        json.dumps({
+            "id": "20261012T100000Z-33333333",
+            "show": "Frieren",
+            "generate_only_re": r"Frieren.*S01E01",
+            "status": "pending",
+        })
     )
 
     # Schedule window closed: 00:00 to 00:01 in UTC
     schedule_file = config_dir / "schedule.json"
     schedule_file.write_text(
-        json.dumps(
-            {
-                "enabled": True,
-                "open": "00:00",
-                "close": "00:01",
-                "tz": "UTC",
-            }
-        )
+        json.dumps({
+            "enabled": True,
+            "open": "00:00",
+            "close": "00:01",
+            "tz": "UTC",
+        })
     )
 
     stop_file = tmp_path / "stop"
@@ -261,14 +253,12 @@ pathlib.Path(r"{call_log}").write_text("called")
     # Schedule window closed
     schedule_file = config_dir / "schedule.json"
     schedule_file.write_text(
-        json.dumps(
-            {
-                "enabled": True,
-                "open": closed_open,
-                "close": closed_close,
-                "tz": "UTC",
-            }
-        )
+        json.dumps({
+            "enabled": True,
+            "open": closed_open,
+            "close": closed_close,
+            "tz": "UTC",
+        })
     )
 
     stop_file = tmp_path / "stop"
@@ -294,14 +284,12 @@ pathlib.Path(r"{call_log}").write_text("called")
 
         # Open the schedule window and verify generate.py IS called
         schedule_file.write_text(
-            json.dumps(
-                {
-                    "enabled": True,
-                    "open": open_open,
-                    "close": open_close,
-                    "tz": "UTC",
-                }
-            )
+            json.dumps({
+                "enabled": True,
+                "open": open_open,
+                "close": open_close,
+                "tz": "UTC",
+            })
         )
         deadline = time.monotonic() + 30.0
         while time.monotonic() < deadline:
@@ -367,14 +355,12 @@ else:
         # Submit request WHILE loop is idle
         req_file = requests_dir / "20261012T100000Z-44444444.json"
         req_file.write_text(
-            json.dumps(
-                {
-                    "id": "20261012T100000Z-44444444",
-                    "show": "Frieren",
-                    "generate_only_re": r"Frieren.*S01E01",
-                    "status": "pending",
-                }
-            )
+            json.dumps({
+                "id": "20261012T100000Z-44444444",
+                "show": "Frieren",
+                "generate_only_re": r"Frieren.*S01E01",
+                "status": "pending",
+            })
         )
 
         # Poll for request completion with a generous deadline (30s)
@@ -462,13 +448,11 @@ pathlib.Path(os.environ["STOP_FLAG"]).touch()
     requests_dir.mkdir(parents=True)
     running_file = requests_dir / "20261012T100000Z-55555555.running"
     running_file.write_text(
-        json.dumps(
-            {
-                "id": "20261012T100000Z-55555555",
-                "show": "Frieren",
-                "status": "running",
-            }
-        )
+        json.dumps({
+            "id": "20261012T100000Z-55555555",
+            "show": "Frieren",
+            "status": "running",
+        })
     )
 
     env = {k: v for k, v in os.environ.items() if k not in ("REQUIRE_ENG", "WATCH_QUEUE_WINDOW_DAYS")}
@@ -513,14 +497,12 @@ pathlib.Path(os.environ["STOP_FLAG"]).touch()
     requests_dir.mkdir(parents=True)
     hostile_file = requests_dir / "20261012T100000Z-66666666.json"
     hostile_file.write_text(
-        json.dumps(
-            {
-                "id": "20261012T100000Z-66666666",
-                "show": "Frieren\nPATH=/evil",
-                "generate_only_re": r"Frieren.*S01E01",
-                "status": "pending",
-            }
-        )
+        json.dumps({
+            "id": "20261012T100000Z-66666666",
+            "show": "Frieren\nPATH=/evil",
+            "generate_only_re": r"Frieren.*S01E01",
+            "status": "pending",
+        })
     )
 
     env = {k: v for k, v in os.environ.items() if k not in ("REQUIRE_ENG", "WATCH_QUEUE_WINDOW_DAYS")}
@@ -570,14 +552,12 @@ sys.exit(res.returncode)
     requests_dir.mkdir(parents=True)
     req_file = requests_dir / "20261012T100000Z-77777777.json"
     req_file.write_text(
-        json.dumps(
-            {
-                "id": "20261012T100000Z-77777777",
-                "show": "Frieren",
-                "generate_only_re": r"Frieren.*S01E01",
-                "status": "pending",
-            }
-        )
+        json.dumps({
+            "id": "20261012T100000Z-77777777",
+            "show": "Frieren",
+            "generate_only_re": r"Frieren.*S01E01",
+            "status": "pending",
+        })
     )
 
     (app / "generate.py").write_text("""\
@@ -636,25 +616,21 @@ sys.exit(res.returncode)
     requests_dir.mkdir(parents=True)
     req1 = requests_dir / "20261012T100000Z-11111111.json"
     req1.write_text(
-        json.dumps(
-            {
-                "id": "20261012T100000Z-11111111",
-                "show": "Frieren",
-                "generate_only_re": r"Frieren.*S01E01",
-                "status": "pending",
-            }
-        )
+        json.dumps({
+            "id": "20261012T100000Z-11111111",
+            "show": "Frieren",
+            "generate_only_re": r"Frieren.*S01E01",
+            "status": "pending",
+        })
     )
     req2 = requests_dir / "20261012T100000Z-22222222.json"
     req2.write_text(
-        json.dumps(
-            {
-                "id": "20261012T100000Z-22222222",
-                "show": "Frieren",
-                "generate_only_re": r"Frieren.*S01E02",
-                "status": "pending",
-            }
-        )
+        json.dumps({
+            "id": "20261012T100000Z-22222222",
+            "show": "Frieren",
+            "generate_only_re": r"Frieren.*S01E02",
+            "status": "pending",
+        })
     )
 
     env = {k: v for k, v in os.environ.items() if k not in ("REQUIRE_ENG", "WATCH_QUEUE_WINDOW_DAYS")}
@@ -699,14 +675,12 @@ pathlib.Path(os.environ["STOP_FLAG"]).touch()
     requests_dir.mkdir(parents=True)
     bad_req = requests_dir / "20261012T100000Z-11111111.json"
     bad_req.write_text(
-        json.dumps(
-            {
-                "id": "20261012T100000Z-11111111",
-                "show": "Frieren",
-                "generate_only_re": f"E01\nPATH={victim}\nSHOW=..",
-                "status": "pending",
-            }
-        )
+        json.dumps({
+            "id": "20261012T100000Z-11111111",
+            "show": "Frieren",
+            "generate_only_re": f"E01\nPATH={victim}\nSHOW=..",
+            "status": "pending",
+        })
     )
 
     env = {k: v for k, v in os.environ.items() if k not in ("REQUIRE_ENG", "WATCH_QUEUE_WINDOW_DAYS")}
@@ -771,13 +745,11 @@ else:
     requests_dir.mkdir(parents=True)
     req = requests_dir / "20261012T100000Z-99999999.json"
     req.write_text(
-        json.dumps(
-            {
-                "id": "20261012T100000Z-99999999",
-                "show": "Frieren",
-                "status": "pending",
-            }
-        )
+        json.dumps({
+            "id": "20261012T100000Z-99999999",
+            "show": "Frieren",
+            "status": "pending",
+        })
     )
 
     env = {k: v for k, v in os.environ.items() if k not in ("REQUIRE_ENG", "WATCH_QUEUE_WINDOW_DAYS")}
@@ -871,14 +843,12 @@ sys.exit(res.returncode)
     requests_dir.mkdir(parents=True)
     real_req = requests_dir / "20261012T100000Z-12341234.json"
     real_req.write_text(
-        json.dumps(
-            {
-                "id": "20261012T100000Z-12341234",
-                "show": "Frieren",
-                "generate_only_re": r"Frieren.*S01E01",
-                "status": "pending",
-            }
-        )
+        json.dumps({
+            "id": "20261012T100000Z-12341234",
+            "show": "Frieren",
+            "generate_only_re": r"Frieren.*S01E01",
+            "status": "pending",
+        })
     )
 
     (app / "generate.py").write_text("""\
@@ -939,14 +909,12 @@ pathlib.Path(r"{gen_called}").touch()
     requests_dir.mkdir(parents=True)
     req_file = requests_dir / "20261012T100000Z-55555555.json"
     req_file.write_text(
-        json.dumps(
-            {
-                "id": "20261012T100000Z-55555555",
-                "show": "Frieren",
-                "generate_only_re": r"Frieren.*S01E01",
-                "status": "pending",
-            }
-        )
+        json.dumps({
+            "id": "20261012T100000Z-55555555",
+            "show": "Frieren",
+            "generate_only_re": r"Frieren.*S01E01",
+            "status": "pending",
+        })
     )
 
     env = {k: v for k, v in os.environ.items() if k not in ("REQUIRE_ENG", "WATCH_QUEUE_WINDOW_DAYS")}
@@ -1014,14 +982,12 @@ else:
     requests_dir.mkdir(parents=True)
     req_file = requests_dir / "20261012T100000Z-88888888.json"
     req_file.write_text(
-        json.dumps(
-            {
-                "id": "20261012T100000Z-88888888",
-                "show": "Frieren",
-                "generate_only_re": r"Frieren.*S01E01",
-                "status": "pending",
-            }
-        )
+        json.dumps({
+            "id": "20261012T100000Z-88888888",
+            "show": "Frieren",
+            "generate_only_re": r"Frieren.*S01E01",
+            "status": "pending",
+        })
     )
 
     env = {k: v for k, v in os.environ.items() if k not in ("REQUIRE_ENG", "WATCH_QUEUE_WINDOW_DAYS")}
