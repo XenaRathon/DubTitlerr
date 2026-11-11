@@ -319,7 +319,7 @@
               <td>
                 <StatusBadge status={req.status} />
                 {#if isAdmin(role) && req.status === 'pending'}
-                  <button type="button" class="btn btn-small" onclick={() => void removeRequest(req.id)}
+                  <button type="button" class="text-button danger" onclick={() => void removeRequest(req.id)}
                     >Remove</button
                   >
                 {/if}
