@@ -271,6 +271,43 @@ def _muxable(tmp_path, monkeypatch, tracks):
     return str(v)
 
 
+def test_process_sidecar_mode_skips_mux_and_keeps_sidecar(tmp_path, monkeypatch):
+    import common
+    import mux
+
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"original-video-bytes")
+    st0 = os.stat(v)
+
+    sidecar = tmp_path / ("ep" + mux.ASS_SUFFIX)
+    sidecar.write_text("the-subtitle-content")
+
+    monkeypatch.setattr(mux, "DUB_OUTPUT", "sidecar")
+    monkeypatch.setattr(mux, "identify", lambda p: _ok_info())
+    monkeypatch.setattr(
+        mux.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(Exception("mkvmerge must not be called in sidecar mode"))
+    )
+
+    res = mux.process(str(v), apply=True)
+    assert res == "muxed"
+
+    # The stamp was written
+    stamp_path = tmp_path / ("ep" + mux.STAMP_SUFFIX)
+    assert stamp_path.exists()
+    assert mux.stamp_valid(mux.read_stamp(stamp_path), str(v))
+
+    # The video is untouched
+    st1 = os.stat(v)
+    assert st1.st_size == st0.st_size
+    assert st1.st_mtime == st0.st_mtime
+
+    # The sidecar was not deleted
+    assert sidecar.exists()
+
+    # The outcome was recorded
+    assert common.read_stages(str(tmp_path / "ep"))["mux"]["outcome"] == "ok"
+
+
 def test_process_remuxes_a_file_that_already_has_a_dubtitles_track(tmp_path, monkeypatch):
     """The old ffprobe backstop is gone: a Dubtitles track alone no longer counts as done,
     because re-muxing is now idempotent (drop old + add fresh). Without this, every
@@ -372,9 +409,7 @@ def _stamp_failure_setup(tmp_path, monkeypatch, name):
     monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
     monkeypatch.setattr(mux, "verify", lambda orig, out: "ok")
     monkeypatch.setattr(mux.os, "chown", lambda *a, **kw: None)
-    monkeypatch.setattr(
-        mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(b"muxed")
-    )
+    monkeypatch.setattr(mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(b"muxed"))
 
     def boom(path, video, **_kw):
         raise OSError("read-only file system")
@@ -443,9 +478,7 @@ def _real_stamp_setup(tmp_path, monkeypatch, payload=b"muxed-complete-payload", 
     monkeypatch.setattr(mux, "identify", lambda p: {"tracks": [aud(0, "eng")]})
     monkeypatch.setattr(mux, "verify", lambda orig, out: "ok")
     monkeypatch.setattr(mux.os, "chown", lambda *a, **kw: None)
-    monkeypatch.setattr(
-        mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(payload)
-    )
+    monkeypatch.setattr(mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(payload))
     return v, str(tmp_path / "ep")
 
 
@@ -550,9 +583,7 @@ def _heal_and_remux_differently(monkeypatch):
     re-mux of the damaged episode is detectable."""
     monkeypatch.setattr(mux.os, "replace", _REAL_REPLACE)
     monkeypatch.setattr(mux.shutil, "move", _REAL_MOVE)
-    monkeypatch.setattr(
-        mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(b"SECOND-RUN")
-    )
+    monkeypatch.setattr(mux.subprocess, "run", lambda cmd, **kw: open(cmd[cmd.index("-o") + 1], "wb").write(b"SECOND-RUN"))
 
 
 def test_failed_finalize_rename_fails_marker_blocks_next_sweep(tmp_path, monkeypatch):
