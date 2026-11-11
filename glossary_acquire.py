@@ -37,7 +37,7 @@ import glossary
 import glossary_verify
 import mine_glossary
 import ordering
-from common import find_video, llm_chat, log, stop_requested
+from common import find_video, llm_chat, log, stop_requested, write_json_atomic
 
 _DISAMBIG_RE = re.compile(r"\s*\([^)]*\)\s*$")
 _REDUCE_RE = re.compile("[\\s" + chr(0x27) + chr(0x2019) + "-]")
@@ -1152,23 +1152,7 @@ def _write_json(path: str, obj) -> None:
     Japanese names, can raise mid-write under a locale-derived encoding -- either way the
     curated glossary is gone. The tmp+replace dance means a failed write leaves the
     original untouched; explicit encoding='utf-8' removes the locale dependency."""
-    tmp = path + ".tmp"
-    try:
-        mode = os.stat(path).st_mode & 0o777
-    except OSError:
-        mode = None  # new file: keep the umask default
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, indent=2, ensure_ascii=False)
-            f.write("\n")  # POSIX line: prettier flags a glossary without it
-        if mode is not None:
-            os.chmod(tmp, mode)  # a replace must not silently change who can read/write the glossary
-        os.replace(tmp, path)
-    finally:
-        try:
-            os.remove(tmp)  # gone after a successful replace; otherwise never leave it behind
-        except OSError:
-            pass
+    write_json_atomic(path, obj, append_newline=True, indent=2, ensure_ascii=False)
 
 
 def _format_episode_page(pattern: str, **kw) -> str | None:

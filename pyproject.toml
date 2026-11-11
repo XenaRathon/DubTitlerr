@@ -27,7 +27,7 @@ markers = ["real_accounts: exercises the real review_auth account functions (fir
 
 [tool.ruff]
 line-length = 130
-target-version = "py39"
+target-version = "py311"
 # Design docs hand-align the comments in their illustrative Python blocks; ruff
 # formats code inside Markdown fences by default and collapses that alignment.
 # The real .py files are still formatted -- only prose documents are exempt.

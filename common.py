@@ -372,6 +372,50 @@ def atomic_write(path, render, mode=SIDECAR_MODE, newline=None):
                 pass
 
 
+
+def write_json_atomic(path: str, obj: dict | list, *, append_newline: bool = False, **dump_kwargs) -> None:
+    """Write a JSON document to a temp file, flush/fsync, and replace the target atomically.
+    Leaves no temp file behind on failure. Keeps the caller's dump formatting.
+    """
+    dir_name = os.path.dirname(path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except OSError:
+        # Default umask is 002 (see os.umask(0o002) at top of common.py)
+        # So new files should default to 0o664
+        mode = 0o666 & ~0o002
+
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=dir_name, delete=False) as f:
+        tmp_path = f.name
+        try:
+            json.dump(obj, f, **dump_kwargs)
+            if append_newline:
+                f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        except Exception:
+            f.close()
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    try:
+        if mode is not None:
+            os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
     """Write the .dubtitles.done idempotency stamp recording the muxed file's size+mtime
     and the tier versions that produced it (stamp_valid rejects a stamp behind either
@@ -532,10 +576,7 @@ def write_stage(stem: str, stage: str, outcome: str, detail: str = "") -> None:
     if detail:
         data[stage]["detail"] = detail
     # atomic write
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f)
-    os.replace(tmp, path)
+    write_json_atomic(path, data)
 
 
 def read_stages(stem: str) -> dict:
@@ -561,10 +602,7 @@ def clear_stage(stem: str, *stages: str) -> None:
         return
     for st in stages:
         data.pop(st, None)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f)
-    os.replace(tmp, path)
+    write_json_atomic(path, data)
 
 
 def failed_stage(stem: str, only=None) -> str | None:
