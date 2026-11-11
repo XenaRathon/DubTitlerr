@@ -83,6 +83,11 @@ def fansub_font_enabled():
     return val not in {"0", "no", "false", "off"}
 
 
+def fansub_look_enabled():
+    val = os.environ.get("DUB_FANSUB_LOOK", "1").strip().lower()
+    return val not in {"0", "no", "false", "off"}
+
+
 def _normalize_font_token(s):
     if not s:
         return ""
@@ -95,8 +100,77 @@ def _normalize_font_token(s):
     return "".join(words)
 
 
-def list_attachment_filenames(video):
-    """List attachment filenames carried by the video file via mkvmerge or ffprobe."""
+def _get_font_families(data):
+    """Pure-Python OpenType/TrueType name table reader, extracting Typographic Family (16) and Family (1)."""
+    import struct
+
+    families = set()
+    try:
+
+        def parse_sfnt(offset):
+            if offset + 12 > len(data):
+                return
+            num_tables = struct.unpack_from(">H", data, offset + 4)[0]
+            name_offset = None
+            for i in range(num_tables):
+                entry_offset = offset + 12 + i * 16
+                if entry_offset + 16 > len(data):
+                    break
+                tag = data[entry_offset : entry_offset + 4]
+                if tag == b"name":
+                    name_offset = struct.unpack_from(">I", data, entry_offset + 8)[0]
+                    break
+            if name_offset is None:
+                return
+
+            if name_offset + 6 > len(data):
+                return
+            fmt, count, string_offset = struct.unpack_from(">HHH", data, name_offset)
+            for i in range(count):
+                record_offset = name_offset + 6 + i * 12
+                if record_offset + 12 > len(data):
+                    break
+                plat_id, enc_id, lang_id, name_id, length, s_offset = struct.unpack_from(">HHHHHH", data, record_offset)
+                if name_id in (1, 16):
+                    actual_string_offset = name_offset + string_offset + s_offset
+                    if actual_string_offset + length > len(data):
+                        continue
+                    raw_name = data[actual_string_offset : actual_string_offset + length]
+                    name_str = None
+                    try:
+                        if plat_id == 3 or plat_id == 0:  # Windows or Unicode
+                            name_str = raw_name.decode("utf-16-be")
+                        elif plat_id == 1:  # Mac
+                            name_str = raw_name.decode("mac_roman")
+                        else:
+                            name_str = raw_name.decode("utf-8", errors="ignore")
+                    except Exception:
+                        pass
+                    if name_str:
+                        families.add(name_str)
+
+        if len(data) >= 4:
+            magic = data[:4]
+            if magic in (b"\x00\x01\x00\x00", b"OTTO", b"true"):
+                parse_sfnt(0)
+            elif magic == b"ttcf":
+                if len(data) >= 12:
+                    num_fonts = struct.unpack_from(">I", data, 8)[0]
+                    for i in range(num_fonts):
+                        if 12 + 4 * i + 4 > len(data):
+                            break
+                        font_offset = struct.unpack_from(">I", data, 12 + 4 * i)[0]
+                        parse_sfnt(font_offset)
+    except Exception:
+        pass
+    return families
+
+
+def list_and_extract_attachments(video):
+    """List attachment filenames and extract font files to read their true families.
+    Returns a list of (filename, set_of_families)."""
+    filenames = []
+    has_mkvmerge = False
     try:
         r = subprocess.run(
             ["mkvmerge", "-J", video],
@@ -107,60 +181,125 @@ def list_attachment_filenames(video):
         )
         if r.returncode == 0:
             data = json.loads(r.stdout)
-            atts = [
-                att.get("file_name", "")
-                for att in data.get("attachments", [])
-                if att.get("file_name")
-            ]
-            if atts:
-                return atts
+            filenames = [att.get("file_name", "") for att in data.get("attachments", []) if att.get("file_name")]
+            has_mkvmerge = True
     except Exception:
         pass
-    try:
-        r = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "stream=index:stream_tags=filename",
-                "-select_streams",
-                "t",
-                "-of",
-                "json",
-                video,
-            ],
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            timeout=30,
-        )
-        if r.returncode == 0:
-            streams = json.loads(r.stdout).get("streams", [])
-            return [
-                (st.get("tags") or {}).get("filename", "")
-                for st in streams
-                if (st.get("tags") or {}).get("filename")
-            ]
-    except Exception:
-        pass
-    return []
+
+    if not filenames and not has_mkvmerge:
+        try:
+            r = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "stream=index:stream_tags=filename",
+                    "-select_streams",
+                    "t",
+                    "-of",
+                    "json",
+                    video,
+                ],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=30,
+            )
+            if r.returncode == 0:
+                streams = json.loads(r.stdout).get("streams", [])
+                filenames = [
+                    (st.get("tags") or {}).get("filename", "") for st in streams if (st.get("tags") or {}).get("filename")
+                ]
+        except Exception:
+            pass
+
+    if not filenames:
+        return []
+
+    results = []
+    with tempfile.TemporaryDirectory() as td:
+        # Try mkvmerge first if available
+        if has_mkvmerge:
+            try:
+                extract_args = ["mkvextract", "attachments", video]
+                r = subprocess.run(
+                    ["mkvmerge", "-J", video],
+                    capture_output=True,
+                    text=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=30,
+                )
+                if r.returncode == 0:
+                    data = json.loads(r.stdout)
+                    att_ids = [str(att["id"]) for att in data.get("attachments", []) if "id" in att]
+                    for att_id in att_ids:
+                        extract_args.append(f"{att_id}:{os.path.join(td, att_id)}")
+                    if att_ids:
+                        subprocess.run(
+                            extract_args,
+                            capture_output=True,
+                            stdin=subprocess.DEVNULL,
+                            timeout=60,
+                        )
+            except Exception:
+                pass
+        else:
+            # Fallback to ffmpeg
+            try:
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-dump_attachment:t",
+                        "",
+                        "-i",
+                        video,
+                    ],
+                    cwd=td,
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=60,
+                )
+            except Exception:
+                pass
+
+        # ffmpeg dumps with the filename, mkvextract dumps with the ID.
+        # Just scan all files in the directory.
+        families_by_file = []
+        for root, _, files in os.walk(td):
+            for f in files:
+                try:
+                    with open(os.path.join(root, f), "rb") as font_file:
+                        data = font_file.read(10 * 1024 * 1024)
+                        families = _get_font_families(data)
+                        if families:
+                            families_by_file.append((f, families))
+                except Exception:
+                    pass
+
+        # Now pair up filenames and their true families.
+        # It's hard to correlate IDs with filenames precisely if using mkvextract,
+        # so we merge all discovered families across the attachments.
+        all_families = set()
+        for _, fams in families_by_file:
+            all_families.update(fams)
+
+        for fn in filenames:
+            results.append((fn, all_families))
+
+    return results
 
 
 def _track_dialogue_font(track):
     dialogue_events = [
         ev
         for ev in track["src_events"]
-        if not keep_event(ev)
-        and not ev.is_comment
-        and ev.plaintext.strip()
-        and not STRONG_DROP_STYLE.search(ev.style or "")
+        if not keep_event(ev) and not ev.is_comment and ev.plaintext.strip() and not STRONG_DROP_STYLE.search(ev.style or "")
     ]
     if not dialogue_events:
         return None
-    counts = Counter(
-        ev.style for ev in dialogue_events if ev.style and ev.style in track["subs"].styles
-    )
+    counts = Counter(ev.style for ev in dialogue_events if ev.style and ev.style in track["subs"].styles)
     if not counts:
         return None
     top_style = counts.most_common(1)[0][0]
@@ -169,41 +308,83 @@ def _track_dialogue_font(track):
     return clean_font if clean_font else None
 
 
-def resolve_dialogue_font(video, loaded_tracks, primary_track):
-    if not fansub_font_enabled():
-        return DEFAULT_DUB_FONT
+def _track_dialogue_style(track):
+    dialogue_events = [
+        ev
+        for ev in track["src_events"]
+        if not keep_event(ev) and not ev.is_comment and ev.plaintext.strip() and not STRONG_DROP_STYLE.search(ev.style or "")
+    ]
+    if not dialogue_events:
+        return None
+    counts = Counter(ev.style for ev in dialogue_events if ev.style and ev.style in track["subs"].styles)
+    if not counts:
+        return None
+    top_style = counts.most_common(1)[0][0]
+    return track["subs"].styles[top_style], track["subs"].info.get("PlayResY")
 
-    candidate_font = None
+
+def resolve_dialogue_font(video, loaded_tracks, primary_track):
+    """Returns (font_name, fansub_style, fansub_playres_y)"""
+    if not fansub_font_enabled():
+        return DEFAULT_DUB_FONT, None, None
+
+    candidate_style = None
+    candidate_play_y = None
     if primary_track:
-        candidate_font = _track_dialogue_font(primary_track)
-    if not candidate_font:
+        res = _track_dialogue_style(primary_track)
+        if res:
+            candidate_style, candidate_play_y = res
+    if not candidate_style:
         for t in loaded_tracks:
             if t is not primary_track:
-                candidate_font = _track_dialogue_font(t)
-                if candidate_font:
+                res = _track_dialogue_style(t)
+                if res:
+                    candidate_style, candidate_play_y = res
                     break
 
-    if not candidate_font:
-        return DEFAULT_DUB_FONT
+    if not candidate_style:
+        return DEFAULT_DUB_FONT, None, None
 
-    attachments = list_attachment_filenames(video)
+    raw_font = candidate_style.fontname or ""
+    candidate_font = raw_font.lstrip("@").strip()
+    if not candidate_font:
+        return DEFAULT_DUB_FONT, None, None
+
+    attachments = list_and_extract_attachments(video)
     norm_font = _normalize_font_token(candidate_font)
     font_attached = False
+
     if norm_font:
-        for att in attachments:
-            norm_att = _normalize_font_token(att)
+        # Match by filename
+        for fn, fams in attachments:
+            norm_att = _normalize_font_token(fn)
             if norm_att and (norm_font in norm_att):
                 font_attached = True
+                log(f"  font '{candidate_font}' chosen (attached-by-filename)")
                 break
 
+        # Match by real family
+        if not font_attached:
+            for fn, fams in attachments:
+                for fam in fams:
+                    norm_fam = _normalize_font_token(fam)
+                    if norm_fam and (norm_font in norm_fam):
+                        font_attached = True
+                        log(f"  font '{candidate_font}' chosen (attached-by-family)")
+                        break
+                if font_attached:
+                    break
+
     if font_attached:
-        return candidate_font
+        return candidate_font, candidate_style, candidate_play_y
 
     if candidate_font.lower() in SAFE_FONTS_LOWER:
-        return candidate_font
+        log(f"  font '{candidate_font}' chosen (safe set)")
+        return candidate_font, candidate_style, candidate_play_y
 
-    log(f"  font '{candidate_font}' not attached and not in safe set — falling back to {DEFAULT_DUB_FONT}")
-    return DEFAULT_DUB_FONT
+    log(f"  font '{candidate_font}' not attached and not in safe set — falling back to {DEFAULT_DUB_FONT} (fallback)")
+    return DEFAULT_DUB_FONT, None, None
+
 
 ROOTS = os.environ.get("MERGE_ROOTS", "/data/Media/Anime Library").split(":")
 SUFFIX = os.environ.get("DUB_SUFFIX", ".eng.dubtitles.srt")
@@ -496,13 +677,15 @@ def build(video, dub_srt, out_ass):
                 continue
             seen_intra.add(key)
             kept_events.append(ev)
-        loaded_tracks.append({
-            "idx": idx,
-            "subs": subs,
-            "src_events": src_events,
-            "kept_events": kept_events,
-            "ws": subs.info.get("WrapStyle"),
-        })
+        loaded_tracks.append(
+            {
+                "idx": idx,
+                "subs": subs,
+                "src_events": src_events,
+                "kept_events": kept_events,
+                "ws": subs.info.get("WrapStyle"),
+            }
+        )
 
     if not loaded_tracks:
         return ("extract-failed" if failed_streams else "no-signs"), 0, 0
@@ -615,12 +798,30 @@ def build(video, dub_srt, out_ass):
     ref = play_y / 720
     fs = max(round(32 * ref), round(play_y / 17))
     st = pysubs2.SSAStyle()
-    st.fontname = resolve_dialogue_font(video, loaded_tracks, primary_track)
+
+    fontname, fansub_style, fansub_play_y = resolve_dialogue_font(video, loaded_tracks, primary_track)
+    st.fontname = fontname
     st.fontsize = fs
     st.bold = True
+
+    if fansub_font_enabled() and fansub_look_enabled() and fansub_style and fontname != DEFAULT_DUB_FONT:
+        st.bold = fansub_style.bold
+        st.italic = fansub_style.italic
+
+        # Scale fontsize based on playres differences
+        src_play_y = _parse_playres(fansub_play_y, 720)  # 720 is fallback if missing
+        if src_play_y > 0 and play_y > 0:
+            scale_factor = play_y / src_play_y
+            scaled_fs = round(fansub_style.fontsize * scale_factor)
+
+            # clamp to sensible bounds (e.g. 1/40 to 1/8 of play_y)
+            min_fs = round(play_y / 40)
+            max_fs = round(play_y / 8)
+            st.fontsize = max(min_fs, min(max_fs, scaled_fs))
+
     st.primarycolor = pysubs2.Color(255, 255, 255)
     st.outlinecolor = pysubs2.Color(0, 0, 0)
-    st.outline = max(1.5 * ref, fs / 22)
+    st.outline = max(1.5 * ref, st.fontsize / 22)
     # NOT scaled by ref: at 720 and 1080 that would change shadow on shows already
     # rendering correctly, and this is a hotfix. A 288 canvas therefore carries a
     # proportionally heavier shadow than a 720 one -- cosmetic, and it belongs with the

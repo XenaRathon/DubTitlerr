@@ -101,6 +101,8 @@ _wave('REPAIR_AUTO_DISMISS_WORDS', 'repair', 'Auto-dismiss word change', 'Word-c
 _wave('REPAIR_KEEP_NAME_PARTS', 'repair', 'Keep name parts', 'Stop repair from dropping part of a multi-word name the glossary knows.', 'bool', True, 'merge', 'next_merge_pass')
 _wave('REPAIR_EPISODE_DEADLINE', 'repair', 'Episode repair deadline (s)', 'Seconds repair may spend on one episode before giving up; 0 disables the limit.', 'int', 3600, 'merge', 'next_merge_pass', advanced=True, min=0, max=604800)
 _wave('DUB_FANSUB_FONT', 'output', 'Match the fansub font', 'Reuse the font the original fansub track asked for on merged signs.', 'bool', True, 'merge', 'next_merge_pass')
+_wave('DUB_FANSUB_LOOK', 'output', 'Match the fansub look', 'Carry over the fansub dialogue style bold/italic flags and scaled fontsize.', 'bool', True, 'merge', 'next_merge_pass')
+
 _wave('SIGNS_CROSS_TRACK_DEDUP', 'output', 'Drop duplicate signs across tracks', 'Remove a sign that two fansub tracks both carry.', 'bool', True, 'merge', 'next_merge_pass')
 _wave('REVIEW_GATE_SHOWS', 'output', 'Shows held for review', 'Colon-separated show folder names whose episodes wait for review before muxing.', 'string', '', 'merge', 'next_merge_pass', pattern=r"[^,]{0,512}", pattern_help='use colon-separated show folder names')
 _wave('REVIEW_GATE_STALE_DAYS', 'output', 'Review gate stale after (days)', 'Days after which a held episode only gets a log line; it stays held.', 'float', 7.0, 'merge', 'next_merge_pass', min=0, max=3650)
