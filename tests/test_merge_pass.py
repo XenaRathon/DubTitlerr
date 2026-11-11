@@ -290,9 +290,7 @@ def test_a_failed_stage_scan_never_prints_complete(tmp_path, monkeypatch):
     common.write_stage(stem, "repair", "ok")
     _fake_bin(tmp_path, "ffmpeg")
     wrapper = tmp_path / "fakebin" / "python3"
-    wrapper.write_text(
-        f'#!/bin/sh\ncase "$2" in *failed_stage*) exit 1 ;;\nesac\nexec {shlex.quote(sys.executable)} "$@"\n'
-    )
+    wrapper.write_text(f'#!/bin/sh\ncase "$2" in *failed_stage*) exit 1 ;;\nesac\nexec {shlex.quote(sys.executable)} "$@"\n')
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     res = _run(tmp_path, root)
     assert "MERGE PASS COMPLETE" not in res.stdout, res.stdout + res.stderr

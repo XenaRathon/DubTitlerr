@@ -13,6 +13,8 @@ import uuid
 import zoneinfo
 from typing import Any
 
+import common
+
 REQUESTS_DIR = os.environ.get("REQUESTS_DIR", "/config/requests")
 ANIME_ROOT = os.environ.get("ANIME_ROOT", "/media/Anime Library")
 
@@ -155,11 +157,7 @@ def _validate_episode_re_grammar(pattern: str) -> None:
 
             total_zero_star_count += 1
             # At most one 0* in the whole pattern, unless it matches the specials anchor ([Ss]0*...[Ee]0*)
-            specials_two = (
-                total_zero_star_count == 2
-                and zero_star_after_s == 1
-                and zero_star_after_e == 1
-            )
+            specials_two = total_zero_star_count == 2 and zero_star_after_s == 1 and zero_star_after_e == 1
             if total_zero_star_count > 2 or (total_zero_star_count == 2 and not specials_two):
                 raise Refused(400, "0* is allowed at most once in episode_re")
 
@@ -261,7 +259,6 @@ def _validate_episode_re_grammar(pattern: str) -> None:
         raise Refused(400, "empty or quantifier-only branch in episode_re")
 
 
-
 def validate(body: dict, anime_root: str | None = None) -> dict:
     """Validate request body.
 
@@ -304,10 +301,28 @@ def validate(body: dict, anime_root: str | None = None) -> dict:
                 raise Refused(400, f"show directory not found: {show}")
             raise Refused(400, "show path escapes anime root")
 
+    season_from = None
+    season_to = None
     season = body.get("season")
     if season is not None:
-        if isinstance(season, bool) or not isinstance(season, int) or season <= 0:
-            raise Refused(400, "season must be a positive integer or null")
+        if isinstance(season, dict):
+            if "from" not in season or "to" not in season:
+                raise Refused(400, "season dict must contain 'from' and 'to' fields")
+            season_from = season["from"]
+            season_to = season["to"]
+            if isinstance(season_from, bool) or not isinstance(season_from, int) or season_from <= 0:
+                raise Refused(400, "season.from must be a positive integer")
+            if isinstance(season_to, bool) or not isinstance(season_to, int) or season_to <= 0:
+                raise Refused(400, "season.to must be a positive integer")
+            if season_from > season_to:
+                raise Refused(400, "season.from must be <= season.to")
+            if season_to - season_from > 49:
+                raise Refused(400, "season range span cannot exceed 50")
+        else:
+            if isinstance(season, bool) or not isinstance(season, int) or season <= 0:
+                raise Refused(400, "season must be a positive integer or null")
+            season_from = season
+            season_to = season
 
     episode_re = body.get("episode_re")
     if episode_re is not None:
@@ -330,7 +345,8 @@ def validate(body: dict, anime_root: str | None = None) -> dict:
 
     return {
         "show": show,
-        "season": season,
+        "season_from": season_from,
+        "season_to": season_to,
         "episode_re": episode_re,
         "require_eng": require_eng,
         "webhook": webhook,
@@ -368,27 +384,10 @@ def list_shows(anime_root: str | None = None) -> list[str]:
 
 def derive_generate_only_re(show: str, season: int | None = None, episode_re: str | None = None) -> str:
     r"""Derive GENERATE_ONLY_RE regex for filename matching with season/episode branches."""
+    import common
+
     ep = normalize_episode_re(episode_re)
-    if season is None and not ep:
-        return ""
-
-    if season is not None and ep:
-        if ep.endswith(r"(?!\d)"):
-            ep = ep[:-len(r"(?!\d)")]
-        branch = f"(?:^|[\\W_])[Ss]0*{season}(?:[\\W_Ee]|(?=[Ee])).*(?:{ep})(?!\\d)"
-    elif season is not None:
-        # Season-only branch: do NOT append (?!\d) because [Ss]0*1(?=[Ee]|[\W_]|$) already bounds the number
-        branch = f"(?:^|[\\W_])[Ss]0*{season}(?=[Ee]|[\\W_]|$)"
-    else:
-        if ep and ep.endswith(r"(?!\d)"):
-            ep = ep[:-len(r"(?!\d)")]
-        branch = f"(?:{ep})(?!\\d)"
-
-    if not (branch.startswith("(?:") and branch.endswith(")")):
-        branch = f"(?:{branch})"
-
-    return branch
-
+    return common.season_episode_re(season, season, ep)
 
 
 def create(
@@ -420,10 +419,14 @@ def create(
                         with open(entry.path, encoding="utf-8") as f:
                             existing = json.load(f)
                         if existing.get("status") == "pending":
+                            existing_season_from = existing.get("season_from", existing.get("season"))
+                            existing_season_to = existing.get("season_to", existing.get("season"))
                             if (
                                 existing.get("show") == clean["show"]
-                                and existing.get("season") == clean["season"]
+                                and existing_season_from == clean["season_from"]
+                                and existing_season_to == clean["season_to"]
                                 and existing.get("episode_re") == clean["episode_re"]
+                                and existing.get("force") == clean.get("force")
                             ):
                                 return 409, {
                                     "error": "identical request already pending",
@@ -448,14 +451,15 @@ def create(
         hex_id = uuid.uuid4().hex[:8]
         req_id = f"{ts_str}-{hex_id}"
 
-        gen_re = derive_generate_only_re(clean["show"], clean["season"], clean["episode_re"])
+        gen_re = common.season_episode_re(clean.get("season_from"), clean.get("season_to"), clean["episode_re"])
 
         doc = {
             "id": req_id,
             "webhook": clean.get("webhook"),
             "created_at": dt.isoformat(),
             "show": clean["show"],
-            "season": clean["season"],
+            "season_from": clean["season_from"],
+            "season_to": clean["season_to"],
             "episode_re": clean["episode_re"],
             "generate_only_re": gen_re,
             "require_eng": clean["require_eng"],
@@ -834,18 +838,20 @@ def is_window_open(schedule_file: str | None = None, now: datetime.datetime | No
 
 
 EFFECTIVE_ENV_ALLOW_PREFIXES = ("REPAIR_", "VERIFY_")
-EFFECTIVE_ENV_ALLOW_EXACT = frozenset((
-    "REQUIRE_ENG",
-    "GLOSSARY_ARC_TAGS",
-    "RESCAN_INTERVAL",
-    "MERGE_WINDOW",
-    "ANIME_ORDER",
-    "ACQUIRE_BACKEND",
-    "WHISPER_MODEL",
-    "COMPUTE_TYPE",
-    "MERGE_ROOTS",
-    "ACQUIRE_APPLY",
-))
+EFFECTIVE_ENV_ALLOW_EXACT = frozenset(
+    (
+        "REQUIRE_ENG",
+        "GLOSSARY_ARC_TAGS",
+        "RESCAN_INTERVAL",
+        "MERGE_WINDOW",
+        "ANIME_ORDER",
+        "ACQUIRE_BACKEND",
+        "WHISPER_MODEL",
+        "COMPUTE_TYPE",
+        "MERGE_ROOTS",
+        "ACQUIRE_APPLY",
+    )
+)
 EFFECTIVE_ENV_SKIP_SUBSTRINGS = ("KEY", "TOKEN", "PASSWORD", "SECRET")
 _SECRET_VALUE_RE = re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{16,}|\bBearer\b")
 _MIN_SECRET_LEN = 8  # shorter values are too common to match against other lines

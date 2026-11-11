@@ -1,3 +1,4 @@
+import json
 """Isolated browser-test server. Never discovers or processes a real media library."""
 
 import json
@@ -6,6 +7,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -143,6 +146,8 @@ def main():
 
         class FixtureHandler(rs.Handler):
             def do_POST(self):
+                import json
+
                 if self.path == "/__test/reset" and self.headers.get("X-Api-Key") == "browser-fixture-token":
                     for file in ddir.glob("*.json"):
                         file.unlink()
@@ -155,6 +160,30 @@ def main():
                     rs._THROTTLE = rs.LoginThrottle()  # every test signs in from 127.0.0.1; no lockout may leak across tests
                     for file in (base / "requests").glob("*") if (base / "requests").is_dir() else []:
                         file.unlink()
+                    import json
+                    import uuid
+                    from datetime import datetime, timezone
+
+                    # Seed an initial multi-season pending request for display testing
+                    req_dir = base / "requests"
+                    req_dir.mkdir(exist_ok=True)
+                    dt = datetime.now(timezone.utc)
+                    req_id = f"{dt.strftime('%Y%m%dT%H%M%S.%fZ')}-{uuid.uuid4().hex[:8]}"
+                    doc = {
+                        "id": req_id,
+                        "webhook": None,
+                        "created_at": dt.isoformat(),
+                        "show": "Test Show",
+                        "season_from": 1,
+                        "season_to": 3,
+                        "episode_re": None,
+                        "generate_only_re": "(?:(?:1|2|3))",
+                        "require_eng": None,
+                        "status": "pending",
+                        "error": None,
+                        "finished_at": None,
+                    }
+                    (req_dir / f"{req_id}.json").write_text(json.dumps(doc))
                     for stale in ("settings.json", "settings.json.prev", "secrets.json", "secrets.json.prev"):
                         (base / "config" / stale).unlink(missing_ok=True)
                     (base / "stop").unlink(missing_ok=True)
