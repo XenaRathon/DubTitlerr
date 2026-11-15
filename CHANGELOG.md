@@ -8,6 +8,10 @@ that shipped since.
 
 ## [Unreleased]
 
+### Changed
+
+- The glossary bake-off measures `LongCat-2.5` (the preview-suffixed model id is gone and the older entry is dropped), and the compose repair example pins the same model on the same endpoint and key variable.
+
 ### Removed
 - The `X-Review-Token` header alias is completely removed; send `X-Api-Key` instead. Note that the audit-log operator for callers passing a key changes from `alias:<name>` to `key:<name>`.
 
