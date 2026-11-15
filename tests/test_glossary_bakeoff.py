@@ -301,11 +301,11 @@ def _fake_local(monkeypatch, reply):
 def test_the_registry_names_every_arm_with_its_endpoint_and_key():
     r = gb.ARMS
     assert set(r) == {
-        "qwen-local", "longcat-2.0", "longcat-2.5", "nemotron-super",
+        "qwen-local", "longcat-2.5", "nemotron-super",
         "mercury-decide", "span-01-lite", "solar-decide-flash", "pplx-decider", "gpt-6-luna-decisions", "jev",
     }  # fmt: skip
-    assert r["longcat-2.0"].url == "https://api.longcat.chat/openai/v1/chat/completions"
-    assert r["longcat-2.0"].key_env == "LONGCATAI_API_KEY" and r["longcat-2.0"].extra_body == {"thinking": {"type": "disabled"}}
+    assert r["longcat-2.5"].url == "https://api.longcat.chat/openai/v1/chat/completions"
+    assert r["longcat-2.5"].key_env == "LONGCATAI_API_KEY" and r["longcat-2.5"].extra_body == {"thinking": {"type": "disabled"}}
     assert r["nemotron-super"].key_env == "NVIDIA_API_KEY"
     assert r["nemotron-super"].extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
     assert {r[n].key_env for n in r if r[n].kind == "decision" and n != "jev"} == {"OPENROUTER_JEV_API_KEY"}
@@ -364,8 +364,8 @@ def _fake_openai(monkeypatch, reply, seen=None):
 def test_a_text_arm_uses_the_registry_endpoint_the_production_prompt_and_parse(tmp_path, items_file, monkeypatch):
     seen = []
     _fake_openai(monkeypatch, '{\n "canonical": "Roronoa Zoro",\n "confidence": "low"\n}', seen)
-    _, rows, _ = _run(tmp_path, items_file, "longcat-2.0", "--stage", "verify")
-    arm = gb.ARMS["longcat-2.0"]
+    _, rows, _ = _run(tmp_path, items_file, "longcat-2.5", "--stage", "verify")
+    arm = gb.ARMS["longcat-2.5"]
     assert seen[0]["url"] == arm.url and seen[0]["model"] == arm.model and seen[0]["key_env"] == "LONGCATAI_API_KEY"
     assert seen[0]["extra"] == {"thinking": {"type": "disabled"}} and seen[0]["first_line"] is False
     assert seen[0]["prompt"] == gv.build_adjudication_prompt("Zoro", ["Zoro", "Roronoa Zoro"], "Alpha Show")
@@ -392,7 +392,7 @@ def test_unparseable_text_is_scored_as_the_production_parser_scores_it(tmp_path,
 def test_third_party_arms_skip_acquire_items_that_have_no_quotes_and_say_so(tmp_path, items_file, monkeypatch, capsys):
     seen = []
     _fake_openai(monkeypatch, '{"same_entity": true, "confidence": "high"}', seen)
-    _, rows, _ = _run(tmp_path, items_file, "longcat-2.0", "--stage", "acquire")
+    _, rows, _ = _run(tmp_path, items_file, "longcat-2.5", "--stage", "acquire")
     assert [r["id"] for r in rows] == ["acquire:Alpha Show:Nammi|Nami"]  # the one with quotes
     assert seen[0]["prompt"] == ga.build_merge_prompt("Nammi", "Nami", ["Nammi said hi"], ["Nami waved"], "Alpha Show")
     assert rows[0]["parsed"] == {"same_entity": True, "confidence": "high"}
@@ -452,7 +452,7 @@ def test_reverse_shows_the_candidates_reversed_and_maps_the_answer_back_to_the_t
 def test_reverse_for_a_text_arm_reverses_the_list_in_the_prompt(tmp_path, items_file, monkeypatch):
     seen = []
     _fake_openai(monkeypatch, '{"canonical": "Zoro", "confidence": "high"}', seen)
-    _run(tmp_path, items_file, "longcat-2.0", "--stage", "verify", "--reverse")
+    _run(tmp_path, items_file, "longcat-2.5", "--stage", "verify", "--reverse")
     assert seen[0]["prompt"] == gv.build_adjudication_prompt("Zoro", ["Roronoa Zoro", "Zoro"], "Alpha Show")
 
 
@@ -612,7 +612,7 @@ def test_the_startup_line_names_exactly_the_fields_sent_to_a_third_party(tmp_pat
 
 def test_the_startup_line_mentions_quotes_when_acquire_can_send_them(tmp_path, items_file, monkeypatch, capsys):
     _fake_openai(monkeypatch, '{"same_entity": true, "confidence": "high"}')
-    _run(tmp_path, items_file, "longcat-2.0", "--stage", "acquire")
+    _run(tmp_path, items_file, "longcat-2.5", "--stage", "acquire")
     assert "transcript quotes" in capsys.readouterr().out.splitlines()[0]
 
 
@@ -918,16 +918,15 @@ def test_a_malformed_glossary_says_its_acquire_cache_was_not_read(tmp_path, caps
 
 def test_the_registry_pins_the_verified_endpoints_models_and_pacing():
     r = gb.ARMS
-    nemo, lc20, lc25 = r["nemotron-super"], r["longcat-2.0"], r["longcat-2.5"]
+    nemo, lc25 = r["nemotron-super"], r["longcat-2.5"]
     assert (
         nemo.url == "https://integrate.api.nvidia.com/v1/chat/completions" and nemo.model == "nvidia/nemotron-3-super-120b-a12b"
     )
     assert nemo.key_env == "NVIDIA_API_KEY" and nemo.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
-    for lc, model in ((lc20, "LongCat-2.0"), (lc25, "LongCat-2.5-Preview")):
-        assert lc.url == "https://api.longcat.chat/openai/v1/chat/completions" and lc.model == model
-        assert lc.key_env == "LONGCATAI_API_KEY" and lc.extra_body == {"thinking": {"type": "disabled"}}
+    assert lc25.url == "https://api.longcat.chat/openai/v1/chat/completions" and lc25.model == "LongCat-2.5"
+    assert lc25.key_env == "LONGCATAI_API_KEY" and lc25.extra_body == {"thinking": {"type": "disabled"}}
     assert nemo.delay >= 1.6  # NVIDIA's free tier is ~40 requests a minute
-    assert lc20.delay == lc25.delay == 0.3
+    assert lc25.delay == 0.3
 
 
 def test_an_arms_default_delay_applies_unless_delay_is_given(tmp_path, items_file, monkeypatch):
@@ -1048,7 +1047,7 @@ def test_whitelisting_also_covers_span_and_noul_answers(tmp_path, items_file, mo
 def test_the_arms_key_value_is_redacted_from_any_row_before_it_is_written(tmp_path, items_file, monkeypatch):
     """Defence in depth: even a text arm whose reply echoes the key cannot put it in the results file."""
     _fake_openai(monkeypatch, f'{{"canonical": "{KEY}", "confidence": "high"}}')
-    _, rows, outp = _run(tmp_path, items_file, "longcat-2.0", "--stage", "verify", "--only", "gold")
+    _, rows, outp = _run(tmp_path, items_file, "longcat-2.5", "--stage", "verify", "--only", "gold")
     text = outp.read_text(encoding="utf-8")
     assert KEY not in text and "***" in text and rows[0]["parsed"]["canonical"] == "***"
 
@@ -1094,7 +1093,7 @@ def test_the_local_arms_startup_line_names_the_endpoint_not_a_promise_of_localit
 def test_text_arms_get_a_total_request_deadline_from_the_harness(tmp_path, items_file, monkeypatch):
     seen = []
     _fake_openai(monkeypatch, '{"canonical": "Zoro", "confidence": "high"}', seen)
-    _run(tmp_path, items_file, "longcat-2.0", "--stage", "verify")
+    _run(tmp_path, items_file, "longcat-2.5", "--stage", "verify")
     assert seen[0]["deadline"] == gb.repair._request_deadline() and seen[0]["deadline"] >= 10
 
 
@@ -1254,7 +1253,7 @@ def test_the_request_estimate_counts_worst_case_requests_per_arm_kind(tmp_path, 
         return next(line for line in out.splitlines() if line.startswith("run: request estimate"))
 
     assert "at most 6 request(s)" in estimate("jev")  # 2 sendable items x 3 (one try + 2 retries)
-    assert "at most 4 request(s)" in estimate("longcat-2.0")  # 2 x 2 (one try + one retry)
+    assert "at most 4 request(s)" in estimate("longcat-2.5")  # 2 x 2 (one try + one retry)
     assert "at most 12 request(s)" in estimate("span-01-lite")  # 2 items x (2 candidates x 3)
     assert "no third-party requests" in estimate("qwen-local")
 
@@ -1285,7 +1284,7 @@ def test_the_keys_json_escaped_and_url_encoded_forms_are_redacted_too(tmp_path, 
         {"canonical": f"{urllib.parse.quote(tricky, safe='')} and {urllib.parse.quote_plus(tricky)}", "confidence": "high"}
     )
     _fake_openai(monkeypatch, reply)
-    _, rows, outp = _run(tmp_path, items_file, "longcat-2.0", "--stage", "verify", "--only", "gold")
+    _, rows, outp = _run(tmp_path, items_file, "longcat-2.5", "--stage", "verify", "--only", "gold")
     text = outp.read_text(encoding="utf-8")
     forms = [tricky, json.dumps(tricky)[1:-1], urllib.parse.quote(tricky, safe=""), urllib.parse.quote_plus(tricky)]
     for form in forms:
@@ -1434,7 +1433,7 @@ def test_at_v2_arms_resolve_to_the_base_entry_with_framing_v2():
         assert gb.resolve_arm(name).framing == "v2" and name in gb.ARM_CHOICES
 
 
-@pytest.mark.parametrize("bad", ["longcat-2.0@v2", "qwen-local@v2", "nemotron-super@v2", "nope@v2", "mercury-decide@v3"])
+@pytest.mark.parametrize("bad", ["longcat-2.5@v2", "qwen-local@v2", "nemotron-super@v2", "nope@v2", "mercury-decide@v3"])
 def test_only_decision_arms_have_a_v2(tmp_path, items_file, bad):
     with pytest.raises(SystemExit) as e:
         gb.main(["run", "--items", str(items_file), "--arm", bad, "--out", str(tmp_path / "o.jsonl")])
