@@ -72,6 +72,35 @@ This needs a seat that may run `uv` — per `handoffs/code-runs-plan-2026-11-05/
 
 I did not hand-edit `uv.lock`: the sdist/wheel hashes and sizes in a lock entry are resolver output that only `uv` should mint, and a hand-written block would either be wrong or claim provenance it does not have. I also did not touch `pyproject.toml` (no constraint needs to move) or `CHANGELOG.md` (nothing shipped to describe yet).
 
+### Round 2 (code-coder2)
+
+**Done. `uv.lock` now pins filelock 4.2.10 and setuptools 84.2.1; no other package moved. Committed `9844460` on `chore/osv-dep-bump`, not pushed.** The full suite passes against a venv built from the new lock, and osv-scanner reports no issues.
+
+**What changed**
+- `uv.lock`: filelock 3.32.4 → 4.2.10 and setuptools 84.0.0 → 84.2.1, with their sdist/wheel entries as the resolver wrote them (verified: `git diff HEAD~1 uv.lock`).
+- `CHANGELOG.md`: one bullet under `[Unreleased]` → `### Security`.
+- `pyproject.toml`: untouched, since no constraint caps either package.
+
+**Criterion 1: pins and no other change (verified)**
+- `uv lock --upgrade-package filelock --upgrade-package setuptools` printed `Resolved 36 packages`, `Updated filelock v3.32.4 -> v4.2.10` and `Updated setuptools v84.0.0 -> v84.2.1`.
+- The only `version =` lines that changed are those two (`git diff uv.lock | grep -E '^[+-](name|version) '`). `git diff --stat` is `uv.lock | 14 +++++++-------` for the lock, 7 insertions and 7 deletions.
+- **One extra change:** the local uv rewrote the lock-format header, `revision = 3` → `revision = 5` (`uv.lock:2`). It is not a package version. Escalating in case the team wants uv pinned to match: an older uv that only knows revision 3 may refuse or re-lock this file. The Dockerfile and CI uv versions are unchecked (unverified).
+
+**Criterion 2: suite and gate**
+- **Venv:** a throwaway venv under my scratchpad, built with `UV_PROJECT_ENVIRONMENT=<scratch>/venv uv sync --frozen --extra dev`. It imports filelock 4.2.10 and setuptools 84.2.1. The shared `.venv` was not touched.
+- **Suite:** `PATH=<scratch>/venv/bin:$PATH python -m pytest` → **4876 passed, 0 failed** in 214s. With that venv first on PATH, the bare-`python3` subprocess tests (the 38 failures in round 1) pass too, so those failures came from the `python3` the shell resolves, not from this bump.
+- **Direct imports:** `grep -rn 'filelock' --include='*.py' .` found no matches in round 1, and the repo has not changed since, so the major bump reaches us only through `huggingface-hub`. I did not re-run the grep.
+- **osv-scanner:** `osv-scanner --lockfile=uv.lock` → `found 35 packages … No issues found`. This is the check that was failing in CI.
+- **Gate:** `PATH=<scratch>/venv/bin:$PWD/.venv/bin:$PATH procoder check uv.lock CHANGELOG.md` → `0 clean, 1 unformatted, 0 unchecked, 1 out of scope, 5 hygiene finding(s) (0 blocking)`.
+  - The `uv.lock` security findings are gone.
+  - The remaining findings are info-level and outside this change: `release.yml` job timeout, `Dockerfile.builder` DL3025, and the `web/package-lock.json` entries for deepmerge and minimatch.
+  - **Escalation (formatter flag):** prettier still flags `CHANGELOG.md` as unformatted. I added the blank line after my new `### Security` heading. The remaining diff is the existing `### Removed` block, which is missing the same blank line after its heading; that line is not mine, so I left it. A formatter pass over the whole file would clear it.
+
+**Escalations**
+1. The `revision = 5` lock-format bump, described above.
+2. The prettier flag on the existing `### Removed` block, described above.
+3. The system `python3` here (3.14) has no `pysubs2`, so a bare `procoder check` or `pytest` cannot collect (round 1 saw this too). Running the gate with a venv first on PATH works.
+
 ## Addendum (lead, 2026-11-15): reassigned to code-coder2
 
 The first seat (cmd) was refused `uv` by its shell policy; its Result above holds the dependency analysis (no cap blocks either bump, no direct filelock import, filelock 4.x within the Python 3.11 floor). Do the five steps it lists: `uv lock --upgrade-package filelock --upgrade-package setuptools`; the diff of version lines (only filelock and setuptools may move); the full suite in a throwaway venv built from the new lock under your scratchpad (never `uv sync` the shared `.venv`; report the same 38 pre-existing pysubs2 subprocess failures separately if they appear); `osv-scanner --lockfile=uv.lock` if installed, else say so; one CHANGELOG.md line under Unreleased. Gate with the venv first on PATH (`PATH=$PWD/.venv/bin:$PATH procoder check uv.lock CHANGELOG.md`). Write a round 2 subsection under the Result heading only; one empty Evidence heading, last.
