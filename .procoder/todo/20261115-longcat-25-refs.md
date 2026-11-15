@@ -96,4 +96,28 @@ New findings:
 
 Hunts that came back clean: dropped-arm label collision in the judge cannot occur (labels are ordinal `LABELS[...]`, not arm names); no code defaults to the dropped name (`--baseline` defaults to `qwen-local`); no script, workflow, spec, shell file or notebook (none exist) calls the arm; the `.env` example, README, AGENTS.md and `docs/wiki/How-To-Guides.md:316` name LongCat without a version or model id; the key still appears by name only (`LONGCATAI_API_KEY`, `settings_registry.py:258`) with no value anywhere.
 
+8e6c1e2 critic @ claude Opus 5.5: PASS, verdict file reviews/20261115-longcat-25-refs/critic-8e6c1e2.json
+
+Head check: git-ro rev-parse HEAD = 8e6c1e2b0606d6f4af36d83352109c23b62cd67e, the brief's REVIEW_SHA, and close-gate --criteria-hash recomputes the brief's value. The fix round is 1bb0c76 (the CHANGELOG.md entry) and 8e6c1e2 (the Result). Code, tests and compose.yaml are unchanged since 5017a93. Nothing was edited except this Review text.
+
+My round-1 findings (critic-5017a93):
+- C1 (should-fix, gate not clean): fixed. (a) The CHANGELOG entry clears the docs obligation, which no longer appears in either run. (b) With the venv first on PATH, procoder check on the five changed files gives '4 clean, 1 unformatted, 0 unchecked, 0 out of scope, 150 hygiene finding(s) (0 blocking)', the lead's figure, and the python-test step passes. With the bare PATH it still blocks on the system pytest (no pysubs2). That is environmental, and the coder escalated it correctly: the shell policy refused a leading PATH= assignment in that seat.
+- The unformatted CHANGELOG.md is pre-existing, as claimed. procoder format on HEAD's file differs only by one blank line after '### Removed'. procoder format on origin/main's CHANGELOG.md, extracted to my scratchpad, gives the same one-line diff. The new '### Changed' block is formatted.
+- C2 (nit, stale gitignored pytest cache): answered. It ships nowhere, and I ran pytest with -p no:cacheprovider so I did not touch it.
+- C3 (info, resume can mix Preview and 2.5 rows): answered accurately. I read the cited paths: _load_done keys on (id, arm, order), and the text-arm rows carry no served-model field. The operator action (a fresh --out file) is right, and the Result is right that a guard would change the row schema.
+
+Reviewer findings (reviewer-5017a93; no reviewer verdict at this head, see C5): F1 and F2 still confirmed, since neither code nor tests changed.
+
+Break attempts:
+1. Criterion 1 re-grep at HEAD, retired token and the preview-suffixed id: no match outside .procoder.
+2. Gate both ways (venv PATH and bare PATH), plus 156 passed on the two touched test files.
+3. The formatter claim, checked against origin/main's bytes rather than taken from the Result: confirmed.
+4. The CHANGELOG entry's accuracy against compose.yaml and the bake-off arm: true, except one loose phrase (C4).
+
+New findings:
+- C4 info, CHANGELOG.md:13. The entry does not name both versions, because criterion 1 forbids the token; I agree. It adds a heading plus the line against a one-line grant, the minimum for Keep a Changelog. 'On the same endpoint' is loose: compose leaves the URL as ${REPAIR_OPENAI_URL:-}.
+- C5 info: there is no reviewer verdict at 8e6c1e2 in the reviews directory. If close-gate wants one at the closing head, it is still owed.
+
+Both criteria are met, and no blocker or should-fix finding stands.
+
 ## Evidence
