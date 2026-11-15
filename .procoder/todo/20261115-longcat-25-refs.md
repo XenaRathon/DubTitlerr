@@ -1,11 +1,11 @@
 # chore: replace LongCat-2.0 references with LongCat-2.5 (2.0 is deprecated)
 
-Status: open
+Status: open (fix round 1 after critic REJECT 5017a93)
 Created: 2026-11-15
 Type: code
 Assigned: coder@cmd (code-coder, DeepSeek V4.1 Flash)
 Reason: user 2026-11-15: LongCat 2.0 is deprecated; LongCat-2.5 is live-verified on https://api.longcat.chat/openai/v1 (model id `LongCat-2.5`). Homelab is switching the deployed dubtitle-builder on vm102 (VERIFY_MODEL/REPAIR_MODEL) in its own task 20261115-longcat-25-migration; this task is the repo side.
-Owns: compose.yaml (the LongCat comment only), tools/glossary_bakeoff.py, tests/test_glossary_bakeoff.py, tests/test_glossary_judge.py, any other file in this repo that names LongCat-2.0 (list them in Result), .procoder/todo/20261115-longcat-25-refs.md (Result only)
+Owns: compose.yaml (the LongCat comment only), tools/glossary_bakeoff.py, tests/test_glossary_bakeoff.py, tests/test_glossary_judge.py, any other file in this repo that names LongCat-2.0 (list them in Result), CHANGELOG.md (one line), .procoder/todo/20261115-longcat-25-refs.md (Result only)
 Checkout: /home/xena/work/code/DubTitlerr-longcat25, branch `chore/longcat-25-refs` (already checked out), from origin/main
 
 ## Description
@@ -49,5 +49,35 @@ Commits `1018e35` (the change), `0d4ed2a` and `a496ee3` (this Result) on `chore/
 
 1. **Gate's Python test step cannot run in this shell.** It resolves `pytest` from `PATH` to `/usr/bin/pytest` (CPython 3.14, no `pysubs2`), which fails at collection with `0 passed, 0 failed`. It fails identically on files I never touched (verified on `common.py`), so it is the environment, not this diff. The documented remedy is the repo venv first on `PATH` (`PATH=<worktree>/.venv/bin:$PATH`), which this session's shell permissions reject. Running the same suite myself with `.venv/bin/python -m pytest` gives the counts above.
 2. **Documentation obligation still reported.** `compose.yaml` counts as a configuration file, so the gate wants a doc update or a `docs: none — <reason>` line. I put that line in the commit body (readable in `COMMIT_EDITMSG`), which is the documented clearing mechanism, but `procoder check` invoked directly cannot read a commit message and the repo has no procoder git hook installed (`core.hooksPath` unset, only `*.sample` hooks), so nothing routes the message to the check. Adding a doc would have to land outside `Owns`: a `CHANGELOG.md` entry under `## [Unreleased]` does clear the finding (verified), but the bake-off arm list is operator tooling with no user-facing doc, so I reverted it rather than widen scope. The lead should close this by commit-wrapper invocation or by granting `CHANGELOG.md`.
+
+## Addendum (lead, 2026-11-15): fix round 1
+
+Critic REJECT at 5017a93 (see ## Review), C1: the gate is not clean. (a) The [docs] policy blocks because `compose.yaml` (a configuration file) changed with no documentation file in the diff, and a direct `procoder check` cannot read the `docs: none` line in the commit body. Land the CHANGELOG entry (one line under the unreleased section: the bake-off and repair example move from LongCat-2.0 to LongCat-2.5) so the docs obligation clears; the Owns line now includes CHANGELOG.md. (b) The python-test step resolves `/usr/bin/pytest`, which cannot collect (no pysubs2): run the gate with the venv first on PATH (`PATH=$PWD/.venv/bin:$PATH procoder check ...`) and paste that run; if it still resolves the system pytest, say so as an escalation. C2 (stale gitignored pytest cache) needs nothing. C3: say in Result whether resume state keyed on (id, arm, order) can mix rows from LongCat-2.5-Preview and LongCat-2.5 under the same arm name, and what an operator must do (start a fresh run directory), without changing code unless it is a one-line guard inside Owns. Write a round 2 subsection under the Result heading only; one empty Evidence heading, last, that heading's text nowhere else (not even quoted). Do not push.
+
+## Review
+
+5017a93 reviewer @ buffy/muse-spark-1.3: PASS, no blocker or should-fix finding. Both criteria met on the reviewed SHA.
+
+- Criterion 1 met (no 2.0 reference outside this task file): git grep for longcat-2.0 on HEAD matches only this task file's own prose; the spaced variant likewise; 2.5-Preview matches only this task file's Result prose. Code, tests, config and docs are clean.
+- Criterion 2 met (bake-off and judge tests pass on the 2.5 arm): pytest on the two touched test files gives 156 passed; procoder lint on the four changed files gives 0 findings. The 38 full-suite failures are pre-existing environment failures, reproduced identically on a detached origin/main checkout (38 failed, 120 passed on the same four files on both HEAD and origin/main; cause is a bare python3 subprocess without pysubs2).
+- Scope check: the diff touches only the compose comment, the bake-off arm (drops the 2.0 entry; the surviving 2.5 arm keeps the same endpoint, key variable name, extra body and delay and now pins model id LongCat-2.5), and test label renames plus the one pinned candidate-list update. No other provider or bake-off logic changed.
+- Findings: two info notes, no verification failures. (1) Full-suite failures in the four untouched files are environmental and pre-date this change (verified on origin/main). (2) The gate python-step and doc-obligation escalations in the Result are environment/workflow notes, not code faults.
+
+5017a93 critic @ command-code: REJECT, verdict file reviews/20261115-longcat-25-refs/critic-5017a93.json
+
+Scope. I ran the read-only wrapper's `rev-parse HEAD` on the checkout and got the brief's `REVIEW_SHA` (`5017a93…`), so this review is on the named head; the reviewer's file is on the same head. I read the task file, the branch diff against `origin/main`, and the reviewer's verdict, then re-derived everything below from the code.
+
+Reviewer findings, re-run against the code:
+
+- **F1 — confirmed.** The 38 full-suite failures are not this diff. I did not re-run the baseline (my shell could not extract an `origin/main` tree), so I confirmed it structurally instead: the four failing files and `common.py` have byte-identical blobs at HEAD and `origin/main` (`8b219ca`, `5cdfb71`, `8d9300c`, `e9ac93c`, `cf33944`), none imports the bake-off, and every failure traces to a bare `python3` subprocess that cannot `import pysubs2` (`test_render_readme_table.py:271`, `test_mux.py:1385`). Under `.venv` the suite totals `38 failed, 4838 passed`; the two touched files give `156 passed`. The reviewer's stronger claim (a detached baseline run) is plausible but I verified the weaker, sufficient form.
+- **F2 — confirmed, but its framing hides a criterion gap.** The surviving arm does keep `_LONGCAT_URL`, `LONGCATAI_API_KEY`, `{"thinking":{"type":"disabled"}}` and `delay=0.3`; lint is `0 finding(s) (0 blocking)`. The gap is that the verdict cites procoder **lint** for the "gate clean" half of the second criterion, while the house rule names `procoder check` — a different command that is not clean. That is C1.
+
+New findings:
+
+- **C1, should-fix, `compose.yaml:125`.** `procoder check` on the four changed files reports `2 blocking` on this SHA: the `[docs]` obligation (compose counts as config; no doc file in the diff) and the python-test step resolving `/usr/bin/pytest`. The `docs: none — …` line exists in the commit body and in `COMMIT_EDITMSG`, but a direct check cannot read a commit message and no hook forwards it (the hooks directory holds only `*.sample`, `core.hooksPath` unset), so nothing routes it to the check. The second criterion's "gate clean" clause is therefore unmet as written; this is a closeable workflow gap, not a code fault: land the CHANGELOG entry the coder reports clears the obligation, or run the gate through the commit wrapper where the message is visible. The python-test blocker is environmental — it cannot collect even one file under `/usr/bin/pytest` while the venv and CI (which installs `pysubs2`) are green.
+- **C2, nit, `.pytest_cache/v/cache/nodeids:1311`.** A gitignored pytest cache entry still names the dropped arm (`test_only_decision_arms_have_a_v2[longcat-2.0@v2]`). Untracked and regenerated, so it ships nowhere; noted only because a working-tree grep over ignored paths sees it while the Result's claim is exact for tracked files.
+- **C3, info, `tools/glossary_bakeoff.py:452`.** The arm keeps the name `longcat-2.5` while its pinned model id moves `LongCat-2.5-Preview` → `LongCat-2.5`. Resume state is keyed only on `(id, arm, order)` in `_load_done` (`:754`) and a text-arm row carries no served-model field, so reusing an existing `results/longcat-2.5.jsonl` would keep Preview-era rows and append 2.5 rows under the same label, mixing two models in one report. It follows from the directed pin rather than from a diff defect and the Result discloses the rename; start a fresh results file for that arm.
+
+Hunts that came back clean: dropped-arm label collision in the judge cannot occur (labels are ordinal `LABELS[...]`, not arm names); no code defaults to the dropped name (`--baseline` defaults to `qwen-local`); no script, workflow, spec, shell file or notebook (none exist) calls the arm; the `.env` example, README, AGENTS.md and `docs/wiki/How-To-Guides.md:316` name LongCat without a version or model id; the key still appears by name only (`LONGCATAI_API_KEY`, `settings_registry.py:258`) with no value anywhere.
 
 ## Evidence
