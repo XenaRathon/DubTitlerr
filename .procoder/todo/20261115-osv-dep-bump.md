@@ -3,7 +3,7 @@
 Status: open
 Created: 2026-11-15
 Type: code
-Assigned: coder@cmd (code-coder, DeepSeek V4.1 Flash) — free coder seat; a lockfile-only bump
+Assigned: coder@claude (code-coder2, Sonnet + Opus advisor) — reassigned 2026-11-15: the cmd seat may not run uv (Result round 1)
 Reason: user 2026-11-15: CI's osv-scan job fails on uv.lock (filelock 3.32.4: 12 advisories incl. GHSA-v4x8-3wr5-3wq8 High, fixed in 4.2.1; setuptools 84.0.0: GHSA-xmj3-9gf7-h52w, fixed in 84.1.0). It blocks PR #60 (LongCat refs) and fails on main too. Bump first, then PR #60 is rebased and merged.
 Owns: uv.lock, pyproject.toml (only if a constraint must move; say why), CHANGELOG.md (one line under Unreleased), .procoder/todo/20261115-osv-dep-bump.md (Result only)
 Checkout: /home/xena/work/code/DubTitlerr-depbump, branch `chore/osv-dep-bump` (already checked out), from origin/main. `.venv` is a symlink to ../DubTitlerr/.venv: do NOT install into it or `uv sync` it (another worktree uses it).
@@ -71,5 +71,9 @@ This needs a seat that may run `uv` — per `handoffs/code-runs-plan-2026-11-05/
 5. one `CHANGELOG.md` line under `[Unreleased]`
 
 I did not hand-edit `uv.lock`: the sdist/wheel hashes and sizes in a lock entry are resolver output that only `uv` should mint, and a hand-written block would either be wrong or claim provenance it does not have. I also did not touch `pyproject.toml` (no constraint needs to move) or `CHANGELOG.md` (nothing shipped to describe yet).
+
+## Addendum (lead, 2026-11-15): reassigned to code-coder2
+
+The first seat (cmd) was refused `uv` by its shell policy; its Result above holds the dependency analysis (no cap blocks either bump, no direct filelock import, filelock 4.x within the Python 3.11 floor). Do the five steps it lists: `uv lock --upgrade-package filelock --upgrade-package setuptools`; the diff of version lines (only filelock and setuptools may move); the full suite in a throwaway venv built from the new lock under your scratchpad (never `uv sync` the shared `.venv`; report the same 38 pre-existing pysubs2 subprocess failures separately if they appear); `osv-scanner --lockfile=uv.lock` if installed, else say so; one CHANGELOG.md line under Unreleased. Gate with the venv first on PATH (`PATH=$PWD/.venv/bin:$PATH procoder check uv.lock CHANGELOG.md`). Write a round 2 subsection under the Result heading only; one empty Evidence heading, last.
 
 ## Evidence
