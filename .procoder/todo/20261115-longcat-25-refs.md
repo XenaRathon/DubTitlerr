@@ -120,4 +120,6 @@ New findings:
 
 Both criteria are met, and no blocker or should-fix finding stands.
 
+5137a9e reviewer @ agy Gemini 3.8 Flash high: PASS, verdict file reviews/20261115-longcat-25-refs/reviewer-5137a9e.json (seat wrote the JSON only; line added by the lead). Info: 38 full-suite failures environmental (bare python3, no pysubs2); CHANGELOG entry accurate; the one unformatted file is pre-existing drift on origin/main.
+
 ## Evidence
