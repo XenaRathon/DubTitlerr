@@ -24,7 +24,7 @@ Known references: `compose.yaml:125` (comment `# REPAIR_MODEL: LongCat-2.0`), `t
 
 ## Result
 
-Commit `1018e35` on `chore/longcat-25-refs` (no push).
+Commits `1018e35` (the change), `0d4ed2a` and `a496ee3` (this Result) on `chore/longcat-25-refs` (no push).
 
 **What changed**
 
