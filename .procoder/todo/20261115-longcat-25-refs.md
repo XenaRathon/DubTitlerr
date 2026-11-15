@@ -43,7 +43,7 @@ Commit `1018e35` on `chore/longcat-25-refs` (no push).
 - Criterion 2 — `.venv/bin/python -m pytest tests/test_glossary_bakeoff.py tests/test_glossary_judge.py` → `156 passed in 6.88s`.
 - Lint — `procoder lint compose.yaml tools/glossary_bakeoff.py tests/test_glossary_bakeoff.py tests/test_glossary_judge.py` → `0 finding(s) (0 blocking)`.
 - Full suite — `.venv/bin/python -m pytest` → `38 failed, 4838 passed`. All 38 sit in four files my diff does not touch (`tests/test_merge_pass.py` 23, `tests/test_merge_pass_runtime_env.py` 13, `tests/test_mux.py` 1, `tests/test_render_readme_table.py` 1) and every one fails on `ModuleNotFoundError: No module named 'pysubs2'` / `FATAL: pysubs2 not found — image is misbuilt` from a bare `python3` subprocess that resolves to system 3.14; the affected suites pass under the venv.
-- Gate — `procoder check` on the four changed files (commit `1018e35`, clean tree): `4 clean, 0 unformatted, 0 unchecked, 0 out of scope, 151 hygiene finding(s) (2 blocking)`. Both blockers are escalated below, not code faults.
+- Gate — `procoder check` on the four changed files (commit `0d4ed2a`, clean tree): `4 clean, 0 unformatted, 0 unchecked, 0 out of scope, 151 hygiene finding(s) (2 blocking)`. Both blockers are escalated below, not code faults. Adding this task file to the same invocation reports it `unformatted`: `procoder format` wants one blank line after `### House rules`, which is in the dispatched text above this heading — I left it alone per the "write only under Result" rule.
 
 **Escalations**
 
