@@ -122,4 +122,8 @@ Both criteria are met, and no blocker or should-fix finding stands.
 
 5137a9e reviewer @ agy Gemini 3.8 Flash high: PASS, verdict file reviews/20261115-longcat-25-refs/reviewer-5137a9e.json (seat wrote the JSON only; line added by the lead). Info: 38 full-suite failures environmental (bare python3, no pysubs2); CHANGELOG entry accurate; the one unformatted file is pre-existing drift on origin/main.
 
+## Addendum (lead, 2026-11-15): rebase onto main for CI (no code change)
+
+PR #60 failed CI's osv-scan on advisories in uv.lock that this task does not touch; task 20261115-osv-dep-bump fixed them (main 693ac59, PR #61). The lead rebased this branch onto that main as `chore/longcat-25-refs-r2` (the old branch was pushed, so it is not force-pushed; PR #60 is closed in favour of a new PR). One conflict, in CHANGELOG.md under Unreleased: both the dep bump's `### Security` entry and this task's `### Changed` entry are kept. Re-review needed only because the commit ids changed: check that the rebased diff against origin/main is the same change as before plus nothing else, and that the CHANGELOG keeps both entries.
+
 ## Evidence
