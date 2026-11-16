@@ -15,14 +15,15 @@ filelock is pulled in by huggingface-hub, setuptools by ctranslate2 (both transi
 Verify: filelock 4.x is a major bump. Search the repo's own code for direct `filelock` imports (`grep -rn 'filelock' --include='*.py' .`) and report them; if any, the suite must cover them. Run the full test suite in a throwaway venv built from the new lock (`uv venv /tmp/<scratch>/venv && uv sync --frozen --python /tmp/<scratch>/venv/bin/python` or `uv run --isolated`; never the shared `.venv`), and paste the counts. Run the osv check locally if osv-scanner is installed (`osv-scanner --lockfile=uv.lock`), otherwise say it was not run.
 
 ### House rules
+
 - Do not run git rebase, merge or fetch. Commit only in the worktree; no push. Commits `20261115-osv-dep-bump: chore: <what>`, no AI trailers.
 - Write only under the Result heading; keep exactly one empty Evidence heading, last in the file, and that heading's text nowhere else (not even quoted).
 - Gate: the repo's test suite (see AGENTS.md) and `procoder check <changed files>` 0 blocking.
 
 ## Acceptance criteria
 
-- [ ] uv.lock pins filelock >= 4.2.1 and setuptools >= 84.1.0; no other package version changed (diff in Result).
-- [ ] Full test suite passes against an environment built from the new lock; gate clean.
+- [x] uv.lock pins filelock >= 4.2.1 and setuptools >= 84.1.0; no other package version changed (diff in Result).
+- [x] Full test suite passes against an environment built from the new lock; gate clean.
 
 ## Result
 
@@ -77,16 +78,19 @@ I did not hand-edit `uv.lock`: the sdist/wheel hashes and sizes in a lock entry 
 **Done. `uv.lock` now pins filelock 4.2.10 and setuptools 84.2.1; no other package moved. Committed `9844460` on `chore/osv-dep-bump`, not pushed.** The full suite passes against a venv built from the new lock, and osv-scanner reports no issues.
 
 **What changed**
+
 - `uv.lock`: filelock 3.32.4 → 4.2.10 and setuptools 84.0.0 → 84.2.1, with their sdist/wheel entries as the resolver wrote them (verified: `git diff HEAD~1 uv.lock`).
 - `CHANGELOG.md`: one bullet under `[Unreleased]` → `### Security`.
 - `pyproject.toml`: untouched, since no constraint caps either package.
 
 **Criterion 1: pins and no other change (verified)**
+
 - `uv lock --upgrade-package filelock --upgrade-package setuptools` printed `Resolved 36 packages`, `Updated filelock v3.32.4 -> v4.2.10` and `Updated setuptools v84.0.0 -> v84.2.1`.
-- The only `version =` lines that changed are those two (`git diff uv.lock | grep -E '^[+-](name|version) '`). `git diff --stat` is `uv.lock | 14 +++++++-------` for the lock, 7 insertions and 7 deletions.
+- The only `version =` lines that changed are those two (`git diff uv.lock | grep -E '^(\+|-)(name|version) '`). `git diff --stat` is `uv.lock | 14 +++++++-------` for the lock, 7 insertions and 7 deletions.
 - **One extra change:** the local uv rewrote the lock-format header, `revision = 3` → `revision = 5` (`uv.lock:2`). It is not a package version. Escalating in case the team wants uv pinned to match: an older uv that only knows revision 3 may refuse or re-lock this file. The Dockerfile and CI uv versions are unchecked (unverified).
 
 **Criterion 2: suite and gate**
+
 - **Venv:** a throwaway venv under my scratchpad, built with `UV_PROJECT_ENVIRONMENT=<scratch>/venv uv sync --frozen --extra dev`. It imports filelock 4.2.10 and setuptools 84.2.1. The shared `.venv` was not touched.
 - **Suite:** `PATH=<scratch>/venv/bin:$PATH python -m pytest` → **4876 passed, 0 failed** in 214s. With that venv first on PATH, the bare-`python3` subprocess tests (the 38 failures in round 1) pass too, so those failures came from the `python3` the shell resolves, not from this bump.
 - **Direct imports:** `grep -rn 'filelock' --include='*.py' .` found no matches in round 1, and the repo has not changed since, so the major bump reaches us only through `huggingface-hub`. I did not re-run the grep.
@@ -97,6 +101,7 @@ I did not hand-edit `uv.lock`: the sdist/wheel hashes and sizes in a lock entry 
   - **Escalation (formatter flag):** prettier still flags `CHANGELOG.md` as unformatted. I added the blank line after my new `### Security` heading. The remaining diff is the existing `### Removed` block, which is missing the same blank line after its heading; that line is not mine, so I left it. A formatter pass over the whole file would clear it.
 
 **Escalations**
+
 1. The `revision = 5` lock-format bump, described above.
 2. The prettier flag on the existing `### Removed` block, described above.
 3. The system `python3` here (3.14) has no `pysubs2`, so a bare `procoder check` or `pytest` cannot collect (round 1 saw this too). Running the gate with a venv first on PATH works.
@@ -114,6 +119,7 @@ The first seat (cmd) was refused `uv` by its shell policy; its Result above hold
 **Reviewer findings:** none were raised, so nothing to confirm or refute. I re-checked both of the reviewer's criterion claims against the code and agree, with the three attacks below.
 
 **Attack 1: does filelock 4.x change an API huggingface-hub or faster-whisper uses at runtime? No (verified).**
+
 - faster-whisper 1.2.1 and ctranslate2 never touch filelock. huggingface-hub 1.28.0 reaches it only through `WeakFileLock` (`huggingface_hub/utils/_fixes.py:77-121`), used by `file_download.py`, `_local_folder.py`, `_auth.py` and `_sandbox_cache.py`. Its surface: `FileLock(path, timeout=, mode=0o664)`, `.acquire(timeout=)` raising `filelock.Timeout`, `.release()`, `SoftFileLock(path, timeout=)`, and an `except NotImplementedError` branch that matches the text "use SoftFileLock instead".
 - I ran a probe of that surface on two venvs: one built from this lock (filelock 4.2.10) and a control with filelock 3.32.4 plus the same hub 1.28.0. Script: `<scratch>/scripts/fl_runtime.py`. The results were identical on both:
   - the lock file mode is `0o664`;
@@ -124,6 +130,7 @@ The first seat (cmd) was refused `uv` by its shell policy; its Result above hold
 - A real network run worked: `snapshot_download('Systran/faster-whisper-tiny', allow_patterns=[config.json, vocabulary.txt])` is the call `faster_whisper.download_model` makes. Under 4.2.10 it fetched the files, wrote `.locks/*.lock`, and a second `local_files_only=True` call resolved from the cache.
 
 **Attack 2: can everything that reads uv.lock read the `revision = 5` header? Yes (verified).**
+
 - The only reader in the repo is CI `osv-scan` (`.github/workflows/ci.yml:77-90`, osv-scanner-action v2.5.1). Nothing else uses uv:
   - `ci.yml` test, lint and web jobs install with `pip` (`ci.yml:35,46,66`);
   - `release.yml` has no uv reference;
@@ -133,7 +140,8 @@ The first seat (cmd) was refused `uv` by its shell policy; its Result above hold
 - **Negative control, so the clean result is not a silent parse skip:** I took a copy of the revision-5 lock with filelock set back to 3.32.4. osv-scanner 2.5.1 still read it, `found 35 packages`, and reported `1 package affected by 12 known vulnerabilities (… 1 High …)`, each "fixed in 4.2.1". The scanner parses revision 5 and checks the versions in it.
 
 **Attack 3: did exactly two package versions move? Yes (verified).**
-- `git diff main...HEAD -- uv.lock | grep -E '^[+-](name|version|revision) '` shows only:
+
+- `git diff main...HEAD -- uv.lock | grep -E '^(\+|-)(name|version|revision) '` shows only:
   - `revision 3→5`;
   - filelock `3.32.4→4.2.10`;
   - setuptools `84.0.0→84.2.1`.
@@ -143,6 +151,7 @@ The first seat (cmd) was refused `uv` by its shell policy; its Result above hold
 - The branch diff touches only `uv.lock`, `CHANGELOG.md` and this task file. `pyproject.toml` is untouched.
 
 **Criteria, re-run by me:**
+
 - Criterion 1 is met by the diff above.
 - Criterion 2 is met:
   - I built a venv from the lock under my scratchpad with `UV_PROJECT_ENVIRONMENT=<scratch>/venv uv sync --frozen --extra dev`; it imports filelock 4.2.10, hub 1.28.0 and faster-whisper 1.2.1. The shared `.venv` was not touched.
@@ -150,6 +159,7 @@ The first seat (cmd) was refused `uv` by its shell policy; its Result above hold
   - `PATH=<scratch>/venv/bin:$PATH procoder check uv.lock CHANGELOG.md` → `0 clean, 1 unformatted, 0 unchecked, 1 out of scope, 5 hygiene finding(s) (0 blocking)`. The uv.lock security findings are gone.
 
 **New findings, all info, none blocking:**
+
 1. info, `uv.lock:2`: `revision = 5` needs a uv that knows that lock revision. I did not check which uv versions read revision 5 (unverified). No CI, release or Docker step runs uv, so the only risk is a contributor's older local uv. Escalation for the lead: pin uv only if the team wants contributors held to one version.
 2. info, `Dockerfile.builder:12`, outside Owns: the shipped image gets faster-whisper, huggingface-hub and filelock from the `mccloud/subgen` base image, not from uv.lock. This bump clears the CI osv-scan but does not change the filelock version that runs in production. Escalation for the lead: check the base image's filelock if the advisory matters at runtime.
 3. info, `CHANGELOG.md`: the prettier "unformatted" flag comes from main's existing `### Removed` block, which has no blank line after its heading (`git show main:CHANGELOG.md`, lines 11-12). The coder's new bullet is formatted correctly. This confirms the coder's escalation 2.
@@ -158,3 +168,25 @@ The first seat (cmd) was refused `uv` by its shell policy; its Result above hold
 `close-gate --dry-run` accepts both verdict files and the criteria hash (`e0cd2ba9…`, unchanged). Process note: I did not load the role's skills (doubt-driven-development, differential-review, fp-check). All four findings are info or nit; each one cites the command or line it rests on, and C1's uv-version claim is marked unverified.
 
 ## Evidence
+
+<!-- close-gate:begin sha256=66f31c82bbcd2a561c604078de70a95cc852e2f47b7c5b9bbe6efc696a0e6fd2 -->
+
+Head: c8e83e946f246e903603b3ebc8fd16d385084bf4
+Criteria sha256: e0cd2ba9d6546115afdd067c70a3d354daa8352ea74472a193a4528beafdffde
+
+- reviewer: agy Gemini 3.8 Flash high; review_sha 60428ebbea322f189b6ae342acf1e66e11493169; verdict PASS; file /home/xena/work/code/.team/reviews/20261115-osv-dep-bump/reviewer-60428eb.json; findings: 0 blocker, 0 should-fix, 0 nit, 0 info
+- critic: Claude Opus + Fable advisor; review_sha 60428ebbea322f189b6ae342acf1e66e11493169; verdict PASS; file /home/xena/work/code/.team/reviews/20261115-osv-dep-bump/critic-60428eb.json; findings: 0 blocker, 0 should-fix, 1 nit, 3 info
+
+Tree equality: the head equals each reviewed commit outside the task file.
+
+CI source: gh api XenaRathon/DubTitlerr
+
+| Check       | Conclusion | URL                                                                                |
+| ----------- | ---------- | ---------------------------------------------------------------------------------- |
+| lint        | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43780298213/job/133015717681 |
+| osv-scan    | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43780298213/job/133015717404 |
+| review-ui   | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43780298213/job/133015717697 |
+| test (3.11) | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43780298213/job/133015717772 |
+| test (3.13) | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43780298213/job/133015717639 |
+
+<!-- close-gate:end -->
