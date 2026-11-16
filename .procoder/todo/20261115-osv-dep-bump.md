@@ -105,4 +105,56 @@ I did not hand-edit `uv.lock`: the sdist/wheel hashes and sizes in a lock entry 
 
 The first seat (cmd) was refused `uv` by its shell policy; its Result above holds the dependency analysis (no cap blocks either bump, no direct filelock import, filelock 4.x within the Python 3.11 floor). Do the five steps it lists: `uv lock --upgrade-package filelock --upgrade-package setuptools`; the diff of version lines (only filelock and setuptools may move); the full suite in a throwaway venv built from the new lock under your scratchpad (never `uv sync` the shared `.venv`; report the same 38 pre-existing pysubs2 subprocess failures separately if they appear); `osv-scanner --lockfile=uv.lock` if installed, else say so; one CHANGELOG.md line under Unreleased. Gate with the venv first on PATH (`PATH=$PWD/.venv/bin:$PATH procoder check uv.lock CHANGELOG.md`). Write a round 2 subsection under the Result heading only; one empty Evidence heading, last.
 
+## Review
+
+60428eb critic @ Claude Opus + Fable advisor: PASS, verdict file reviews/20261115-osv-dep-bump/critic-60428eb.json
+
+**SHA:** `git-ro . rev-parse HEAD` → `60428ebbea322f189b6ae342acf1e66e11493169`, equal to REVIEW_SHA; the reviewer's verdict file names the same full SHA.
+
+**Reviewer findings:** none were raised, so nothing to confirm or refute. I re-checked both of the reviewer's criterion claims against the code and agree, with the three attacks below.
+
+**Attack 1: does filelock 4.x change an API huggingface-hub or faster-whisper uses at runtime? No (verified).**
+- faster-whisper 1.2.1 and ctranslate2 never touch filelock. huggingface-hub 1.28.0 reaches it only through `WeakFileLock` (`huggingface_hub/utils/_fixes.py:77-121`), used by `file_download.py`, `_local_folder.py`, `_auth.py` and `_sandbox_cache.py`. Its surface: `FileLock(path, timeout=, mode=0o664)`, `.acquire(timeout=)` raising `filelock.Timeout`, `.release()`, `SoftFileLock(path, timeout=)`, and an `except NotImplementedError` branch that matches the text "use SoftFileLock instead".
+- I ran a probe of that surface on two venvs: one built from this lock (filelock 4.2.10) and a control with filelock 3.32.4 plus the same hub 1.28.0. Script: `<scratch>/scripts/fl_runtime.py`. The results were identical on both:
+  - the lock file mode is `0o664`;
+  - a cross-process holder makes `WeakFileLock(timeout=1)` raise `filelock._error.Timeout` after 1.0s;
+  - the lock can be taken again after the holder exits;
+  - a simulated `ENOSYS` flock falls back to `SoftFileLock` with the warning "flock not supported on this filesystem, falling back to SoftFileLock".
+- The text the hub's `NotImplementedError` branch matches is in neither filelock version (grep finds no match in either `filelock/` tree). Both versions fall back to the soft lock inside filelock (`filelock/_unix.py:184-208` in 4.2.10, `fallback_to_soft=True` by default), so that hub branch was already dead code before the bump and its behaviour is unchanged. Same-thread nesting of two separate `WeakFileLock` instances blocks on both versions, so that is not a regression either.
+- A real network run worked: `snapshot_download('Systran/faster-whisper-tiny', allow_patterns=[config.json, vocabulary.txt])` is the call `faster_whisper.download_model` makes. Under 4.2.10 it fetched the files, wrote `.locks/*.lock`, and a second `local_files_only=True` call resolved from the cache.
+
+**Attack 2: can everything that reads uv.lock read the `revision = 5` header? Yes (verified).**
+- The only reader in the repo is CI `osv-scan` (`.github/workflows/ci.yml:77-90`, osv-scanner-action v2.5.1). Nothing else uses uv:
+  - `ci.yml` test, lint and web jobs install with `pip` (`ci.yml:35,46,66`);
+  - `release.yml` has no uv reference;
+  - `Dockerfile.builder` installs only `pysubs2 jellyfish` with pip (`:31`) and takes faster-whisper from `FROM mccloud/subgen:2026.06.2` (`:12`);
+  - the repo has no Dependabot or Renovate config, and no `[tool.uv] required-version`.
+- Local osv-scanner 2.5.1 on the branch lock: `found 35 packages … No issues found`.
+- **Negative control, so the clean result is not a silent parse skip:** I took a copy of the revision-5 lock with filelock set back to 3.32.4. osv-scanner 2.5.1 still read it, `found 35 packages`, and reported `1 package affected by 12 known vulnerabilities (… 1 High …)`, each "fixed in 4.2.1". The scanner parses revision 5 and checks the versions in it.
+
+**Attack 3: did exactly two package versions move? Yes (verified).**
+- `git diff main...HEAD -- uv.lock | grep -E '^[+-](name|version|revision) '` shows only:
+  - `revision 3→5`;
+  - filelock `3.32.4→4.2.10`;
+  - setuptools `84.0.0→84.2.1`.
+- No `name` line was added or removed, and both lock files have 36 `name =` lines.
+- Each moved block changed only its version, sdist and wheel lines, 7+/7- in total.
+- `uv lock --locked` exits 0 (`Resolved 36 packages`) and leaves `uv.lock` unchanged, so the lock is current with `pyproject.toml` and no other package is due to move.
+- The branch diff touches only `uv.lock`, `CHANGELOG.md` and this task file. `pyproject.toml` is untouched.
+
+**Criteria, re-run by me:**
+- Criterion 1 is met by the diff above.
+- Criterion 2 is met:
+  - I built a venv from the lock under my scratchpad with `UV_PROJECT_ENVIRONMENT=<scratch>/venv uv sync --frozen --extra dev`; it imports filelock 4.2.10, hub 1.28.0 and faster-whisper 1.2.1. The shared `.venv` was not touched.
+  - `PATH=<scratch>/venv/bin:$PATH python -m pytest -o addopts="" -q` → `4876 passed in 207.26s`, pytest exit code 0 (captured directly, not through a pipe), and no FAILED or ERROR lines.
+  - `PATH=<scratch>/venv/bin:$PATH procoder check uv.lock CHANGELOG.md` → `0 clean, 1 unformatted, 0 unchecked, 1 out of scope, 5 hygiene finding(s) (0 blocking)`. The uv.lock security findings are gone.
+
+**New findings, all info, none blocking:**
+1. info, `uv.lock:2`: `revision = 5` needs a uv that knows that lock revision. I did not check which uv versions read revision 5 (unverified). No CI, release or Docker step runs uv, so the only risk is a contributor's older local uv. Escalation for the lead: pin uv only if the team wants contributors held to one version.
+2. info, `Dockerfile.builder:12`, outside Owns: the shipped image gets faster-whisper, huggingface-hub and filelock from the `mccloud/subgen` base image, not from uv.lock. This bump clears the CI osv-scan but does not change the filelock version that runs in production. Escalation for the lead: check the base image's filelock if the advisory matters at runtime.
+3. info, `CHANGELOG.md`: the prettier "unformatted" flag comes from main's existing `### Removed` block, which has no blank line after its heading (`git show main:CHANGELOG.md`, lines 11-12). The coder's new bullet is formatted correctly. This confirms the coder's escalation 2.
+4. nit, outside Owns: the commit subject is 98 characters, against procoder's 72-character guide (info in the gate).
+
+`close-gate --dry-run` accepts both verdict files and the criteria hash (`e0cd2ba9…`, unchanged). Process note: I did not load the role's skills (doubt-driven-development, differential-review, fp-check). All four findings are info or nit; each one cites the command or line it rests on, and C1's uv-version claim is marked unverified.
+
 ## Evidence
