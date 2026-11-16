@@ -447,12 +447,9 @@ ARMS = {
     for a in (
         Arm("qwen-local", "local", model=glossary_verify.VERIFY_MODEL, third_party=False),
         Arm(
-            "longcat-2.0", "text", "LongCat-2.0", _LONGCAT_URL, "LONGCATAI_API_KEY", {"thinking": {"type": "disabled"}}, delay=0.3
-        ),
-        Arm(
             "longcat-2.5",
             "text",
-            "LongCat-2.5-Preview",
+            "LongCat-2.5",
             _LONGCAT_URL,
             "LONGCATAI_API_KEY",
             {"thinking": {"type": "disabled"}},

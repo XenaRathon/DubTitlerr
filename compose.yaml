@@ -122,7 +122,7 @@ services:
       # Replace the three REPAIR_* lines above with these. The key is read from the
       # environment variable NAMED by REPAIR_OPENAI_KEY_ENV; put the key itself in .env.
       # REPAIR_BACKEND: openai
-      # REPAIR_MODEL: LongCat-2.0
+      # REPAIR_MODEL: LongCat-2.5
       # REPAIR_OPENAI_URL: ${REPAIR_OPENAI_URL:-}
       # REPAIR_OPENAI_KEY_ENV: LONGCATAI_API_KEY
       # LONGCATAI_API_KEY: ${LONGCATAI_API_KEY:-}

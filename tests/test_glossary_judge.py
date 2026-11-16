@@ -7,7 +7,7 @@ import pytest
 import tools.glossary_bakeoff as gb
 import tools.glossary_score as gs
 
-KEYS = ("qwen-local", "mercury-decide", "longcat-2.0")
+KEYS = ("qwen-local", "mercury-decide", "longcat-2.5")
 
 
 def _vitem(term, titles, gold=None, no_call=False):
@@ -73,12 +73,12 @@ AQ = "acquire:Show One:Zoroo|Zoro"
 ROWS = [
     _t(Z, "qwen-local", "Zoro"),
     _d(Z, "mercury-decide", "Roronoa Zoro", 0.93),
-    _t(Z, "longcat-2.0", "Zoro", "low"),  # 2 distinct picks
-    _t(L, "qwen-local", ""), _d(L, "mercury-decide", "Monkey D. Luffy", 0.55), _t(L, "longcat-2.0", "Monkey D. Luffy"),  # no gold
-    _t(N, "qwen-local", "Nami"), _d(N, "mercury-decide", "Nami", 0.9), _t(N, "longcat-2.0", "Nami"),  # all agree: not exported
-    _t(S, "qwen-local", "Sanji"), _d(S, "mercury-decide", "Sanjy", 0.7), _e(S, "longcat-2.0"),  # an errored arm is ignored
+    _t(Z, "longcat-2.5", "Zoro", "low"),  # 2 distinct picks
+    _t(L, "qwen-local", ""), _d(L, "mercury-decide", "Monkey D. Luffy", 0.55), _t(L, "longcat-2.5", "Monkey D. Luffy"),  # no gold
+    _t(N, "qwen-local", "Nami"), _d(N, "mercury-decide", "Nami", 0.9), _t(N, "longcat-2.5", "Nami"),  # all agree: not exported
+    _t(S, "qwen-local", "Sanji"), _d(S, "mercury-decide", "Sanjy", 0.7), _e(S, "longcat-2.5"),  # an errored arm is ignored
     _t(AG, "qwen-local", "Agree"), _t(AG, "mercury-decide", "Agree"),
-    _a(AQ, "qwen-local", True), _a(AQ, "longcat-2.0", False), _a(AQ, "mercury-decide", True, "low"),
+    _a(AQ, "qwen-local", True), _a(AQ, "longcat-2.5", False), _a(AQ, "mercury-decide", True, "low"),
 ]  # fmt: skip
 
 
@@ -142,7 +142,7 @@ def test_identical_picks_are_merged_and_the_key_maps_labels_to_arms(tmp_path, fi
     zoro = next(k for k in key["items"] if k["id"] == Z)
     assert len(zoro["answers"]) == 2  # qwen and longcat both said Zoro: one answer
     merged = next(a for a in zoro["answers"].values() if a["pick"] == "Zoro")
-    assert sorted(merged["arms"]) == ["longcat-2.0", "qwen-local"]
+    assert sorted(merged["arms"]) == ["longcat-2.5", "qwen-local"]
     other = next(a for a in zoro["answers"].values() if a["pick"] == "Roronoa Zoro")
     assert other["arms"] == ["mercury-decide"]
     assert md.count("- answer ") >= 4  # two for Zoro, two for Sanji
@@ -205,7 +205,7 @@ def test_acquire_layout_has_both_spellings_the_quotes_and_merged_answers(tmp_pat
     for needle in ('"Zoroo"', "Zoroo said hi", '"Zoro"', "Zoro drew his sword"):
         assert needle in md, needle
     answers = {a["pick"]: sorted(a["arms"]) for a in key["items"][0]["answers"].values()}
-    assert answers == {"same entity": ["mercury-decide", "qwen-local"], "different entities": ["longcat-2.0"]}
+    assert answers == {"same entity": ["mercury-decide", "qwen-local"], "different entities": ["longcat-2.5"]}
     for bit in ("historical", "confidence", "qwen", "mercury", "longcat"):
         assert bit not in md.lower()
 
@@ -241,7 +241,7 @@ def test_import_round_trip_maps_labels_back_to_arms(tmp_path, files, capsys):
     assert code == 0
     by_arm = {r["arm"]: r for r in rows if r["item"] == Z}
     assert set(by_arm) == set(KEYS)
-    assert by_arm["qwen-local"]["best"] and by_arm["longcat-2.0"]["best"] and not by_arm["mercury-decide"]["best"]
+    assert by_arm["qwen-local"]["best"] and by_arm["longcat-2.5"]["best"] and not by_arm["mercury-decide"]["best"]
     assert by_arm["mercury-decide"]["worst"] and not by_arm["qwen-local"]["worst"]
     assert (
         by_arm["qwen-local"]["note"] == "the exact name"
@@ -318,10 +318,10 @@ def test_the_judged_table_counts_best_worst_net_and_sole_winners_per_stage():
         # item 1: qwen alone gave the best answer (sole winner); mercury and longcat share the worst one
         r("i1", 1, "qwen-local", "A", True, False, sole=True),
         r("i1", 1, "mercury-decide", "B", False, True),
-        r("i1", 1, "longcat-2.0", "B", False, True),
+        r("i1", 1, "longcat-2.5", "B", False, True),
         # item 2: qwen and longcat share the best answer (not sole), mercury is worst
         r("i2", 2, "qwen-local", "A", True, False),
-        r("i2", 2, "longcat-2.0", "A", True, False),
+        r("i2", 2, "longcat-2.5", "A", True, False),
         r("i2", 2, "mercury-decide", "B", False, True),
         r("i3", 1, "qwen-local", "same entity", True, False, stage="acquire", sole=True),
     ]
@@ -356,7 +356,7 @@ def test_the_import_marks_sole_winners(tmp_path, files):
     a, b = _label_of(key, Z, "Zoro"), _label_of(key, Z, "Roronoa Zoro")
     _, rows = _import(tmp_path, d, f"{n_z} | best={b} | worst={a}\n")
     sole = {r["arm"]: r["sole_best"] for r in rows if r["item"] == Z}
-    assert sole == {"mercury-decide": True, "qwen-local": False, "longcat-2.0": False}
+    assert sole == {"mercury-decide": True, "qwen-local": False, "longcat-2.5": False}
 
 
 def test_acquire_decision_rows_with_the_noul_shape_become_same_or_different(tmp_path, files):
@@ -364,11 +364,11 @@ def test_acquire_decision_rows_with_the_noul_shape_become_same_or_different(tmp_
     rows = [json.loads(line) for line in res.read_text(encoding="utf-8").splitlines()]
     rows = [r for r in rows if r["id"] != AQ]
     shape = {"same_entity": True, "noul": 0.97, "confidence": 0.97}
-    rows += [_row(AQ, "mercury-decide", shape), _row(AQ, "longcat-2.0", {"same_entity": False, "noul": 0.2, "confidence": 0.8})]
+    rows += [_row(AQ, "mercury-decide", shape), _row(AQ, "longcat-2.5", {"same_entity": False, "noul": 0.2, "confidence": 0.8})]
     res.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
-    _, md, key, _ = _export(tmp_path, files, stage="acquire", out="acq2", arms=("mercury-decide", "longcat-2.0"))
+    _, md, key, _ = _export(tmp_path, files, stage="acquire", out="acq2", arms=("mercury-decide", "longcat-2.5"))
     answers = {a["pick"]: a["arms"] for a in key["items"][0]["answers"].values()}
-    assert answers == {"same entity": ["mercury-decide"], "different entities": ["longcat-2.0"]}
+    assert answers == {"same entity": ["mercury-decide"], "different entities": ["longcat-2.5"]}
     assert "0.97" not in md and "noul" not in md
 
 
@@ -485,7 +485,7 @@ def test_an_answer_outside_the_candidate_list_is_shown_neutrally_and_kept_raw_in
     rows = [
         _t(it["id"], "qwen-local", "Odd Alfa (dub: Alfa)"),
         _d(it["id"], "mercury-decide", "Odd", 0.9),
-        _t(it["id"], "longcat-2.0", "Something else entirely"),
+        _t(it["id"], "longcat-2.5", "Something else entirely"),
     ]
     ip, rp = tmp_path / "i.jsonl", tmp_path / "r.jsonl"
     ip.write_text(json.dumps(it) + "\n", encoding="utf-8")
@@ -494,5 +494,5 @@ def test_an_answer_outside_the_candidate_list_is_shown_neutrally_and_kept_raw_in
     assert "Alfa" not in md and "Something else" not in md and "(an answer outside the list)" in md
     answers = list(key["items"][0]["answers"].values())
     outside = next(a for a in answers if a["pick"] == "(an answer outside the list)")
-    assert sorted(outside["arms"]) == ["longcat-2.0", "qwen-local"]  # both free-form answers share the one neutral entry
+    assert sorted(outside["arms"]) == ["longcat-2.5", "qwen-local"]  # both free-form answers share the one neutral entry
     assert sorted(outside["raw"]) == ["Odd Alfa (dub: Alfa)", "Something else entirely"]
