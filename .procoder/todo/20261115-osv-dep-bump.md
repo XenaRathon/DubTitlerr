@@ -1,6 +1,6 @@
 # chore(deps): bump filelock and setuptools in uv.lock to clear the osv-scan advisories
 
-Status: open
+Status: closed 2026-11-16
 Created: 2026-11-15
 Type: code
 Assigned: coder@claude (code-coder2, Sonnet + Opus advisor) — reassigned 2026-11-15: the cmd seat may not run uv (Result round 1)
@@ -169,9 +169,9 @@ The first seat (cmd) was refused `uv` by its shell policy; its Result above hold
 
 ## Evidence
 
-<!-- close-gate:begin sha256=66f31c82bbcd2a561c604078de70a95cc852e2f47b7c5b9bbe6efc696a0e6fd2 -->
+<!-- close-gate:begin sha256=a9e38a192f74bb7747b449ee363889f2ffa39fba6e691657483d80e1263c8815 -->
 
-Head: c8e83e946f246e903603b3ebc8fd16d385084bf4
+Head: 79394353e55e5dce428c02a8c6435c0fd9b55b57
 Criteria sha256: e0cd2ba9d6546115afdd067c70a3d354daa8352ea74472a193a4528beafdffde
 
 - reviewer: agy Gemini 3.8 Flash high; review_sha 60428ebbea322f189b6ae342acf1e66e11493169; verdict PASS; file /home/xena/work/code/.team/reviews/20261115-osv-dep-bump/reviewer-60428eb.json; findings: 0 blocker, 0 should-fix, 0 nit, 0 info
@@ -183,10 +183,10 @@ CI source: gh api XenaRathon/DubTitlerr
 
 | Check       | Conclusion | URL                                                                                |
 | ----------- | ---------- | ---------------------------------------------------------------------------------- |
-| lint        | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43780298213/job/133015717681 |
-| osv-scan    | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43780298213/job/133015717404 |
-| review-ui   | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43780298213/job/133015717697 |
-| test (3.11) | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43780298213/job/133015717772 |
-| test (3.13) | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43780298213/job/133015717639 |
+| lint        | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43782407019/job/133022339995 |
+| osv-scan    | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43782407019/job/133022340040 |
+| review-ui   | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43782407019/job/133022340099 |
+| test (3.11) | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43782407019/job/133022339787 |
+| test (3.13) | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43782407019/job/133022340070 |
 
 <!-- close-gate:end -->
