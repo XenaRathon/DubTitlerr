@@ -126,4 +126,6 @@ Both criteria are met, and no blocker or should-fix finding stands.
 
 PR #60 failed CI's osv-scan on advisories in uv.lock that this task does not touch; task 20261115-osv-dep-bump fixed them (main 693ac59, PR #61). The lead rebased this branch onto that main as `chore/longcat-25-refs-r2` (the old branch was pushed, so it is not force-pushed; PR #60 is closed in favour of a new PR). One conflict, in CHANGELOG.md under Unreleased: both the dep bump's `### Security` entry and this task's `### Changed` entry are kept. Re-review needed only because the commit ids changed: check that the rebased diff against origin/main is the same change as before plus nothing else, and that the CHANGELOG keeps both entries.
 
+6b2aa3b reviewer @ agy Gemini 3.8 Flash high: PASS (rebase re-review), verdict file reviews/20261115-longcat-25-refs/reviewer-6b2aa3b.json (seat wrote the JSON only; line added by the lead). The rebased diff against origin/main 693ac59 matches the change passed at 5137a9e; CHANGELOG keeps both Unreleased entries.
+
 ## Evidence
