@@ -128,4 +128,27 @@ PR #60 failed CI's osv-scan on advisories in uv.lock that this task does not tou
 
 6b2aa3b reviewer @ agy Gemini 3.8 Flash high: PASS (rebase re-review), verdict file reviews/20261115-longcat-25-refs/reviewer-6b2aa3b.json (seat wrote the JSON only; line added by the lead). The rebased diff against origin/main 693ac59 matches the change passed at 5137a9e; CHANGELOG keeps both Unreleased entries.
 
+e9a7a85 critic @ claude Opus 5.5: PASS (rebase re-review), verdict file reviews/20261115-longcat-25-refs/critic-e9a7a85.json
+
+Head check: git-ro rev-parse HEAD = e9a7a85c23bd1217d26981a981c0c26d6a0f3589, the brief's REVIEW_SHA. close-gate --criteria-hash recomputes 38f9d53b…f67b, the brief's value. Between 6b2aa3b and e9a7a85 the only change is two lines appended to this task file, so the code is identical to 6b2aa3b. Merge-base with origin/main is 693ac59, which is origin/main itself. Nothing was edited except this Review text.
+
+Same change, nothing else: the pre-rebase diff (88094fd..8e6c1e2) and the rebased diff (origin/main..HEAD) touch the same six files. For compose.yaml, tools/glossary_bakeoff.py, both test files and CHANGELOG.md, the +/- hunk lines are byte-identical between the two diffs. This task file differs only by text appended after line 98: my 8e6c1e2 review, the 5137a9e reviewer line, the rebase addendum and the 6b2aa3b reviewer line. The Description, Result and criteria are unchanged.
+
+CHANGELOG merge: Unreleased now has `### Security` (the dep bump), then `### Changed` (this task), then `### Removed`. Each entry appears once, and the Security and Changed blocks each have their heading, a blank line, and one item. The section reads in a sensible order. procoder format still reports only the pre-existing missing blank line after `### Removed`, and origin/main has the same drift at line 15. The merge did not introduce it.
+
+Interaction with main since 88094fd: main changed only uv.lock (transitive filelock 3.32.4 → 4.2.10, setuptools 84.0.0 → 84.2.1, lock revision 3 → 5), CHANGELOG.md and its own task file. Importing tools.glossary_bakeoff in the venv loads neither filelock, huggingface_hub nor setuptools. In uv.lock, filelock's only dependent is huggingface-hub, and nothing in the bake-off import chain imports huggingface_hub, faster_whisper or ctranslate2. So there is no interaction.
+
+Reviewer findings (reviewer-6b2aa3b): F1 confirmed (environmental pysubs2 failures, as at 8e6c1e2). F2 confirmed: the arm and its test hunks are identical. F3 confirmed, from my own reading of HEAD's CHANGELOG and the formatter output. F4 confirmed: identical +/- lines in all four code and test files, plus CHANGELOG.
+
+Break attempts:
+1. Hunk-level comparison of old and new diffs, file by file, rather than relying on --stat: identical.
+2. Criterion 1 re-grep at HEAD for the retired token, the spaced variant and the preview-suffixed id, outside .procoder: no match (exit 1).
+3. Gate: `.venv/bin/python -m pytest -p no:cacheprovider` on the two touched test files gives 156 passed. With the venv first on PATH, procoder check on the five changed files gives '4 clean, 1 unformatted, 0 unchecked, 0 out of scope, 147 hygiene finding(s) (0 blocking)'.
+4. Dependency reach: the import probe and the uv.lock dependents check above.
+
+New finding:
+- C6 info, uv.lock:165. The shared .venv, symlinked from ../DubTitlerr, has filelock 4.2.4 installed, not the locked 4.2.10. Local test runs therefore do not exercise the exact locked version, though both are 4.x. CI installs from the lock. The bake-off never loads filelock, so this has no bearing on this change.
+
+Both criteria are met, and no blocker or should-fix finding stands.
+
 ## Evidence
