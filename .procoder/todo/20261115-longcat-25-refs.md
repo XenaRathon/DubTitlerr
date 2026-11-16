@@ -1,6 +1,6 @@
 # chore: replace LongCat-2.0 references with LongCat-2.5 (2.0 is deprecated)
 
-Status: open (fix round 1 after critic REJECT 5017a93)
+Status: closed 2026-11-16
 Created: 2026-11-15
 Type: code
 Assigned: coder@cmd (code-coder, DeepSeek V4.1 Flash)
@@ -13,14 +13,15 @@ Checkout: /home/xena/work/code/DubTitlerr-longcat25, branch `chore/longcat-25-re
 Known references: `compose.yaml:125` (comment `# REPAIR_MODEL: LongCat-2.0`), `tools/glossary_bakeoff.py:450` (a bake-off candidate `"longcat-2.0", "text", "LongCat-2.0", _LONGCAT`), `tests/test_glossary_bakeoff.py:304-308, 367` and `tests/test_glossary_judge.py`. First `grep -rn -i 'longcat-2.0\|LongCat-2\.0'` the whole repo. Then: in code and tests, drop the 2.0 candidate and keep (or add) `longcat-2.5` with model id `LongCat-2.5` on the same endpoint and key env `LONGCATAI_API_KEY` (by name only; never read or print the key); update the tests to the new candidate set; in comments and docs, change the model to LongCat-2.5. Do not change other providers or the bake-off logic. If a test pinned the exact candidate list, update it to the new list and say so. Check the repo's docs (README, AGENTS.md, docs/) for LongCat-2.0 too.
 
 ### House rules
+
 - Do not run git rebase, merge or fetch (cmd shell policy). Commit only in the worktree; no push. Commits `20261115-longcat-25-refs: chore: <what>`, no AI trailers.
 - Write only under the Result heading; keep exactly one empty Evidence heading, last in the file, and that heading's text nowhere else (not even quoted).
 - Gate: the repo's test suite (see AGENTS.md; `.venv` if present) and `procoder check <changed files>` 0 blocking.
 
 ## Acceptance criteria
 
-- [ ] No `LongCat-2.0` / `longcat-2.0` reference remains in code, tests, config or docs (grep output in Result).
-- [ ] The bake-off and judge tests pass with the LongCat-2.5 candidate; gate clean.
+- [x] No `LongCat-2.0` / `longcat-2.0` reference remains in code, tests, config or docs (grep output in Result).
+- [x] The bake-off and judge tests pass with the LongCat-2.5 candidate; gate clean.
 
 ## Result
 
@@ -101,6 +102,7 @@ Hunts that came back clean: dropped-arm label collision in the judge cannot occu
 Head check: git-ro rev-parse HEAD = 8e6c1e2b0606d6f4af36d83352109c23b62cd67e, the brief's REVIEW_SHA, and close-gate --criteria-hash recomputes the brief's value. The fix round is 1bb0c76 (the CHANGELOG.md entry) and 8e6c1e2 (the Result). Code, tests and compose.yaml are unchanged since 5017a93. Nothing was edited except this Review text.
 
 My round-1 findings (critic-5017a93):
+
 - C1 (should-fix, gate not clean): fixed. (a) The CHANGELOG entry clears the docs obligation, which no longer appears in either run. (b) With the venv first on PATH, procoder check on the five changed files gives '4 clean, 1 unformatted, 0 unchecked, 0 out of scope, 150 hygiene finding(s) (0 blocking)', the lead's figure, and the python-test step passes. With the bare PATH it still blocks on the system pytest (no pysubs2). That is environmental, and the coder escalated it correctly: the shell policy refused a leading PATH= assignment in that seat.
 - The unformatted CHANGELOG.md is pre-existing, as claimed. procoder format on HEAD's file differs only by one blank line after '### Removed'. procoder format on origin/main's CHANGELOG.md, extracted to my scratchpad, gives the same one-line diff. The new '### Changed' block is formatted.
 - C2 (nit, stale gitignored pytest cache): answered. It ships nowhere, and I ran pytest with -p no:cacheprovider so I did not touch it.
@@ -109,12 +111,14 @@ My round-1 findings (critic-5017a93):
 Reviewer findings (reviewer-5017a93; no reviewer verdict at this head, see C5): F1 and F2 still confirmed, since neither code nor tests changed.
 
 Break attempts:
+
 1. Criterion 1 re-grep at HEAD, retired token and the preview-suffixed id: no match outside .procoder.
 2. Gate both ways (venv PATH and bare PATH), plus 156 passed on the two touched test files.
 3. The formatter claim, checked against origin/main's bytes rather than taken from the Result: confirmed.
 4. The CHANGELOG entry's accuracy against compose.yaml and the bake-off arm: true, except one loose phrase (C4).
 
 New findings:
+
 - C4 info, CHANGELOG.md:13. The entry does not name both versions, because criterion 1 forbids the token; I agree. It adds a heading plus the line against a one-line grant, the minimum for Keep a Changelog. 'On the same endpoint' is loose: compose leaves the URL as ${REPAIR_OPENAI_URL:-}.
 - C5 info: there is no reviewer verdict at 8e6c1e2 in the reviews directory. If close-gate wants one at the closing head, it is still owed.
 
@@ -141,14 +145,38 @@ Interaction with main since 88094fd: main changed only uv.lock (transitive filel
 Reviewer findings (reviewer-6b2aa3b): F1 confirmed (environmental pysubs2 failures, as at 8e6c1e2). F2 confirmed: the arm and its test hunks are identical. F3 confirmed, from my own reading of HEAD's CHANGELOG and the formatter output. F4 confirmed: identical +/- lines in all four code and test files, plus CHANGELOG.
 
 Break attempts:
+
 1. Hunk-level comparison of old and new diffs, file by file, rather than relying on --stat: identical.
 2. Criterion 1 re-grep at HEAD for the retired token, the spaced variant and the preview-suffixed id, outside .procoder: no match (exit 1).
 3. Gate: `.venv/bin/python -m pytest -p no:cacheprovider` on the two touched test files gives 156 passed. With the venv first on PATH, procoder check on the five changed files gives '4 clean, 1 unformatted, 0 unchecked, 0 out of scope, 147 hygiene finding(s) (0 blocking)'.
 4. Dependency reach: the import probe and the uv.lock dependents check above.
 
 New finding:
+
 - C6 info, uv.lock:165. The shared .venv, symlinked from ../DubTitlerr, has filelock 4.2.4 installed, not the locked 4.2.10. Local test runs therefore do not exercise the exact locked version, though both are 4.x. CI installs from the lock. The bake-off never loads filelock, so this has no bearing on this change.
 
 Both criteria are met, and no blocker or should-fix finding stands.
 
 ## Evidence
+
+<!-- close-gate:begin sha256=21972479808ec1bd389a75632b373d3a753aff2e1e3f80158f523d052b0c8a86 -->
+
+Head: 739433e59268e73487fbd3e1d083d44293617b0f
+Criteria sha256: 38f9d53b55cf6a420c2b2fe3e20b0b8b14e3aa10133ba88aeddf78952f56f67b
+
+- reviewer: agy Gemini 3.8 Flash high; review_sha 6b2aa3bc47d94ff25f3b80f64f9237de23e7e320; verdict PASS; file /home/xena/work/code/.team/reviews/20261115-longcat-25-refs/reviewer-6b2aa3b.json; findings: 0 blocker, 0 should-fix, 0 nit, 4 info
+- critic: critic @ claude Opus 5.5; review_sha e9a7a85c23bd1217d26981a981c0c26d6a0f3589; verdict PASS; file /home/xena/work/code/.team/reviews/20261115-longcat-25-refs/critic-e9a7a85.json; findings: 0 blocker, 0 should-fix, 0 nit, 1 info
+
+Tree equality: the head equals each reviewed commit outside the task file.
+
+CI source: gh api XenaRathon/DubTitlerr
+
+| Check       | Conclusion | URL                                                                                |
+| ----------- | ---------- | ---------------------------------------------------------------------------------- |
+| lint        | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43785823599/job/133033093447 |
+| osv-scan    | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43785823599/job/133033093272 |
+| review-ui   | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43785823599/job/133033093485 |
+| test (3.11) | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43785823599/job/133033093494 |
+| test (3.13) | success    | https://github.com/XenaRathon/DubTitlerr/actions/runs/43785823599/job/133033093377 |
+
+<!-- close-gate:end -->
