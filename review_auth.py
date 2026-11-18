@@ -630,6 +630,7 @@ register_routes(
         ("POST", "/api/users"): "admin",
         ("PUT", "/api/users/*"): "admin",
         ("DELETE", "/api/users/*"): "admin",
+        ("DELETE", "/api/requests/*"): "admin",
     }
 )
 

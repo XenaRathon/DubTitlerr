@@ -1282,3 +1282,55 @@ def test_shows_cli_prints_one_show_per_line(tmp_path):
         check=True,
     ).stdout
     assert out == "Show A\nShow B\n"
+
+
+def test_delete_request_api(tmp_path):
+    import json
+    import os
+    requests_dir = str(tmp_path)
+    os.environ["REQUESTS_DIR"] = requests_dir
+    os.makedirs(os.path.join(requests_dir, "failed"), exist_ok=True)
+
+    status, payload = handle("DELETE", "/api/requests/not-an-id", requests_dir=requests_dir, user="admin")
+    assert status == 400
+    assert "invalid request id" in payload["error"]
+
+    valid_id = "20261012T100000.123456Z-11111111"
+    status, payload = handle("DELETE", f"/api/requests/{valid_id}", requests_dir=requests_dir, user="admin")
+    assert status == 409
+    assert "request is not pending" in payload["error"]
+
+    pending_path = os.path.join(requests_dir, f"{valid_id}.json")
+    with open(pending_path, "w") as f:
+        json.dump({"id": valid_id, "status": "pending"}, f)
+
+    status, payload = handle("DELETE", f"/api/requests/{valid_id}", requests_dir=requests_dir, user="test_user")
+    assert status == 200
+    assert payload["status"] == "removed"
+
+    assert not os.path.exists(pending_path)
+    failed_path = os.path.join(requests_dir, "failed", f"{valid_id}.json")
+    assert os.path.exists(failed_path)
+
+    with open(failed_path) as f:
+        data = json.load(f)
+    assert data["status"] == "removed"
+    assert data["error"] == "removed by test_user"
+    assert "finished_at" in data
+
+def test_request_claim_race_condition(tmp_path):
+    import json
+    import os
+
+    from review_requests import remove
+
+    requests_dir = str(tmp_path)
+    os.environ["REQUESTS_DIR"] = requests_dir
+    valid_id = "20261012T100000.123456Z-11111111"
+    pending_path = os.path.join(requests_dir, f"{valid_id}.json")
+
+    with open(pending_path, "w") as f:
+        json.dump({"id": valid_id, "status": "pending"}, f)
+
+    status, payload = remove(valid_id, user="admin", requests_dir=requests_dir)
+    assert status == 200

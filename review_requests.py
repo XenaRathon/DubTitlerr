@@ -657,14 +657,17 @@ def _check_requests_dir_containment(path: str, requests_dir: str | None = None) 
 def mark_running(path: str, requests_dir: str | None = None) -> str:
     """Mark a pending request as running, renaming it to .running on disk."""
     _check_requests_dir_containment(path, requests_dir)
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-
-    data["status"] = "running"
     if path.endswith(".json"):
         running_path = path[:-5] + ".running"
     else:
         running_path = path + ".running"
+
+    os.rename(path, running_path)
+
+    with open(running_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    data["status"] = "running"
 
     tmp_path = running_path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
@@ -672,10 +675,6 @@ def mark_running(path: str, requests_dir: str | None = None) -> str:
         f.write("\n")
 
     os.replace(tmp_path, running_path)
-    if os.path.exists(path) and os.path.abspath(path) != os.path.abspath(running_path):
-        with contextlib.suppress(OSError):
-            os.unlink(path)
-
     return running_path
 
 
@@ -1047,6 +1046,56 @@ def put_schedule(body: dict, schedule_file: str | None = None) -> tuple[int, dic
     return 200, clean
 
 
+def remove(
+    request_id: str,
+    user: str,
+    requests_dir: str | None = None,
+    now: datetime.datetime | float | None = None,
+) -> tuple[int, dict]:
+    """Remove a pending request and mark it as failed/removed. Atomic."""
+    import re
+    if not re.match(r"^\d{8}T\d{6}\.\d{6}Z-[0-9a-f]{8}$", request_id):
+        return 400, {"error": "invalid request id"}
+    rdir = requests_dir or os.environ.get("REQUESTS_DIR", REQUESTS_DIR)
+    pending_path = os.path.join(rdir, f"{request_id}.json")
+    failed_dir = os.path.join(rdir, "failed")
+    os.makedirs(failed_dir, exist_ok=True)
+    failed_path = os.path.join(failed_dir, f"{request_id}.json")
+
+    try:
+        os.rename(pending_path, failed_path)
+    except FileNotFoundError:
+        return 409, {"error": "request is not pending"}
+
+    if now is None:
+        dt = datetime.datetime.now(datetime.timezone.utc)
+    elif isinstance(now, (int, float)):
+        dt = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc)
+    elif isinstance(now, datetime.datetime):
+        dt = now if now.tzinfo is not None else now.replace(tzinfo=datetime.timezone.utc)
+    else:
+        dt = datetime.datetime.now(datetime.timezone.utc)
+
+    try:
+        with open(failed_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except OSError:
+        data = {"id": request_id}
+    data["status"] = "removed"
+    data["error"] = f"removed by {user}"
+    data["finished_at"] = dt.isoformat()
+
+    tmp_path = failed_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(tmp_path, failed_path)
+
+    import common
+    common.log(f"review server: request {request_id} removed by {user}")
+    return 200, {"status": "removed"}
+
+
 def handle(
     method: str,
     path: str,
@@ -1057,6 +1106,7 @@ def handle(
     anime_root: str | None = None,
     schedule_file: str | None = None,
     now: datetime.datetime | float | None = None,
+    user: str = "admin",
 ) -> tuple[int, Any]:
     """Handle HTTP requests for /api/requests and /api/schedule."""
     clean_path = path.split("?")[0].rstrip("/")
@@ -1072,6 +1122,10 @@ def handle(
                 return r.status, {"error": r.error}
 
         return 405, {"error": "method not allowed"}
+
+    if clean_path.startswith("/api/requests/") and method == "DELETE":
+        request_id = clean_path.split("/")[-1]
+        return remove(request_id, user, requests_dir=requests_dir, now=now)
 
     if clean_path == "/api/schedule":
         if method == "GET":
@@ -1159,6 +1213,9 @@ def main() -> None:
             sys.exit(1)
         try:
             mark_running(args[1])
+        except FileNotFoundError as e:
+            print(f"error marking running: file not found: {e}", file=sys.stderr)
+            sys.exit(2)
         except Exception as e:
             print(f"error marking running: {e}", file=sys.stderr)
             sys.exit(1)

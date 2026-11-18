@@ -221,7 +221,12 @@ EOF
 		fi
 
 		echo "#### RUN REQUEST for $req_show ($req_path) $(date)"
-		if ! python3 "$APP_DIR"/review_requests.py start "$req_path" </dev/null 2>&1; then
+		python3 "$APP_DIR"/review_requests.py start "$req_path" </dev/null 2>&1 && start_code=0 || start_code=$?
+		if [ $start_code -ne 0 ]; then
+			if [ $start_code -eq 2 ]; then
+				echo "gen_loop: request $req_path was removed before it started, skipping"
+				continue
+			fi
 			echo "gen_loop: failed to claim request $req_path — stopping drain"
 			break
 		fi

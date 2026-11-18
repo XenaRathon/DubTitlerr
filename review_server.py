@@ -1087,6 +1087,10 @@ def _route(method: str, path: str, bare: str, body: dict, decision, client: str,
         return 200, handle_apply(str(body.get("stem", "")))
     if method == "GET" and bare in ("/api/requests", "/api/schedule"):
         return review_requests.handle("GET", bare, body, anime_root=_anime_root())
+    if method == "DELETE" and bare.startswith("/api/requests/"):
+        p = decision.principal
+        user = f"{p.kind}:{p.name}" if p and getattr(p, "name", None) else "admin"
+        return review_requests.handle("DELETE", bare, body, anime_root=_anime_root(), user=user)
     if bare in ("/api/settings", "/api/settings/schema", "/api/settings/reset", "/api/settings/test", "/api/system/restart"):
         p = decision.principal
         return settings_api.handle(method, bare, body, who=f"{p.kind}:{p.name}" if p and p.name else "admin")
