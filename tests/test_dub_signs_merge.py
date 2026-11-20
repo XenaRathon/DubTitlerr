@@ -937,6 +937,20 @@ def _track_with_dialogue(fontname="Arial", style_name="Default"):
     return t
 
 
+def test_fansub_font_sidecar_mode_falls_back_to_safe_font(tmp_path, monkeypatch):
+    import dub_signs_merge as dm
+
+    monkeypatch.setattr(dm, "DUB_OUTPUT", "sidecar")
+    monkeypatch.setattr(dm, "list_attachment_filenames", lambda v: ["ExoticFont.ttf"])
+
+    # Fake tracks
+    track_file = _track_with_dialogue(fontname="ExoticFont", style_name="Default")
+    track = {"subs": track_file, "src_events": list(track_file)}
+
+    font = dm.resolve_dialogue_font("video.mkv", [track], track)
+    assert font == dm.DEFAULT_DUB_FONT
+
+
 def test_fansub_font_attachment_present(tmp_path, monkeypatch):
     track = _track_with_dialogue(fontname="WildWords", style_name="Default")
     monkeypatch.setattr(dsm, "signs_sub_streams", lambda video, langs: [0])
@@ -1159,9 +1173,7 @@ def test_primary_track_selection_more_events_wins(tmp_path, monkeypatch, capsys)
     track1.events[0].text = r"{\pos(120,210)\fs40}Tokyo Tower"
     track1.events[0].start = 1000
     track1.events[0].end = 3000
-    track1.events.append(
-        pysubs2.SSAEvent(start=5000, end=7000, style="SignB", text=r"{\pos(200,300)}Shinjuku")
-    )
+    track1.events.append(pysubs2.SSAEvent(start=5000, end=7000, style="SignB", text=r"{\pos(200,300)}Shinjuku"))
 
     status, signs, dub, out_ass = _two_track_build(tmp_path, monkeypatch, track0, track1)
     assert status == "ok"
@@ -1269,8 +1281,6 @@ def test_secondary_sign_layer_preserved_and_style_conflict_logged(tmp_path, monk
     assert "style conflict: 'OtherSign'" not in out
 
 
-
-
 # --- Follow-up 1: PlayRes declared as a float / padded / garbage -------------
 
 
@@ -1367,9 +1377,7 @@ def test_unpositioned_drawings_with_the_same_path_are_collapsed_whatever_the_spa
 def _count_match_calls(tmp_path, monkeypatch, primary_extra):
     def tr(off):
         return [
-            pysubs2.SSAEvent(
-                start=i * 600 + off, end=i * 600 + off + 1500, style="Signs", text=f"{{\\pos(100,100)}}SIGN {i}"
-            )
+            pysubs2.SSAEvent(start=i * 600 + off, end=i * 600 + off + 1500, style="Signs", text=f"{{\\pos(100,100)}}SIGN {i}")
             for i in range(2000)
         ]
 
@@ -1396,8 +1404,7 @@ def _count_match_calls(tmp_path, monkeypatch, primary_extra):
 def test_long_primary_events_do_not_blow_up_the_number_of_comparisons(tmp_path, monkeypatch):
     base_calls, _ = _count_match_calls(tmp_path, monkeypatch, [])
     long_karaoke = [
-        pysubs2.SSAEvent(start=i * 300_000, end=i * 300_000 + 120_000, style="OP", text=r"{\k20}la{\k20}la")
-        for i in range(3)
+        pysubs2.SSAEvent(start=i * 300_000, end=i * 300_000 + 120_000, style="OP", text=r"{\k20}la{\k20}la") for i in range(3)
     ]
     calls, _ = _count_match_calls(tmp_path, monkeypatch, long_karaoke)
     assert calls <= 3 * base_calls, f"{calls} comparisons vs {base_calls} without the long events"
@@ -1415,15 +1422,11 @@ def test_bisect_window_gives_the_same_survivors_as_a_full_scan(tmp_path, monkeyp
             start = rng.randrange(0, 600_000, 10)
             dur = rng.choice([0, 500, 2000, 8000])
             t.events.append(
-                pysubs2.SSAEvent(
-                    start=start, end=start + dur, style="Signs", text=f"{{\\pos(10,10)}}{rng.choice(texts)}"
-                )
+                pysubs2.SSAEvent(start=start, end=start + dur, style="Signs", text=f"{{\\pos(10,10)}}{rng.choice(texts)}")
             )
         for _ in range(long_ones):
             start = rng.randrange(0, 400_000, 10)
-            t.events.append(
-                pysubs2.SSAEvent(start=start, end=start + 120_000, style="Signs", text=r"{\pos(10,10)}EXIT")
-            )
+            t.events.append(pysubs2.SSAEvent(start=start, end=start + 120_000, style="Signs", text=r"{\pos(10,10)}EXIT"))
         return t
 
     def kept(track):
