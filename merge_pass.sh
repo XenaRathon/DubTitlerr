@@ -11,7 +11,9 @@
 # Env: MERGE_ROOTS, OLLAMA_URL, REPAIR_MODEL, GLOSSARY_DIR, PLEX_URL, PLEX_TOKEN, PLEX_SECTION,
 #      MIN_FREE_GB, KEEP_LANGS.
 ROOT="${MERGE_ROOTS:-/media/Anime Library}"
-APP="${APP_DIR:-/scripts}"
+# Default: the directory this script lives in (/app in the published image), so a manual
+# `sh /app/merge_pass.sh` finds its stages without APP_DIR. container_run.sh still exports it.
+APP="${APP_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 export PYTHONPATH="$APP${PYTHONPATH:+:$PYTHONPATH}" # so inline `python3 -c "import common"` snippets resolve
 # Stored settings (settings.json / secrets.json, written by the web UI): applied at the start of EVERY pass, so a change takes
 # effect at the next pass boundary and never mid-episode. NOT `source`d: review_settings_write.py parses and re-validates the
@@ -27,6 +29,14 @@ fi
 if [ -d "${CONFIG_DIR:-/config}" ] && [ -f "$APP/review_requests.py" ]; then
 	python3 "$APP/review_requests.py" write-effective-env "${CONFIG_DIR:-/config}/merge-effective.env" || true
 fi
+# A wrong APP_DIR is a configuration error, not a stage failure: without this check the first episode records a
+# repair "crashed" stage (python3 cannot open repair.py) that keeps every later pass INCOMPLETE until cleared by hand.
+for _stage in repair.py dub_signs_merge.py mux.py; do
+	[ -f "$APP/$_stage" ] || {
+		echo "FATAL: $APP/$_stage not found — set APP_DIR to the directory that holds the pipeline scripts"
+		exit 1
+	}
+done
 command -v ffmpeg >/dev/null 2>&1 || {
 	echo "FATAL: ffmpeg not found — image is misbuilt"
 	exit 1
@@ -46,7 +56,7 @@ cd "$ROOT" || {
 
 # EXTRA_DIRS single source of truth (B7/B9): data/extras.txt via shell/lib.sh, with an
 # inline fallback (the pre-consolidation regex) if the lib or data file isn't present
-# (e.g. run under the deprecated $APP=/scripts flow, which doesn't ship these files).
+# (e.g. an APP_DIR checkout that doesn't ship these files).
 #
 # The file test is load-bearing, NOT belt-and-braces: `.` is a POSIX special builtin, so
 # sourcing a missing file is a fatal error that terminates a non-interactive shell BEFORE

@@ -8,6 +8,10 @@ that shipped since.
 
 ## [Unreleased]
 
+### Fixed
+
+- `merge_pass.sh` run by hand (without `APP_DIR`) now uses its own directory instead of `/scripts`, and a wrong `APP_DIR` stops the pass with one `FATAL` line instead of recording a repair `crashed` stage that kept later passes INCOMPLETE (#39).
+
 ### Security
 
 - Bump transitive `filelock` 3.32.4 → 4.2.10 and `setuptools` 84.0.0 → 84.2.1 in `uv.lock` to clear the osv-scan advisories.
