@@ -2059,3 +2059,101 @@ def test_a_schema_1_sidecar_with_no_compute_fields_still_reads(tmp_path):
     with open(path, "w") as f:
         json.dump(doc, f)
     assert common.read_words(stem) is not None
+
+
+# --- sidecar output (DUB_OUTPUT=sidecar, #38): the finished subtitle stays beside the video ---------------------------
+# Under mux output a sidecar on disk is always pending work, so "a sidecar exists" was a safe reason to skip. Under sidecar
+# output the finished subtitle looks the same. The stamp field `"output": "sidecar"` is what tells them apart.
+
+
+def _sidecar_stamped(tmp_path, leftovers):
+    """An episode finished by sidecar output: the subtitle (older than the stamp) and a stamp that says so."""
+    v = tmp_path / "ep.mkv"
+    v.write_bytes(b"x" * 1000)
+    stamp = tmp_path / ("ep" + generate.STAMP_SUFFIX)
+    common.write_stamp(str(stamp), str(v), output="sidecar")
+    stamp_mtime = stamp.stat().st_mtime
+    for name in leftovers:
+        p = tmp_path / name
+        p.write_text("the finished subtitle")
+        os.utime(p, (stamp_mtime - 60, stamp_mtime - 60))
+    return v
+
+
+def test_a_finished_sidecar_episode_needs_no_work_and_keeps_its_subtitle(monkeypatch, tmp_path):
+    v = _sidecar_stamped(tmp_path, ["ep.eng.dubtitles.ass"])
+    assert _real_needs_work()(str(v)) is False
+    assert generate.process(str(v)) == "already-muxed"
+    assert (tmp_path / "ep.eng.dubtitles.ass").exists()
+
+
+def test_a_replaced_video_parks_the_sidecar_made_for_the_old_one(monkeypatch, tmp_path):
+    """The subtitle beside the new file was timed for the old one. Without this the already-ass / already-srt skips read
+    it as an episode waiting for the merge pass, and it is never transcribed again."""
+    v = _sidecar_stamped(tmp_path, ["ep.eng.dubtitles.ass", "ep.dubtitles.conf.json"])
+    v.write_bytes(b"a different release of the same episode")
+    assert _real_needs_work()(str(v)) is True
+    monkeypatch.setattr(generate, "eng_audio_index", lambda video: None)
+    assert generate.process(str(v)) == "no-eng-dub"  # NOT "already-ass"
+    assert not (tmp_path / "ep.eng.dubtitles.ass").exists()
+    assert (tmp_path / "ep.eng.dubtitles.ass.stale").exists(), "parked, not deleted"
+
+
+def test_a_replaced_video_keeps_a_sidecar_newer_than_the_old_stamp(monkeypatch, tmp_path):
+    """This run's own output, waiting for the merge pass: the park rule (older than the stamp only) still protects it."""
+    v = _sidecar_stamped(tmp_path, [])
+    v.write_bytes(b"a different release of the same episode")
+    fresh = tmp_path / "ep.eng.dubtitles.srt"
+    fresh.write_text("freshly transcribed")
+    later = (tmp_path / ("ep" + generate.STAMP_SUFFIX)).stat().st_mtime + 60
+    os.utime(fresh, (later, later))
+    assert generate.process(str(v)) == "already-srt"
+    assert fresh.exists()
+
+
+def test_a_replaced_muxed_video_with_a_pending_sidecar_is_handled_as_before(monkeypatch, tmp_path):
+    """Nothing changes for mux output: a stamp mux wrote, for another file, parks nothing."""
+    v = _sidecar_stamped(tmp_path, ["ep.eng.dubtitles.ass"])
+    common.write_stamp(str(tmp_path / ("ep" + generate.STAMP_SUFFIX)), str(v))  # mux's stamp: no "output"
+    v.write_bytes(b"a different release of the same episode")
+    assert _real_needs_work()(str(v)) is False
+    assert generate.process(str(v)) == "already-ass"
+    assert (tmp_path / "ep.eng.dubtitles.ass").exists()
+
+
+def _text_stale_with_an_ass(tmp_path, monkeypatch, ass_age):
+    """A text-stale episode with a usable words.json and an .ass ``ass_age`` seconds away from its stamp."""
+    words, segments = _clamped_fixture()
+    v = _stamped(tmp_path, "ep.mkv", transcribe_version=common.TRANSCRIBE_VERSION, version=4)
+    stem = os.path.splitext(v)[0]
+    monkeypatch.setattr(generate, "INITIAL_PROMPT", "p")
+    generate.write_words(stem, words, segments, 7.0, initial_prompt="p")
+    with open(stem + ".eng.dubtitles.ass", "w") as f:
+        f.write("an assembled subtitle")
+    at = os.path.getmtime(stem + common.STAMP_SUFFIX) + ass_age
+    os.utime(stem + ".eng.dubtitles.ass", (at, at))
+    return v, stem
+
+
+def test_the_text_replay_clears_an_ass_left_by_the_superseded_run(tmp_path, monkeypatch):
+    """A replay writes a new srt in place, and an .ass older than the stamp was assembled from the OLD one: sidecar output
+    keeps it for good, and under mux one survives a cleanup that failed after stamping. mux prefers the .ass and the merge
+    pass only assembles when there is none, so the old text would ship and be stamped current."""
+    v, stem = _text_stale_with_an_ass(tmp_path, monkeypatch, ass_age=-60)
+
+    assert generate.process_text(v) == "ok"
+
+    assert os.path.exists(stem + ".eng.dubtitles.srt")
+    assert not os.path.exists(stem + ".eng.dubtitles.ass")
+    assert generate.parked_sidecars(stem) == [], "parked for the replay, dropped once the replacement landed"
+    assert common.read_words(stem) is not None, "the replay reads words.json: it must never be parked with the .ass"
+
+
+def test_the_text_replay_keeps_an_ass_newer_than_the_stamp(tmp_path, monkeypatch):
+    """Assembled after the stamp: this version's own output, waiting on a mux that was held back. Clearing it would send
+    the episode through repair again on every sweep for as long as the hold lasts."""
+    v, stem = _text_stale_with_an_ass(tmp_path, monkeypatch, ass_age=+60)
+
+    assert generate.process_text(v) == "ok"
+
+    assert open(stem + ".eng.dubtitles.ass").read() == "an assembled subtitle"

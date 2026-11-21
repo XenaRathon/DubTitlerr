@@ -73,6 +73,17 @@ Then open `http://<host>:8842/review/setup` to create the admin account. Repair 
 - An OpenAI-compatible endpoint for repair: llama.cpp serving qwen3-4b-instruct is the default, or use a hosted API with a key ([Repair with a hosted model](https://github.com/XenaRathon/DubTitlerr/wiki/How-To-Guides#repair-with-a-hosted-model)). A hosted API receives the lines it repairs.
 - Everything else (ffmpeg, Python packages) is baked into the image, so there is nothing else to install.
 
+## Sidecar output
+
+By default the finished subtitle is muxed into the video. To leave it beside the video instead, set `DUB_OUTPUT=sidecar`: under Settings > Output in the web UI, or as a `DUB_OUTPUT: sidecar` line in the `environment:` block of `compose.yaml`.
+
+- The video file is never rewritten: no remux, no track dropped, and an MP4 stays an MP4.
+- The output is `<episode>.eng.dubtitles.ass` when signs and songs were merged in, and `<episode>.eng.dubtitles.srt` otherwise. Media servers that read external subtitles list it as its own stream.
+- The `.dubtitles.done` stamp is still written, so a finished episode is skipped on later passes and regenerated after a pipeline version bump.
+- The dialogue uses a font every player has, because a sidecar carries no fonts. Signs and songs keep their styles.
+
+The mode applies to episodes finished after you change it. The details are in the [Reference](https://github.com/XenaRathon/DubTitlerr/wiki/Reference#sidecar-output).
+
 ## Documentation
 
 | Page                                                                                         | What is there                                                             |

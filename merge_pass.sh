@@ -6,6 +6,8 @@
 #   2. mux: embed the .ass (mkv) / .srt (mp4) into the video as a default "Dubtitles"
 #      track WITH the embedded fonts (mp4 is remuxed to mkv) -> signs render correctly,
 #      a .dubtitles.done stamp is written, sidecars removed.
+#      With DUB_OUTPUT=sidecar nothing is embedded: the .ass / .srt stays beside the video as the output,
+#      the video is never rewritten, and this step only writes the stamp.
 # Idempotent: a muxed episode has the stamp + embedded track, so it's skipped next pass.
 # Per-episode availability; refreshes Plex when this pass muxed anything new.
 # Env: MERGE_ROOTS, OLLAMA_URL, REPAIR_MODEL, GLOSSARY_DIR, PLEX_URL, PLEX_TOKEN, PLEX_SECTION,
@@ -27,6 +29,16 @@ fi
 if [ -d "${CONFIG_DIR:-/config}" ] && [ -f "$APP/review_requests.py" ]; then
 	python3 "$APP/review_requests.py" write-effective-env "${CONFIG_DIR:-/config}/merge-effective.env" || true
 fi
+# DUB_OUTPUT: where the finished subtitle goes. mux (the default) embeds it in the video; sidecar leaves it beside the video
+# and never rewrites the video. Checked here, after the stored settings are applied and before any stage runs. An unknown
+# value stops the pass instead of falling back: the fallback would be mux, the one mode that rewrites video files.
+case "${DUB_OUTPUT:-mux}" in
+mux | sidecar) ;;
+*)
+	echo "FATAL: configuration error — DUB_OUTPUT='${DUB_OUTPUT}' is not mux or sidecar. Nothing assembled, nothing muxed."
+	exit 1
+	;;
+esac
 command -v ffmpeg >/dev/null 2>&1 || {
 	echo "FATAL: ffmpeg not found — image is misbuilt"
 	exit 1
@@ -89,6 +101,12 @@ has_record() {
 	python3 -c "import common,sys; sys.exit(0 if sys.argv[2] in common.read_stages(sys.argv[1]) else 1)" "$1" "$2" </dev/null >/dev/null 2>&1
 }
 
+# "yes" if the subtitle beside this stem is finished sidecar output (common.kept_sidecar), "no" if it is work for this pass.
+# Fails CLOSED like stage_failure: "gate-error" when the check itself cannot run.
+kept_sidecar() {
+	python3 -c "import common,sys; print('yes' if common.kept_sidecar(sys.argv[1]) else 'no')" "$1" </dev/null 2>/dev/null || echo "gate-error"
+}
+
 before=$(find "$@" -type f -name "*.dubtitles.done" | wc -l)
 # episodes with a sidecar (srt or ass) -> dedup to the stem
 find "$@" -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" \) |
@@ -101,6 +119,19 @@ find "$@" -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" 
 		break
 	fi
 	[ -f "$stem.dubtitles.fail" ] && continue # generate crashed on it -> skip
+	# Sidecar output (DUB_OUTPUT=sidecar) leaves the finished subtitle beside the video for good, so finding one no longer
+	# proves there is work waiting. The stamp says which it is. Only a stem that HAS a stamp is asked, so a stem that was
+	# never finished takes exactly the path it always took. Without this, every pass would run repair again on each
+	# finished dialogue-only episode. A check that cannot run skips the stem: repairing and stamping blind is the worse error.
+	if [ -f "$stem.dubtitles.done" ]; then
+		kept=$(kept_sidecar "$stem")
+		if [ "$kept" = "yes" ]; then
+			continue
+		elif [ "$kept" != "no" ]; then
+			echo "skip: cannot tell whether $stem is finished sidecar output ($kept)"
+			continue
+		fi
+	fi
 	if [ ! -f "$stem.eng.dubtitles.ass" ] && [ -f "$stem.eng.dubtitles.srt" ]; then
 		echo "### assemble $stem"
 		# Drop records from older runs so the crash fallbacks and the gates below only ever see
