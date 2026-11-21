@@ -71,6 +71,7 @@ from common import (
     out_for,
     read_stamp,
     read_words,
+    sidecar_outlived_video,
     stale_tiers,
     stale_version_stamp,
     stamp_valid,
@@ -447,7 +448,7 @@ def write_words(stem, words, segments, audio_duration, initial_prompt=""):
     _atomic_write(out_for(stem + WORDS_SUFFIX), lambda f: json.dump(doc, f))
 
 
-def park_stale_sidecars(stem):
+def park_stale_sidecars(stem, suffixes=None):
     """Move the sidecars LEFT BEHIND by a superseded pipeline version (see
     common.stale_version_stamp) out of the way. They are last version's output, not
     pending work: left in place they'd make the skips in process() return
@@ -476,12 +477,14 @@ def park_stale_sidecars(stem):
     would read as "no progress" and abandon the show mid-regeneration.
 
     (Raw paths, not out_for(): mux reads these same raw paths, so both already assume
-    OUTPUT_ROOT resolves into the same mergerfs pool view.)"""
+    OUTPUT_ROOT resolves into the same mergerfs pool view.)
+
+    ``suffixes`` narrows what is parked (default: all of SIDECAR_SUFFIXES). process_text() parks the .ass alone."""
     try:
         stamp_mtime = os.path.getmtime(stem + STAMP_SUFFIX)
     except OSError:
         return  # no stamp -> nothing is attributable to it
-    for suff in SIDECAR_SUFFIXES:
+    for suff in SIDECAR_SUFFIXES if suffixes is None else suffixes:
         p = stem + suff
         try:
             if os.path.getmtime(p) > stamp_mtime:
@@ -941,6 +944,13 @@ def process_text(video):
         _note_words_stats(rec)
         return "no-words"
     _note_words_stats(rec)
+    # The replay overwrites the srt, conf and qc in place and READS words.json, so none of those is parked. The .ass is
+    # different: nothing here rewrites it, and one that predates the stamp was assembled from the srt being replaced.
+    # Sidecar output keeps such an .ass beside the video for good (#38); under mux one survives a cleanup that failed
+    # after stamping. mux.sub_source prefers an .ass and merge_pass.sh only assembles when there is none, so left in
+    # place it would ship last version's text under a current stamp. process() parks it for a transcribe run; this is
+    # the same rule for a replay. An .ass NEWER than the stamp is this version's own, still waiting, and is kept.
+    park_stale_sidecars(stem, (".eng.dubtitles.ass",))
     return text_stages(
         stem,
         doc["words"],
@@ -965,7 +975,9 @@ def process(video):
     # poison-marked file: that one is never transcribed, so discarding its sidecars would
     # be pure destruction (mux would then have nothing to embed until the marker is
     # cleared by hand).
-    if stale_version_stamp(stamp, video) and not os.path.exists(fail):
+    # Sidecar output stamped for a video that has since been replaced is superseded in the same way: the subtitle beside
+    # the new file was timed for the old one.
+    if (stale_version_stamp(stamp, video) or sidecar_outlived_video(stamp, video)) and not os.path.exists(fail):
         park_stale_sidecars(stem)
     if os.path.exists(stem + ".eng.dubtitles.ass"):  # assembled already -> skip (idempotent)
         return "already-ass"
@@ -1158,7 +1170,7 @@ def main():
             return False  # poison marker wins
         # Superseded output: its leftover sidecars are stale, so the checks below must not
         # read them as "done" -- process() discards them and re-transcribes.
-        if stale_version_stamp(stamp, v):
+        if stale_version_stamp(stamp, v) or sidecar_outlived_video(stamp, v):
             return True
         if os.path.exists(stem + ".eng.dubtitles.ass"):
             return False
