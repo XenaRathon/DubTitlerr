@@ -538,20 +538,6 @@ def test_sweep_on_still_merges_every_show(tmp_path):
     assert (root / "Second" / "ep01.eng.dubtitles.ass").exists()
 
 
-def test_app_dir_unset_resolves_to_script_dir_and_finds_scripts(tmp_path):
-    root, stem = _episode(tmp_path)
-    bindir = _fake_bin(tmp_path, "mkvmerge")
-    _fake_bin(tmp_path, "ffmpeg")
-    env = dict(os.environ)
-    env["PATH"] = bindir + os.pathsep + env["PATH"]
-    env.update(MERGE_ROOTS=str(root))
-    env.pop("APP_DIR", None)
-    env["LIBRARY_SWEEP"] = "0"
-    res = subprocess.run(["/bin/sh", MERGE_PASS], env=env, cwd=str(root), capture_output=True, text=True, timeout=60)
-    assert res.returncode == 0, res.stdout + res.stderr
-    assert "FATAL" not in res.stdout
-
-
 def test_bogus_app_dir_fails_fast_and_writes_no_record(tmp_path):
     root, stem = _episode(tmp_path)
     bindir = _fake_bin(tmp_path, "mkvmerge")
@@ -566,17 +552,74 @@ def test_bogus_app_dir_fails_fast_and_writes_no_record(tmp_path):
     assert not (root / "Show" / "ep01.dubtitles.stages.json").exists()
 
 
-def test_symlinked_script_resolves_correctly(tmp_path):
-    root, stem = _episode(tmp_path)
+def _manual_run_without_app_dir(tmp_path, root, argv, cwd):
+    """merge_pass.sh as an operator runs it by hand: APP_DIR is not exported (container_run.sh is what exports it)."""
     bindir = _fake_bin(tmp_path, "mkvmerge")
     _fake_bin(tmp_path, "ffmpeg")
     env = dict(os.environ)
-    env["PATH"] = bindir + os.pathsep + env["PATH"]
-    env.update(MERGE_ROOTS=str(root))
     env.pop("APP_DIR", None)
-    link_path = tmp_path / "symlink_pass.sh"
-    os.symlink(MERGE_PASS, link_path)
-    env["LIBRARY_SWEEP"] = "0"
-    res = subprocess.run(["/bin/sh", str(link_path)], env=env, cwd=str(root), capture_output=True, text=True, timeout=60)
-    assert res.returncode == 0, res.stdout + res.stderr
-    assert "configuration error" not in res.stdout
+    env["PATH"] = bindir + os.pathsep + env["PATH"]
+    env.update(MERGE_ROOTS=str(root), PYTHONPATH=_REPO, CALLLOG=str(tmp_path / "calls.log"))
+    res = subprocess.run(["/bin/sh", *argv], env=env, cwd=cwd, capture_output=True, text=True, timeout=60)
+    return res, (tmp_path / "calls.log").read_text().split("\n")[:-1]
+
+
+def _installed_like_the_image(tmp_path):
+    """merge_pass.sh next to the stage scripts in one folder, the layout of /app in the published image."""
+    app = _stub_app(tmp_path)
+    shutil.copy(MERGE_PASS, app / "merge_pass.sh")
+    return app
+
+
+def test_a_manual_run_by_absolute_path_reaches_every_stage_without_app_dir(tmp_path, monkeypatch):
+    """#39's repro, `docker exec dubtitlerr sh /app/merge_pass.sh`: every stage is found beside the script and runs, and the
+    episode is not left with a `crashed` repair record."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    root, stem = _episode(tmp_path)
+    app = _installed_like_the_image(tmp_path)
+    res, calls = _manual_run_without_app_dir(tmp_path, root, [str(app / "merge_pass.sh")], cwd=str(root))
+    assert calls == ["repair ep01", "signs ep01", "mux ep01"], (calls, res.stdout, res.stderr)
+    assert common.failed_stage(stem) is None
+    assert "MERGE PASS COMPLETE" in res.stdout, res.stdout + res.stderr
+
+
+def test_a_manual_run_by_relative_path_reaches_every_stage_without_app_dir(tmp_path, monkeypatch):
+    """`cd /app && sh merge_pass.sh`: $0 is a bare file name, and the script changes directory to the library before it runs
+    a stage, so the app folder has to be resolved to an absolute path first."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    root, stem = _episode(tmp_path)
+    app = _installed_like_the_image(tmp_path)
+    res, calls = _manual_run_without_app_dir(tmp_path, root, ["merge_pass.sh"], cwd=str(app))
+    assert calls == ["repair ep01", "signs ep01", "mux ep01"], (calls, res.stdout, res.stderr)
+    assert common.failed_stage(stem) is None
+
+
+def test_a_wrong_app_dir_is_reported_once_and_no_stage_runs(tmp_path, monkeypatch):
+    """A folder that exists but holds no stage scripts: one configuration line naming the missing script and the folder, a
+    non-zero exit, and nothing recorded against the episode (the old run recorded repair `crashed`, which later passes
+    kept reporting as a failed stage)."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    root, stem = _episode(tmp_path)
+    empty = tmp_path / "not-the-app"
+    empty.mkdir()
+    res, calls = _gated_run(tmp_path, root, extra_env={"APP_DIR": str(empty)})
+    assert res.returncode != 0
+    assert calls == []
+    assert res.stdout.count("configuration error") == 1, res.stdout
+    assert f"repair.py not found in {empty}" in res.stdout
+    assert common.read_stages(stem) == {}
+    assert "MERGE PASS" not in res.stdout
+
+
+def test_a_manual_run_through_a_symlink_resolves_to_the_real_app_folder(tmp_path, monkeypatch):
+    """A link to the script from somewhere else (/usr/local/bin/merge-pass -> /app/merge_pass.sh): the stages live beside the
+    real file, not beside the link."""
+    monkeypatch.setattr(common, "OUTPUT_ROOT", "")
+    root, stem = _episode(tmp_path)
+    app = _installed_like_the_image(tmp_path)
+    links = tmp_path / "bin"
+    links.mkdir()
+    os.symlink(app / "merge_pass.sh", links / "merge-pass")
+    res, calls = _manual_run_without_app_dir(tmp_path, root, [str(links / "merge-pass")], cwd=str(root))
+    assert calls == ["repair ep01", "signs ep01", "mux ep01"], (calls, res.stdout, res.stderr)
+    assert common.failed_stage(stem) is None
