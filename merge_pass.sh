@@ -11,7 +11,13 @@
 # Env: MERGE_ROOTS, OLLAMA_URL, REPAIR_MODEL, GLOSSARY_DIR, PLEX_URL, PLEX_TOKEN, PLEX_SECTION,
 #      MIN_FREE_GB, KEEP_LANGS.
 ROOT="${MERGE_ROOTS:-/media/Anime Library}"
-APP="${APP_DIR:-/scripts}"
+if [ -n "${APP_DIR:-}" ]; then
+	APP="$APP_DIR"
+elif _script_path="$(readlink -f "$0" 2>/dev/null)"; then
+	APP="$(dirname "$_script_path")"
+else
+	APP="/app"
+fi
 export PYTHONPATH="$APP${PYTHONPATH:+:$PYTHONPATH}" # so inline `python3 -c "import common"` snippets resolve
 # Stored settings (settings.json / secrets.json, written by the web UI): applied at the start of EVERY pass, so a change takes
 # effect at the next pass boundary and never mid-episode. NOT `source`d: review_settings_write.py parses and re-validates the
@@ -39,6 +45,14 @@ python3 -c "import pysubs2" >/dev/null 2>&1 || {
 	echo "FATAL: pysubs2 not found — image is misbuilt"
 	exit 1
 }
+
+for _script in repair.py dub_signs_merge.py mux.py; do
+	if [ ! -f "$APP/$_script" ]; then
+		echo "FATAL: $_script not found in APP ($APP) — configuration error"
+		exit 1
+	fi
+done
+
 cd "$ROOT" || {
 	echo "merge_pass: missing $ROOT"
 	exit 1

@@ -536,3 +536,47 @@ def test_sweep_on_still_merges_every_show(tmp_path):
     res, calls = _gated_run(tmp_path, root, extra_env={"LIBRARY_SWEEP": "true", "REQUESTS_DIR": str(rdir)})
     assert (root / "Requested" / "ep01.eng.dubtitles.ass").exists()
     assert (root / "Second" / "ep01.eng.dubtitles.ass").exists()
+
+
+def test_app_dir_unset_resolves_to_script_dir_and_finds_scripts(tmp_path):
+    root, stem = _episode(tmp_path)
+    bindir = _fake_bin(tmp_path, "mkvmerge")
+    _fake_bin(tmp_path, "ffmpeg")
+    env = dict(os.environ)
+    env["PATH"] = bindir + os.pathsep + env["PATH"]
+    env.update(MERGE_ROOTS=str(root))
+    env.pop("APP_DIR", None)
+    env["LIBRARY_SWEEP"] = "0"
+    res = subprocess.run(["/bin/sh", MERGE_PASS], env=env, cwd=str(root), capture_output=True, text=True, timeout=60)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "FATAL" not in res.stdout
+
+
+def test_bogus_app_dir_fails_fast_and_writes_no_record(tmp_path):
+    root, stem = _episode(tmp_path)
+    bindir = _fake_bin(tmp_path, "mkvmerge")
+    _fake_bin(tmp_path, "ffmpeg")
+    env = dict(os.environ)
+    env["PATH"] = bindir + os.pathsep + env["PATH"]
+    env.update(MERGE_ROOTS=str(root))
+    env["APP_DIR"] = "/bogus/path/here"
+    res = subprocess.run(["/bin/sh", MERGE_PASS], env=env, cwd=str(root), capture_output=True, text=True, timeout=60)
+    assert res.returncode != 0
+    assert "configuration error" in res.stdout
+    assert not (root / "Show" / "ep01.dubtitles.stages.json").exists()
+
+
+def test_symlinked_script_resolves_correctly(tmp_path):
+    root, stem = _episode(tmp_path)
+    bindir = _fake_bin(tmp_path, "mkvmerge")
+    _fake_bin(tmp_path, "ffmpeg")
+    env = dict(os.environ)
+    env["PATH"] = bindir + os.pathsep + env["PATH"]
+    env.update(MERGE_ROOTS=str(root))
+    env.pop("APP_DIR", None)
+    link_path = tmp_path / "symlink_pass.sh"
+    os.symlink(MERGE_PASS, link_path)
+    env["LIBRARY_SWEEP"] = "0"
+    res = subprocess.run(["/bin/sh", str(link_path)], env=env, cwd=str(root), capture_output=True, text=True, timeout=60)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "configuration error" not in res.stdout
