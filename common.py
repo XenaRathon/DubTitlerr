@@ -126,6 +126,24 @@ EXTRA_DIRS = load_extras()
 
 STAMP_SUFFIX = ".dubtitles.done"
 
+# DUB_OUTPUT: where the finished subtitle goes. "mux" (the default) embeds it in the video as the Dubtitles track and then
+# removes the sidecars. "sidecar" leaves <stem>.eng.dubtitles.ass/.srt beside the video and never rewrites the video (#38).
+OUTPUT_MODES = ("mux", "sidecar")
+# The subtitle sidecars the merge pass works on, in the order mux.sub_source prefers them.
+SUBTITLE_SUFFIXES = (".eng.dubtitles.ass", ".eng.dubtitles.srt")
+
+
+def output_mode() -> str:
+    """DUB_OUTPUT, read when called, so a stage started by a merge pass sees what that pass exported.
+
+    Unset or empty is "mux". Any other spelling RAISES instead of falling back. The fallback would be "mux", the one mode
+    that rewrites video files, handed to an operator who wrote `Sidecar` to ask for the opposite: #38 is a remux that dropped
+    subtitle tracks no backup held."""
+    mode = os.environ.get("DUB_OUTPUT", "") or "mux"
+    if mode not in OUTPUT_MODES:
+        raise ValueError(f"DUB_OUTPUT={mode!r} is not one of: {', '.join(OUTPUT_MODES)}")
+    return mode
+
 # TRACK_NAME: the mkv subtitle-track name mux.py stamps on our own generated dubtitle.
 # It is self-authored and used nowhere else, so it doubles as the marker that keeps the
 # pipeline from reading its OWN previous output as if it were the human fansub -- every
@@ -372,7 +390,7 @@ def atomic_write(path, render, mode=SIDECAR_MODE, newline=None):
                 pass
 
 
-def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
+def write_stamp(path: str, video: str, stages: dict | None = None, output: str | None = None) -> None:
     """Write the .dubtitles.done idempotency stamp recording the muxed file's size+mtime
     and the tier versions that produced it (stamp_valid rejects a stamp behind either
     tier, so a version bump marks every prior-version file stale).
@@ -386,7 +404,12 @@ def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
     ADDITIVE AND OPTIONAL, and stamp_valid ignores it. That is the whole constraint: if an
     older stamp stopped validating, every episode in the library would read as unprocessed
     and be fully re-transcribed -- roughly 12 GPU-hours to add a bookkeeping field. Omitted
-    entirely when the caller does not know, rather than guessed."""
+    entirely when the caller does not know, rather than guessed.
+
+    ``output`` is "sidecar" when the subtitle was left beside the video instead of muxed in, and is omitted for a mux. Additive
+    and optional in the same way, and stamp_valid ignores it too. "muxed" stays True in both cases: it is the key every
+    reader, old builds included, takes to mean "this episode is done", and a sidecar stamp without it would read as an
+    unprocessed episode. kept_sidecar() is what reads ``output``."""
     st = os.stat(video)
     doc = {
         "size": st.st_size,
@@ -403,6 +426,8 @@ def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
     }
     if stages:
         doc["stages"] = stages
+    if output:
+        doc["output"] = output
     atomic_write(path, lambda f: json.dump(doc, f))
 
 
@@ -598,6 +623,61 @@ def stale_version_stamp(stamp: dict | None, video: str) -> bool:
     if not stamp or not stamp.get("muxed") or not _stamp_matches_file(stamp, video):
         return False
     return bool(stale_tiers(stamp, video))
+
+
+def kept_sidecar(stem: str) -> bool:
+    """True when the subtitle beside this episode is FINISHED sidecar output, not work waiting for the merge pass.
+
+    Under DUB_OUTPUT=mux a subtitle sidecar on disk always means "not shipped yet", because mux removes it once the track is
+    embedded, and merge_pass.sh finds its work by globbing for one. Sidecar output breaks that: the file stays for good. The
+    stamp tells the two apart: one written by sidecar output records ``"output": "sidecar"``.
+
+    While that stamp is CURRENT, any subtitle beside it is finished output. Nothing else can have put it there: generate.py
+    skips an episode with a current stamp, and review_apply.py drops the stamp when it re-opens one. That holds whatever
+    the file times say, so a subtitle someone corrected by hand, or one copied without its timestamps, is still finished.
+    It has to be: repair rebuilds the srt from conf.json, so treating it as work would undo the correction, and since mux
+    answers already-muxed without moving the stamp, would do so again on every pass.
+
+    When the stamp is NOT current (behind on a version tier, or describing a video that has since been replaced) the
+    subtitle is superseded, and replacing it is generate.py's job: it parks the old files and writes new ones. Those are
+    newer than the stamp, which is how they are told from the ones it shipped (park_stale_sidecars' rule, for its reason).
+    Until generate has done that the merge pass must leave the old one alone. Re-running repair would spend the LLM budget,
+    every pass, on text about to be discarded; re-stamping would mark last version's subtitle current, the version bump
+    that silently does nothing (see stale_version_stamp).
+
+    Always False for a stamp mux wrote, so nothing changes for mux output."""
+    stamp_path = stem + STAMP_SUFFIX
+    stamp = read_stamp(stamp_path)
+    if not isinstance(stamp, dict) or stamp.get("output") != "sidecar":
+        return False
+    video = find_video(stem)
+    current = video is not None and stamp_valid(stamp, video)
+    try:
+        stamped_at = os.path.getmtime(stamp_path)
+    except OSError:
+        return False
+    seen = False
+    for suff in SUBTITLE_SUFFIXES:
+        try:
+            written_at = os.path.getmtime(stem + suff)
+        except OSError:
+            continue
+        if not current and written_at > stamped_at:
+            return False  # a stale stamp and a newer subtitle: generate.py's replacement -> work
+        seen = True
+    return seen
+
+
+def sidecar_outlived_video(stamp: dict | None, video: str) -> bool:
+    """True if sidecar output was stamped for a video that is no longer the file on disk (replaced or upgraded in place).
+
+    A replaced video under mux output simply reads as unprocessed: the new file has no Dubtitles track and no sidecar. Under
+    sidecar output the old subtitle is still lying beside it, timed for the old file, and generate.py's "a sidecar exists,
+    so this episode is waiting for the merge pass" skips would keep it there forever. This is what lets generate tell that
+    case from real pending work and park the old files first, as it does for a stale version."""
+    if not isinstance(stamp, dict) or stamp.get("output") != "sidecar" or not stamp.get("muxed"):
+        return False
+    return not _stamp_matches_file(stamp, video)
 
 
 def find_video(stem):

@@ -47,6 +47,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 import time
 
 import unresolved
@@ -56,7 +57,9 @@ from common import (
     STAMP_SUFFIX,
     TRACK_NAME,
     is_our_track,
+    kept_sidecar,
     log,
+    output_mode,
     read_stages,
     read_stamp,
     stamp_valid,
@@ -566,6 +569,33 @@ def cleanup_old_temps(stem: str, now: float | None = None) -> None:
                 pass
 
 
+def _keep_sidecar(stem, orig, src, stamp, apply):
+    """DUB_OUTPUT=sidecar: the assembled subtitle stays beside the video and IS the output (#38).
+
+    The video is never opened for writing: no remux, no track dropped, no mp4 turned into an mkv, no temp file, so no disk
+    headroom is needed either. All that is left of the mux stage is its bookkeeping: the stamp that makes the episode read as
+    done to every sweep (stamped against the UNTOUCHED video, so it stays valid until that file or a version changes), and
+    the stage record the pass reports from. Stamp first, as in the mux path: it is the only "done" signal, and a stage that
+    says ok beside no stamp would be re-processed every pass while reporting success."""
+    name = os.path.basename(src)
+    if not apply:
+        log(f"  PLAN sidecar {os.path.basename(orig)}: keep {name}, video untouched")
+        return "plan"
+    try:
+        write_stamp(stamp, orig, stages=_stages_ran(stem, src), output="sidecar")
+    except OSError as e:
+        log(f"  ERROR: stamp write FAILED ({e}) — {name} stays where it is and the episode is retried next sweep")
+        write_stage(stem, "mux", "unwritable", str(e))
+        return "stamp-write-failed"
+    log(f"  sidecar kept: {name} (video untouched)")
+    try:
+        write_stage(stem, "mux", "ok", "sidecar")
+    except OSError as e:
+        # stamped, so the episode IS done; the next sweep skips it before any stage record is read
+        log(f"  WARNING: stamped, but the stage record could not be written ({e})")
+    return "sidecar-kept"
+
+
 def process(orig, apply):
     stem, ext = os.path.splitext(orig)
     marker = stem + RECOVERY_SUFFIX
@@ -604,12 +634,19 @@ def process(orig, apply):
             return "signs-regression-refused"
     if stamp_valid(read_stamp(stamp), orig):
         return "already-muxed"  # stat-only, version-aware stamp is the ONLY guard
+    if kept_sidecar(stem):
+        # Sidecar output an earlier run already shipped, under a stamp that is no longer current (a version bump, or the
+        # video was replaced). generate.py replaces it. Stamping it again here, or muxing it, would call last version's
+        # subtitle current. Whatever DUB_OUTPUT says now: the stamp decides, not the mode.
+        return "awaiting-regeneration"
     # AFTER the stamp check, not before it (the plan sketched the reverse). An episode that
     # already shipped cannot be held back -- reporting a hold for it would inflate the
     # backlog count with episodes no review can affect, and hide "already-muxed" behind a
     # status the operator is meant to act on.
     if held_for_review(stem):
         return "held-for-review"
+    if output_mode() == "sidecar":
+        return _keep_sidecar(stem, orig, src, stamp, apply)
     if not has_room(_free_bytes(orig), os.path.getsize(orig)):
         log("  skip (low disk):", os.path.basename(orig))
         return "skip-no-room"
@@ -757,7 +794,13 @@ def main(argv=None):
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("paths", nargs="*", help="explicit video paths; else walk MUX_ROOTS")
     a = ap.parse_args(argv)
-    if a.apply and os.geteuid() != 0:
+    try:
+        mode = output_mode()
+    except ValueError as e:
+        # before the walk, and not per episode: a misspelt mode is a configuration error, not an episode failure
+        log(f"FATAL: {e} — nothing muxed, nothing stamped")
+        return 2
+    if a.apply and mode == "mux" and os.geteuid() != 0:
         log("WARNING: not root — atomic replace may fail (mergerfs perms).")
     vids = list(a.paths)
     if not vids:
@@ -786,4 +829,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

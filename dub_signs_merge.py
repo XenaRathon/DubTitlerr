@@ -44,7 +44,7 @@ from collections import Counter
 
 import pysubs2
 
-from common import MEDIA_GID, MEDIA_UID, find_video, log, out_for, signs_sub_streams, write_stage
+from common import MEDIA_GID, MEDIA_UID, find_video, log, out_for, output_mode, signs_sub_streams, write_stage
 from common import extract_sub as extract
 
 SAFE_FONTS = {
@@ -186,23 +186,31 @@ def resolve_dialogue_font(video, loaded_tracks, primary_track):
     if not candidate_font:
         return DEFAULT_DUB_FONT
 
-    attachments = list_attachment_filenames(video)
-    norm_font = _normalize_font_token(candidate_font)
-    font_attached = False
-    if norm_font:
-        for att in attachments:
-            norm_att = _normalize_font_token(att)
-            if norm_att and (norm_font in norm_att):
-                font_attached = True
-                break
+    # DUB_OUTPUT=sidecar: the .ass is read from beside the video by whichever player opens it. mux ships the fonts with the
+    # track it embeds; a sidecar ships none, so "this font is attached to the mkv" is no longer something the dialogue can
+    # count on. Only a font every player has is kept. Signs and songs keep the styles their source gave them, as always.
+    sidecar = output_mode() == "sidecar"
+    if not sidecar:
+        attachments = list_attachment_filenames(video)
+        norm_font = _normalize_font_token(candidate_font)
+        font_attached = False
+        if norm_font:
+            for att in attachments:
+                norm_att = _normalize_font_token(att)
+                if norm_att and (norm_font in norm_att):
+                    font_attached = True
+                    break
 
-    if font_attached:
-        return candidate_font
+        if font_attached:
+            return candidate_font
 
     if candidate_font.lower() in SAFE_FONTS_LOWER:
         return candidate_font
 
-    log(f"  font '{candidate_font}' not attached and not in safe set — falling back to {DEFAULT_DUB_FONT}")
+    if sidecar:
+        log(f"  sidecar output: font '{candidate_font}' not in safe set — falling back to {DEFAULT_DUB_FONT}")
+    else:
+        log(f"  font '{candidate_font}' not attached and not in safe set — falling back to {DEFAULT_DUB_FONT}")
     return DEFAULT_DUB_FONT
 
 ROOTS = os.environ.get("MERGE_ROOTS", "/data/Media/Anime Library").split(":")
