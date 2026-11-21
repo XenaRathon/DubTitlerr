@@ -56,7 +56,7 @@ All are written beside the video, sharing its basename. The merged `.ass` keeps 
 | `.eng.dubtitles.ass`             | `dub_signs_merge.py`, `review_apply.py`                      | `mux.py`                                     | Dialogue plus signs, songs and credits                                                                              |
 | `.dubtitles.conf.json`           | `generate.py`, `repair.py`                                   | `repair.py`, `glossary_acquire.py`, `mux.py` | Per-cue `avg_logprob` and `no_speech_prob`                                                                          |
 | `.dubtitles.words.json`          | `generate.py`                                                | `generate.py`                                | Per-word confidences and audio duration; lets a text-tier re-run skip the GPU                                       |
-| `.dubtitles.done`                | `common.py`, `mux.py`                                        | `generate.py`, `mux.py`                      | Completion stamp: muxed size, mtime, tier versions                                                                  |
+| `.dubtitles.done`                | `common.py`, `mux.py`                                        | `generate.py`, `mux.py`                      | Completion stamp: muxed size, mtime, tier versions (`output: sidecar` under `OUTPUT_MODE=sidecar`)                  |
 | `.dubtitles.fail`                | `generate.py`                                                | `generate.py`                                | Poison marker after a hard crash. Delete it to retry. Stopping the container no longer leaves one (0.2.2 and later) |
 | `.dubtitles.stages.json`         | `repair.py`, `dub_signs_merge.py`, `mux.py`, `merge_pass.sh` | `merge_pass.sh`, `mux.py`                    | One outcome per stage (repair, signs, mux). See [Stage outcomes](#stage-outcomes)                                   |
 | `.dubtitles.mux-recovery`        | `mux.py`                                                     | `mux.py`                                     | Written when a failed cross-device copy may have damaged the episode. While it exists, mux refuses that episode     |
@@ -343,11 +343,14 @@ Every wiki fetch is https-only. A redirect to another scheme is refused before t
 | `MIN_FREE_GB`             | `5`                      | Skip a mux below this free space rather than failing                                              |
 | `DUR_TOL`                 | `2`                      | Seconds of duration mismatch tolerated                                                            |
 | `DUB_SUFFIX`              | `.eng.dubtitles.srt`     | Sidecar the merge step looks for                                                                  |
-| `REVIEW_GATE_SHOWS`       | _(empty)_                | Shows whose episodes wait for review before muxing                                                |
+| `OUTPUT_MODE`             | `mux`                    | `mux` embeds the subtitle; `sidecar` leaves `<stem>.eng.dubtitles.ass` / `.srt` beside the video and never rewrites it |
+| `REVIEW_GATE_SHOWS`       | _(empty)_                | Shows held from muxing while they have unreviewed applied repairs (`repair_applied`); an episode without any is not held |
 | `REVIEW_GATE_STALE_DAYS`  | `7`                      | A hold older than this is reported loudly and **stays held**. It buys a log line, never a release |
 | `MEDIA_UID` / `MEDIA_GID` | `1000` / `100`           | Ownership set on written files                                                                    |
 
 The muxed `Dubtitles` track is appended last and flagged default, so the relative order of the other subtitle tracks is unchanged while players pick it up through the default flag. An MP4 or M4V source is removed only after the remuxed MKV verifies and the stamp writes. If the stamp write itself fails, the new MKV is rolled back and the original file is left untouched, so a failed run always leaves something complete on disk. Plex reads `.ass` sidecars and renders styling and positioning on direct-play clients; transcoding clients burn them in.
+
+With `OUTPUT_MODE=sidecar` the assembled subtitle is the deliverable: mux runs its gates (recovery marker, signs regression, review gate, stamp), then writes the `.dubtitles.done` stamp against the untouched video with `"output": "sidecar"` and keeps the `.ass` (or, for an MP4 or an episode without signs, the `.srt`) beside it. `KEEP_LANGS` and `MIN_FREE_GB` do not apply because nothing is remuxed. A sidecar stamp does not count as done once the mode is switched back to `mux`, so those episodes are muxed on the next pass; a mux stamp counts as done in both modes.
 
 ### Review server
 
