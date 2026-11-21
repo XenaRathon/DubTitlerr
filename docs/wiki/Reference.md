@@ -48,7 +48,7 @@ The container runs as **root**, so `generate.py` can chown into the media tree. 
 
 ## Per-episode files
 
-All are written beside the video, sharing its basename. The merged `.ass` keeps the same `...eng.dubtitles.*` name, so it still shows up as the Dubtitles track with signs included. If the sidecar came from subgen with `SKIP_IF_EXTERNAL_SUBTITLES_EXIST`, replacing the `.srt` with the merged `.ass` does not trigger a re-transcribe loop.
+All are written beside the video, sharing its basename. Under [sidecar output](#sidecar-output) the `.eng.dubtitles.ass` or `.eng.dubtitles.srt` is the finished product and stays; under mux both are removed once the track is embedded. The merged `.ass` keeps the same `...eng.dubtitles.*` name, so it still shows up as the Dubtitles track with signs included. If the sidecar came from subgen with `SKIP_IF_EXTERNAL_SUBTITLES_EXIST`, replacing the `.srt` with the merged `.ass` does not trigger a re-transcribe loop.
 
 | Suffix                           | Written by                                                   | Read by                                      | Contents                                                                                                            |
 | -------------------------------- | ------------------------------------------------------------ | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -343,11 +343,25 @@ Every wiki fetch is https-only. A redirect to another scheme is refused before t
 | `MIN_FREE_GB`             | `5`                      | Skip a mux below this free space rather than failing                                              |
 | `DUR_TOL`                 | `2`                      | Seconds of duration mismatch tolerated                                                            |
 | `DUB_SUFFIX`              | `.eng.dubtitles.srt`     | Sidecar the merge step looks for                                                                  |
+| `DUB_OUTPUT`              | `mux`                    | `sidecar` leaves the subtitle beside the video, unmuxed ([below](#sidecar-output))                |
 | `REVIEW_GATE_SHOWS`       | _(empty)_                | Shows whose episodes wait for review before muxing                                                |
 | `REVIEW_GATE_STALE_DAYS`  | `7`                      | A hold older than this is reported loudly and **stays held**. It buys a log line, never a release |
 | `MEDIA_UID` / `MEDIA_GID` | `1000` / `100`           | Ownership set on written files                                                                    |
 
 The muxed `Dubtitles` track is appended last and flagged default, so the relative order of the other subtitle tracks is unchanged while players pick it up through the default flag. An MP4 or M4V source is removed only after the remuxed MKV verifies and the stamp writes. If the stamp write itself fails, the new MKV is rolled back and the original file is left untouched, so a failed run always leaves something complete on disk. Plex reads `.ass` sidecars and renders styling and positioning on direct-play clients; transcoding clients burn them in.
+
+### Sidecar output
+
+`DUB_OUTPUT=sidecar` ends the merge pass after assembly: the subtitle stays beside the video and nothing is muxed.
+
+- **Output.** The assembled `.eng.dubtitles.ass` (signs and songs merged in), or the `.eng.dubtitles.srt` for an MP4 or M4V source and for an MKV with no signs track. The video is never opened for writing: no remux, no track dropped (`KEEP_LANGS` is not applied), an MP4 stays an MP4, and `MIN_FREE_GB` is not checked because nothing is copied. No `.dubtitles.mux.log` is written.
+- **Stamp.** `.dubtitles.done` is written against the untouched video and carries `"output": "sidecar"`. The mux stage records `ok` with the detail `sidecar`; a stamp that cannot be written records `unwritable`, as under mux.
+- **Finished or waiting.** Under mux a subtitle sidecar on disk always means work is waiting. A finished sidecar looks the same, so the merge pass asks the stamp. Beside a current sidecar stamp the subtitle is finished and is left alone, also after you correct a line in the file by hand. With no stamp (a new episode, or one re-opened by `review_apply.py`) it is work.
+- **Regeneration.** A version bump, or a video replaced under the same name, leaves the stamp stale. `generate.py` parks the old sidecars as `.stale` and writes new ones, and the next merge pass assembles and stamps those. Until then the merge pass leaves the old subtitle alone and never re-stamps it. The replacement is recognised by being newer than the stale stamp, so a hand-corrected sidecar that later goes stale is taken for one: it is repaired again from `conf.json` and stamped. Corrections that should survive a regeneration belong in the review page.
+- **Fonts.** A sidecar carries no fonts, so `DUB_FANSUB_FONT` keeps the fansub dialogue font only when it is in the safe set and otherwise uses the default dialogue font. Sign and song styles are unchanged.
+- **Review gate.** `REVIEW_GATE_SHOWS` still delays the stamp, but players read a sidecar from the moment it is written, so in this mode the gate cannot keep unreviewed text off the screen.
+- **Switching.** The mode applies to episodes finished after the change. Episodes already muxed keep their embedded track. Finished sidecars stay sidecars after a switch back to `mux`; delete an episode's `.dubtitles.done` to have it muxed on the next pass.
+- **Any other value** stops the merge pass with a configuration error before a stage runs. It does not fall back to `mux`.
 
 ### Review server
 

@@ -8,6 +8,11 @@ that shipped since.
 
 ## [Unreleased]
 
+### Added
+
+- **Sidecar output** (`DUB_OUTPUT=sidecar`, Settings > Output > Output mode; default `mux`): the assembled `.eng.dubtitles.ass` or `.srt` stays beside the video and the video is never rewritten, so no track is dropped and an MP4 stays an MP4 (#38). The `.dubtitles.done` stamp is still written and records `"output": "sidecar"`; a finished sidecar is skipped by later merge passes and regenerated after a version bump or when its video is replaced. The dialogue font falls back to the default unless the fansub font is in the safe set. Any value other than `mux` or `sidecar` stops the merge pass with a configuration error instead of falling back to `mux`.
+- A text-tier replay now parks an `.ass` left by the superseded run (older than the stamp), as a transcribe run already did. Before, that `.ass` won over the replayed srt and the old text was stamped current. Sidecar output depends on this; under mux it only arose after a post-stamp cleanup had failed.
+
 ### Security
 
 - Bump transitive `filelock` 3.32.4 → 4.2.10 and `setuptools` 84.0.0 → 84.2.1 in `uv.lock` to clear the osv-scan advisories.

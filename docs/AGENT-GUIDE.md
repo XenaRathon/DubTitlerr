@@ -20,7 +20,7 @@ DubTitlerr watches an anime library and, per episode, transcribes English-dub au
 | Transcribe and reflow | `generate.py` | `<stem>.eng.dubtitles.srt`, `<stem>.dubtitles.conf.json`, `<stem>.dubtitles.words.json`; a hard crash leaves `<stem>.dubtitles.fail` and `<stem>.dubtitles.crash.json` |
 | Repair | `repair.py` | Rewrites the SRT; writes `<stem>.dubtitles.repair.csv` and `<stem>.dubtitles.repair-summary.json` |
 | Merge signs and songs | `dub_signs_merge.py` | `<stem>.eng.dubtitles.ass` for MKV episodes |
-| Mux | `mux.py` | Video with a default `Dubtitles` track and the `<stem>.dubtitles.done` stamp |
+| Mux | `mux.py` | Video with a default `Dubtitles` track and the `<stem>.dubtitles.done` stamp. With `DUB_OUTPUT=sidecar`: the stamp only; the `.ass` or `.srt` stays beside the untouched video as the output |
 | Stage record | `common.py` (called by each stage and `merge_pass.sh`) | `<stem>.dubtitles.stages.json` |
 
 Invariants to keep:
