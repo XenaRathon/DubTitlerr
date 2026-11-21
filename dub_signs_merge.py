@@ -107,11 +107,7 @@ def list_attachment_filenames(video):
         )
         if r.returncode == 0:
             data = json.loads(r.stdout)
-            atts = [
-                att.get("file_name", "")
-                for att in data.get("attachments", [])
-                if att.get("file_name")
-            ]
+            atts = [att.get("file_name", "") for att in data.get("attachments", []) if att.get("file_name")]
             if atts:
                 return atts
     except Exception:
@@ -137,11 +133,7 @@ def list_attachment_filenames(video):
         )
         if r.returncode == 0:
             streams = json.loads(r.stdout).get("streams", [])
-            return [
-                (st.get("tags") or {}).get("filename", "")
-                for st in streams
-                if (st.get("tags") or {}).get("filename")
-            ]
+            return [(st.get("tags") or {}).get("filename", "") for st in streams if (st.get("tags") or {}).get("filename")]
     except Exception:
         pass
     return []
@@ -151,16 +143,11 @@ def _track_dialogue_font(track):
     dialogue_events = [
         ev
         for ev in track["src_events"]
-        if not keep_event(ev)
-        and not ev.is_comment
-        and ev.plaintext.strip()
-        and not STRONG_DROP_STYLE.search(ev.style or "")
+        if not keep_event(ev) and not ev.is_comment and ev.plaintext.strip() and not STRONG_DROP_STYLE.search(ev.style or "")
     ]
     if not dialogue_events:
         return None
-    counts = Counter(
-        ev.style for ev in dialogue_events if ev.style and ev.style in track["subs"].styles
-    )
+    counts = Counter(ev.style for ev in dialogue_events if ev.style and ev.style in track["subs"].styles)
     if not counts:
         return None
     top_style = counts.most_common(1)[0][0]
@@ -204,6 +191,7 @@ def resolve_dialogue_font(video, loaded_tracks, primary_track):
 
     log(f"  font '{candidate_font}' not attached and not in safe set — falling back to {DEFAULT_DUB_FONT}")
     return DEFAULT_DUB_FONT
+
 
 ROOTS = os.environ.get("MERGE_ROOTS", "/data/Media/Anime Library").split(":")
 SUFFIX = os.environ.get("DUB_SUFFIX", ".eng.dubtitles.srt")
@@ -496,13 +484,15 @@ def build(video, dub_srt, out_ass):
                 continue
             seen_intra.add(key)
             kept_events.append(ev)
-        loaded_tracks.append({
-            "idx": idx,
-            "subs": subs,
-            "src_events": src_events,
-            "kept_events": kept_events,
-            "ws": subs.info.get("WrapStyle"),
-        })
+        loaded_tracks.append(
+            {
+                "idx": idx,
+                "subs": subs,
+                "src_events": src_events,
+                "kept_events": kept_events,
+                "ws": subs.info.get("WrapStyle"),
+            }
+        )
 
     if not loaded_tracks:
         return ("extract-failed" if failed_streams else "no-signs"), 0, 0

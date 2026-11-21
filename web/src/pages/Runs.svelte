@@ -35,6 +35,8 @@
     id: string;
     show: string;
     season: number | null;
+    season_from: number | null;
+    season_to: number | null;
     episode_re: string | null;
     require_eng: number | null;
     status: string;
@@ -48,6 +50,7 @@
   let shows = $state.raw<string[]>([]);
   let showsFailed = $state(false);
   let season = $state('');
+  let seasonTo = $state('');
   let episodeRe = $state('');
   let requireEng = $state(false);
   let requests = $state<RunRequest[]>([]);
@@ -104,7 +107,7 @@
     formError = '';
     errorMsg = '';
     statusMsg = '';
-    const problem = validateForm({ show, season, episodeRe }) ?? checkShowPick(show, shows);
+    const problem = validateForm({ show, season, seasonTo, episodeRe }) ?? checkShowPick(show, shows);
     if (problem) {
       formError = problem;
       return;
@@ -112,11 +115,12 @@
     queuing = true;
     try {
       const res = (await api('/api/requests', {
-        body: buildRequestBody({ show, season, episodeRe, requireEng }),
+        body: buildRequestBody({ show, season, seasonTo, episodeRe, requireEng }),
       })) as { id: string };
       statusMsg = `Queued as ${shortId(res.id)}.`;
       show = '';
       season = '';
+      seasonTo = '';
       episodeRe = '';
       requireEng = false;
       await load();
@@ -254,13 +258,26 @@
         {#each shows as name (name)}<option value={name}></option>{/each}
       </datalist>
       <label for="runs-season">Season (optional)</label>
-      <input
-        id="runs-season"
-        bind:value={season}
-        inputmode="numeric"
-        placeholder="e.g. 1"
-        autocomplete="off"
-      />
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <input
+          id="runs-season"
+          bind:value={season}
+          inputmode="numeric"
+          placeholder="e.g. 1"
+          autocomplete="off"
+          style="flex: 1; margin: 0;"
+        />
+        <span style="color: var(--text-muted)">to</span>
+        <input
+          id="runs-season-to"
+          bind:value={seasonTo}
+          inputmode="numeric"
+          placeholder="e.g. 3"
+          autocomplete="off"
+          style="flex: 1; margin: 0;"
+          aria-label="to season (optional)"
+        />
+      </div>
       <label for="runs-regex">Episode filter (optional)</label>
       <input
         id="runs-regex"
@@ -302,7 +319,11 @@
             <tr>
               <td title={req.id}><code>{shortId(req.id)}</code></td>
               <td>{req.show}</td>
-              <td>{req.season ?? '—'}</td>
+              <td
+                >{req.season_from !== null && req.season_to !== null && req.season_from !== req.season_to
+                  ? `S${req.season_from}–S${req.season_to}`
+                  : (req.season_from ?? req.season ?? '—')}</td
+              >
               <td>{req.episode_re ?? '—'}</td>
               <td><StatusBadge status={req.status} /></td>
               <td>{formatWhen(req.created_at)}</td>

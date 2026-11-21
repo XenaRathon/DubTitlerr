@@ -1021,3 +1021,43 @@ def within_window(spec: str, hour: int, minute: int) -> bool:
     if start < end:
         return start <= now < end
     return now >= start or now < end
+
+
+def season_episode_re(season_from: int | None = None, season_to: int | None = None, episode_re: str | None = None) -> str:
+    """Derive GENERATE_ONLY_RE regex for filename matching with season/episode branches."""
+    ep = episode_re.strip() if episode_re else None
+    ep = ep if ep else None
+
+    if season_from is not None and season_to is None:
+        season_to = season_from
+    elif season_to is not None and season_from is None:
+        season_from = season_to
+
+    if season_from is not None and season_to is not None and season_from != season_to:
+        seasons = list(range(season_from, season_to + 1))
+        inner = "|".join(str(s) for s in seasons)
+        season_token = f"(?:{inner})"
+    elif season_from is not None:
+        season_token = str(season_from)
+    else:
+        season_token = None
+
+    if season_token is None and not ep:
+        return ""
+
+    if season_token is not None and ep:
+        if ep.endswith(r"(?!\d)"):
+            ep = ep[: -len(r"(?!\d)")]
+        branch = f"(?:^|[\\W_])[Ss]0*{season_token}(?:[\\W_Ee]|(?=[Ee])).*(?:{ep})(?!\\d)"
+    elif season_token is not None:
+        # Season-only branch: do NOT append (?!\d) because [Ss]0*1(?=[Ee]|[\W_]|$) already bounds the number
+        branch = f"(?:^|[\\W_])[Ss]0*{season_token}(?=[Ee]|[\\W_]|$)"
+    else:
+        if ep and ep.endswith(r"(?!\d)"):
+            ep = ep[: -len(r"(?!\d)")]
+        branch = f"(?:{ep})(?!\\d)"
+
+    if not (branch.startswith("(?:") and branch.endswith(")")):
+        branch = f"(?:{branch})"
+
+    return branch

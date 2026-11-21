@@ -12,6 +12,7 @@ def _setup_app(tmp_path, include_exporter=True):
     (app / "shell").mkdir(parents=True, exist_ok=True)
     shutil.copy(REPO / "shell" / "lib.sh", app / "shell" / "lib.sh")
     shutil.copy(REPO / "review_requests.py", app / "review_requests.py")
+    shutil.copy(REPO / "common.py", app / "common.py")
     if include_exporter and (REPO / "review_settings_write.py").exists():
         shutil.copy(REPO / "review_settings_write.py", app / "review_settings_write.py")
         if (REPO / "glossary_lock.py").exists():
@@ -227,8 +228,6 @@ pathlib.Path(os.environ["STOP_FLAG"]).touch()
         assert not (root / "PWNED").exists()
 
 
-
-
 # --- stored settings (settings.json) reach the loop at its boundaries -----------------------------------------------------
 
 
@@ -394,8 +393,6 @@ def test_a_saved_acquire_apply_true_applies_and_an_empty_store_means_apply(tmp_p
     env, log_file, _ = _prep_env(tmp_path, "Frieren\n", {"generate": "pathlib.Path(os.environ['STOP_FLAG']).touch()"})
     _run_gen_loop(env)
     assert "acquire Frieren apply" in log_file.read_text()
-
-
 
 
 def test_the_sweep_exits_zero_on_a_soft_stop_with_stored_settings(tmp_path):
