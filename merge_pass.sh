@@ -9,9 +9,19 @@
 # Idempotent: a muxed episode has the stamp + embedded track, so it's skipped next pass.
 # Per-episode availability; refreshes Plex when this pass muxed anything new.
 # Env: MERGE_ROOTS, OLLAMA_URL, REPAIR_MODEL, GLOSSARY_DIR, PLEX_URL, PLEX_TOKEN, PLEX_SECTION,
-#      MIN_FREE_GB, KEEP_LANGS.
+#      MIN_FREE_GB, KEEP_LANGS, APP_DIR.
 ROOT="${MERGE_ROOTS:-/media/Anime Library}"
-APP="${APP_DIR:-/scripts}"
+# APP: where repair.py, dub_signs_merge.py and mux.py live. An explicit APP_DIR wins (container_run.sh exports it). Without
+# one, the directory this script itself sits in, symlinks resolved, so a manual `sh /app/merge_pass.sh` finds its neighbours.
+# The old default was a hardcoded /scripts, which the image does not have: a manual run failed every stage with "can't open
+# file" and recorded a `crashed` repair for an episode nothing was wrong with (#39).
+if [ -n "${APP_DIR:-}" ]; then
+	APP="$APP_DIR"
+elif _script_path="$(readlink -f "$0" 2>/dev/null)"; then
+	APP="$(dirname "$_script_path")"
+else
+	APP="/app"
+fi
 export PYTHONPATH="$APP${PYTHONPATH:+:$PYTHONPATH}" # so inline `python3 -c "import common"` snippets resolve
 # Stored settings (settings.json / secrets.json, written by the web UI): applied at the start of EVERY pass, so a change takes
 # effect at the next pass boundary and never mid-episode. NOT `source`d: review_settings_write.py parses and re-validates the
@@ -39,6 +49,14 @@ python3 -c "import pysubs2" >/dev/null 2>&1 || {
 	echo "FATAL: pysubs2 not found — image is misbuilt"
 	exit 1
 }
+# A wrong APP is a configuration error, not an episode failure: stop here, before any stage runs and before any stage record
+# is written. Left to the per-stem loop, the first episode would be recorded as a `crashed` repair instead.
+for _script in repair.py dub_signs_merge.py mux.py; do
+	if [ ! -f "$APP/$_script" ]; then
+		echo "FATAL: configuration error — $_script not found in $APP. Set APP_DIR to the directory that holds the DubTitlerr scripts (/app in the published image)."
+		exit 1
+	fi
+done
 cd "$ROOT" || {
 	echo "merge_pass: missing $ROOT"
 	exit 1

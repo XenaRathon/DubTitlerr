@@ -19,6 +19,10 @@ that shipped since.
 ### Removed
 - The `X-Review-Token` header alias is completely removed; send `X-Api-Key` instead. Note that the audit-log operator for callers passing a key changes from `alias:<name>` to `key:<name>`.
 
+### Fixed
+
+- `merge_pass.sh` run by hand (for example `docker exec dubtitlerr sh /app/merge_pass.sh`) finds the stage scripts beside itself instead of defaulting to `/scripts`, which the image does not have. An explicit `APP_DIR` still wins. A folder without the stage scripts stops the pass with one configuration error before any stage runs, so no episode is recorded as a `crashed` repair (#39).
+
 ## 0.3.0 - 2026-10-16
 
 The web UI release. Sign-in with admin and user accounts replaces the shared token, every setting the pipeline
