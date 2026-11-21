@@ -8,6 +8,15 @@ that shipped since.
 
 ## [Unreleased]
 
+### Added
+
+- `OUTPUT_MODE=sidecar` (Output settings page): assemble without muxing. The `.eng.dubtitles.ass` / `.srt` stays beside the video, the video is never rewritten, and a `.dubtitles.done` stamp keeps the pass idempotent. Switching back to `mux` muxes those episodes on the next pass (#38).
+
+### Fixed
+
+- The merge pass no longer re-runs repair on an `.srt`-only episode whose stamp is already current.
+- `REVIEW_GATE_SHOWS` help text says what the gate does: it holds only episodes with unreviewed applied repairs, not every episode of a listed show (#38).
+
 ### Security
 
 - Bump transitive `filelock` 3.32.4 → 4.2.10 and `setuptools` 84.0.0 → 84.2.1 in `uv.lock` to clear the osv-scan advisories.

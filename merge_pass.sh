@@ -6,10 +6,12 @@
 #   2. mux: embed the .ass (mkv) / .srt (mp4) into the video as a default "Dubtitles"
 #      track WITH the embedded fonts (mp4 is remuxed to mkv) -> signs render correctly,
 #      a .dubtitles.done stamp is written, sidecars removed.
+#      OUTPUT_MODE=sidecar: no remux; the stamp is written against the untouched video and the
+#      .ass / .srt sidecar stays beside it (see mux.py).
 # Idempotent: a muxed episode has the stamp + embedded track, so it's skipped next pass.
 # Per-episode availability; refreshes Plex when this pass muxed anything new.
 # Env: MERGE_ROOTS, OLLAMA_URL, REPAIR_MODEL, GLOSSARY_DIR, PLEX_URL, PLEX_TOKEN, PLEX_SECTION,
-#      MIN_FREE_GB, KEEP_LANGS.
+#      MIN_FREE_GB, KEEP_LANGS, OUTPUT_MODE.
 ROOT="${MERGE_ROOTS:-/media/Anime Library}"
 APP="${APP_DIR:-/scripts}"
 export PYTHONPATH="$APP${PYTHONPATH:+:$PYTHONPATH}" # so inline `python3 -c "import common"` snippets resolve
@@ -84,6 +86,13 @@ stage_failure() {
 	python3 -c "import common,sys; s=sys.argv[1]; f=common.failed_stage(s, only=(sys.argv[2],)); print(common.read_stages(s)[f].get('outcome') if f else '')" "$1" "$2" </dev/null 2>/dev/null || echo "gate-error"
 }
 
+# True if the episode is already delivered in the current OUTPUT_MODE (a current stamp for its video). In sidecar mode
+# the .srt of an mp4 episode stays beside the video, so without this the assemble branch below would re-run repair on it
+# every pass. Fails open to "not done": the stage gates below and mux's own stamp check still decide.
+already_done() {
+	python3 -c "import common,sys; s=sys.argv[1]; v=common.find_video(s); sys.exit(0 if v and common.stamp_done_for_mode(common.read_stamp(s+common.STAMP_SUFFIX), v) else 1)" "$1" </dev/null >/dev/null 2>&1
+}
+
 # True if the stage left ANY record. Fails closed: a check that cannot run counts as "no".
 has_record() {
 	python3 -c "import common,sys; sys.exit(0 if sys.argv[2] in common.read_stages(sys.argv[1]) else 1)" "$1" "$2" </dev/null >/dev/null 2>&1
@@ -101,6 +110,7 @@ find "$@" -type f \( -name "*.eng.dubtitles.srt" -o -name "*.eng.dubtitles.ass" 
 		break
 	fi
 	[ -f "$stem.dubtitles.fail" ] && continue # generate crashed on it -> skip
+	already_done "$stem" && continue          # delivered (muxed, or a sidecar in OUTPUT_MODE=sidecar)
 	if [ ! -f "$stem.eng.dubtitles.ass" ] && [ -f "$stem.eng.dubtitles.srt" ]; then
 		echo "### assemble $stem"
 		# Drop records from older runs so the crash fallbacks and the gates below only ever see

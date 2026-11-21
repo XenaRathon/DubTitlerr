@@ -372,7 +372,7 @@ def atomic_write(path, render, mode=SIDECAR_MODE, newline=None):
                 pass
 
 
-def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
+def write_stamp(path: str, video: str, stages: dict | None = None, output: str | None = None) -> None:
     """Write the .dubtitles.done idempotency stamp recording the muxed file's size+mtime
     and the tier versions that produced it (stamp_valid rejects a stamp behind either
     tier, so a version bump marks every prior-version file stale).
@@ -386,7 +386,12 @@ def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
     ADDITIVE AND OPTIONAL, and stamp_valid ignores it. That is the whole constraint: if an
     older stamp stopped validating, every episode in the library would read as unprocessed
     and be fully re-transcribed -- roughly 12 GPU-hours to add a bookkeeping field. Omitted
-    entirely when the caller does not know, rather than guessed."""
+    entirely when the caller does not know, rather than guessed.
+
+    ``output`` records HOW the episode was delivered: ``"sidecar"`` for OUTPUT_MODE=sidecar
+    (the video was never rewritten; the subtitle stays beside it). Omitted for a mux, so
+    every existing stamp reads as a mux. ``"muxed": True`` is still written for a sidecar
+    stamp: stale_tiers() requires it, and the generate stage must see the episode as done."""
     st = os.stat(video)
     doc = {
         "size": st.st_size,
@@ -403,6 +408,8 @@ def write_stamp(path: str, video: str, stages: dict | None = None) -> None:
     }
     if stages:
         doc["stages"] = stages
+    if output:
+        doc["output"] = output
     atomic_write(path, lambda f: json.dump(doc, f))
 
 
@@ -458,6 +465,31 @@ def _stamp_matches_file(stamp: dict, video: str) -> bool:
     except OSError:
         return False
     return stamp.get("size") == st.st_size and abs(stamp.get("mtime", 0) - st.st_mtime) < 1.0
+
+
+OUTPUT_MODES = ("mux", "sidecar")
+
+
+def output_mode() -> str:
+    """OUTPUT_MODE: "mux" (default) embeds the subtitle into the video; "sidecar" leaves
+    ``<stem>.eng.dubtitles.ass`` / ``.srt`` beside the untouched video instead. Read per
+    call, so a stored-settings change applies at the next merge pass. An unknown value
+    falls back to "sidecar", the mode that never rewrites media: a typo must not be the
+    thing that replaces a library file in place."""
+    v = (os.environ.get("OUTPUT_MODE") or "mux").strip().lower()
+    return v if v in OUTPUT_MODES else "sidecar"
+
+
+def stamp_done_for_mode(stamp: dict | None, video: str, mode: str | None = None) -> bool:
+    """True if the stamp is current (stamp_valid) AND satisfies the delivery ``mode``.
+
+    A mux stamp satisfies both modes (the track is already embedded; switching to sidecar
+    must not un-mux anything). A sidecar stamp satisfies only "sidecar": after switching
+    back to "mux", the episode is muxed on the next pass instead of staying unembedded."""
+    if not stamp_valid(stamp, video):
+        return False
+    mode = mode or output_mode()
+    return mode == "sidecar" or stamp.get("output", "mux") != "sidecar"
 
 
 def stamp_valid(stamp: dict | None, video: str) -> bool:

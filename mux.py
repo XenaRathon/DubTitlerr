@@ -35,6 +35,11 @@ DUR_TOL (seconds, default 2), MEDIA_UID/GID.
                          held. It buys a log line, never a release: auto-releasing
                          unreviewed repairs is the failure the review loop exists to
                          prevent.
+  OUTPUT_MODE            "mux" (default) or "sidecar". Sidecar: every gate above still
+                         runs, then the video is NOT remuxed: a ``.dubtitles.done`` stamp is
+                         written against the untouched video (``"output": "sidecar"``) and
+                         the ``.eng.dubtitles.ass`` / ``.srt`` stays beside it for the media
+                         server to pick up. KEEP_LANGS and MIN_FREE_GB do not apply.
 Requires mkvtoolnix (mkvmerge) + ffprobe.  Built with help of Claude (Anthropic).
 """
 
@@ -57,8 +62,10 @@ from common import (
     TRACK_NAME,
     is_our_track,
     log,
+    output_mode,
     read_stages,
     read_stamp,
+    stamp_done_for_mode,
     stamp_valid,
     write_stage,
     write_stamp,
@@ -602,7 +609,8 @@ def process(orig, apply):
         if signs_outcome not in (None, "ok"):
             write_stage(stem, "mux", "build-error", "signs-regression-refused")
             return "signs-regression-refused"
-    if stamp_valid(read_stamp(stamp), orig):
+    mode = output_mode()
+    if stamp_done_for_mode(read_stamp(stamp), orig, mode):
         return "already-muxed"  # stat-only, version-aware stamp is the ONLY guard
     # AFTER the stamp check, not before it (the plan sketched the reverse). An episode that
     # already shipped cannot be held back -- reporting a hold for it would inflate the
@@ -610,6 +618,8 @@ def process(orig, apply):
     # status the operator is meant to act on.
     if held_for_review(stem):
         return "held-for-review"
+    if mode == "sidecar":
+        return _deliver_sidecar(orig, stem, src, apply)
     if not has_room(_free_bytes(orig), os.path.getsize(orig)):
         log("  skip (low disk):", os.path.basename(orig))
         return "skip-no-room"
@@ -750,6 +760,33 @@ def process(orig, apply):
         log("  mux error:", e)
         write_stage(stem, "mux", "crashed", "mux-exception")
         return "error"
+
+
+def _deliver_sidecar(orig, stem, src, apply):
+    """OUTPUT_MODE=sidecar: the video is never opened for writing. Stamp the UNTOUCHED
+    video (size+mtime, so the stamp stays valid until the file itself changes), keep the
+    sidecar, record the stage. The stamp is what keeps the pass idempotent: generate and
+    merge_pass both skip an episode with a current stamp, exactly as after a mux."""
+    if not apply:
+        log(f"  PLAN sidecar {os.path.basename(src)} (video left untouched)")
+        return "plan"
+    try:
+        write_stamp(stem + STAMP_SUFFIX, orig, stages=_stages_ran(stem, src), output="sidecar")
+    except OSError as e:
+        log(f"  ERROR: stamp write FAILED ({e}) — {os.path.basename(orig)} will be retried next sweep")
+        write_stage(stem, "mux", "unwritable", str(e))
+        return "stamp-write-failed"
+    # The other sidecar is not the delivered one: an .srt left beside a merged .ass would
+    # show up in the media server as a second, dialogue-only English stream.
+    leftovers = [ASS_SUFFIX + ".part"] + ([SRT_SUFFIX] if src.endswith(ASS_SUFFIX) else [])
+    for suff in leftovers:
+        try:
+            os.remove(stem + suff)
+        except OSError:
+            pass
+    log(f"  sidecar delivered: {os.path.basename(src)} (video untouched)")
+    write_stage(stem, "mux", "ok", "sidecar")
+    return "sidecar"
 
 
 def main(argv=None):
